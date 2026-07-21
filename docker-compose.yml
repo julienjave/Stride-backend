@@ -1,11 +1,14 @@
+name: stride
+
 services:
   db:
     image: postgres:16
+    container_name: stride-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-physio_app}
+      POSTGRES_DB: ${POSTGRES_DB:-stride}
     ports:
       - "5432:5432"
     volumes:
@@ -13,6 +16,7 @@ services:
 
   storage:
     image: minio/minio
+    container_name: stride-storage
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
