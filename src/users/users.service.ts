@@ -16,38 +16,44 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+// --- IMPORTS -----------------------------------------------------------------------------------------------
 import {
   ConflictException,
   Inject,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import * as bcrypt from 'bcrypt';
-import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider';
+} from '@nestjs/common'
+import { eq } from 'drizzle-orm'
+import * as bcrypt from 'bcrypt'
+import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
   practitionerProfiles,
   patientProfiles,
   adminProfiles,
-} from '../database/schema';
-import { CreateUserDto, UserRole } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+} from '../database/schema'
+import { CreateUserDto, UserRole } from './dto/create-user.dto'
+import { UpdateUserDto } from './dto/update-user.dto'
 
 
+// --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
 export class UsersService {
   constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
 
+  // === ROUTES =============================================================
+
+  // --- POST ROUTES ---
+
   async create(dto: CreateUserDto) {
     const existing = await this.db.query.users.findFirst({
       where: eq(users.email, dto.email),
-    });
+    })
     if (existing) {
-      throw new ConflictException('A user with this email already exists');
+      throw new ConflictException('A user with this email already exists')
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, 10)
 
     return this.db.transaction(async (tx) => {
       // .returning() asks Postgres to hand back the row it just inserted —
@@ -62,72 +68,88 @@ export class UsersService {
           firstName: dto.firstName,
           lastName: dto.lastName,
         })
-        .returning();
+        .returning()
 
       if (dto.role === UserRole.PRACTITIONER) {
         await tx.insert(practitionerProfiles).values({
           userId: user.id,
           licenseNumber: dto.licenseNumber!,
           specialties: dto.specialties ?? [],
-        });
+        })
       } else if (dto.role === UserRole.PATIENT) {
         await tx.insert(patientProfiles).values({
           userId: user.id,
           dateOfBirth: dto.dateOfBirth!,
-        });
+        })
       } else if (dto.role === UserRole.ADMIN) {
         await tx.insert(adminProfiles).values({
           userId: user.id,
           position: dto.position,
-        });
+        })
       }
 
-      return this.toPublic(user);
-    });
+      return this.toPublic(user)
+    })
   }
+
+  // --- GET ROUTES ---
 
   async findAll() {
     const rows = await this.db.query.users.findMany({
       where: eq(users.isActive, true),
-    });
-    return rows.map((u) => this.toPublic(u));
+    })
+    return rows.map((u) => this.toPublic(u))
   }
 
   async findOne(id: number) {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, id),
-    });
+    })
     if (!user) {
-      throw new NotFoundException(`User ${id} not found`);
+      throw new NotFoundException(`User ${id} not found`)
     }
-    return this.toPublic(user);
+    return this.toPublic(user)
   }
 
+  // INTERNAL USE ONLY — the one method in this service that does NOT strip
+  // passwordHash. Never call this from a controller; it exists purely for
+  // AuthService to compare a login attempt's password against the real hash.
+  async findByEmailWithHash(email: string) {
+    return this.db.query.users.findFirst({ where: eq(users.email, email) })
+  }
+
+  // --- PATCH ROUTES ---
+
   async update(id: number, dto: UpdateUserDto) {
-    await this.findOne(id);
+    await this.findOne(id)
     const [updated] = await this.db
       .update(users)
       .set(dto)
       .where(eq(users.id, id))
-      .returning();
-    return this.toPublic(updated);
+      .returning()
+    return this.toPublic(updated)
   }
+
+  // --- DELETE ROUTES ---
 
   // Soft delete only — matches the is_active pattern from the schema. There is
   // deliberately no method here that issues a real DELETE against users.
   async softDelete(id: number) {
-    await this.findOne(id);
+    await this.findOne(id)
     const [deactivated] = await this.db
       .update(users)
       .set({ isActive: false })
       .where(eq(users.id, id))
-      .returning();
-    return this.toPublic(deactivated);
+      .returning()
+    return this.toPublic(deactivated)
   }
+
+
+  // === HELPER FUNCTIONS =====================================================
 
   // Strips passwordHash before anything leaves the service
   private toPublic(user: typeof users.$inferSelect) {
-    const { passwordHash, ...publicUser } = user;
-    return publicUser;
+    const { passwordHash, ...publicUser } = user
+    return publicUser
   }
 }

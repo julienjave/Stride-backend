@@ -16,14 +16,17 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+// --- IMPORTS -----------------------------------------------------------------------------------------------
 import { Module } from '@nestjs/common'
 import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
 import { UsersModule } from './users/users.module'
+import { AuthModule } from './auth/auth.module'
 
 
+// --- MODULE ------------------------------------------------------------------------------------------------
 @Module({
-  imports: [DrizzleModule, StorageModule, UsersModule],
+  imports: [DrizzleModule, StorageModule, UsersModule, AuthModule],
 })
 
 export class AppModule {}
