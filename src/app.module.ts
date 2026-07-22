@@ -18,6 +18,8 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { Module } from '@nestjs/common'
+import { APP_GUARD } from '@nestjs/core'
+import { ThrottlerModule, ThrottlerGuard, seconds } from '@nestjs/throttler'
 import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
 import { UsersModule } from './users/users.module'
@@ -26,7 +28,24 @@ import { AuthModule } from './auth/auth.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 @Module({
-  imports: [DrizzleModule, StorageModule, UsersModule, AuthModule],
+  imports: [
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: seconds(60),
+        limit: 60, // baseline: 60 requests/minute per IP, across the whole API
+      },
+    ]),
+    DrizzleModule, 
+    StorageModule, 
+    UsersModule, 
+    AuthModule
+  ],
+  providers: [
+    // Applying ThrottlerGuard globally here — every route in the app gets the
+    // baseline limit automatically, no controller has to remember to add it.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 
 export class AppModule {}

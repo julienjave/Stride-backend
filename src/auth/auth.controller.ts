@@ -18,6 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res, UseGuards } from '@nestjs/common'
+import { Throttle, seconds } from '@nestjs/throttler'
 import { type Request, type Response } from 'express'
 import { LocalAuthGuard } from './guards/local-auth.guard'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -33,6 +34,8 @@ export class AuthController {
 
   // --- POST ROUTES ---
   
+  // Overrides just the 'default' throttler for THIS route only
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @UseGuards(LocalAuthGuard)
   @Post('login')
   login(@Body() _dto: LoginDto, @CurrentUser() user: unknown) {

@@ -18,6 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { NestFactory } from '@nestjs/core'
+import { NestExpressApplication } from '@nestjs/platform-express'
 import { ValidationPipe } from '@nestjs/common'
 import session from 'express-session'
 import passport from 'passport'
@@ -29,7 +30,13 @@ import { getDatabaseUrl } from './config/database-url'
 
 // --- MAIN LOGIC ---------------------------------------------------------------------------------------------
 async function bootstrap() {
-    const app = await NestFactory.create(AppModule)
+    const app = await NestFactory.create<NestExpressApplication>(AppModule)
+
+    // === PROXY ==================================================================
+
+    // Needed to allow for rate-limiting
+    app.set('trust proxy', 1)
+
 
     // === CORS ===================================================================
 
@@ -37,6 +44,7 @@ async function bootstrap() {
         origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
         credentials: true,
     })
+
 
     // === VALIDATION =============================================================
 
