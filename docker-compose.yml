@@ -15,19 +15,22 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   storage:
-    image: minio/minio
+    image: rustfs/rustfs:latest
     container_name: stride-storage
     restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_VOLUMES: "/data"
     volumes:
-      - minio_data:/data
-
+      - rustfs_data:/data
+ 
 volumes:
   pgdata:
-  minio_data:
+  rustfs_data:

@@ -31,7 +31,7 @@ export const exercises = pgTable('exercises', {
     primaryMuscles: text('primary_muscles').array().notNull().default([]),
     secondaryMuscles: text('secondary_muscles').array().notNull().default([]),
     equipment: text('equipment').array().notNull().default([]),
-    instructions: text('instructions').notNull(),
+    instructions: text('instructions').array().notNull(),
     mediaUrls: text('media_urls').array().notNull().default([]),
     source: exerciseSourceEnum('source').notNull(),
     createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),

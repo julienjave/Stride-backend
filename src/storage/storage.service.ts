@@ -16,42 +16,63 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+// --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common'
-import { Client } from 'minio'
+import {
+  S3Client,
+  HeadBucketCommand,
+  CreateBucketCommand,
+  PutObjectCommand,
+  GetObjectCommand,
+} from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+
+
+// --- SERVICE -----------------------------------------------------------------------------------------------
 
 @Injectable()
 export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name)
-  private readonly client: Client
-
-  // One shared bucket for the whole app, organized by key prefix (folder-like paths
-  // such as "avatars/42.jpg", "exercises/pushup-0.jpg") rather than a separate bucket
-  // per feature — fewer buckets to create and manage permissions for.
+  private readonly client: S3Client
   private readonly bucket = 'stride'
 
   constructor() {
-    this.client = new Client({
-      endPoint: process.env.MINIO_ENDPOINT ?? 'localhost',
-      port: Number(process.env.MINIO_PORT ?? 9000),
-      useSSL: false,
-      accessKey: process.env.MINIO_ROOT_USER ?? 'minioadmin',
-      secretKey: process.env.MINIO_ROOT_PASSWORD ?? 'minioadmin',
+    this.client = new S3Client({
+      endpoint: `http://${process.env.STORAGE_ENDPOINT ?? 'localhost'}:${process.env.STORAGE_PORT ?? 9000}`,
+      region: 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.RUSTFS_ACCESS_KEY ?? 'rustfsadmin',
+        secretAccessKey: process.env.RUSTFS_SECRET_KEY ?? 'rustfsadmin',
+      },
+      // AWS S3 addresses buckets via subdomains (bucket.s3.amazonaws.com),
+      // relying on AWS's own wildcard DNS. Self-hosted S3-compatible servers
+      // don't have that DNS setup, so they address buckets via the URL PATH
+      // instead (localhost:9000/stride/...). forcePathStyle is what tells the
+      // SDK to use that addressing style — required for any self-hosted target.
+      forcePathStyle: true,
     })
   }
 
   async onModuleInit() {
-    const exists = await this.client.bucketExists(this.bucket).catch(() => false)
-    if (!exists) {
-      await this.client.makeBucket(this.bucket)
-      this.logger.log(`Created MinIO bucket "${this.bucket}"`)
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }))
+    } catch {
+      await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }))
+      this.logger.log(`Created bucket "${this.bucket}"`)
     }
   }
 
   // Uploads a file, returns the object key
   async upload(objectKey: string, buffer: Buffer, contentType: string): Promise<string> {
-    await this.client.putObject(this.bucket, objectKey, buffer, buffer.length, {
-      'Content-Type': contentType,
-    })
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: objectKey,
+        Body: buffer,
+        ContentType: contentType,
+      }),
+    )
     return objectKey
   }
 
@@ -59,6 +80,7 @@ export class StorageService implements OnModuleInit {
   // pattern letting a browser fetch the file directly without
   // routing the bytes through our NestJS server.
   async getPresignedUrl(objectKey: string, expirySeconds = 900): Promise<string> {
-    return this.client.presignedGetObject(this.bucket, objectKey, expirySeconds)
+    const command = new GetObjectCommand({ Bucket: this.bucket, Key: objectKey })
+    return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
   }
 }

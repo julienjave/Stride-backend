@@ -1,5 +1,5 @@
 {
-  "id": "c4c5b6a6-3db2-4640-b5a0-920fabd66550",
+  "id": "a5e8cb53-e60d-4488-a84a-90e15f0f5185",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -609,7 +609,7 @@
         },
         "instructions": {
           "name": "instructions",
-          "type": "text",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true
         },

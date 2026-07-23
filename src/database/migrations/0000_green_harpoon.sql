@@ -82,7 +82,7 @@ CREATE TABLE "exercises" (
 	"primary_muscles" text[] DEFAULT '{}' NOT NULL,
 	"secondary_muscles" text[] DEFAULT '{}' NOT NULL,
 	"equipment" text[] DEFAULT '{}' NOT NULL,
-	"instructions" text NOT NULL,
+	"instructions" text[] NOT NULL,
 	"media_urls" text[] DEFAULT '{}' NOT NULL,
 	"source" "exercise_source" NOT NULL,
 	"created_by" integer,
