@@ -16,15 +16,18 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+// --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import { Module } from '@nestjs/common'
 import { UsersController } from './users.controller'
 import { UsersService } from './users.service'
 
 
+// --- MODULE ------------------------------------------------------------------------------------------------
+
 @Module({
   controllers: [UsersController],
   providers: [UsersService],
-  // Exported so a future AuthModule can inject UsersService directly
   exports: [UsersService],
 })
 

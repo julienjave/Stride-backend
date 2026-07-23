@@ -22,8 +22,9 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ForbiddenException
 } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
@@ -31,6 +32,8 @@ import {
   practitionerProfiles,
   patientProfiles,
   adminProfiles,
+  userClinics,
+  clinics,
 } from '../database/schema'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
@@ -45,20 +48,21 @@ export class UsersService {
 
   // --- POST ROUTES ---
 
-  async create(dto: CreateUserDto) {
+  async create(dto: CreateUserDto, requestingUser?: { role: string }) {
+    if (requestingUser?.role === UserRole.PRACTITIONER && dto.role !== UserRole.PATIENT) {
+      throw new ForbiddenException('Practitioners can only create patient accounts')
+    }
+ 
     const existing = await this.db.query.users.findFirst({
       where: eq(users.email, dto.email),
     })
     if (existing) {
       throw new ConflictException('A user with this email already exists')
     }
-
+ 
     const passwordHash = await bcrypt.hash(dto.password, 10)
-
+ 
     return this.db.transaction(async (tx) => {
-      // .returning() asks Postgres to hand back the row it just inserted —
-      // without it, an INSERT tells nothing about what was created,
-      // including the auto-generated id we need for the next insert below.
       const [user] = await tx
         .insert(users)
         .values({
@@ -69,7 +73,7 @@ export class UsersService {
           lastName: dto.lastName,
         })
         .returning()
-
+ 
       if (dto.role === UserRole.PRACTITIONER) {
         await tx.insert(practitionerProfiles).values({
           userId: user.id,
@@ -87,7 +91,25 @@ export class UsersService {
           position: dto.position,
         })
       }
-
+ 
+      // Validated as a plain query against the clinics table — not by
+      // injecting ClinicsService, which would create a circular dependency
+      // between UsersModule and ClinicsModule. Both services independently
+      // query whatever tables they need via the shared, global DRIZZLE
+      // token; neither needs the other's NestJS module imported.
+      if (dto.clinicId) {
+        const clinic = await tx.query.clinics.findFirst({
+          where: eq(clinics.id, dto.clinicId),
+        })
+        if (!clinic) {
+          throw new NotFoundException(`Clinic ${dto.clinicId} not found`)
+        }
+        await tx.insert(userClinics).values({
+          userId: user.id,
+          clinicId: dto.clinicId,
+        })
+      }
+ 
       return this.toPublic(user)
     })
   }
@@ -99,6 +121,61 @@ export class UsersService {
       where: eq(users.isActive, true),
     })
     return rows.map((u) => this.toPublic(u))
+  }
+
+  // "My patients," for a practitioner — defined as any active patient who
+  // shares at least one clinic with them. This is the only relationship
+  // table we have between users and anything shared right now; a stricter
+  // definition ("patients I've actually assigned a program to") becomes
+  // possible once AssignedProgramsModule exists, and would be worth
+  // tightening to at that point.
+  async findPatientsForPractitioner(practitionerId: number) {
+    const practitionerClinics = await this.db
+      .select({ clinicId: userClinics.clinicId })
+      .from(userClinics)
+      .where(eq(userClinics.userId, practitionerId))
+ 
+    const clinicIds = practitionerClinics.map((c) => c.clinicId)
+    if (clinicIds.length === 0) {
+      return []
+    }
+ 
+    const rows = await this.db
+      .selectDistinct({ user: users })
+      .from(users)
+      .innerJoin(userClinics, eq(userClinics.userId, users.id))
+      .where(
+        and(
+          eq(users.role, UserRole.PATIENT),
+          eq(users.isActive, true),
+          inArray(userClinics.clinicId, clinicIds),
+        ),
+      )
+ 
+    return rows.map((r) => this.toPublic(r.user))
+  }
+
+  // The shared building block behind the PATCH/DELETE ownership checks below
+  // — "is this patient one this practitioner can act on," using the same
+  // clinic-sharing definition as findPatientsForPractitioner.
+  async isPatientManagedBy(patientId: number, practitionerId: number): Promise<boolean> {
+    const practitionerClinics = await this.db
+      .select({ clinicId: userClinics.clinicId })
+      .from(userClinics)
+      .where(eq(userClinics.userId, practitionerId))
+ 
+    const clinicIds = practitionerClinics.map((c) => c.clinicId)
+    if (clinicIds.length === 0) {
+      return false
+    }
+ 
+    const match = await this.db
+      .select()
+      .from(userClinics)
+      .where(and(eq(userClinics.userId, patientId), inArray(userClinics.clinicId, clinicIds)))
+      .limit(1)
+ 
+    return match.length > 0
   }
 
   async findOne(id: number) {

@@ -8,7 +8,8 @@ CREATE TABLE "clinics" (
 	"email" varchar(255) NOT NULL,
 	"phone" varchar(50),
 	"website" varchar(255),
-	"logo_path" varchar(500)
+	"logo_path" varchar(500),
+	"is_active" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "admin_profiles" (

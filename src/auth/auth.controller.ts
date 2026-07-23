@@ -23,17 +23,45 @@ import { type Request, type Response } from 'express'
 import { LocalAuthGuard } from './guards/local-auth.guard'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
+import { RegisterDto } from './dto/register.dto'
+import { RegisterClinicDto } from './dto/register-clinic.dto'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 @Controller('auth')
 export class AuthController {
+  constructor(private readonly authService: AuthService) {}
 
   // === ROUTES ===========================================================
 
   // --- POST ROUTES ---
+
+  // == Register ==
+
+  @Throttle({ default: { limit: 10, ttl: seconds(60) } })
+  @Post('register')
+  async register(@Body() dto: RegisterDto, @Req() req: Request) {
+    const user = await this.authService.register(dto)
+    return new Promise((resolve, reject) => {
+      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+    })
+  }
+
+  // Public, but self-limiting: AuthService.registerClinic() refuses to run
+  // at all once any admin account exists — see the comment there.
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @Post('register-clinic')
+  async registerClinic(@Body() dto: RegisterClinicDto, @Req() req: Request) {
+    const user = await this.authService.registerClinic(dto)
+    return new Promise((resolve, reject) => {
+      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+    })
+  }
   
+  // == Login ==
+
   // Overrides just the 'default' throttler for THIS route only
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @UseGuards(LocalAuthGuard)
@@ -45,6 +73,8 @@ export class AuthController {
     // nothing left to do here but return the user.
     return user
   }
+
+  // == Logout ==
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)

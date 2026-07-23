@@ -16,6 +16,8 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+// --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import {
   IsEmail,
   IsString,
@@ -24,9 +26,12 @@ import {
   IsOptional,
   IsArray,
   IsDateString,
+  IsInt,
   ValidateIf,
 } from 'class-validator'
 
+
+// --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 // A plain TS enum, kept in sync by hand with the roleEnum values in users.schema.ts.
 // Used both for validation here AND for the if/else branching in the service below.
@@ -77,4 +82,13 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   position?: string
+
+
+  // Optional — links the new user to a clinic via user_clinics at creation
+  // time. This is what makes clinic-scoped queries (e.g. "this practitioner's
+  // patients") actually have data to work with, rather than being correct
+  // queries against permanently empty relationships.
+  @IsOptional()
+  @IsInt()
+  clinicId?: number
 }

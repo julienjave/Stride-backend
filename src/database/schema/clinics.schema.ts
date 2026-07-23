@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
-import { pgTable, serial, varchar } from 'drizzle-orm/pg-core'
+import { pgTable, serial, varchar, boolean } from 'drizzle-orm/pg-core'
 
 export const clinics = pgTable('clinics', {
   id: serial('id').primaryKey(),
@@ -25,4 +25,5 @@ export const clinics = pgTable('clinics', {
   phone: varchar('phone', { length: 50 }),
   website: varchar('website', { length: 255 }),
   logoPath: varchar('logo_path', { length: 500 }),
+  isActive: boolean('is_active').notNull().default(true),
 })

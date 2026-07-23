@@ -17,6 +17,7 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import { Module } from '@nestjs/common'
 import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerModule, ThrottlerGuard, seconds } from '@nestjs/throttler'
@@ -24,9 +25,12 @@ import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
 import { UsersModule } from './users/users.module'
 import { AuthModule } from './auth/auth.module'
+import { ExercisesModule } from './exercises/exercises.module'
+import { ClinicsModule } from './clinics/clinics.module'
 
 
 // --- MODULE ------------------------------------------------------------------------------------------------
+
 @Module({
   imports: [
     ThrottlerModule.forRoot([
@@ -39,7 +43,9 @@ import { AuthModule } from './auth/auth.module'
     DrizzleModule, 
     StorageModule, 
     UsersModule, 
-    AuthModule
+    AuthModule,
+    ExercisesModule,
+    ClinicsModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the
