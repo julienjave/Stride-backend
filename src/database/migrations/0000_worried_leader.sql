@@ -39,11 +39,17 @@ CREATE TABLE "user_clinics" (
 	CONSTRAINT "user_clinics_user_clinic_unique" UNIQUE("user_id","clinic_id")
 );
 --> statement-breakpoint
+CREATE TABLE "user_roles" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"role" "role" NOT NULL,
+	CONSTRAINT "user_roles_user_role_unique" UNIQUE("user_id","role")
+);
+--> statement-breakpoint
 CREATE TABLE "users" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"email" varchar(255) NOT NULL,
 	"password_hash" varchar(255) NOT NULL,
-	"role" "role" NOT NULL,
 	"first_name" varchar(100) NOT NULL,
 	"last_name" varchar(100) NOT NULL,
 	"avatar_path" varchar(500),
@@ -172,6 +178,7 @@ ALTER TABLE "patient_profiles" ADD CONSTRAINT "patient_profiles_user_id_users_id
 ALTER TABLE "practitioner_profiles" ADD CONSTRAINT "practitioner_profiles_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_clinics" ADD CONSTRAINT "user_clinics_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_clinics" ADD CONSTRAINT "user_clinics_clinic_id_clinics_id_fk" FOREIGN KEY ("clinic_id") REFERENCES "public"."clinics"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "medical_files" ADD CONSTRAINT "medical_files_patient_id_users_id_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "medical_files" ADD CONSTRAINT "medical_files_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversations" ADD CONSTRAINT "conversations_practitioner_id_users_id_fk" FOREIGN KEY ("practitioner_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint

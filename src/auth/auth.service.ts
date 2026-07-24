@@ -17,11 +17,11 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { ForbiddenException, Inject, Injectable } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common'
 import { eq } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-import { clinics, users, adminProfiles, userClinics } from '../database/schema'
+import { clinics, users, adminProfiles, userClinics, userRoles } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { UserRole } from '../users/dto/create-user.dto'
 import { RegisterDto } from './dto/register.dto'
@@ -33,10 +33,11 @@ import { RegisterClinicDto } from './dto/register-clinic.dto'
 export class AuthService {
   constructor(private readonly usersService: UsersService, @Inject(DRIZZLE) private readonly db: DrizzleDb) {}
 
+  
   // === REGISTRATION ============================================================
 
   async register(dto: RegisterDto) {
-    return this.usersService.create({
+    const user = await this.usersService.create({
       email: dto.email,
       password: dto.password,
       role: UserRole.PATIENT,
@@ -44,6 +45,8 @@ export class AuthService {
       lastName: dto.lastName,
       dateOfBirth: dto.dateOfBirth,
     })
+
+    return { ...user, activeRole: UserRole.PATIENT }
   }
 
   // Bootstraps a brand-new clinic AND its founding admin account together.
@@ -53,8 +56,8 @@ export class AuthService {
   // isolated multi-tenant boundaries, so letting anyone spin up unlimited
   // clinics indefinitely would be a different product than the one designed.
   async registerClinic(dto: RegisterClinicDto) {
-    const existingAdmin = await this.db.query.users.findFirst({
-      where: eq(users.role, UserRole.ADMIN),
+    const existingAdmin = await this.db.query.userRoles.findFirst({
+      where: eq(userRoles.role, UserRole.ADMIN),
     })
     if (existingAdmin) {
       throw new ForbiddenException(
@@ -80,11 +83,12 @@ export class AuthService {
         .values({
           email: dto.email,
           passwordHash,
-          role: UserRole.ADMIN,
           firstName: dto.firstName,
           lastName: dto.lastName,
         })
         .returning()
+ 
+      await tx.insert(userRoles).values({ userId: user.id, role: UserRole.ADMIN })
  
       await tx.insert(adminProfiles).values({
         userId: user.id,
@@ -97,15 +101,23 @@ export class AuthService {
       })
  
       const { passwordHash: _omit, ...publicUser } = user
-      return publicUser
+      return {
+        ...publicUser,
+        roles: [UserRole.ADMIN],
+        activeRole: UserRole.ADMIN,
+        clinicId: clinic.id,
+      }
     })
   }
 
+
   // === VALIDATION / LOGIN =======================================================
 
-  // Called by LocalStrategy on every login attempt.
-  // Returns the sanitized user on success, or null on failure
-  async validateUser(email: string, password: string) {
+  // Called by LocalStrategy on every login attempt. requestedRole is
+  // optional — required only when the account holds more than one role,
+  // since there's no safe way to silently guess which one someone means to
+  // use for this session.
+  async validateUser(email: string, password: string, requestedRole?: string) {
     const user = await this.usersService.findByEmailWithHash(email)
     if (!user) {
       return null
@@ -114,7 +126,25 @@ export class AuthService {
     if (!passwordMatches) {
       return null
     }
+ 
+    const roles = await this.usersService.getRolesForUser(user.id)
+ 
+    let activeRole: string
+    if (requestedRole) {
+      if (!roles.includes(requestedRole)) {
+        throw new ForbiddenException(`This account does not have the "${requestedRole}" role`)
+      }
+      activeRole = requestedRole
+    } else if (roles.length === 1) {
+      activeRole = roles[0]
+    } else {
+      // Multiple roles, none specified — refuse to silently pick one.
+      throw new BadRequestException(
+        'This account has multiple roles. Specify which one to log in as.',
+      )
+    }
+ 
     const { passwordHash, ...publicUser } = user
-    return publicUser
+    return { ...publicUser, roles, activeRole }
   }
 }

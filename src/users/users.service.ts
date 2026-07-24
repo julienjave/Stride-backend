@@ -29,6 +29,7 @@ import * as bcrypt from 'bcrypt'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
+  userRoles,
   practitionerProfiles,
   patientProfiles,
   adminProfiles,
@@ -37,6 +38,7 @@ import {
 } from '../database/schema'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
+import { GrantRoleDto } from './dto/grant-role.dto'
 
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
@@ -48,8 +50,9 @@ export class UsersService {
 
   // --- POST ROUTES ---
 
-  async create(dto: CreateUserDto, requestingUser?: { role: string }) {
-    if (requestingUser?.role === UserRole.PRACTITIONER && dto.role !== UserRole.PATIENT) {
+  // requestingUser is checked against ACTIVE role, not just "has this role somewhere" 
+  async create(dto: CreateUserDto, requestingUser?: { activeRole: string }) {
+    if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.role !== UserRole.PATIENT) {
       throw new ForbiddenException('Practitioners can only create patient accounts')
     }
  
@@ -68,11 +71,12 @@ export class UsersService {
         .values({
           email: dto.email,
           passwordHash,
-          role: dto.role,
           firstName: dto.firstName,
           lastName: dto.lastName,
         })
         .returning()
+ 
+      await tx.insert(userRoles).values({ userId: user.id, role: dto.role });
  
       if (dto.role === UserRole.PRACTITIONER) {
         await tx.insert(practitionerProfiles).values({
@@ -110,9 +114,59 @@ export class UsersService {
         })
       }
  
-      return this.toPublic(user)
+      return { ...this.toPublic(user), roles: [dto.role] }
     })
   }
+
+  // Grants an ADDITIONAL role to an already-existing user
+  async grantRole(userId: number, dto: GrantRoleDto) {
+    await this.findOne(userId)
+ 
+    const existingRole = await this.db.query.userRoles.findFirst({
+      where: and(eq(userRoles.userId, userId), eq(userRoles.role, dto.role)),
+    })
+    if (existingRole) {
+      throw new ConflictException(`User already has the "${dto.role}" role`)
+    }
+ 
+    return this.db.transaction(async (tx) => {
+      await tx.insert(userRoles).values({ userId, role: dto.role })
+ 
+      // Only creates the profile row if this user doesn't already have one
+      // for this role (relevant if a role was previously granted, then
+      // somehow re-granted after removal — defensive, not expected in
+      // normal use, but cheap to guard against).
+      if (dto.role === UserRole.PRACTITIONER) {
+        const hasProfile = await tx.query.practitionerProfiles.findFirst({
+          where: eq(practitionerProfiles.userId, userId),
+        })
+        if (!hasProfile) {
+          await tx.insert(practitionerProfiles).values({
+            userId,
+            licenseNumber: dto.licenseNumber!,
+            specialties: dto.specialties ?? [],
+          })
+        }
+      } else if (dto.role === UserRole.PATIENT) {
+        const hasProfile = await tx.query.patientProfiles.findFirst({
+          where: eq(patientProfiles.userId, userId),
+        })
+        if (!hasProfile) {
+          await tx.insert(patientProfiles).values({ userId, dateOfBirth: dto.dateOfBirth! })
+        }
+      } else if (dto.role === UserRole.ADMIN) {
+        const hasProfile = await tx.query.adminProfiles.findFirst({
+          where: eq(adminProfiles.userId, userId),
+        })
+        if (!hasProfile) {
+          await tx.insert(adminProfiles).values({ userId, position: dto.position })
+        }
+      }
+ 
+      return this.getRolesForUser(userId)
+    })
+  }
+
 
   // --- GET ROUTES ---
 
@@ -121,6 +175,14 @@ export class UsersService {
       where: eq(users.isActive, true),
     })
     return rows.map((u) => this.toPublic(u))
+  }
+
+  async getRolesForUser(userId: number): Promise<string[]> {
+    const rows = await this.db
+      .select({ role: userRoles.role })
+      .from(userRoles)
+      .where(eq(userRoles.userId, userId))
+    return rows.map((r) => r.role)
   }
 
   // "My patients," for a practitioner — defined as any active patient who
@@ -144,9 +206,10 @@ export class UsersService {
       .selectDistinct({ user: users })
       .from(users)
       .innerJoin(userClinics, eq(userClinics.userId, users.id))
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
       .where(
         and(
-          eq(users.role, UserRole.PATIENT),
+          eq(userRoles.role, UserRole.PATIENT),
           eq(users.isActive, true),
           inArray(userClinics.clinicId, clinicIds),
         ),
@@ -179,13 +242,12 @@ export class UsersService {
   }
 
   async findOne(id: number) {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, id),
-    })
+    const user = await this.db.query.users.findFirst({ where: eq(users.id, id) })
     if (!user) {
       throw new NotFoundException(`User ${id} not found`)
     }
-    return this.toPublic(user)
+    const roles = await this.getRolesForUser(id)
+    return { ...this.toPublic(user), roles }
   }
 
   // INTERNAL USE ONLY — the one method in this service that does NOT strip
@@ -194,6 +256,7 @@ export class UsersService {
   async findByEmailWithHash(email: string) {
     return this.db.query.users.findFirst({ where: eq(users.email, email) })
   }
+
 
   // --- PATCH ROUTES ---
 
@@ -204,8 +267,10 @@ export class UsersService {
       .set(dto)
       .where(eq(users.id, id))
       .returning()
-    return this.toPublic(updated)
+    const roles = await this.getRolesForUser(id)
+    return { ...this.toPublic(updated), roles }
   }
+
 
   // --- DELETE ROUTES ---
 
@@ -218,7 +283,8 @@ export class UsersService {
       .set({ isActive: false })
       .where(eq(users.id, id))
       .returning()
-    return this.toPublic(deactivated)
+    const roles = await this.getRolesForUser(id)
+    return { ...this.toPublic(deactivated), roles }
   }
 
 

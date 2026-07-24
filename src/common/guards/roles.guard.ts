@@ -17,12 +17,14 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { ROLES_KEY } from '../decorators/roles.decorator'
 
 
 // --- GUARD -------------------------------------------------------------------------------------------------
+
 // AUTHORIZATION check: given an already-authenticated user (SessionAuthGuard
 // runs first), are they allowed to do THIS specific thing?
 @Injectable()
@@ -37,14 +39,14 @@ export class RolesGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ])
-
+ 
     // No @Roles() at all on this route = open to any authenticated user.
     if (!requiredRoles || requiredRoles.length === 0) {
       return true
     }
-
+ 
     const { user } = context.switchToHttp().getRequest()
-    if (!requiredRoles.includes(user.role)) {
+    if (!requiredRoles.includes(user.activeRole)) {
       throw new ForbiddenException('You do not have permission to access this resource')
     }
     return true

@@ -16,8 +16,24 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
-import { pgTable, serial, integer, varchar, boolean, timestamp, date, text, pgEnum, unique } from 'drizzle-orm/pg-core'
+// --- IMPORTS -----------------------------------------------------------------------------------------------
+
+import { 
+  pgTable, 
+  serial, 
+  integer, 
+  varchar, 
+  boolean, 
+  timestamp, 
+  date, 
+  text, 
+  pgEnum, 
+  unique 
+} from 'drizzle-orm/pg-core'
 import { clinics } from './clinics.schema'
+
+
+// --- SCHEMA ------------------------------------------------------------------------------------------------
 
 // pgEnum defines a native Postgres ENUM type. The first argument is the SQL type's
 // name; the array is the fixed set of allowed values, enforced by the database itself
@@ -28,13 +44,27 @@ export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
-  role: roleEnum('role').notNull(),
   firstName: varchar('first_name', { length: 100 }).notNull(),
   lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarPath: varchar('avatar_path', { length: 500 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// One person can hold several roles (e.g. a clinic owner who is both admin
+// AND a treating practitioner) — this is why it's its own table with a
+// generated id, rather than userId-as-primary-key the way the profile
+// tables below work (those are strictly 1:1; this is 1:many).
+export const userRoles = pgTable('user_roles', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  role: roleEnum('role').notNull(),
+}, (table) => ({
+  // Prevents granting the same role to the same user twice.
+  userRoleUnique: unique('user_roles_user_role_unique').on(table.userId, table.role),
+}))
 
 // A join table: no independent meaning of its own, just links two other tables.
 export const userClinics = pgTable('user_clinics', {

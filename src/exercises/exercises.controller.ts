@@ -48,6 +48,20 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class ExercisesController {
   constructor(private readonly exercisesService: ExercisesService) {}
 
+  // === ROUTES ===========================================================
+
+  // --- POST ROUTES ---
+
+  @UseGuards(RolesGuard)
+  @Roles('practitioner')
+  @Post()
+  create(@CurrentUser() user: any, @Body() dto: CreateExerciseDto) {
+    return this.exercisesService.create(user.id, dto)
+  }
+
+
+  // --- GET ROUTES ---
+
   @Get()
   findAll(@Query('search') search?: string) {
     return this.exercisesService.findAll(search)
@@ -58,28 +72,27 @@ export class ExercisesController {
     return this.exercisesService.findOne(id)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles('practitioner')
-  @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateExerciseDto) {
-    return this.exercisesService.create(user.id, dto)
-  }
+
+  // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner')
+  @Roles('practitioner', 'admin')
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: any,
     @Body() dto: UpdateExerciseDto,
   ) {
-    return this.exercisesService.update(id, user.id, dto)
+    return this.exercisesService.update(id, user, dto)
   }
 
+
+  // --- DELETE ROUTES ---
+
   @UseGuards(RolesGuard)
-  @Roles('practitioner')
+  @Roles('practitioner', 'admin')
   @Delete(':id')
   archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
-    return this.exercisesService.archive(id, user.id)
+    return this.exercisesService.archive(id, user)
   }
 }

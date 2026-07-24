@@ -33,6 +33,7 @@ import {
 import { UsersService } from './users.service'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
+import { GrantRoleDto } from './dto/grant-role.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -41,9 +42,14 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
+@UseGuards(SessionAuthGuard)
 @Controller('users')
 export class UsersController {
     constructor(private readonly usersService: UsersService) {}
+
+    // === ROUTES =============================================================
+
+    // --- POST ROUTES ---
 
     @UseGuards(RolesGuard)
     @Roles('practitioner', 'admin')
@@ -52,13 +58,24 @@ export class UsersController {
         return this.usersService.create(dto, currentUser)
     }
 
+    // Admin-only: grants an existing user an ADDITIONAL role
+    @UseGuards(RolesGuard)
+    @Roles('admin')
+    @Post(':id/roles')
+    grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
+        return this.usersService.grantRole(id, dto)
+    }
+
+
+    // --- GET ROUTES ---
+
     // Admin: every account. Practitioner: their own patients (clinic-scoped).
     // Patient: no blanket listing at all.
     @UseGuards(RolesGuard)
     @Roles('practitioner', 'admin')
     @Get()
     findAll(@CurrentUser() currentUser: any) {
-        if (currentUser.role === UserRole.ADMIN) {
+        if (currentUser.activeRole === UserRole.ADMIN) {
         return this.usersService.findAll()
         }
         return this.usersService.findPatientsForPractitioner(currentUser.id)
@@ -67,16 +84,17 @@ export class UsersController {
     @Get(':id')
     findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
         const isSelf = currentUser.id === id
-        const isElevated = currentUser.role === UserRole.PRACTITIONER || currentUser.role === UserRole.ADMIN
+        const isElevated =
+        currentUser.activeRole === UserRole.PRACTITIONER || currentUser.activeRole === UserRole.ADMIN
         if (!isSelf && !isElevated) {
         throw new ForbiddenException('You can only view your own profile')
         }
         return this.usersService.findOne(id)
     }
+
+
+    // --- PATCH ROUTES ---
     
-    // Self, admin, or a practitioner acting on one of their own (clinic-shared)
-    // patients — isPatientManagedBy is the same check used by remove() below,
-    // kept in the service so both routes stay consistent with one definition.
     @Patch(':id')
     async update(
         @Param('id', ParseIntPipe) id: number,
@@ -84,9 +102,9 @@ export class UsersController {
         @Body() dto: UpdateUserDto,
     ) {
         const isSelf = currentUser.id === id
-        const isAdmin = currentUser.role === UserRole.ADMIN
+        const isAdmin = currentUser.activeRole === UserRole.ADMIN
         const isManagingPractitioner =
-        currentUser.role === UserRole.PRACTITIONER &&
+        currentUser.activeRole === UserRole.PRACTITIONER &&
         (await this.usersService.isPatientManagedBy(id, currentUser.id))
     
         if (!isSelf && !isAdmin && !isManagingPractitioner) {
@@ -100,9 +118,9 @@ export class UsersController {
     @Delete(':id')
     async remove(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
         const isSelf = currentUser.id === id
-        const isAdmin = currentUser.role === UserRole.ADMIN
+        const isAdmin = currentUser.activeRole === UserRole.ADMIN
         const isManagingPractitioner =
-        currentUser.role === UserRole.PRACTITIONER &&
+        currentUser.activeRole === UserRole.PRACTITIONER &&
         (await this.usersService.isPatientManagedBy(id, currentUser.id))
     
         if (!isSelf && !isAdmin && !isManagingPractitioner) {

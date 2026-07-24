@@ -18,7 +18,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e:fresh": "cross-env POSTGRES_DB=stride_test jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",
@@ -59,6 +60,7 @@
     "@types/passport-local": "^1.0.38",
     "@types/pg": "^8.20.0",
     "@types/supertest": "^7.0.0",
+    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
     "eslint": "^9.18.0",

@@ -79,9 +79,9 @@ export class ExercisesService {
 
   // --- PATCH ROUTES ---
 
-  async update(id: number, userId: number, dto: UpdateExerciseDto) {
+  async update(id: number, currentUser: { id: number; activeRole: string }, dto: UpdateExerciseDto) {
     const exercise = await this.findOne(id)
-    this.assertOwnership(exercise, userId)
+    this.assertCanModify(exercise, currentUser)
     const [updated] = await this.db
       .update(exercises)
       .set(dto)
@@ -92,9 +92,9 @@ export class ExercisesService {
 
   // --- DELETE ROUTES ---
 
-  async archive(id: number, userId: number) {
+  async archive(id: number, currentUser: { id: number; activeRole: string }) {
     const exercise = await this.findOne(id)
-    this.assertOwnership(exercise, userId)
+    this.assertCanModify(exercise, currentUser)
     const [archived] = await this.db
       .update(exercises)
       .set({ isArchived: true })
@@ -106,15 +106,19 @@ export class ExercisesService {
 
   // === HELPER FUNCTIONS =====================================================
 
-  // Only the practitioner who authored a custom exercise may edit or archive
-  // it. Exercises seeded from the external dataset (source: 'api', createdBy:
-  // null) can NEVER be edited through this service, by anyone — they're the
-  // shared base library every practitioner draws from, not any individual's
-  // content. This is exactly the resource-level check RolesGuard can't do —
-  // it needs the actual row, which only exists once we've already fetched it.
-  private assertOwnership(exercise: typeof exercises.$inferSelect, userId: number) {
-    if (exercise.source !== 'custom' || exercise.createdBy !== userId) {
-      throw new ForbiddenException('You can only modify custom exercises you created')
+  // A practitioner is restricted to their own custom exercises:
+  // an admin can correct anything, including the shared api-sourced library.
+  private assertCanModify(
+    exercise: typeof exercises.$inferSelect,
+    currentUser: { id: number; activeRole: string },
+  ) {
+    const isAdmin = currentUser.activeRole === 'admin'
+    const isOwner = exercise.source === 'custom' && exercise.createdBy === currentUser.id
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException(
+        'You can only modify custom exercises you created, unless you are an administrator',
+      )
     }
   }
 }
+ 

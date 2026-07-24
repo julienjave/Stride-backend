@@ -16,25 +16,42 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
+import { Injectable, OnModuleDestroy, Inject } from '@nestjs/common'
 import { Pool } from 'pg'
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from './schema'
 import { getDatabaseUrl } from '../config/database-url'
 
 
-// The injection token
 export const DRIZZLE = Symbol('DRIZZLE')
+// A separate token for the raw pool — exists specifically so something can
+// hold a reference to it for cleanup, which the DRIZZLE token alone never
+// exposed (drizzle(pool, {schema}) wraps the pool, it doesn't expose it).
+export const PG_POOL = Symbol('PG_POOL')
 
-// The exact type of "a Drizzle database instance that knows about our schema"
 export type DrizzleDb = NodePgDatabase<typeof schema>
+
+export const pgPoolProvider = {
+  provide: PG_POOL,
+  useFactory: (): Pool => new Pool({ connectionString: getDatabaseUrl() }),
+}
 
 export const drizzleProvider = {
   provide: DRIZZLE,
-  // useFactory, rather than useClass or useValue: we need to actually COMPUTE
-  // the value (build a connection pool, wrap it with Drizzle) when the app
-  // starts, not just hand Nest a class to instantiate or a static value.
-  useFactory: (): DrizzleDb => {
-    const pool = new Pool({ connectionString: getDatabaseUrl() })
-    return drizzle(pool, { schema })
-  },
+  useFactory: (pool: Pool): DrizzleDb => drizzle(pool, { schema }),
+  inject: [PG_POOL],
+}
+
+// A small dedicated class, purely to hook into Nest's shutdown lifecycle —
+// plain factory providers (like the two above) can't implement lifecycle
+// interfaces themselves, since they're not classes. This is what actually
+// closes the pool when app.close() runs (in a test's afterAll, or in
+// production when app.enableShutdownHooks() relays a real SIGTERM).
+@Injectable()
+export class DrizzlePoolCloser implements OnModuleDestroy {
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+
+  async onModuleDestroy() {
+    await this.pool.end()
+  }
 }

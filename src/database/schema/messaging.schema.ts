@@ -18,7 +18,6 @@
 
 import { pgTable, serial, bigserial, integer, text, timestamp, unique } from 'drizzle-orm/pg-core'
 import { users } from './users.schema'
-import { table } from 'console'
 
 export const conversations = pgTable('conversations', {
     id: serial('id').primaryKey(),

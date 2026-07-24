@@ -19,7 +19,6 @@
 import { pgTable, serial, varchar, text, integer, boolean, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
-import { table } from 'console'
 
 
 export const exerciseSourceEnum = pgEnum('exercise_source', ['api', 'custom'])

@@ -18,18 +18,22 @@
 
 export function getDatabaseUrl(): string {
   const {
-    POSTGRES_HOST,
-    POSTGRES_PORT,
+    POSTGRES_HOST = 'localhost',
+    POSTGRES_PORT = '5432',
     POSTGRES_USER,
     POSTGRES_PASSWORD,
     POSTGRES_DB,
   } = process.env
-
-  if (!POSTGRES_HOST || !POSTGRES_PORT || !POSTGRES_USER || !POSTGRES_PASSWORD || !POSTGRES_DB) {
-    throw new Error(
-      'Missing required Postgres environment variables: POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB',
-    )
+ 
+  const missing = [
+    !POSTGRES_USER && 'POSTGRES_USER',
+    !POSTGRES_PASSWORD && 'POSTGRES_PASSWORD',
+    !POSTGRES_DB && 'POSTGRES_DB',
+  ].filter(Boolean)
+ 
+  if (missing.length > 0) {
+    throw new Error(`Missing required Postgres environment variables: ${missing.join(', ')}`)
   }
-
+ 
   return `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}`
 }

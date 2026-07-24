@@ -17,7 +17,18 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res, UseGuards } from '@nestjs/common'
+import { 
+  Body, 
+  Controller, 
+  Get, 
+  ForbiddenException, 
+  HttpCode, 
+  HttpStatus, 
+  Post, 
+  Req, 
+  Res, 
+  UseGuards 
+} from '@nestjs/common'
 import { Throttle, seconds } from '@nestjs/throttler'
 import { type Request, type Response } from 'express'
 import { LocalAuthGuard } from './guards/local-auth.guard'
@@ -27,6 +38,7 @@ import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
+import { SwitchRoleDto } from './dto/switch-role.dto'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -72,6 +84,24 @@ export class AuthController {
     // the session, and set the session cookie on the response. There's
     // nothing left to do here but return the user.
     return user
+  }
+
+  // == Switch Roles ==
+
+  // Changes which role is active for THIS session, without a full
+  // logout/login round trip — re-calls req.login() with an updated
+  // activeRole, which re-triggers serializeUser and overwrites the stored
+  // session data. Only lets someone switch to a role they actually hold.
+  @UseGuards(SessionAuthGuard)
+  @Post('switch-role')
+  switchRole(@Body() dto: SwitchRoleDto, @CurrentUser() user: any, @Req() req: Request) {
+    if (!user.roles.includes(dto.role)) {
+      throw new ForbiddenException(`You do not have the "${dto.role}" role`)
+    }
+    const updatedUser = { ...user, activeRole: dto.role }
+    return new Promise((resolve, reject) => {
+      req.login(updatedUser, (err) => (err ? reject(err) : resolve(updatedUser)))
+    })
   }
 
   // == Logout ==

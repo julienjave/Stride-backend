@@ -17,7 +17,7 @@
 
 
 import { Global, Module } from '@nestjs/common'
-import { drizzleProvider } from './drizzle.provider'
+import { pgPoolProvider, drizzleProvider, DrizzlePoolCloser } from './drizzle.provider'
 
 // @Global() — imported once here, in AppModule, and then DRIZZLE is injectable
 // from any module in the app without each one separately importing DrizzleModule.
@@ -26,7 +26,7 @@ import { drizzleProvider } from './drizzle.provider'
 // realistic case where one wouldn't.
 @Global()
 @Module({
-  providers: [drizzleProvider],
+  providers: [pgPoolProvider, drizzleProvider, DrizzlePoolCloser],
   exports: [drizzleProvider],
 })
 

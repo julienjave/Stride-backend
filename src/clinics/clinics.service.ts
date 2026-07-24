@@ -21,7 +21,7 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-import { clinics, userClinics, users } from '../database/schema'
+import { clinics, userClinics, users, userRoles } from '../database/schema'
 import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
 
@@ -93,24 +93,38 @@ export class ClinicsService {
 
   async listMembers(clinicId: number) {
     await this.findOne(clinicId)
-    return this.db
+    const members = await this.db
       .select({
         id: users.id,
         email: users.email,
-        role: users.role,
         firstName: users.firstName,
         lastName: users.lastName,
       })
       .from(userClinics)
       .innerJoin(users, eq(users.id, userClinics.userId))
       .where(eq(userClinics.clinicId, clinicId))
+ 
+    // Attaches each member's full roles array
+    return Promise.all(
+      members.map(async (member) => {
+        const roles = await this.db
+          .select({ role: userRoles.role })
+          .from(userRoles)
+          .where(eq(userRoles.userId, member.id))
+        return { ...member, roles: roles.map((r) => r.role) }
+      }),
+    )
   }
 
   // --- PATCH ROUTES ---
 
   async update(id: number, dto: UpdateClinicDto) {
     await this.findOne(id)
-    const [updated] = await this.db.update(clinics).set(dto).where(eq(clinics.id, id)).returning()
+    const [updated] = await this.db
+      .update(clinics)
+      .set(dto)
+      .where(eq(clinics.id, id))
+      .returning()
     return updated
   }
 

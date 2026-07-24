@@ -17,14 +17,24 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { IsEmail, IsString } from 'class-validator'
+
+import { IsEmail, IsString, IsEnum, IsOptional } from 'class-validator'
+import { UserRole } from '../../users/dto/create-user.dto'
 
 
-// --- DTO ---------------------------------------------------------------------------------------------------
+// --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
+
 export class LoginDto {
   @IsEmail()
   email!: string
 
   @IsString()
   password!: string
+
+  // Only required if the account holds more than one role — LocalStrategy
+  // reads this directly off req.body (see passReqToCallback), so this DTO
+  // mainly documents the shape rather than being what actually enforces it.
+  @IsOptional()
+  @IsEnum(UserRole)
+  role?: UserRole
 }

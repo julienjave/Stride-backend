@@ -17,12 +17,19 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
+
 import { Injectable } from '@nestjs/common'
 import { PassportSerializer } from '@nestjs/passport'
 import { UsersService } from '../../users/users.service'
 
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
+
+interface SessionData {
+  id: number
+  activeRole: string
+}
+
 @Injectable()
 export class SessionSerializer extends PassportSerializer {
   constructor(private readonly usersService: UsersService) {
@@ -30,19 +37,30 @@ export class SessionSerializer extends PassportSerializer {
   }
 
   // Decides what actually gets STORED inside the session (in Postgres):
-  // just the id, never the full user object
-  serializeUser(user: { id: number }, done: (err: Error | null, id?: number) => void) {
-    done(null, user.id)
+  // Stores {id, activeRole} instead of a bare id — the session needs to
+  // remember not just WHO is logged in, but WHICH of their roles is active
+  // for this particular session.
+  serializeUser(user: { id: number; activeRole: string }, done: (err: Error | null, data?: SessionData) => void) {
+    done(null, { id: user.id, activeRole: user.activeRole })
   }
 
-  // Runs on EVERY subsequent request carrying a valid session cookie — reloads
-  // the user fresh from the database each time. This is what makes a role
-  // change or a deactivation (is_active = false) take effect immediately,
-  // rather than only at the next login.
-  async deserializeUser(id: number, done: (err: Error | null, user?: unknown) => void) {
+  // Runs on EVERY subsequent request carrying a valid session cookie.
+  // Reloads the full user (with their current roles) fresh on every request.
+  // If the stored activeRole is no longer among their actual roles — it was
+  // revoked by an admin sometime after this session's login — done(null,
+  // false) tells Passport deserialization failed: req.user stays unset,
+  // isAuthenticated() returns false, exactly as if they'd been logged out.
+  // This is what makes a mid-session role revocation take effect immediately.
+  async deserializeUser(
+    sessionData: SessionData,
+    done: (err: Error | null, user?: unknown) => void,
+  ) {
     try {
-      const user = await this.usersService.findOne(id)
-      done(null, user)
+      const user = await this.usersService.findOne(sessionData.id)
+      if (!user.roles.includes(sessionData.activeRole)) {
+        return done(null, false)
+      }
+      done(null, { ...user, activeRole: sessionData.activeRole })
     } catch (err) {
       done(err as Error)
     }
