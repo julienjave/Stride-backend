@@ -39,12 +39,17 @@ import {
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
 import { GrantRoleDto } from './dto/grant-role.dto'
+import { StorageService } from '../storage/storage.service'
+import { extensionForMimeType } from '../common/config/image-upload.config'
 
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
 export class UsersService {
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    private readonly storageService: StorageService,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -165,6 +170,23 @@ export class UsersService {
  
       return this.getRolesForUser(userId)
     })
+  }
+
+  // Uploads a new avatar and stores its object key on the user's row.
+  // Authorization (self-or-admin) happens in the controller, matching
+  // update()'s rule — same pattern, just triggered by a file instead of a
+  // JSON body.
+  async updateAvatar(id: number, file: Express.Multer.File) {
+    await this.findOne(id)
+    const objectKey = `avatars/${id}/${Date.now()}.${extensionForMimeType(file.mimetype)}`
+    await this.storageService.upload(objectKey, file.buffer, file.mimetype)
+    const [updated] = await this.db
+      .update(users)
+      .set({ avatarPath: objectKey })
+      .where(eq(users.id, id))
+      .returning()
+    const roles = await this.getRolesForUser(id)
+    return { ...this.toPublic(updated), roles }
   }
 
 

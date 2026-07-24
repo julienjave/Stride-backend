@@ -19,6 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -28,8 +29,11 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { UsersService } from './users.service'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
@@ -38,6 +42,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { imageUploadOptions } from '../common/config/image-upload.config'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -64,6 +69,28 @@ export class UsersController {
     @Post(':id/roles')
     grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
         return this.usersService.grantRole(id, dto)
+    }
+
+    // @UseInterceptors(FileInterceptor('file', ...)) parses a multipart/form-data
+    // body, extracts the single part named "file", validates/buffers it per
+    // imageUploadOptions, and makes the result available via @UploadedFile()
+    // below — the file-upload equivalent of @Body() + a DTO for JSON routes.
+    @Post(':id/avatar')
+    @UseInterceptors(FileInterceptor('file', imageUploadOptions))
+    uploadAvatar(
+        @Param('id', ParseIntPipe) id: number,
+        @UploadedFile() file: Express.Multer.File,
+        @CurrentUser() currentUser: any,
+    ) {
+        const isSelf = currentUser.id === id
+        const isAdmin = currentUser.activeRole === UserRole.ADMIN
+        if (!isSelf && !isAdmin) {
+        throw new ForbiddenException('You can only update your own avatar')
+        }
+        if (!file) {
+        throw new BadRequestException('No file uploaded')
+        }
+        return this.usersService.updateAvatar(id, file)
     }
 
 

@@ -21,11 +21,13 @@
 import { Module } from '@nestjs/common'
 import { ExercisesController } from './exercises.controller'
 import { ExercisesService } from './exercises.service'
+import { StorageModule } from '../storage/storage.module'
 
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 @Module({
+  imports: [StorageModule],
   controllers: [ExercisesController],
   providers: [ExercisesService],
   exports: [ExercisesService],

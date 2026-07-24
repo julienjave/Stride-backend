@@ -19,26 +19,31 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
-  HttpCode,
-  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
   Post,
   Query,
+  UploadedFiles,
   UseGuards,
-} from '@nestjs/common';
-import { ExercisesService } from './exercises.service';
-import { CreateExerciseDto } from './dto/create-exercise.dto';
-import { UpdateExerciseDto } from './dto/update-exercise.dto';
-import { SessionAuthGuard } from '../common/guards/session-auth.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
-import { CurrentUser } from '../common/decorators/current-user.decorator';
+  UseInterceptors,
+} from '@nestjs/common'
+import { FilesInterceptor } from '@nestjs/platform-express'
+import { ExercisesService } from './exercises.service'
+import { CreateExerciseDto } from './dto/create-exercise.dto'
+import { UpdateExerciseDto } from './dto/update-exercise.dto'
+import { RemoveImageDto } from './dto/remove-image.dto'
+import { ReorderImagesDto } from './dto/reorder-images.dto'
+import { SessionAuthGuard } from '../common/guards/session-auth.guard'
+import { RolesGuard } from '../common/guards/roles.guard'
+import { Roles } from '../common/decorators/roles.decorator'
+import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { imageUploadOptions } from '../common/config/image-upload.config'
 
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
@@ -57,6 +62,24 @@ export class ExercisesController {
   @Post()
   create(@CurrentUser() user: any, @Body() dto: CreateExerciseDto) {
     return this.exercisesService.create(user.id, dto)
+  }
+
+  // FilesInterceptor (plural) — the only real difference from the single-file
+  // avatar/logo routes: up to 5 files under the field name "files" in one
+  // request, delivered as an array via @UploadedFiles().
+  @UseGuards(RolesGuard)
+  @Roles('practitioner', 'admin')
+  @Post(':id/images')
+  @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
+  uploadImages(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFiles() files: Express.Multer.File[],
+    @CurrentUser() user: any,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files uploaded')
+    }
+    return this.exercisesService.addImages(id, user, files)
   }
 
 
@@ -86,6 +109,17 @@ export class ExercisesController {
     return this.exercisesService.update(id, user, dto)
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('practitioner', 'admin')
+  @Patch(':id/images')
+  reorderImages(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ReorderImagesDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.exercisesService.reorderImages(id, user, dto.order)
+  }
+
 
   // --- DELETE ROUTES ---
 
@@ -94,5 +128,16 @@ export class ExercisesController {
   @Delete(':id')
   archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.exercisesService.archive(id, user)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('practitioner', 'admin')
+  @Delete(':id/images')
+  removeImage(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RemoveImageDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.exercisesService.removeImage(id, user, dto.objectKey)
   }
 }

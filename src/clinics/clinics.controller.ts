@@ -19,6 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -27,8 +28,11 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { ClinicsService } from './clinics.service'
 import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
@@ -36,6 +40,7 @@ import { AddMemberDto } from './dto/add-member.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
+import { imageUploadOptions } from '../common/config/image-upload.config'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -63,6 +68,17 @@ export class ClinicsController {
   @Post(':id/members')
   addMember(@Param('id', ParseIntPipe) id: number, @Body() dto: AddMemberDto) {
     return this.clinicsService.addMember(id, dto.userId)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Post(':id/logo')
+  @UseInterceptors(FileInterceptor('file', imageUploadOptions))
+  uploadLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded')
+    }
+    return this.clinicsService.updateLogo(id, file)
   }
 
 

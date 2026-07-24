@@ -18,19 +18,24 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, eq, ilike } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { exercises } from '../database/schema'
 import { CreateExerciseDto } from './dto/create-exercise.dto'
 import { UpdateExerciseDto } from './dto/update-exercise.dto'
+import { StorageService } from '../storage/storage.service'
+import { extensionForMimeType } from '../common/config/image-upload.config'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 @Injectable()
 export class ExercisesService {
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    private readonly storageService: StorageService,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -52,6 +57,36 @@ export class ExercisesService {
       .returning()
     return exercise
   }
+
+  // Appends to the existing mediaUrls array rather than replacing it.
+  // Seeded exercises often have multiple genuinely distinct images (e.g. a
+  // movement's start and end position) — a full replace would silently
+  // delete those too. Removing a specific unwanted image is its own
+  // deliberate action (removeImage, below), not an implicit side effect of
+  // uploading something new.
+  async addImages(
+    id: number,
+    currentUser: { id: number; activeRole: string },
+    files: Express.Multer.File[],
+  ) {
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
+ 
+    const newKeys: string[] = []
+    for (const [index, file] of files.entries()) {
+      const objectKey = `exercises/${id}/upload-${Date.now()}-${index}.${extensionForMimeType(file.mimetype)}`
+      await this.storageService.upload(objectKey, file.buffer, file.mimetype)
+      newKeys.push(objectKey)
+    }
+ 
+    const [updated] = await this.db
+      .update(exercises)
+      .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
+      .where(eq(exercises.id, id))
+      .returning()
+    return updated
+  }
+
 
   // --- GET ROUTES ---
 
@@ -90,6 +125,43 @@ export class ExercisesService {
     return updated
   }
 
+  // "Cover image" is deliberately not its own column — it's simply
+  // mediaUrls[0], the first image in the array. That means reordering to
+  // put a specific image first IS "setting it as the cover," with no
+  // separate concept, endpoint, or schema field that could ever drift out
+  // of sync with the array itself.
+  //
+  // Validates newOrder is an exact permutation of the current images — same
+  // set of keys, just reordered — so this endpoint can't be used to sneak
+  // in keys that were never uploaded, or silently drop ones that were.
+  async reorderImages(
+    id: number,
+    currentUser: { id: number; activeRole: string },
+    newOrder: string[],
+  ) {
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
+ 
+    const currentSet = new Set(exercise.mediaUrls)
+    const newSet = new Set(newOrder)
+    const isSamePermutation =
+      currentSet.size === newSet.size && [...currentSet].every((key) => newSet.has(key))
+ 
+    if (!isSamePermutation) {
+      throw new BadRequestException(
+        'The new order must contain exactly the same images as the current gallery, just reordered',
+      )
+    }
+ 
+    const [updated] = await this.db
+      .update(exercises)
+      .set({ mediaUrls: newOrder })
+      .where(eq(exercises.id, id))
+      .returning()
+    return updated
+  }
+
+
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: { id: number; activeRole: string }) {
@@ -101,6 +173,29 @@ export class ExercisesService {
       .where(eq(exercises.id, id))
       .returning()
     return archived
+  }
+
+  // Validates the key actually belongs to THIS exercise before deleting anything
+  async removeImage(
+    id: number,
+    currentUser: { id: number; activeRole: string },
+    objectKey: string,
+  ) {
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
+ 
+    if (!exercise.mediaUrls.includes(objectKey)) {
+      throw new NotFoundException('This image does not belong to this exercise')
+    }
+ 
+    await this.storageService.delete(objectKey)
+ 
+    const [updated] = await this.db
+      .update(exercises)
+      .set({ mediaUrls: exercise.mediaUrls.filter((url) => url !== objectKey) })
+      .where(eq(exercises.id, id))
+      .returning()
+    return updated
   }
 
 

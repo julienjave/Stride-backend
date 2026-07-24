@@ -25,6 +25,7 @@ import {
   CreateBucketCommand,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
@@ -63,6 +64,10 @@ export class StorageService implements OnModuleInit {
     }
   }
 
+  // === ROUTES =============================================================
+
+  // --- POST ROUTES ---
+
   // Uploads a file, returns the object key
   async upload(objectKey: string, buffer: Buffer, contentType: string): Promise<string> {
     await this.client.send(
@@ -76,11 +81,23 @@ export class StorageService implements OnModuleInit {
     return objectKey
   }
 
+
+  // --- GET ROUTES ---
+
   // Generates a temporary, signed URL good for `expirySeconds` — presigned-URL
   // pattern letting a browser fetch the file directly without
   // routing the bytes through our NestJS server.
   async getPresignedUrl(objectKey: string, expirySeconds = 900): Promise<string> {
     const command = new GetObjectCommand({ Bucket: this.bucket, Key: objectKey })
     return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
+  }
+
+
+  // --- DELETE ROUTES ---
+
+  // Actually frees the bytes in storage — deleting a row's reference to an
+  // object key without this would just hide the waste, not eliminate it.
+  async delete(objectKey: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: objectKey }))
   }
 }

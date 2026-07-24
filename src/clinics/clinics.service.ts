@@ -24,6 +24,8 @@ import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { clinics, userClinics, users, userRoles } from '../database/schema'
 import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
+import { StorageService } from '../storage/storage.service'
+import { extensionForMimeType } from '../common/config/image-upload.config'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -35,7 +37,10 @@ export class ClinicsService {
   // just another query against the same globally-available DRIZZLE db.
   // Avoids a circular module dependency (Clinics <-> Users) that would
   // otherwise appear the moment UsersModule also needs to check clinics.
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    private readonly storageService: StorageService,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -66,6 +71,18 @@ export class ClinicsService {
       .values({ clinicId, userId })
       .returning()
     return membership
+  }
+
+  async updateLogo(id: number, file: Express.Multer.File) {
+    await this.findOne(id)
+    const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
+    await this.storageService.upload(objectKey, file.buffer, file.mimetype)
+    const [updated] = await this.db
+      .update(clinics)
+      .set({ logoPath: objectKey })
+      .where(eq(clinics.id, id))
+      .returning()
+    return updated
   }
 
   // --- GET ROUTES ---
