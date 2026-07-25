@@ -27,6 +27,7 @@ import { UsersModule } from './users/users.module'
 import { AuthModule } from './auth/auth.module'
 import { ExercisesModule } from './exercises/exercises.module'
 import { ClinicsModule } from './clinics/clinics.module'
+import { ProgramsModule } from './programs/programs.module'
 
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -46,6 +47,7 @@ import { ClinicsModule } from './clinics/clinics.module'
     AuthModule,
     ExercisesModule,
     ClinicsModule,
+    ProgramsModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the
