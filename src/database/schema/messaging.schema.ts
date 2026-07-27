@@ -27,6 +27,8 @@ export const conversations = pgTable('conversations', {
     patientId: integer('patient_id')
         .notNull()
         .references(() => users.id, { onDelete: 'restrict' }),
+    practitionerArchivedAt: timestamp('practitioner_archived_at', { withTimezone: true }),
+    patientArchivedAt: timestamp('patient_archived_at', { withTimezone: true }),
 }, (table) => ({
     practitionerPatientUnique: unique('conversations_practitioner_patient_unique')
         .on(table.practitionerId, table.patientId),
@@ -46,5 +48,6 @@ export const messages = pgTable('messages', {
         .references(() => users.id, { onDelete: 'restrict' }),
     messageBody: text('message_body').notNull(),
     readAt: timestamp('read_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
 })

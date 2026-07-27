@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, ParseIntPipe, Delete, Patch, Post, UseGuards } from '@nestjs/common'
 import { MessagingService } from './messaging.service'
 import { CreateConversationDto } from './dto/create-conversation.dto'
 import { SendMessageDto } from './dto/send-message.dto'
@@ -75,5 +75,29 @@ export class MessagingController {
   @Patch(':id/read')
   markAsRead(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.messagingService.markAsRead(id, user)
+  }
+
+  @Patch(':id/archive')
+  archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.messagingService.archiveConversation(id, user)
+  }
+ 
+  @Patch(':id/unarchive')
+  unarchive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.messagingService.unarchiveConversation(id, user)
+  }
+
+
+  // --- DELETE ROUTES ---
+
+  // Soft delete — see MessagingService.deleteMessage for the two-condition
+  // gate (unread AND within 15 minutes) that decides whether this succeeds.
+  @Delete(':id/messages/:messageId')
+  deleteMessage(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('messageId', ParseIntPipe) messageId: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.messagingService.deleteMessage(id, messageId, user)
   }
 }

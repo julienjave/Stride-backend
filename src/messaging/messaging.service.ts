@@ -142,8 +142,98 @@ export class MessagingService {
       )
   }
 
+  // Two explicit actions rather than one ambiguous "toggle" endpoint — each
+  // only ever touches the CALLING user's own column, never the other
+  // participant's. Admins don't get an archive action at all: this is a
+  // personal inbox-management concern for the two actual participants, not
+  // something oversight touches.
+  async archiveConversation(id: number, currentUser: CurrentUser) {
+    const conversation = await this.findConversationOrThrow(id)
+    this.assertParticipant(conversation, currentUser)
+ 
+    const column =
+      currentUser.activeRole === 'practitioner'
+        ? { practitionerArchivedAt: new Date() }
+        : { patientArchivedAt: new Date() }
+ 
+    const [updated] = await this.db
+      .update(conversations)
+      .set(column)
+      .where(eq(conversations.id, id))
+      .returning()
+    return updated
+  }
+ 
+  async unarchiveConversation(id: number, currentUser: CurrentUser) {
+    const conversation = await this.findConversationOrThrow(id)
+    this.assertParticipant(conversation, currentUser)
+ 
+    const column =
+      currentUser.activeRole === 'practitioner'
+        ? { practitionerArchivedAt: null }
+        : { patientArchivedAt: null }
+ 
+    const [updated] = await this.db
+      .update(conversations)
+      .set(column)
+      .where(eq(conversations.id, id))
+      .returning()
+    return updated
+  }
+
+
+  // --- DELETE ROUTES ---
+
+  // 15 minutes: a message can be deleted only within this window AND only
+  // if the recipient hasn't read it yet (checked in deleteMessage below) —
+  // both conditions together, not either alone. This is narrower than a
+  // typical consumer chat app's "delete anytime" on purpose: this schema's
+  // whole design treats clinical communication as something that shouldn't
+  // silently disappear once the other party has actually seen it.
+  private readonly DELETE_WINDOW_MS = 15 * 60 * 1000
+ 
+  async deleteMessage(conversationId: number, messageId: number, currentUser: CurrentUser) {
+    const conversation = await this.findConversationOrThrow(conversationId)
+    this.assertParticipant(conversation, currentUser)
+ 
+    const message = await this.db.query.messages.findFirst({
+      where: and(eq(messages.id, messageId), eq(messages.conversationId, conversationId)),
+    })
+    if (!message) {
+      throw new NotFoundException(`Message ${messageId} not found in this conversation`)
+    }
+    if (message.senderId !== currentUser.id) {
+      throw new ForbiddenException('You can only delete your own messages')
+    }
+    if (message.readAt) {
+      throw new ForbiddenException('This message has already been read and can no longer be deleted')
+    }
+    if (Date.now() - message.sentAt.getTime() > this.DELETE_WINDOW_MS) {
+      throw new ForbiddenException('This message can no longer be deleted — the 15 minute window has passed')
+    }
+ 
+    const [updated] = await this.db
+      .update(messages)
+      .set({ deletedAt: new Date() })
+      .where(eq(messages.id, messageId))
+      .returning()
+    return this.toPublicMessage(updated)
+  }
+
 
   // === HELPER FUNCTIONS =====================================================
+
+  // Soft delete only, matching messages.deletedAt in the schema — the row
+  // is never actually removed. What changes is the SERVED representation:
+  // once deleted, the real messageBody is replaced with a tombstone for
+  // EVERYONE reading it, sender included, rather than the message quietly
+  // vanishing from the thread with no trace.
+  private toPublicMessage(message: typeof messages.$inferSelect) {
+    if (message.deletedAt) {
+      return { ...message, messageBody: '[message deleted]' }
+    }
+    return message
+  }
 
   private async findConversationOrThrow(id: number) {
     const conversation = await this.db.query.conversations.findFirst({
@@ -166,4 +256,6 @@ export class MessagingService {
       throw new ForbiddenException('You are not a participant in this conversation')
     }
   }
+
+
 }

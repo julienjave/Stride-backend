@@ -100,4 +100,21 @@ export class MessagingGateway implements OnGatewayConnection {
     this.server.to(`conversation:${data.conversationId}`).emit('newMessage', message)
     return message
   }
+
+  @SubscribeMessage('deleteMessage')
+  async handleDeleteMessage(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { conversationId: number; messageId: number },
+  ) {
+    const user = (socket.data as any).user;
+    const message = await this.messagingService.deleteMessage(
+      data.conversationId,
+      data.messageId,
+      user,
+    )
+    // Live tombstone — the other party's open thread updates immediately,
+    // same room-broadcast mechanism as a new message.
+    this.server.to(`conversation:${data.conversationId}`).emit('messageDeleted', message)
+    return message
+  }
 }
