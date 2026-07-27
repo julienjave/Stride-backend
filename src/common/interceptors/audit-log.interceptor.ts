@@ -44,9 +44,9 @@ export class AuditLogInterceptor implements NestInterceptor {
     // password" on a failed login) than this generic interceptor could
     // ever infer from the request alone.
     const isMutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)
-    const isAuthRoute = originalUrl.startsWith('/auth')
+    const isExplicitlyAudited = originalUrl.startsWith('/auth') || originalUrl.startsWith('/medical-files')
 
-    if (!isMutating || isAuthRoute || !user) {
+    if (!isMutating || isExplicitlyAudited || !user) {
       return next.handle()
     }
 

@@ -33,6 +33,7 @@ import { SessionsModule } from './sessions/sessions.module'
 import { MessagingModule } from './messaging/messaging.module'
 import { AuditModule } from './audit/audit.module'
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor'
+import { MedicalFilesModule } from './medical-files/medical-files.module'
 
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -57,6 +58,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
     SessionsModule,
     MessagingModule,
     AuditModule,
+    MedicalFilesModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the
