@@ -19,7 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
-import { APP_GUARD } from '@nestjs/core'
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import { ThrottlerModule, ThrottlerGuard, seconds } from '@nestjs/throttler'
 import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
@@ -31,6 +31,8 @@ import { ProgramsModule } from './programs/programs.module'
 import { AssignedProgramsModule } from './assigned-programs/assigned-programs.module'
 import { SessionsModule } from './sessions/sessions.module'
 import { MessagingModule } from './messaging/messaging.module'
+import { AuditModule } from './audit/audit.module'
+import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor'
 
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -54,11 +56,13 @@ import { MessagingModule } from './messaging/messaging.module'
     AssignedProgramsModule,
     SessionsModule,
     MessagingModule,
+    AuditModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the
     // baseline limit automatically, no controller has to remember to add it.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
   ],
 })
 

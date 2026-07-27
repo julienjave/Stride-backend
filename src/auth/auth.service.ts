@@ -26,12 +26,31 @@ import { UsersService } from '../users/users.service'
 import { UserRole } from '../users/dto/create-user.dto'
 import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
+import { AuditService } from '../audit/audit.service'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
+
+interface RegisterClinicResult {
+  id: number
+  email: string
+  firstName: string
+  lastName: string
+  avatarPath: string | null
+  isActive: boolean
+  createdAt: Date
+  roles: UserRole[]
+  activeRole: UserRole
+  clinicId: number
+}
+
 @Injectable()
 export class AuthService {
-  constructor(private readonly usersService: UsersService, @Inject(DRIZZLE) private readonly db: DrizzleDb) {}
+  constructor(
+    private readonly usersService: UsersService, 
+    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    private readonly auditService: AuditService,
+  ) {}
 
   
   // === REGISTRATION ============================================================
@@ -44,6 +63,13 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       dateOfBirth: dto.dateOfBirth,
+    })
+
+    await this.auditService.log({
+      performedBy: user.id,
+      action: 'REGISTER',
+      entityType: 'users',
+      entityId: user.id,
     })
 
     return { ...user, activeRole: UserRole.PATIENT }
@@ -67,7 +93,7 @@ export class AuthService {
  
     const passwordHash = await bcrypt.hash(dto.password, 10)
  
-    return this.db.transaction(async (tx) => {
+    const result: RegisterClinicResult = await this.db.transaction(async (tx): Promise<RegisterClinicResult> => {
       const [clinic] = await tx
         .insert(clinics)
         .values({
@@ -108,6 +134,16 @@ export class AuthService {
         clinicId: clinic.id,
       }
     })
+
+    await this.auditService.log({
+      performedBy: result.id,
+      action: 'REGISTER_CLINIC',
+      entityType: 'clinics',
+      entityId: result.clinicId,
+      details: { adminUserId: result.id },
+    })
+
+    return result
   }
 
 
@@ -124,6 +160,12 @@ export class AuthService {
     }
     const passwordMatches = await bcrypt.compare(password, user.passwordHash)
     if (!passwordMatches) {
+      await this.auditService.log({
+        performedBy: user.id,
+        action: 'LOGIN_FAILURE',
+        entityType: 'users',
+        entityId: user.id,
+      })
       return null
     }
  
@@ -143,6 +185,14 @@ export class AuthService {
         'This account has multiple roles. Specify which one to log in as.',
       )
     }
+
+    await this.auditService.log({
+      performedBy: user.id,
+      action: 'LOGIN_SUCCESS',
+      entityType: 'users',
+      entityId: user.id,
+      details: { activeRole },
+    })
  
     const { passwordHash, ...publicUser } = user
     return { ...publicUser, roles, activeRole }

@@ -39,12 +39,16 @@ import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { SwitchRoleDto } from './dto/switch-role.dto'
+import { AuditService } from '../audit/audit.service'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService, 
+    private readonly auditService: AuditService,
+  ) {}
 
   // === ROUTES ===========================================================
 
@@ -108,7 +112,17 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  logout(@Req() req: Request, @Res() res: Response) {
+  async logout(@Req() req: Request, @Res() res: Response) {
+    const user = req.user as any
+    if (user) {
+      await this.auditService.log({
+        performedBy: user.id,
+        action: 'LOGOUT',
+        entityType: 'users',
+        entityId: user.id,
+      })
+    }
+
     req.logout(() => {
       req.session.destroy(() => {
         res.clearCookie('connect.sid')
