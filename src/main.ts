@@ -28,6 +28,7 @@ import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
 import { AppModule } from './app.module'
 import { getDatabaseUrl } from './config/database-url'
+import { SessionIoAdapter } from './messaging/session-io.adapter'
 
 
 // --- MAIN LOGIC ---------------------------------------------------------------------------------------------
@@ -76,22 +77,34 @@ async function bootstrap() {
     const sessionPool = new Pool({ connectionString: getDatabaseUrl() })
     const PgSessionStore = connectPgSimple(session)
     
-    app.use(
-        session({
-            store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
-            secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
-            resave: false,           // don't re-save a session to the store if nothing in it changed
-            saveUninitialized: false, // don't create a session at all until something is actually stored in it
-            cookie: {
-                httpOnly: true,         // inaccessible to JS in the browser
-                maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
-            },
-        }),
-    )
+    // Named, rather than passed inline to app.use() — this exact same
+    // middleware instance is reused below for WebSocket connections too, via
+    // SessionIoAdapter. One session store, one cookie, two transports.
+    const sessionMiddleware = session({
+        store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
+        secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+            httpOnly: true,
+            maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+        },
+    })
+
+    app.use(sessionMiddleware)
+
 
     // --- PASSPORT ---
     app.use(passport.initialize())
     app.use(passport.session())
+
+
+    // --- WEBSOCKET ---
+    // Applies sessionMiddleware to every WebSocket handshake too — without
+    // this, MessagingGateway would have no way to know who's connecting at
+    // all, since Socket.IO's handshake never runs through Express's normal
+    // middleware chain on its own.
+    app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))
 
 
     // === START APP ================================================================
