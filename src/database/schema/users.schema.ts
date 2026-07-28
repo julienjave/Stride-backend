@@ -49,6 +49,8 @@ export const users = pgTable('users', {
   avatarPath: varchar('avatar_path', { length: 500 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  passwordResetTokenHash: varchar('password_reset_token_hash', { length: 255 }),
+  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', { withTimezone: true }),
 })
 
 // One person can hold several roles (e.g. a clinic owner who is both admin

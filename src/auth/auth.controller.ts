@@ -39,6 +39,8 @@ import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { SwitchRoleDto } from './dto/switch-role.dto'
+import { ForgotPasswordDto } from './dto/forgot-password.dto'
+import { ResetPasswordDto } from './dto/reset-password.dto'
 import { AuditService } from '../audit/audit.service'
 
 
@@ -130,6 +132,25 @@ export class AuthController {
       })
     })
   }
+
+  // == RESET PASSWORD ==
+
+  // 204 — genuinely nothing to describe, on purpose: the whole point is
+  // that success and "no such account" look identical from the outside.
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    await this.authService.forgotPassword(dto.email)
+  }
+ 
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @Post('reset-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.token, dto.newPassword)
+  }
+
 
   // --- GET ROUTES ---
 
