@@ -17,19 +17,14 @@
 
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { ExecutionContext, Injectable } from '@nestjs/common'
-import { AuthGuard } from '@nestjs/passport'
+
+import { IsString, Length } from 'class-validator'
 
 
-// --- MAIN LOGIC --------------------------------------------------------------------------------------------
-// A thin named wrapper around Passport's generic AuthGuard('local'):
-// the standard Nest convention
-@Injectable()
-export class LocalAuthGuard extends AuthGuard('local') {
-    async canActivate(context: ExecutionContext): Promise<boolean> {
-    const result = (await super.canActivate(context)) as boolean;
-    const request = context.switchToHttp().getRequest();
-    await super.logIn(request);
-    return result
-  }
+// --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
+
+export class MfaCodeDto {
+  @IsString()
+  @Length(6, 6)
+  code!: string
 }

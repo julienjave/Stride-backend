@@ -22,6 +22,8 @@ import {
   Controller, 
   Get, 
   ForbiddenException, 
+  UnauthorizedException,
+  BadRequestException,
   HttpCode, 
   HttpStatus, 
   Post, 
@@ -31,16 +33,17 @@ import {
 } from '@nestjs/common'
 import { Throttle, seconds } from '@nestjs/throttler'
 import { type Request, type Response } from 'express'
-import { LocalAuthGuard } from './guards/local-auth.guard'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuthService } from './auth.service'
+import { UsersService } from '../users/users.service'
 import { LoginDto } from './dto/login.dto'
 import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { SwitchRoleDto } from './dto/switch-role.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
 
 
@@ -49,6 +52,7 @@ import { AuditService } from '../audit/audit.service'
 export class AuthController {
   constructor(
     private readonly authService: AuthService, 
+    private readonly usersService: UsersService,
     private readonly auditService: AuditService,
   ) {}
 
@@ -78,18 +82,86 @@ export class AuthController {
     })
   }
   
-  // == Login ==
+  // == Login / MFA ==
 
-  // Overrides just the 'default' throttler for THIS route only
+  // No longer uses LocalAuthGuard/LocalStrategy — an explicit method,
+  // calling AuthService.validateUser() directly, the same manual req.login()
+  // pattern already used by register/registerClinic/switchRole above.
+  // Passport's Strategy model is single-shot (succeed → immediately log in);
+  // MFA needs a genuine intermediate state (password correct, session NOT
+  // yet authenticated), which that model has no clean way to express — so
+  // this route stopped using it entirely, rather than working around it.
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
-  @UseGuards(LocalAuthGuard)
   @Post('login')
-  login(@Body() _dto: LoginDto, @CurrentUser() user: unknown) {
-    // By the time this method body runs, LocalAuthGuard has already: run
-    // LocalStrategy.validate(), called req.login() internally to establish
-    // the session, and set the session cookie on the response. There's
-    // nothing left to do here but return the user.
-    return user
+  async login(@Body() dto: LoginDto, @Req() req: Request) {
+    const user = await this.authService.validateUser(dto.email, dto.password, dto.role)
+    if (!user) {
+      throw new UnauthorizedException('Invalid email or password')
+    }
+ 
+    if (user.mfaEnabled) {
+      // Password verified, but req.login() is deliberately NOT called yet.
+      // mfaPending is a SEPARATE session key from the one Passport itself
+      // checks (req.session.passport) — req.isAuthenticated() still
+      // correctly returns false for this session until MFA actually
+      // succeeds. The resolved activeRole is carried through here too, so
+      // the role-selection logic already run inside validateUser() doesn't
+      // need to be repeated once MFA completes.
+      (req.session as any).mfaPending = { userId: user.id, activeRole: user.activeRole }
+      return { mfaRequired: true }
+    }
+ 
+    return new Promise((resolve, reject) => {
+      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+    })
+  }
+ 
+  // The second step of a two-factor login. Deliberately no SessionAuthGuard
+  // here — the session isn't authenticated yet, by design; this route's own
+  // check of req.session.mfaPending is what stands in for a guard.
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @Post('mfa/verify')
+  async verifyMfaLogin(@Body() dto: MfaCodeDto, @Req() req: Request) {
+    const pending = (req.session as any).mfaPending
+    if (!pending) {
+      throw new BadRequestException('No pending MFA verification for this session')
+    }
+ 
+    const isValid = await this.authService.verifyMfaCode(pending.userId, dto.code)
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid authentication code')
+    }
+ 
+    delete (req.session as any).mfaPending
+ 
+    const user = await this.usersService.findOne(pending.userId)
+    const authenticatedUser = { ...user, activeRole: pending.activeRole }
+ 
+    return new Promise((resolve, reject) => {
+      req.login(authenticatedUser, (err) => (err ? reject(err) : resolve(authenticatedUser)))
+    })
+  }
+ 
+  // --- MFA enrollment (requires an already-authenticated session) ---
+ 
+  @UseGuards(SessionAuthGuard)
+  @Post('mfa/setup')
+  setupMfa(@CurrentUser() user: any) {
+    return this.authService.setupMfa(user.id)
+  }
+ 
+  @UseGuards(SessionAuthGuard)
+  @Post('mfa/enable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async enableMfa(@CurrentUser() user: any, @Body() dto: MfaCodeDto) {
+    await this.authService.enableMfa(user.id, dto.code)
+  }
+ 
+  @UseGuards(SessionAuthGuard)
+  @Post('mfa/disable')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async disableMfa(@CurrentUser() user: any, @Body() dto: MfaCodeDto) {
+    await this.authService.disableMfa(user.id, dto.code)
   }
 
   // == Switch Roles ==

@@ -23,7 +23,6 @@ import { UsersModule } from '../users/users.module'
 import { EmailModule } from '../email/email.module'
 import { AuthService } from './auth.service'
 import { AuthController } from './auth.controller'
-import { LocalStrategy } from './strategies/local.strategy'
 import { SessionSerializer } from './strategies/session.serializer'
 
 
@@ -35,7 +34,7 @@ import { SessionSerializer } from './strategies/session.serializer'
     PassportModule.register({ session: true }), // session: true = use req.login()/sessions, not JWT issuance
   ],
   controllers: [AuthController],
-  providers: [AuthService, LocalStrategy, SessionSerializer],
+  providers: [AuthService, SessionSerializer],
   exports: [AuthService],
 })
 export class AuthModule {}

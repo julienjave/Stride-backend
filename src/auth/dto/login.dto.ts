@@ -31,9 +31,11 @@ export class LoginDto {
   @IsString()
   password!: string
 
-  // Only required if the account holds more than one role — LocalStrategy
-  // reads this directly off req.body (see passReqToCallback), so this DTO
-  // mainly documents the shape rather than being what actually enforces it.
+  // Only required if the account holds more than one role. Now genuinely
+  // validated and used directly — login() reads this DTO normally via
+  // @Body(), unlike the earlier LocalStrategy-based version where this
+  // field bypassed validation entirely (read straight off req.body before
+  // ValidationPipe ever ran).
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole

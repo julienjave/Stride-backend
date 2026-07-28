@@ -51,6 +51,18 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   passwordResetTokenHash: varchar('password_reset_token_hash', { length: 255 }),
   passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', { withTimezone: true }),
+  // Nullable — only present once MFA setup has been initiated. isEnabled
+  // gates whether login actually requires it; a generated-but-unconfirmed
+  // secret sitting here is harmless, since it has no effect until enabled.
+  // Worth being explicit about a real, deliberate scope limitation: this is
+  // stored in plain text, not encrypted at rest — unlike passwordHash
+  // (one-way, useless even with full database read access), a TOTP secret
+  // must remain genuinely readable to verify codes, so anyone with raw
+  // database access could compute valid codes for any account with MFA
+  // enabled. Production would need application-level encryption of this
+  // column with a key held separately from the database itself (e.g. a KMS).
+  mfaSecret: varchar('mfa_secret', { length: 255 }),
+  mfaEnabled: boolean('mfa_enabled').notNull().default(false),
 })
 
 // One person can hold several roles (e.g. a clinic owner who is both admin
