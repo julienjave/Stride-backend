@@ -55,6 +55,10 @@ CREATE TABLE "users" (
 	"avatar_path" varchar(500),
 	"is_active" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"password_reset_token_hash" varchar(255),
+	"password_reset_token_expires_at" timestamp with time zone,
+	"mfa_secret" varchar(255),
+	"mfa_enabled" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
@@ -70,6 +74,8 @@ CREATE TABLE "conversations" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"practitioner_id" integer NOT NULL,
 	"patient_id" integer NOT NULL,
+	"practitioner_archived_at" timestamp with time zone,
+	"patient_archived_at" timestamp with time zone,
 	CONSTRAINT "conversations_practitioner_patient_unique" UNIQUE("practitioner_id","patient_id")
 );
 --> statement-breakpoint
@@ -79,6 +85,7 @@ CREATE TABLE "messages" (
 	"sender_id" integer NOT NULL,
 	"message_body" text NOT NULL,
 	"read_at" timestamp with time zone,
+	"deleted_at" timestamp with time zone,
 	"sent_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

@@ -1,0 +1,316 @@
+// Same reason this exists in main.ts and scripts/seed-exercises.ts — Jest,
+// like ts-node, never auto-loads .env. AppModule's DrizzleModule needs
+// POSTGRES_* in process.env the moment Test.createTestingModule() below
+// tries to construct it, so this has to be the very first thing that runs.
+import 'dotenv/config';
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import request from 'supertest';
+import session from 'express-session';
+import passport from 'passport';
+import connectPgSimple from 'connect-pg-simple';
+import { Pool } from 'pg';
+import { sql } from 'drizzle-orm';
+import { AppModule } from '../src/app.module';
+import { getDatabaseUrl } from '../src/config/database-url';
+import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
+
+// Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
+// not mocks — this is deliberately testing the whole real pipeline: guards,
+// pipes, session persistence, the actual database. Requires
+// `docker compose up -d db storage` running, and must be pointed at the
+// DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
+// real dev database — see test:e2e:fresh in package.json.
+describe('Users (e2e)', () => {
+  let app: INestApplication;
+  let sessionPool: Pool;
+
+  const adminAgent = () => request.agent(app.getHttpServer());
+  const practitionerAAgent = () => request.agent(app.getHttpServer());
+  const practitionerBAgent = () => request.agent(app.getHttpServer());
+  const patient1Agent = () => request.agent(app.getHttpServer());
+  const patient2Agent = () => request.agent(app.getHttpServer());
+
+  let admin: ReturnType<typeof adminAgent>;
+  let practitionerA: ReturnType<typeof practitionerAAgent>;
+  let practitionerB: ReturnType<typeof practitionerBAgent>;
+  let patient1: ReturnType<typeof patient1Agent>;
+  let patient2: ReturnType<typeof patient2Agent>;
+  let clinicXId: number;
+  let clinicYId: number;
+  let patient1Id: number;
+  let patient2Id: number;
+
+  beforeAll(async () => {
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    );
+
+    // Same session setup as main.ts — an e2e test needs the REAL middleware
+    // stack, not just the DI-wired providers, since guards/sessions live in
+    // middleware that main.ts sets up manually, outside AppModule itself.
+    sessionPool = new Pool({ connectionString: getDatabaseUrl() });
+    const PgSessionStore = connectPgSimple(session);
+    app.use(
+      session({
+        store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
+        secret: 'e2e-test-secret',
+        resave: false,
+        saveUninitialized: false,
+        cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 },
+      }),
+    );
+    app.use(passport.initialize());
+    app.use(passport.session());
+
+    await app.init();
+
+    // A hard safety check, not just a naming convention to remember —
+    // refuses to proceed at all unless genuinely connected to the
+    // dedicated test database. Without this, accidentally running e2e
+    // tests via the wrong npm script (plain `test:e2e` instead of
+    // `test:e2e:fresh`) would TRUNCATE the real dev database with no
+    // warning, since nothing else in this file would notice the difference.
+    const db = app.get<DrizzleDb>(DRIZZLE);
+    const { rows } = await db.execute<{ current_database: string }>(
+      sql`SELECT current_database()`,
+    );
+    const currentDatabase = rows[0].current_database;
+    if (currentDatabase !== 'stride_test') {
+      throw new Error(
+        `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test". ` +
+          'Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?',
+      );
+    }
+
+    // Resets this test's starting state, so this file can run any number of
+    // times in a row and always begin from a genuinely empty database.
+    await db.execute(sql`TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE`);
+
+    // --- Shared scaffolding for every test below ---
+    admin = adminAgent();
+    practitionerA = practitionerAAgent();
+    practitionerB = practitionerBAgent();
+    patient1 = patient1Agent();
+    patient2 = patient2Agent();
+
+    const stamp = Date.now();
+
+    const clinicXRes = await admin.post('/auth/register-clinic').send({
+      clinicName: 'Users E2E Clinic X',
+      clinicEmail: `clinicx-${stamp}@example.com`,
+      email: `admin-${stamp}@example.com`,
+      password: 'password123',
+      firstName: 'Users',
+      lastName: 'Admin',
+    });
+    if (clinicXRes.status !== 201) {
+      throw new Error(`Failed to bootstrap the founding admin: ${JSON.stringify(clinicXRes.body)}`);
+    }
+    clinicXId = clinicXRes.body.clinicId;
+
+    const clinicYRes = await admin.post('/clinics').send({
+      name: 'Users E2E Clinic Y',
+      email: `clinicy-${stamp}@example.com`,
+    });
+    expect(clinicYRes.status).toBe(201);
+    clinicYId = clinicYRes.body.id;
+
+    const practitionerARes = await admin.post('/users').send({
+      email: `practitioner-a-${stamp}@example.com`,
+      password: 'password123',
+      role: 'practitioner',
+      firstName: 'Practitioner',
+      lastName: 'A',
+      licenseNumber: `PT-A-${stamp}`,
+      clinicId: clinicXId,
+    });
+    expect(practitionerARes.status).toBe(201);
+    await practitionerA.post('/auth/login').send({
+      email: `practitioner-a-${stamp}@example.com`,
+      password: 'password123',
+    });
+
+    const practitionerBRes = await admin.post('/users').send({
+      email: `practitioner-b-${stamp}@example.com`,
+      password: 'password123',
+      role: 'practitioner',
+      firstName: 'Practitioner',
+      lastName: 'B',
+      licenseNumber: `PT-B-${stamp}`,
+      clinicId: clinicYId,
+    });
+    expect(practitionerBRes.status).toBe(201);
+    await practitionerB.post('/auth/login').send({
+      email: `practitioner-b-${stamp}@example.com`,
+      password: 'password123',
+    });
+
+    const patient1Res = await admin.post('/users').send({
+      email: `patient1-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Patient',
+      lastName: 'One',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(patient1Res.status).toBe(201);
+    patient1Id = patient1Res.body.id;
+    await patient1.post('/auth/login').send({
+      email: `patient1-${stamp}@example.com`,
+      password: 'password123',
+    });
+
+    const patient2Res = await admin.post('/users').send({
+      email: `patient2-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Patient',
+      lastName: 'Two',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicYId,
+    });
+    expect(patient2Res.status).toBe(201);
+    patient2Id = patient2Res.body.id;
+    await patient2.post('/auth/login').send({
+      email: `patient2-${stamp}@example.com`,
+      password: 'password123',
+    });
+  });
+
+  afterAll(async () => {
+    await app.close();
+    // app.close() only closes what Nest's own DI container manages.
+    // sessionPool was created manually, outside that container, so it needs
+    // to be closed explicitly too.
+    await sessionPool.end();
+  });
+
+  it('lets a patient view and update their own profile', async () => {
+    const viewRes = await patient1.get(`/users/${patient1Id}`);
+    expect(viewRes.status).toBe(200);
+
+    const updateRes = await patient1.patch(`/users/${patient1Id}`).send({ firstName: 'Updated' });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.firstName).toBe('Updated');
+  });
+
+  it('lets an admin update anyone', async () => {
+    const res = await admin.patch(`/users/${patient1Id}`).send({ firstName: 'AdminEdited' });
+    expect(res.status).toBe(200);
+    expect(res.body.firstName).toBe('AdminEdited');
+  });
+
+  it('lets a managing practitioner (sharing a clinic) update the patient', async () => {
+    const res = await practitionerA.patch(`/users/${patient1Id}`).send({ firstName: 'PractitionerEdited' });
+    expect(res.status).toBe(200);
+    expect(res.body.firstName).toBe('PractitionerEdited');
+  });
+
+  it('rejects a non-managing practitioner (no shared clinic) from updating the patient', async () => {
+    const res = await practitionerB.patch(`/users/${patient1Id}`).send({ firstName: 'ShouldNotWork' });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects one patient viewing or updating a profile that is not theirs', async () => {
+    const viewRes = await patient2.get(`/users/${patient1Id}`);
+    expect(viewRes.status).toBe(403);
+
+    const updateRes = await patient2.patch(`/users/${patient1Id}`).send({ firstName: 'Hijacked' });
+    expect(updateRes.status).toBe(403);
+  });
+
+  it('scopes GET /users to only clinic-shared patients for a practitioner, and to everyone for an admin', async () => {
+    const forPractitionerA = await practitionerA.get('/users');
+    expect(forPractitionerA.status).toBe(200);
+    const idsForA = forPractitionerA.body.map((u: any) => u.id);
+    expect(idsForA).toContain(patient1Id);
+    expect(idsForA).not.toContain(patient2Id);
+
+    const forAdmin = await admin.get('/users');
+    expect(forAdmin.status).toBe(200);
+    const idsForAdmin = forAdmin.body.map((u: any) => u.id);
+    expect(idsForAdmin).toEqual(expect.arrayContaining([patient1Id, patient2Id]));
+  });
+
+  it('rejects a plain patient from listing users at all', async () => {
+    const res = await patient1.get('/users');
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a user deactivate their own account (self soft-delete)', async () => {
+    const stamp = Date.now();
+    const selfCreate = await admin.post('/users').send({
+      email: `self-delete-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Self',
+      lastName: 'Delete',
+      dateOfBirth: '1990-01-01',
+    });
+    expect(selfCreate.status).toBe(201);
+    const selfAgent = request.agent(app.getHttpServer());
+    await selfAgent.post('/auth/login').send({
+      email: `self-delete-${stamp}@example.com`,
+      password: 'password123',
+    });
+
+    const deleteRes = await selfAgent.delete(`/users/${selfCreate.body.id}`);
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.body.isActive).toBe(false);
+  });
+
+  it('lets a managing practitioner deactivate one of their own patients', async () => {
+    const stamp = Date.now();
+    const create = await admin.post('/users').send({
+      email: `managed-delete-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Managed',
+      lastName: 'Delete',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(create.status).toBe(201);
+
+    const deleteRes = await practitionerA.delete(`/users/${create.body.id}`);
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.body.isActive).toBe(false);
+  });
+
+  it('rejects a non-managing practitioner from deactivating a patient they do not manage', async () => {
+    const stamp = Date.now();
+    const create = await admin.post('/users').send({
+      email: `unmanaged-delete-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Unmanaged',
+      lastName: 'Delete',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(create.status).toBe(201);
+
+    const deleteRes = await practitionerB.delete(`/users/${create.body.id}`);
+    expect(deleteRes.status).toBe(403);
+  });
+
+  it('rejects a practitioner creating anything other than a patient account', async () => {
+    const stamp = Date.now();
+    const res = await practitionerA.post('/users').send({
+      email: `should-not-be-created-${stamp}@example.com`,
+      password: 'password123',
+      role: 'practitioner',
+      firstName: 'Should',
+      lastName: 'NotWork',
+      licenseNumber: `PT-X-${stamp}`,
+    });
+    expect(res.status).toBe(403);
+  });
+});
