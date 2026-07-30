@@ -19,6 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { MedicalFilesService } from './medical-files.service'
 import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -32,6 +33,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // No PATCH, no DELETE routes anywhere in this controller — deliberate, not
 // an incomplete module. See MedicalFilesService for the reasoning.
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('medical-files')
 export class MedicalFilesController {
   constructor(private readonly medicalFilesService: MedicalFilesService) {}

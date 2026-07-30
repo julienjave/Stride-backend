@@ -32,6 +32,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ClinicsService } from './clinics.service'
 import { CreateClinicDto } from './dto/create-clinic.dto'
@@ -46,6 +47,7 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('clinics')
 export class ClinicsController {
   constructor(private readonly clinicsService: ClinicsService) {}

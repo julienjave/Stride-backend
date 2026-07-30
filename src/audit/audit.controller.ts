@@ -19,7 +19,9 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Controller, Get, Query, UseGuards } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { AuditService } from './audit.service'
+import { FindAuditLogsQueryDto } from './dto/find-audit-logs-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -32,6 +34,7 @@ import { Roles } from '../common/decorators/roles.decorator'
 // patients have any access to.
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles('admin')
+@ApiTags('Audit')
 @Controller('audit-logs')
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
@@ -42,15 +45,7 @@ export class AuditController {
   // --- GET ROUTES ---
 
   @Get()
-  findAll(
-    @Query('action') action?: string,
-    @Query('entityType') entityType?: string,
-    @Query('performedBy') performedBy?: string,
-  ) {
-    return this.auditService.findAll({
-      action,
-      entityType,
-      performedBy: performedBy ? Number(performedBy) : undefined,
-    })
+  findAll(@Query() query: FindAuditLogsQueryDto) {
+    return this.auditService.findAll(query)
   }
 }

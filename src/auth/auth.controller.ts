@@ -31,6 +31,7 @@ import {
   Res, 
   UseGuards 
 } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { Throttle, seconds } from '@nestjs/throttler'
 import { type Request, type Response } from 'express'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -48,6 +49,8 @@ import { AuditService } from '../audit/audit.service'
 
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
+
+@ApiTags('Users')
 @Controller('auth')
 export class AuthController {
   constructor(

@@ -29,6 +29,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { ProgramsService } from './programs.service'
 import { CreateTemplateDto } from './dto/create-template.dto'
 import { UpdateTemplateDto } from './dto/update-template.dto'
@@ -44,6 +45,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('programs')
 export class ProgramsController {
   constructor(private readonly programsService: ProgramsService) {}

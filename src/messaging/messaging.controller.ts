@@ -19,6 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Body, Controller, Get, Param, ParseIntPipe, Delete, Patch, Post, UseGuards } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { MessagingService } from './messaging.service'
 import { CreateConversationDto } from './dto/create-conversation.dto'
 import { SendMessageDto } from './dto/send-message.dto'
@@ -29,6 +30,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('conversations')
 export class MessagingController {
   constructor(private readonly messagingService: MessagingService) {}

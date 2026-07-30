@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
-import { pgTable, bigserial, bigint, integer, timestamp, boolean, text, pgEnum, check } from 'drizzle-orm/pg-core'
+import { pgTable, bigserial, bigint, integer, timestamp, boolean, text, pgEnum, check, index } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
 import { assignedPrograms, assignedProgramExercises } from './programs.schema'
@@ -38,7 +38,9 @@ export const sessions = pgTable('sessions', {
     totalDurationInSeconds: integer('total_duration_in_seconds'),
     status: sessionStatusEnum('status').notNull().default('pending'),
     sessionFeedback: text('session_feedback'),
-})
+}, (table) => ({
+  patientIdIdx: index('sessions_patient_id_idx').on(table.patientId),
+}))
 
 export const sessionExercises = pgTable('session_exercises', {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
@@ -62,4 +64,5 @@ export const sessionExercises = pgTable('session_exercises', {
         'difficulty_rating_range',
         sql`${table.difficultyRating} IS NULL OR ${table.difficultyRating} BETWEEN 1 AND 10`,
     ),
+    sessionIdIdx: index('session_exercises_session_id_idx').on(table.sessionId),
 }))

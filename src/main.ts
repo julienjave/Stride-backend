@@ -26,15 +26,29 @@ import session from 'express-session'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger'
+import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
 import { getDatabaseUrl } from './config/database-url'
+import { validateEnv } from './config/validate-env'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
 
 
 // --- MAIN LOGIC ---------------------------------------------------------------------------------------------
 
 async function bootstrap() {
+    // The very first thing that runs, before even NestFactory.create() — no
+    // module in this app should be constructed at all if a critical piece of
+    // config is missing or insecure.
+    validateEnv()
+
     const app = await NestFactory.create<NestExpressApplication>(AppModule)
+
+
+    // === LOGGER =================================================================
+
+    // Swaps Nest's default console logger for pino GLOBALLY
+    app.useLogger(app.get(Logger))
 
     // === SHUTDOWN SIGNALS =======================================================
     
@@ -105,6 +119,26 @@ async function bootstrap() {
     // all, since Socket.IO's handshake never runs through Express's normal
     // middleware chain on its own.
     app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))
+
+
+    // === SWAGGER ==================================================================
+
+    // Auto-generated from the DTOs and decorators already written throughout
+  // this app — the @nestjs/swagger CLI plugin (see nest-cli.json) is what
+  // makes this possible without manually adding @ApiProperty() to every
+  // field of every DTO: it statically reads each class's TypeScript types
+  // and class-validator decorators at BUILD time and injects the equivalent
+  // Swagger metadata automatically. addCookieAuth documents that this API
+  // authenticates via a session cookie, not a Bearer token — the Swagger UI
+  // shows an "Authorize" button reflecting that.
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('Stride API')
+    .setDescription('Physiotherapy exercise program management API')
+    .setVersion('1.0')
+    .addCookieAuth('connect.sid')
+    .build()
+  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig)
+  SwaggerModule.setup('api-docs', app, swaggerDocument)
 
 
     // === START APP ================================================================

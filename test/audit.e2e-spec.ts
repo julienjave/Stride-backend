@@ -136,30 +136,34 @@ describe('Audit (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
+  // res.body.data, not res.body directly — AuditController.findAll() now
+  // returns { data: [...], meta: {...} } since pagination was added, not a
+  // plain array. Only these four tests below needed updating; the two above
+  // only ever checked res.status, so pagination's shape change never touched them.
   it('lets an admin read the audit log, including the REGISTER_CLINIC entry from bootstrap', async () => {
     const res = await admin.get('/audit-logs');
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.some((entry: any) => entry.action === 'REGISTER_CLINIC')).toBe(true);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.some((entry: any) => entry.action === 'REGISTER_CLINIC')).toBe(true);
   });
 
   it('filters by action', async () => {
     const res = await admin.get('/audit-logs').query({ action: 'LOGIN_SUCCESS' });
     expect(res.status).toBe(200);
-    expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body.every((entry: any) => entry.action === 'LOGIN_SUCCESS')).toBe(true);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    expect(res.body.data.every((entry: any) => entry.action === 'LOGIN_SUCCESS')).toBe(true);
   });
 
   it('filters by performedBy', async () => {
     const res = await admin.get('/audit-logs').query({ performedBy: adminId });
     expect(res.status).toBe(200);
-    expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body.every((entry: any) => entry.performedBy === adminId)).toBe(true);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    expect(res.body.data.every((entry: any) => entry.performedBy === adminId)).toBe(true);
   });
 
   it('filters by entityType', async () => {
     const res = await admin.get('/audit-logs').query({ entityType: 'clinics' });
     expect(res.status).toBe(200);
-    expect(res.body.every((entry: any) => entry.entityType === 'clinics')).toBe(true);
+    expect(res.body.data.every((entry: any) => entry.entityType === 'clinics')).toBe(true);
   });
 });

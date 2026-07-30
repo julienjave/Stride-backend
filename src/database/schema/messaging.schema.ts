@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
-import { pgTable, serial, bigserial, integer, text, timestamp, unique } from 'drizzle-orm/pg-core'
+import { pgTable, serial, bigserial, integer, text, timestamp, unique, index } from 'drizzle-orm/pg-core'
 import { users } from './users.schema'
 
 export const conversations = pgTable('conversations', {
@@ -32,6 +32,8 @@ export const conversations = pgTable('conversations', {
 }, (table) => ({
     practitionerPatientUnique: unique('conversations_practitioner_patient_unique')
         .on(table.practitionerId, table.patientId),
+    practitionerIdIdx: index('conversations_practitioner_id_idx').on(table.practitionerId),
+    patientIdIdx: index('conversations_patient_id_idx').on(table.patientId),
 }))
 
 // bigserial, because messages is one of the tables we expect real growth on.
@@ -50,4 +52,8 @@ export const messages = pgTable('messages', {
     readAt: timestamp('read_at', { withTimezone: true }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
-})
+}, (table) => ({
+  // getMessages() loads an entire conversation's history by this column,
+  // on every single request that opens a thread.
+  conversationIdIdx: index('messages_conversation_id_idx').on(table.conversationId),
+}))

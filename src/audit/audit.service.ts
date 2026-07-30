@@ -19,9 +19,10 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Inject, Injectable } from '@nestjs/common'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, count } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { auditLogs } from '../database/schema'
+import { FindAuditLogsQueryDto } from './dto/find-audit-logs-query.dto'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -66,17 +67,31 @@ export class AuditService {
 
   // --- GET ROUTES ---
 
-  async findAll(filters: AuditFilters) {
+  async findAll(query: FindAuditLogsQueryDto) {
+    const page = query.page ?? 1
+    const limit = query.limit ?? 20
+    const offset = (page - 1) * limit
+ 
     const conditions = [
-      filters.action ? eq(auditLogs.action, filters.action) : undefined,
-      filters.entityType ? eq(auditLogs.entityType, filters.entityType) : undefined,
-      filters.performedBy ? eq(auditLogs.performedBy, filters.performedBy) : undefined,
+      query.action ? eq(auditLogs.action, query.action) : undefined,
+      query.entityType ? eq(auditLogs.entityType, query.entityType) : undefined,
+      query.performedBy ? eq(auditLogs.performedBy, query.performedBy) : undefined,
     ].filter((c): c is NonNullable<typeof c> => c !== undefined)
-
-    return this.db.query.auditLogs.findMany({
-      where: conditions.length > 0 ? and(...conditions) : undefined,
-      orderBy: (log, { desc: descend }) => [descend(log.createdAt)],
-      limit: 200, // a reasonable cap — never accidentally return the entire table
-    })
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+ 
+    const [rows, [{ total }]] = await Promise.all([
+      this.db.query.auditLogs.findMany({
+        where: whereClause,
+        orderBy: (log, { desc: descend }) => [descend(log.createdAt)],
+        limit,
+        offset,
+      }),
+      this.db.select({ total: count() }).from(auditLogs).where(whereClause),
+    ])
+ 
+    return {
+      data: rows,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    }
   }
 }

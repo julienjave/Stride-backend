@@ -19,11 +19,12 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, ilike } from 'drizzle-orm'
+import { and, eq, count, ilike } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { exercises } from '../database/schema'
 import { CreateExerciseDto } from './dto/create-exercise.dto'
 import { UpdateExerciseDto } from './dto/update-exercise.dto'
+import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 
@@ -94,12 +95,29 @@ export class ExercisesService {
   // sensitivity in a general exercise library the way there is with medical
   // files, and patients need to see the full details of exercises assigned
   // to them, not just practitioners browsing to build a program.
-  async findAll(search?: string) {
-    return this.db.query.exercises.findMany({
-      where: search
-        ? and(eq(exercises.isArchived, false), ilike(exercises.name, `%${search}%`))
-        : eq(exercises.isArchived, false),
-    })
+  async findAll(query: FindExercisesQueryDto) {
+    const page = query.page ?? 1
+    const limit = query.limit ?? 20
+    const offset = (page - 1) * limit
+ 
+    const whereClause = query.search
+      ? and(eq(exercises.isArchived, false), ilike(exercises.name, `%${query.search}%`))
+      : eq(exercises.isArchived, false)
+ 
+    // Run the page of rows and the total count as two separate, PARALLEL
+    // queries (Promise.all) rather than sequentially — no reason to wait on
+    // one before starting the other, since neither depends on the other's
+    // result. The total is what lets a client compute totalPages/know
+    // whether there's a next page at all, which the rows alone can't tell it.
+    const [rows, [{ total }]] = await Promise.all([
+      this.db.query.exercises.findMany({ where: whereClause, limit, offset }),
+      this.db.select({ total: count() }).from(exercises).where(whereClause),
+    ])
+ 
+    return {
+      data: rows,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    }
   }
 
   async findOne(id: number) {

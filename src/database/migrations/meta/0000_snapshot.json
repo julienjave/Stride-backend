@@ -1,5 +1,5 @@
 {
-  "id": "e1657bc4-5693-4b66-9ef3-b294a6e5801e",
+  "id": "64aceb1b-60f6-4099-beaf-b3d7d3c8c457",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -233,7 +233,38 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "user_clinics_user_id_idx": {
+          "name": "user_clinics_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "user_clinics_clinic_id_idx": {
+          "name": "user_clinics_clinic_id_idx",
+          "columns": [
+            {
+              "expression": "clinic_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "user_clinics_user_id_users_id_fk": {
           "name": "user_clinics_user_id_users_id_fk",
@@ -301,7 +332,23 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "user_roles_user_id_idx": {
+          "name": "user_roles_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "user_roles_user_id_users_id_fk": {
           "name": "user_roles_user_id_users_id_fk",
@@ -465,7 +512,23 @@
           "default": "'{}'::jsonb"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "medical_files_patient_id_idx": {
+          "name": "medical_files_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "medical_files_patient_id_users_id_fk": {
           "name": "medical_files_patient_id_users_id_fk",
@@ -535,7 +598,38 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "conversations_practitioner_id_idx": {
+          "name": "conversations_practitioner_id_idx",
+          "columns": [
+            {
+              "expression": "practitioner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_patient_id_idx": {
+          "name": "conversations_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "conversations_practitioner_id_users_id_fk": {
           "name": "conversations_practitioner_id_users_id_fk",
@@ -627,7 +721,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "messages_conversation_id_idx": {
+          "name": "messages_conversation_id_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "messages_conversation_id_conversations_id_fk": {
           "name": "messages_conversation_id_conversations_id_fk",
@@ -831,7 +941,23 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "assigned_program_exercises_assigned_program_id_idx": {
+          "name": "assigned_program_exercises_assigned_program_id_idx",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "assigned_program_exercises_assigned_program_id_assigned_programs_id_fk": {
           "name": "assigned_program_exercises_assigned_program_id_assigned_programs_id_fk",
@@ -928,7 +1054,23 @@
           "default": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "assigned_programs_patient_id_idx": {
+          "name": "assigned_programs_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "assigned_programs_patient_id_users_id_fk": {
           "name": "assigned_programs_patient_id_users_id_fk",
@@ -1087,7 +1229,23 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "template_exercises_template_id_idx": {
+          "name": "template_exercises_template_id_idx",
+          "columns": [
+            {
+              "expression": "template_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "template_exercises_template_id_program_templates_id_fk": {
           "name": "template_exercises_template_id_program_templates_id_fk",
@@ -1176,7 +1334,23 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "session_exercises_session_id_idx": {
+          "name": "session_exercises_session_id_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "session_exercises_session_id_sessions_id_fk": {
           "name": "session_exercises_session_id_sessions_id_fk",
@@ -1277,7 +1451,23 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "sessions_patient_id_idx": {
+          "name": "sessions_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "sessions_assigned_program_id_assigned_programs_id_fk": {
           "name": "sessions_assigned_program_id_assigned_programs_id_fk",
@@ -1366,7 +1556,38 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "audit_logs_performed_by_idx": {
+          "name": "audit_logs_performed_by_idx",
+          "columns": [
+            {
+              "expression": "performed_by",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_logs_entity_type_idx": {
+          "name": "audit_logs_entity_type_idx",
+          "columns": [
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "audit_logs_performed_by_users_id_fk": {
           "name": "audit_logs_performed_by_users_id_fk",

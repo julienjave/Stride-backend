@@ -33,12 +33,14 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { FilesInterceptor } from '@nestjs/platform-express'
 import { ExercisesService } from './exercises.service'
 import { CreateExerciseDto } from './dto/create-exercise.dto'
 import { UpdateExerciseDto } from './dto/update-exercise.dto'
 import { RemoveImageDto } from './dto/remove-image.dto'
 import { ReorderImagesDto } from './dto/reorder-images.dto'
+import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -49,6 +51,7 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Exercises')
 @Controller('exercises')
 export class ExercisesController {
   constructor(private readonly exercisesService: ExercisesService) {}
@@ -85,9 +88,14 @@ export class ExercisesController {
 
   // --- GET ROUTES ---
 
+  // A SINGLE @Query() binding to one combined DTO — not @Query('search')
+  // plus a separate pagination DTO. ValidationPipe's whitelist option
+  // validates the WHOLE query object handed to @Query(); splitting it
+  // across two decorators would make the DTO see "search" as an
+  // undeclared property and reject the request outright.
   @Get()
-  findAll(@Query('search') search?: string) {
-    return this.exercisesService.findAll(search)
+  findAll(@Query() query: FindExercisesQueryDto) {
+    return this.exercisesService.findAll(query)
   }
 
   @Get(':id')

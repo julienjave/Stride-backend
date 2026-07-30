@@ -33,6 +33,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { UsersService } from './users.service'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
@@ -48,6 +49,7 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('users')
 export class UsersController {
     constructor(private readonly usersService: UsersService) {}

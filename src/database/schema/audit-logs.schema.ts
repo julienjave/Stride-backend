@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 
-import { pgTable, bigserial, bigint, integer, varchar, timestamp, jsonb } from 'drizzle-orm/pg-core'
+import { pgTable, bigserial, bigint, integer, varchar, timestamp, jsonb, index } from 'drizzle-orm/pg-core'
 import { users } from './users.schema'
 
 
@@ -36,4 +36,7 @@ export const auditLogs = pgTable('audit_logs', {
     entityId: bigint('entity_id', { mode: 'number' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     details: jsonb('details'),
-})
+}, (table) => ({
+  performedByIdx: index('audit_logs_performed_by_idx').on(table.performedBy),
+  entityTypeIdx: index('audit_logs_entity_type_idx').on(table.entityType),
+}))

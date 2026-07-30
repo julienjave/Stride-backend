@@ -19,6 +19,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common'
+import { ApiTags } from '@nestjs/swagger'
 import { SessionsService } from './sessions.service'
 import { CreateSessionDto } from './dto/create-session.dto'
 import { UpdateSessionDto } from './dto/update-session.dto'
@@ -32,6 +33,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
+@ApiTags('Users')
 @Controller('sessions')
 export class SessionsController {
   constructor(private readonly sessionsService: SessionsService) {}

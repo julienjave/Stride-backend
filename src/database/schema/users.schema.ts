@@ -28,7 +28,8 @@ import {
   date, 
   text, 
   pgEnum, 
-  unique 
+  unique,
+  index
 } from 'drizzle-orm/pg-core'
 import { clinics } from './clinics.schema'
 
@@ -78,6 +79,7 @@ export const userRoles = pgTable('user_roles', {
 }, (table) => ({
   // Prevents granting the same role to the same user twice.
   userRoleUnique: unique('user_roles_user_role_unique').on(table.userId, table.role),
+  userIdIdx: index('user_roles_user_id_idx').on(table.userId),
 }))
 
 // A join table: no independent meaning of its own, just links two other tables.
@@ -92,6 +94,8 @@ export const userClinics = pgTable('user_clinics', {
 }, (table) => ({
   // Prevents the same user/clinic pairing from being inserted twice.
   userClinicUnique: unique('user_clinics_user_clinic_unique').on(table.userId, table.clinicId),
+  userIdIdx: index('user_clinics_user_id_idx').on(table.userId),
+  clinicIdIdx: index('user_clinics_clinic_id_idx').on(table.clinicId),
 }))
 
 // One row per practitioner user. userId is BOTH the primary key AND the foreign key —

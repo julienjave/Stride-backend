@@ -207,4 +207,18 @@ ALTER TABLE "sessions" ADD CONSTRAINT "sessions_assigned_program_id_assigned_pro
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_patient_id_users_id_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_performed_by_users_id_fk" FOREIGN KEY ("performed_by") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_target_user_id_users_id_fk" FOREIGN KEY ("target_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "exercises_external_id_unique" ON "exercises" USING btree ("external_id") WHERE "exercises"."external_id" IS NOT NULL;
+CREATE INDEX "user_clinics_user_id_idx" ON "user_clinics" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "user_clinics_clinic_id_idx" ON "user_clinics" USING btree ("clinic_id");--> statement-breakpoint
+CREATE INDEX "user_roles_user_id_idx" ON "user_roles" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "medical_files_patient_id_idx" ON "medical_files" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX "conversations_practitioner_id_idx" ON "conversations" USING btree ("practitioner_id");--> statement-breakpoint
+CREATE INDEX "conversations_patient_id_idx" ON "conversations" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX "messages_conversation_id_idx" ON "messages" USING btree ("conversation_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "exercises_external_id_unique" ON "exercises" USING btree ("external_id") WHERE "exercises"."external_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "assigned_program_exercises_assigned_program_id_idx" ON "assigned_program_exercises" USING btree ("assigned_program_id");--> statement-breakpoint
+CREATE INDEX "assigned_programs_patient_id_idx" ON "assigned_programs" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX "template_exercises_template_id_idx" ON "template_exercises" USING btree ("template_id");--> statement-breakpoint
+CREATE INDEX "session_exercises_session_id_idx" ON "session_exercises" USING btree ("session_id");--> statement-breakpoint
+CREATE INDEX "sessions_patient_id_idx" ON "sessions" USING btree ("patient_id");--> statement-breakpoint
+CREATE INDEX "audit_logs_performed_by_idx" ON "audit_logs" USING btree ("performed_by");--> statement-breakpoint
+CREATE INDEX "audit_logs_entity_type_idx" ON "audit_logs" USING btree ("entity_type");
