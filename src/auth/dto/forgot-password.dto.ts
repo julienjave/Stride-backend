@@ -18,12 +18,13 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail } from 'class-validator'
+import { IsEmail, MaxLength } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class ForgotPasswordDto {
   @IsEmail()
+  @MaxLength(255)
   email!: string
 }

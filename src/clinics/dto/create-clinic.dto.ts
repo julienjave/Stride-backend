@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, IsOptional } from 'class-validator'
+import { IsEmail, IsString, MaxLength, IsOptional } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -28,16 +28,20 @@ import { IsEmail, IsString, IsOptional } from 'class-validator'
 // field, and belongs as its own endpoint later.
 export class CreateClinicDto {
   @IsString()
+  @MaxLength(255)
   name!: string
-
+ 
   @IsEmail()
+  @MaxLength(255)
   email!: string
-
+ 
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   phone?: string
-
+ 
   @IsOptional()
   @IsString()
+  @MaxLength(255)
   website?: string
 }

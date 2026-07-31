@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional, IsString, Min } from 'class-validator'
+import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -30,27 +30,28 @@ import { IsInt, IsOptional, IsString, Min } from 'class-validator'
 export class AssignedExerciseInputDto {
   @IsInt()
   exerciseId!: number
-
+ 
   @IsOptional()
   @IsInt()
   @Min(1)
   sets?: number
-
+ 
   @IsOptional()
   @IsInt()
   @Min(1)
   reps?: number
-
+ 
   @IsOptional()
   @IsInt()
   @Min(1)
   durationInSeconds?: number
-
+ 
   @IsInt()
   @Min(0)
   sortOrder!: number
-
+ 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string
 }

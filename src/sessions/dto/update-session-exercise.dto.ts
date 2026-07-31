@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsOptional, IsBoolean, IsInt, IsString, Min, Max } from 'class-validator'
+import { IsOptional, IsBoolean, IsInt, IsString, MaxLength, Min, Max } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -27,12 +27,12 @@ export class UpdateSessionExerciseDto {
   @IsOptional()
   @IsBoolean()
   completed?: boolean
-
+ 
   @IsOptional()
   @IsInt()
   @Min(0)
   durationActualInSeconds?: number
-
+ 
   // Matches the database's own CHECK constraint — validated here too, so a
   // bad value gets a clean 400 instead of a raw Postgres constraint error.
   @IsOptional()
@@ -40,8 +40,9 @@ export class UpdateSessionExerciseDto {
   @Min(1)
   @Max(10)
   difficultyRating?: number
-
+ 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   feedback?: string
 }

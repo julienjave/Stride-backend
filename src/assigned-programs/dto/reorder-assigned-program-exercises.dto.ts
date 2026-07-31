@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, IsInt } from 'class-validator'
+import { IsArray, ArrayMinSize, ArrayMaxSize, IsInt } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -26,6 +26,7 @@ import { IsArray, ArrayMinSize, IsInt } from 'class-validator'
 export class ReorderAssignedProgramExercisesDto {
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(100)
   @IsInt({ each: true })
   order!: number[]
 }

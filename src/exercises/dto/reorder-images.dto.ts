@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, IsString } from 'class-validator'
+import { IsArray, ArrayMinSize, ArrayMaxSize, IsString, MaxLength } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -30,6 +30,8 @@ import { IsArray, ArrayMinSize, IsString } from 'class-validator'
 export class ReorderImagesDto {
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(20) // matches FilesInterceptor('files', 5, ...)'s per-upload cap, generous headroom for accumulated uploads over time
   @IsString({ each: true })
+  @MaxLength(500, { each: true })
   order!: string[]
 }

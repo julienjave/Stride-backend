@@ -30,13 +30,14 @@ import {
 import { Server, Socket } from 'socket.io'
 import { UsersService } from '../users/users.service'
 import { MessagingService } from './messaging.service'
+import { getAllowedOrigins } from '../config/allowed-origins'
 
 
 // --- GATEWAY ------------------------------------------------------------------------------------------------
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
+    origin: getAllowedOrigins(),
     credentials: true,
   },
 })

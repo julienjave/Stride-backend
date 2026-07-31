@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsString } from 'class-validator'
+import { IsString, MaxLength } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -29,5 +29,6 @@ import { IsString } from 'class-validator'
 // practical choice here.
 export class RemoveImageDto {
   @IsString()
+  @MaxLength(500)
   objectKey!: string
 }

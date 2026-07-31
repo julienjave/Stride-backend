@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, IsInt } from 'class-validator'
+import { IsArray, ArrayMinSize, ArrayMaxSize, IsInt } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -30,6 +30,7 @@ import { IsArray, ArrayMinSize, IsInt } from 'class-validator'
 export class ReorderTemplateExercisesDto {
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(200) // no realistic template needs more exercise slots than this
   @IsInt({ each: true })
   order!: number[]
 }

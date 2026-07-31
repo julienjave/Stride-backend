@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common'
+import { Injectable, OnModuleInit, Logger, PayloadTooLargeException } from '@nestjs/common'
 import {
   S3Client,
   HeadBucketCommand,
@@ -31,6 +31,18 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
+
+// A generic safety ceiling for ANY upload through this service, regardless
+// of caller — deliberately a DIFFERENT number from the 5MB limit
+// image-upload.config.ts enforces at the route level (not a duplicate of
+// that specific business rule, a different kind of check entirely). The
+// route-level Multer limit answers "is this appropriate for a profile
+// photo"; this answers "is this an absurd upload no matter what it's for."
+// Relying on Multer's config alone means this guard only exists for
+// callers that happen to go through a Multer-configured route — if
+// StorageService.upload() is ever called from anywhere else in the future,
+// that caller would currently have ZERO size enforcement at all.
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
 @Injectable()
 export class StorageService implements OnModuleInit {
@@ -70,6 +82,14 @@ export class StorageService implements OnModuleInit {
 
   // Uploads a file, returns the object key
   async upload(objectKey: string, buffer: Buffer, contentType: string): Promise<string> {
+    // Checked first, before any network call — no reason to spend a round
+    // trip to RustFS on a payload we're going to reject anyway.
+    if (buffer.byteLength > MAX_UPLOAD_SIZE_BYTES) {
+      throw new PayloadTooLargeException(
+        `File exceeds the maximum allowed size of ${MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)}MB`,
+      )
+    }
+ 
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,

@@ -31,6 +31,8 @@ import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
 import { getDatabaseUrl } from './config/database-url'
 import { validateEnv } from './config/validate-env'
+import { getAllowedOrigins } from './config/allowed-origins'
+import { getPoolConfig } from './config/pool-config'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
 
 
@@ -65,7 +67,7 @@ async function bootstrap() {
     // === CORS ===================================================================
 
     app.enableCors({
-        origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
+        origin: getAllowedOrigins(),
         credentials: true,
     })
 
@@ -88,7 +90,7 @@ async function bootstrap() {
     // --- SESSION ---
     // A SEPARATE pool from Drizzle's own — connect-pg-simple manages its own
     // "session" table directly with raw SQL, entirely outside Drizzle's schema/migration system.
-    const sessionPool = new Pool({ connectionString: getDatabaseUrl() })
+    const sessionPool = new Pool({ connectionString: getDatabaseUrl(), ...getPoolConfig('session') })
     const PgSessionStore = connectPgSimple(session)
     
     // Named, rather than passed inline to app.use() — this exact same
@@ -96,7 +98,7 @@ async function bootstrap() {
     // SessionIoAdapter. One session store, one cookie, two transports.
     const sessionMiddleware = session({
         store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
-        secret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
+        secret: process.env.SESSION_SECRET!,
         resave: false,
         saveUninitialized: false,
         cookie: {

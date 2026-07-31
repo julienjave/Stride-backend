@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsString, MinLength } from 'class-validator'
+import { IsString, MinLength, MaxLength } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -26,5 +26,6 @@ import { IsString, MinLength } from 'class-validator'
 export class SendMessageDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(5000)
   messageBody!: string
 }

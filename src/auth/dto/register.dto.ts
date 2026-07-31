@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MinLength, IsDateString } from 'class-validator'
+import { IsEmail, IsString, MinLength, MaxLength, IsDateString } from 'class-validator'
 
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -28,18 +28,22 @@ import { IsEmail, IsString, MinLength, IsDateString } from 'class-validator'
 // override, because there's nothing to send in the first place.
 export class RegisterDto {
   @IsEmail()
+  @MaxLength(255)
   email!: string
-
+ 
   @IsString()
   @MinLength(8)
+  @MaxLength(128)
   password!: string
-
+ 
   @IsString()
+  @MaxLength(100)
   firstName!: string
-
+ 
   @IsString()
+  @MaxLength(100)
   lastName!: string
-
+ 
   @IsDateString()
   dateOfBirth!: string
 }

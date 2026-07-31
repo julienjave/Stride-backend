@@ -18,7 +18,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsOptional, IsString } from 'class-validator'
+import { IsOptional, IsString, MaxLength } from 'class-validator'
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto'
 
 
@@ -32,5 +32,6 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto'
 export class FindExercisesQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200) // a search TERM has no reason to be longer than a name itself would be
   search?: string
 }
