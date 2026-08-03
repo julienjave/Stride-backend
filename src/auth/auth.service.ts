@@ -31,6 +31,7 @@ import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
+import { encryptMfaSecret, decryptMfaSecret } from './mfa-secret-crypto'
 
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -311,7 +312,12 @@ export class AuthService {
     const otpauthUrl = this.otp.generateURI({ issuer: 'Stride', label: user.email, secret })
     const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl)
  
-    await this.db.update(users).set({ mfaSecret: secret }).where(eq(users.id, userId))
+    // The PLAINTEXT secret is what goes into the QR code/otpauth URL (the
+    // authenticator app needs the real value) — only the STORED copy is
+    // encrypted. The two are deliberately different at this point: the
+    // returned value here is shown to the user once, right now; what lands
+    // in the database is never in plaintext at rest.
+    await this.db.update(users).set({ mfaSecret: encryptMfaSecret(secret) }).where(eq(users.id, userId))
  
     // The raw secret is included so an authenticator app that can't scan a
     // QR code (or a user who prefers typing it) has a manual-entry option —
@@ -326,8 +332,9 @@ export class AuthService {
     }
  
     // verify() is async now, and returns a { valid, ... } result object —
-    // not a plain boolean the way the previous otplib API did.
-    const result = await this.otp.verify({ secret: user.mfaSecret, token: code })
+    // not a plain boolean the way the previous otplib API did. Decrypted
+    // here, right before use — never held decrypted any longer than needed.
+    const result = await this.otp.verify({ secret: decryptMfaSecret(user.mfaSecret), token: code })
     if (!result.valid) {
       throw new BadRequestException('Invalid authentication code')
     }
@@ -351,7 +358,7 @@ export class AuthService {
     // Requiring a valid CURRENT code to disable — not just an active
     // session — so someone who merely stole a session cookie can't turn
     // off a security measure they never actually authenticated past.
-    const result = await this.otp.verify({ secret: user.mfaSecret, token: code })
+    const result = await this.otp.verify({ secret: decryptMfaSecret(user.mfaSecret), token: code })
     if (!result.valid) {
       throw new BadRequestException('Invalid authentication code')
     }
@@ -375,7 +382,7 @@ export class AuthService {
     if (!user?.mfaSecret) {
       return false
     }
-    const result = await this.otp.verify({ secret: user.mfaSecret, token: code })
+    const result = await this.otp.verify({ secret: decryptMfaSecret(user.mfaSecret), token: code })
     return result.valid
   }
 

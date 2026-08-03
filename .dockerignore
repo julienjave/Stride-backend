@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+.git
+.env
+.env.example
+*.log
+test
+docs
+.vscode
+removed
+*.txt
+*.md

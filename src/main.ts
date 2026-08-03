@@ -60,8 +60,14 @@ async function bootstrap() {
 
     // === PROXY ==================================================================
 
-    // Needed to allow for rate-limiting
-    app.set('trust proxy', 1)
+    // Needed to allow for rate-limiting to see the real client IP, not
+    // whatever's directly in front of this process. The number of hops to
+    // trust is genuinely different between environments — locally, nothing
+    // sits in front of the app at all; in production, it's TWO hops
+    // (Cloudflare, then Caddy). Hardcoding either number would make the
+    // OTHER environment wrong, so this reads from an env var instead, with
+    // a default (1) that preserves prior behavior when unset.
+    app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1))
 
 
     // === CORS ===================================================================
@@ -103,6 +109,8 @@ async function bootstrap() {
         saveUninitialized: false,
         cookie: {
             httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
             maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
         },
     })

@@ -42,4 +42,33 @@ export function validateEnv(): void {
         'Generate a real random secret (e.g. `openssl rand -hex 32`) before starting the app.',
     )
   }
+
+  // Email sending is now a real, working feature (Resend), 
+  // a missing key here would otherwise only surface the first
+  // time someone actually requests a password reset, as a confusing runtime
+  // failure deep inside EmailService, rather than a clear error at boot.
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error(
+      'Missing required environment variable: RESEND_API_KEY. Set a real API key ' +
+        'from your Resend dashboard before starting the app.',
+    )
+  }
+
+  // Same reasoning, applied to MFA secret encryption — validated for both
+  // presence AND correct shape (64 hex characters = 32 bytes = AES-256's
+  // required key length), since a key of the wrong length would otherwise
+  // fail confusingly deep inside crypto.createCipheriv, not here.
+  const mfaKey = process.env.MFA_ENCRYPTION_KEY
+  if (!mfaKey) {
+    throw new Error(
+      'Missing required environment variable: MFA_ENCRYPTION_KEY. Set a 64-character ' +
+        'hex string (e.g. `openssl rand -hex 32`) before starting the app.',
+    )
+  }
+  if (!/^[0-9a-f]{64}$/i.test(mfaKey)) {
+    throw new Error(
+      'MFA_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes, for AES-256). ' +
+        'Generate one with `openssl rand -hex 32`.',
+    )
+  }
 }
