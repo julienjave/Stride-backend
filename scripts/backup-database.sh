@@ -22,11 +22,25 @@ BACKUP_FILE="stride-backup-${TIMESTAMP}.sql.gz"
 docker compose -f docker-compose.prod.yml exec -T db \
   pg_dump -U postgres stride | gzip > "/tmp/${BACKUP_FILE}"
 
-# Uses the same RustFS credentials already in .env — reusing existing
-# infrastructure rather than adding a new dependency for this one purpose.
-set -a
-source .env
-set +a
+# Deliberately NOT `source .env` — a .env file is only guaranteed to be
+# simple KEY=VALUE text, safe for tools with their own lightweight parser
+# (Node's dotenv, Docker Compose's env_file:). It is NOT guaranteed to be
+# valid bash syntax — `source` genuinely EXECUTES the file as a script,
+# where unquoted spaces and characters like < > have real shell meaning.
+# EMAIL_FROM's value ("Stride Care <noreply@...>") breaks exactly this way.
+# Extracting only the specific lines actually needed, as plain text via
+# grep+cut, avoids this entire class of problem — nothing else in .env is
+# ever interpreted as code, regardless of what it contains.
+RUSTFS_ACCESS_KEY=$(grep -E "^RUSTFS_ACCESS_KEY=" .env | cut -d= -f2-)
+RUSTFS_SECRET_KEY=$(grep -E "^RUSTFS_SECRET_KEY=" .env | cut -d= -f2-)
+STORAGE_PORT=$(grep -E "^STORAGE_PORT=" .env | cut -d= -f2-)
+
+# The AWS CLI only ever reads ITS OWN standard variable names — it has no
+# concept of "RUSTFS_ACCESS_KEY" at all. Without this export, every `aws`
+# call below would fail on authentication, silently unrelated to the actual
+# credential values being correct.
+export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY"
+export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY"
 
 aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 cp \
   "/tmp/${BACKUP_FILE}" "s3://backups/${BACKUP_FILE}"
