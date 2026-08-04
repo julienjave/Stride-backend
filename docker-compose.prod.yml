@@ -1,0 +1,73 @@
+name: stride
+
+services:
+  db:
+    image: postgres:16
+    container_name: stride-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-stride}
+    # Deliberately NO published port here, unlike the dev compose file —
+    # nothing outside this compose network has any legitimate reason to
+    # reach Postgres directly. Only the `app` service needs it, and that
+    # happens via Docker's internal service-name DNS ("db"), never through
+    # a port exposed to the actual internet. Occasional manual access (a
+    # one-off psql session) is better done via an SSH tunnel from your own
+    # machine than by leaving a port open permanently for a rare need.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  storage:
+    image: rustfs/rustfs:latest
+    container_name: stride-storage
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be set in .env}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be set in .env}
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_VOLUMES: "/data"
+    # Same reasoning as db above — no published port. Only `app` needs to
+    # reach this, via the internal network as "storage".
+    volumes:
+      - rustfs_data:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stride-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - storage
+    # No published port either — only Caddy needs to reach this, as "app"
+    # on the internal network, matching exactly what the Caddyfile proxies to.
+
+  caddy:
+    image: caddy:2
+    container_name: stride-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy's own data volume — CRITICAL that this persists across
+      # restarts, since it's where Let's Encrypt certificates are actually
+      # stored. Without a persistent volume here, Caddy would request a
+      # brand new certificate on every single container restart, risking
+      # hitting Let's Encrypt's real rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  rustfs_data:
+  caddy_data:
+  caddy_config:

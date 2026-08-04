@@ -1,0 +1,30 @@
+api.stridecare.app {
+	# Caddy's flagship feature — genuinely this simple. Because the site
+	# address above is a real domain (not an IP or "localhost"), Caddy
+	# automatically requests and renews a real Let's Encrypt certificate for
+	# it, and automatically redirects any plain HTTP request to HTTPS. No
+	# separate TLS config block, no manual redirect rule — both are Caddy's
+	# defaults the moment it sees a real domain name here.
+	#
+	# "app" is the OTHER container's service name from docker-compose.prod.yml
+	# — resolved via Docker's internal DNS, not a real hostname on the public
+	# internet. 3000 matches main.ts's app.listen(process.env.PORT ?? 3000).
+	# WebSocket upgrade requests (Socket.IO's handshake) are proxied
+	# automatically too — reverse_proxy detects and handles the Connection:
+	# Upgrade header without any extra configuration.
+	reverse_proxy app:3000
+
+	# A separate, proxy-level log from the application's own pino output —
+	# this captures every request Caddy receives, INCLUDING ones that never
+	# reach the app at all (e.g. a 502 if the app container is down), which
+	# pino's own logs would have no record of, since the app never saw them.
+	# Logged to stdout deliberately, not a file — Docker's own logging
+	# driver captures and persists that automatically, the same way
+	# `docker logs stride-app` already works for the app container. A file
+	# path here would need its own separate volume mount to survive a
+	# restart at all; stdout needs nothing extra.
+	log {
+		output stdout
+		format json
+	}
+}
