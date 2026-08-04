@@ -23,6 +23,18 @@ services:
     image: rustfs/rustfs:latest
     container_name: stride-storage
     restart: unless-stopped
+    # Bound to 127.0.0.1 specifically, not left unpublished, and NOT 0.0.0.0
+    # — the middle ground between "totally unreachable from the host" (which
+    # broke both the admin console over an SSH tunnel, and this project's
+    # own backup script, since both need host-level localhost access) and
+    # "published to the world" (deliberately avoided originally). 127.0.0.1
+    # binding means: reachable from anything running ON the Droplet itself,
+    # but categorically unreachable from the public internet — not just
+    # firewalled, actually absent from the public network interface
+    # entirely, regardless of any firewall rule.
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be set in .env}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be set in .env}
@@ -30,8 +42,6 @@ services:
       RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_VOLUMES: "/data"
-    # Same reasoning as db above — no published port. Only `app` needs to
-    # reach this, via the internal network as "storage".
     volumes:
       - rustfs_data:/data
 
