@@ -49,6 +49,34 @@ services:
     # No published port either — only Caddy needs to reach this, as "app"
     # on the internal network, matching exactly what the Caddyfile proxies to.
 
+  # Run migrations with: docker compose -f docker-compose.prod.yml run --rm migrate
+  #
+  # Deliberately targets the BUILDER stage of the same Dockerfile, not the
+  # final runtime image — the runtime stage is intentionally lean (only
+  # production dependencies, only dist/), so it has neither drizzle-kit
+  # (a devDependency, correctly excluded from what actually ships) nor
+  # drizzle.config.ts or the migrations folder (never copied into runtime
+  # at all, since the running app doesn't need them to serve requests).
+  # The builder stage already has all of this, since it's what compiles the
+  # app in the first place — reusing it here means no new Dockerfile stage
+  # needed, and Docker's build cache is shared with the app service's own
+  # build (both reference the same builder stage).
+  #
+  # `profiles: ["tools"]` is what keeps this from starting automatically
+  # with `docker compose up` — it only ever runs when explicitly invoked.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: stride-migrate
+    env_file:
+      - .env
+    depends_on:
+      - db
+    profiles: ["tools"]
+    command: ["npx", "drizzle-kit", "migrate"]
+
   caddy:
     image: caddy:2
     container_name: stride-caddy
