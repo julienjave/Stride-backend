@@ -59,7 +59,7 @@ async function bootstrap() {
 
 
     // === PROXY ==================================================================
-
+ 
     // Needed to allow for rate-limiting to see the real client IP, not
     // whatever's directly in front of this process. The number of hops to
     // trust is genuinely different between environments — locally, nothing
@@ -68,6 +68,28 @@ async function bootstrap() {
     // OTHER environment wrong, so this reads from an env var instead, with
     // a default (1) that preserves prior behavior when unset.
     app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1))
+ 
+    // Verified against this project's OWN real production logs, not just
+    // assumed from generic documentation: Cloudflare's docs claim
+    // X-Forwarded-For includes the original client IP — but captured
+    // production logs showed it containing ONLY Cloudflare's own edge IP
+    // (itself within Cloudflare's published ranges), while cf-connecting-ip
+    // correctly carried the real visitor's IP every single time. Given this
+    // specific, observed behavior in our own chain, relying on generic
+    // X-Forwarded-For + trust-proxy hop-counting alone is not reliable here.
+    // Overwriting X-Forwarded-For with Cloudflare's own dedicated header,
+    // before anything downstream (rate limiting, logging) ever reads
+    // req.ip, is the robust fix — every consumer of req.ip benefits
+    // automatically, with no changes needed anywhere else in the app.
+    if (process.env.NODE_ENV === 'production') {
+        app.use((req: any, res: any, next: any) => {
+            const cfConnectingIp = req.headers['cf-connecting-ip']
+            if (typeof cfConnectingIp === 'string') {
+                req.headers['x-forwarded-for'] = cfConnectingIp
+            }
+            next()
+        })
+    }
 
 
     // === CORS ===================================================================
