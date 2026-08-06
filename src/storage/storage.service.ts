@@ -15,10 +15,14 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Injectable, OnModuleInit, Logger, PayloadTooLargeException } from '@nestjs/common'
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  PayloadTooLargeException,
+} from '@nestjs/common'
 import {
   S3Client,
   HeadBucketCommand,
@@ -28,7 +32,6 @@ import {
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -42,7 +45,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // callers that happen to go through a Multer-configured route — if
 // StorageService.upload() is ever called from anywhere else in the future,
 // that caller would currently have ZERO size enforcement at all.
-const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024 // 10MB
 
 @Injectable()
 export class StorageService implements OnModuleInit {
@@ -81,7 +84,11 @@ export class StorageService implements OnModuleInit {
   // --- POST ROUTES ---
 
   // Uploads a file, returns the object key
-  async upload(objectKey: string, buffer: Buffer, contentType: string): Promise<string> {
+  async upload(
+    objectKey: string,
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<string> {
     // Checked first, before any network call — no reason to spend a round
     // trip to RustFS on a payload we're going to reject anyway.
     if (buffer.byteLength > MAX_UPLOAD_SIZE_BYTES) {
@@ -89,7 +96,7 @@ export class StorageService implements OnModuleInit {
         `File exceeds the maximum allowed size of ${MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)}MB`,
       )
     }
- 
+
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -101,23 +108,29 @@ export class StorageService implements OnModuleInit {
     return objectKey
   }
 
-
   // --- GET ROUTES ---
 
   // Generates a temporary, signed URL good for `expirySeconds` — presigned-URL
   // pattern letting a browser fetch the file directly without
   // routing the bytes through our NestJS server.
-  async getPresignedUrl(objectKey: string, expirySeconds = 900): Promise<string> {
-    const command = new GetObjectCommand({ Bucket: this.bucket, Key: objectKey })
+  async getPresignedUrl(
+    objectKey: string,
+    expirySeconds = 900,
+  ): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: objectKey,
+    })
     return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
   }
-
 
   // --- DELETE ROUTES ---
 
   // Actually frees the bytes in storage — deleting a row's reference to an
   // object key without this would just hide the waste, not eliminate it.
   async delete(objectKey: string): Promise<void> {
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: objectKey }))
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: objectKey }),
+    )
   }
 }

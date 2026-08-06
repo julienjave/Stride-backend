@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
@@ -42,7 +41,6 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
-
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -76,13 +74,15 @@ export class ClinicsController {
   @Roles('admin')
   @Post(':id/logo')
   @UseInterceptors(FileInterceptor('file', imageUploadOptions))
-  uploadLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
+  uploadLogo(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
     if (!file) {
       throw new BadRequestException('No file uploaded')
     }
     return this.clinicsService.updateLogo(id, file)
   }
-
 
   // --- GET ROUTES ---
 
@@ -105,7 +105,6 @@ export class ClinicsController {
     return this.clinicsService.listMembers(id)
   }
 
-
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
@@ -114,7 +113,6 @@ export class ClinicsController {
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateClinicDto) {
     return this.clinicsService.update(id, dto)
   }
-
 
   // --- DELETE ROUTES ---
 

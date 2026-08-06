@@ -15,9 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 import { Global, Module } from '@nestjs/common'
-import { pgPoolProvider, drizzleProvider, DrizzlePoolCloser } from './drizzle.provider'
+import {
+  pgPoolProvider,
+  drizzleProvider,
+  DrizzlePoolCloser,
+} from './drizzle.provider'
 
 // @Global() — imported once here, in AppModule, and then DRIZZLE is injectable
 // from any module in the app without each one separately importing DrizzleModule.
@@ -29,5 +32,4 @@ import { pgPoolProvider, drizzleProvider, DrizzlePoolCloser } from './drizzle.pr
   providers: [pgPoolProvider, drizzleProvider, DrizzlePoolCloser],
   exports: [drizzleProvider],
 })
-
 export class DrizzleModule {}

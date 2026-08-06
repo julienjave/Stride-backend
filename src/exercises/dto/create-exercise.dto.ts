@@ -15,11 +15,16 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, ArrayMaxSize, IsOptional, IsString, MaxLength } from 'class-validator'
-
+import {
+  IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -31,28 +36,28 @@ export class CreateExerciseDto {
   @IsString()
   @MaxLength(200)
   name!: string
- 
+
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   primaryMuscles!: string[]
- 
+
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   secondaryMuscles?: string[]
- 
+
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   equipment?: string[]
- 
+
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(50)

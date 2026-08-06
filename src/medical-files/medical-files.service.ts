@@ -15,17 +15,21 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { eq } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { medicalFiles } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
 import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
-
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -39,7 +43,6 @@ export class MedicalFilesService {
     private readonly auditService: AuditService,
   ) {}
 
-
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
@@ -49,9 +52,14 @@ export class MedicalFilesService {
   // Clinic-scoped here too: a practitioner may only add an entry for a
   // patient they actually manage.
   async create(currentUser: CurrentUser, dto: CreateMedicalFileDto) {
-    const managed = await this.usersService.isPatientManagedBy(dto.patientId, currentUser.id)
+    const managed = await this.usersService.isPatientManagedBy(
+      dto.patientId,
+      currentUser.id,
+    )
     if (!managed) {
-      throw new ForbiddenException('You can only create medical file entries for patients you manage')
+      throw new ForbiddenException(
+        'You can only create medical file entries for patients you manage',
+      )
     }
 
     const [entry] = await this.db
@@ -70,10 +78,9 @@ export class MedicalFilesService {
       entityType: 'medical_files',
       entityId: entry.id,
     })
-    
+
     return entry
   }
-
 
   // --- GET ROUTES ---
 
@@ -87,9 +94,14 @@ export class MedicalFilesService {
         throw new BadRequestException('patientId is required')
       }
       if (currentUser.activeRole === 'practitioner') {
-        const managed = await this.usersService.isPatientManagedBy(patientId, currentUser.id)
+        const managed = await this.usersService.isPatientManagedBy(
+          patientId,
+          currentUser.id,
+        )
         if (!managed) {
-          throw new ForbiddenException("You do not have permission to view this patient's medical file")
+          throw new ForbiddenException(
+            "You do not have permission to view this patient's medical file",
+          )
         }
       }
       targetPatientId = patientId
@@ -123,14 +135,20 @@ export class MedicalFilesService {
       throw new NotFoundException(`Medical file entry ${id} not found`)
     }
 
-    const isSelf = currentUser.activeRole === 'patient' && entry.patientId === currentUser.id
+    const isSelf =
+      currentUser.activeRole === 'patient' && entry.patientId === currentUser.id
     const isAdmin = currentUser.activeRole === 'admin'
     const isManaging =
       currentUser.activeRole === 'practitioner' &&
-      (await this.usersService.isPatientManagedBy(entry.patientId, currentUser.id))
+      (await this.usersService.isPatientManagedBy(
+        entry.patientId,
+        currentUser.id,
+      ))
 
     if (!isSelf && !isAdmin && !isManaging) {
-      throw new ForbiddenException('You do not have permission to view this medical file entry')
+      throw new ForbiddenException(
+        'You do not have permission to view this medical file entry',
+      )
     }
 
     await this.auditService.log({

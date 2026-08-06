@@ -15,14 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
 import { AssignedProgramsController } from './assigned-programs.controller'
 import { AssignedProgramsService } from './assigned-programs.service'
 import { UsersModule } from '../users/users.module'
-
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 

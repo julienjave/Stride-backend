@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
@@ -38,7 +37,6 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter'
 import { MedicalFilesModule } from './medical-files/medical-files.module'
 import { HealthModule } from './health/health.module'
 
-
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 @Module({
@@ -50,7 +48,9 @@ import { HealthModule } from './health/health.module'
         // JSON output is what a log aggregator (or `docker logs` piped
         // into one) actually needs to search/filter on.
         transport:
-          process.env.NODE_ENV === 'production' ? undefined : { target: 'pino-pretty' },
+          process.env.NODE_ENV === 'production'
+            ? undefined
+            : { target: 'pino-pretty' },
         // Explicit, not optional: an unredacted HTTP request logger would
         // otherwise happily log a raw session cookie (a live, usable
         // credential) or a plaintext password on every login/register
@@ -76,9 +76,9 @@ import { HealthModule } from './health/health.module'
         limit: 60, // baseline: 60 requests/minute per IP, across the whole API
       },
     ]),
-    DrizzleModule, 
-    StorageModule, 
-    UsersModule, 
+    DrizzleModule,
+    StorageModule,
+    UsersModule,
     AuthModule,
     ExercisesModule,
     ClinicsModule,
@@ -98,5 +98,4 @@ import { HealthModule } from './health/health.module'
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],
 })
-
 export class AppModule {}

@@ -1,22 +1,26 @@
-import { Test } from '@nestjs/testing';
-import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { UsersService } from './users.service';
-import { StorageService } from '../storage/storage.service';
-import { DRIZZLE } from '../database/drizzle.provider';
-import { UserRole } from './dto/create-user.dto';
+import { Test } from '@nestjs/testing'
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common'
+import { UsersService } from './users.service'
+import { StorageService } from '../storage/storage.service'
+import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from './dto/create-user.dto'
 
 describe('UsersService.create', () => {
-  let usersService: UsersService;
+  let usersService: UsersService
   let db: {
-    query: { users: { findFirst: jest.Mock } };
-    transaction: jest.Mock;
-  };
+    query: { users: { findFirst: jest.Mock } }
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     db = {
       query: { users: { findFirst: jest.fn() } },
       transaction: jest.fn(),
-    };
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -24,10 +28,10 @@ describe('UsersService.create', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    usersService = moduleRef.get(UsersService);
-  });
+    usersService = moduleRef.get(UsersService)
+  })
 
   it('refuses a practitioner creating anything other than a patient account', async () => {
     await expect(
@@ -42,15 +46,15 @@ describe('UsersService.create', () => {
         },
         { activeRole: UserRole.PRACTITIONER },
       ),
-    ).rejects.toThrow(ForbiddenException);
+    ).rejects.toThrow(ForbiddenException)
 
     // The check runs before any lookup — a rejected request should never
     // touch the database at all.
-    expect(db.query.users.findFirst).not.toHaveBeenCalled();
-  });
+    expect(db.query.users.findFirst).not.toHaveBeenCalled()
+  })
 
   it('allows a practitioner to create a patient account', async () => {
-    db.query.users.findFirst.mockResolvedValue(undefined);
+    db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
         insert: jest.fn().mockReturnValue({
@@ -70,7 +74,7 @@ describe('UsersService.create', () => {
         }),
         query: { clinics: { findFirst: jest.fn() } },
       }),
-    );
+    )
 
     const result = await usersService.create(
       {
@@ -82,14 +86,17 @@ describe('UsersService.create', () => {
         dateOfBirth: '1990-01-01',
       },
       { activeRole: UserRole.PRACTITIONER },
-    );
+    )
 
-    expect(result.roles).toEqual([UserRole.PATIENT]);
-    expect((result as any).passwordHash).toBeUndefined();
-  });
+    expect(result.roles).toEqual([UserRole.PATIENT])
+    expect((result as any).passwordHash).toBeUndefined()
+  })
 
   it('rejects an email that already belongs to another account', async () => {
-    db.query.users.findFirst.mockResolvedValue({ id: 1, email: 'taken@example.com' });
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'taken@example.com',
+    })
 
     await expect(
       usersService.create({
@@ -99,11 +106,11 @@ describe('UsersService.create', () => {
         firstName: 'Dup',
         lastName: 'Licate',
       }),
-    ).rejects.toThrow(ConflictException);
-  });
+    ).rejects.toThrow(ConflictException)
+  })
 
   it('rejects a clinicId that does not correspond to any real clinic', async () => {
-    db.query.users.findFirst.mockResolvedValue(undefined);
+    db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
         insert: jest.fn().mockReturnValue({
@@ -121,9 +128,11 @@ describe('UsersService.create', () => {
             ]),
           }),
         }),
-        query: { clinics: { findFirst: jest.fn().mockResolvedValue(undefined) } },
+        query: {
+          clinics: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        },
       }),
-    );
+    )
 
     await expect(
       usersService.create({
@@ -134,31 +143,42 @@ describe('UsersService.create', () => {
         lastName: 'Admin',
         clinicId: 999,
       }),
-    ).rejects.toThrow(NotFoundException);
-  });
-});
+    ).rejects.toThrow(NotFoundException)
+  })
+})
 
 describe('UsersService.grantRole', () => {
-  let usersService: UsersService;
+  let usersService: UsersService
   let db: {
-    query: { users: { findFirst: jest.Mock }; userRoles: { findFirst: jest.Mock } };
-    select: jest.Mock;
-    transaction: jest.Mock;
-  };
+    query: {
+      users: { findFirst: jest.Mock }
+      userRoles: { findFirst: jest.Mock }
+    }
+    select: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     db = {
-      query: { users: { findFirst: jest.fn() }, userRoles: { findFirst: jest.fn() } },
+      query: {
+        users: { findFirst: jest.fn() },
+        userRoles: { findFirst: jest.fn() },
+      },
       select: jest.fn(),
       transaction: jest.fn(),
-    };
+    }
     // findOne() (called first by grantRole) needs a real user, and
     // getRolesForUser() (called at the end, via this.db not tx) needs a
     // resolvable roles query — both are exercised on every test below.
-    db.query.users.findFirst.mockResolvedValue({ id: 1, email: 'user@example.com' });
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'user@example.com',
+    })
     db.select.mockReturnValue({
-      from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]) }),
-    });
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+      }),
+    })
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -166,58 +186,81 @@ describe('UsersService.grantRole', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    usersService = moduleRef.get(UsersService);
-  });
+    usersService = moduleRef.get(UsersService)
+  })
 
   it('refuses to grant a role the user already holds', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue({ id: 5, userId: 1, role: UserRole.PRACTITIONER });
+    db.query.userRoles.findFirst.mockResolvedValue({
+      id: 5,
+      userId: 1,
+      role: UserRole.PRACTITIONER,
+    })
 
     await expect(
-      usersService.grantRole(1, { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' }),
-    ).rejects.toThrow(ConflictException);
-  });
+      usersService.grantRole(1, {
+        role: UserRole.PRACTITIONER,
+        licenseNumber: 'PT-2',
+      }),
+    ).rejects.toThrow(ConflictException)
+  })
 
   it('grants a new role and creates its profile when none exists yet', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue(undefined);
-    const insert = jest.fn().mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) });
-    const tx = {
-      insert,
-      query: { practitionerProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) } },
-    };
-    db.transaction.mockImplementation((cb: any) => cb(tx));
-
-    await usersService.grantRole(1, { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' });
-
-    // userRoles insert + practitionerProfiles insert, since none existed yet.
-    expect(insert).toHaveBeenCalledTimes(2);
-  });
-
-  it('grants a new role without duplicating an already-existing profile', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue(undefined);
-    const insert = jest.fn().mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) });
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    const insert = jest
+      .fn()
+      .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
     const tx = {
       insert,
       query: {
-        practitionerProfiles: { findFirst: jest.fn().mockResolvedValue({ userId: 1 }) },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
       },
-    };
-    db.transaction.mockImplementation((cb: any) => cb(tx));
+    }
+    db.transaction.mockImplementation((cb: any) => cb(tx))
 
-    await usersService.grantRole(1, { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' });
+    await usersService.grantRole(1, {
+      role: UserRole.PRACTITIONER,
+      licenseNumber: 'PT-2',
+    })
+
+    // userRoles insert + practitionerProfiles insert, since none existed yet.
+    expect(insert).toHaveBeenCalledTimes(2)
+  })
+
+  it('grants a new role without duplicating an already-existing profile', async () => {
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    const insert = jest
+      .fn()
+      .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
+    const tx = {
+      insert,
+      query: {
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue({ userId: 1 }),
+        },
+      },
+    }
+    db.transaction.mockImplementation((cb: any) => cb(tx))
+
+    await usersService.grantRole(1, {
+      role: UserRole.PRACTITIONER,
+      licenseNumber: 'PT-2',
+    })
 
     // Only the userRoles insert — the existing profile must not be re-inserted.
-    expect(insert).toHaveBeenCalledTimes(1);
-  });
-});
+    expect(insert).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('UsersService.findPatientsForPractitioner', () => {
-  let usersService: UsersService;
-  let db: { select: jest.Mock; selectDistinct: jest.Mock };
+  let usersService: UsersService
+  let db: { select: jest.Mock; selectDistinct: jest.Mock }
 
   beforeEach(async () => {
-    db = { select: jest.fn(), selectDistinct: jest.fn() };
+    db = { select: jest.fn(), selectDistinct: jest.fn() }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -225,49 +268,61 @@ describe('UsersService.findPatientsForPractitioner', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    usersService = moduleRef.get(UsersService);
-  });
+    usersService = moduleRef.get(UsersService)
+  })
 
   it('returns an empty list without querying further when the practitioner belongs to no clinic', async () => {
-    db.select.mockReturnValue({ from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }) });
+    db.select.mockReturnValue({
+      from: jest
+        .fn()
+        .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+    })
 
-    const result = await usersService.findPatientsForPractitioner(1);
+    const result = await usersService.findPatientsForPractitioner(1)
 
-    expect(result).toEqual([]);
-    expect(db.selectDistinct).not.toHaveBeenCalled();
-  });
+    expect(result).toEqual([])
+    expect(db.selectDistinct).not.toHaveBeenCalled()
+  })
 
   it("returns patients sharing at least one of the practitioner's clinics", async () => {
     db.select.mockReturnValue({
-      from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([{ clinicId: 7 }]) }),
-    });
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
+      }),
+    })
     db.selectDistinct.mockReturnValue({
       from: jest.fn().mockReturnValue({
         innerJoin: jest.fn().mockReturnValue({
           innerJoin: jest.fn().mockReturnValue({
             where: jest.fn().mockResolvedValue([
-              { user: { id: 20, email: 'patient@example.com', passwordHash: 'hashed' } },
+              {
+                user: {
+                  id: 20,
+                  email: 'patient@example.com',
+                  passwordHash: 'hashed',
+                },
+              },
             ]),
           }),
         }),
       }),
-    });
+    })
 
-    const result = await usersService.findPatientsForPractitioner(1);
+    const result = await usersService.findPatientsForPractitioner(1)
 
-    expect(result).toHaveLength(1);
-    expect((result[0] as any).passwordHash).toBeUndefined();
-  });
-});
+    expect(result).toHaveLength(1)
+    expect((result[0] as any).passwordHash).toBeUndefined()
+  })
+})
 
 describe('UsersService.isPatientManagedBy', () => {
-  let usersService: UsersService;
-  let db: { select: jest.Mock };
+  let usersService: UsersService
+  let db: { select: jest.Mock }
 
   beforeEach(async () => {
-    db = { select: jest.fn() };
+    db = { select: jest.fn() }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -275,55 +330,67 @@ describe('UsersService.isPatientManagedBy', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    usersService = moduleRef.get(UsersService);
-  });
+    usersService = moduleRef.get(UsersService)
+  })
 
   it('returns false when the practitioner belongs to no clinic at all', async () => {
-    db.select.mockReturnValue({ from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }) });
+    db.select.mockReturnValue({
+      from: jest
+        .fn()
+        .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+    })
 
-    const result = await usersService.isPatientManagedBy(20, 1);
-    expect(result).toBe(false);
-  });
+    const result = await usersService.isPatientManagedBy(20, 1)
+    expect(result).toBe(false)
+  })
 
   it('returns true when the patient shares a clinic with the practitioner', async () => {
     db.select
       .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([{ clinicId: 7 }]) }),
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
+        }),
       })
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({ limit: jest.fn().mockResolvedValue([{ id: 1 }]) }),
+          where: jest.fn().mockReturnValue({
+            limit: jest.fn().mockResolvedValue([{ id: 1 }]),
+          }),
         }),
-      });
+      })
 
-    const result = await usersService.isPatientManagedBy(20, 1);
-    expect(result).toBe(true);
-  });
+    const result = await usersService.isPatientManagedBy(20, 1)
+    expect(result).toBe(true)
+  })
 
   it('returns false when the patient does not belong to any shared clinic', async () => {
     db.select
       .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([{ clinicId: 7 }]) }),
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
+        }),
       })
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({ limit: jest.fn().mockResolvedValue([]) }),
+          where: jest
+            .fn()
+            .mockReturnValue({ limit: jest.fn().mockResolvedValue([]) }),
         }),
-      });
+      })
 
-    const result = await usersService.isPatientManagedBy(20, 1);
-    expect(result).toBe(false);
-  });
-});
+    const result = await usersService.isPatientManagedBy(20, 1)
+    expect(result).toBe(false)
+  })
+})
 
 describe('UsersService.findOne', () => {
-  let usersService: UsersService;
-  let db: { query: { users: { findFirst: jest.Mock } } };
+  let usersService: UsersService
+  let db: { query: { users: { findFirst: jest.Mock } } }
 
   beforeEach(async () => {
-    db = { query: { users: { findFirst: jest.fn() } } };
+    db = { query: { users: { findFirst: jest.fn() } } }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -331,14 +398,14 @@ describe('UsersService.findOne', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    usersService = moduleRef.get(UsersService);
-  });
+    usersService = moduleRef.get(UsersService)
+  })
 
   it('throws NotFoundException when the user does not exist', async () => {
-    db.query.users.findFirst.mockResolvedValue(undefined);
+    db.query.users.findFirst.mockResolvedValue(undefined)
 
-    await expect(usersService.findOne(999)).rejects.toThrow(NotFoundException);
-  });
-});
+    await expect(usersService.findOne(999)).rejects.toThrow(NotFoundException)
+  })
+})

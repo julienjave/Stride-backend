@@ -15,20 +15,19 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEnum, 
-    IsString, 
-    MaxLength, 
-    IsOptional, 
-    IsArray, 
-    ArrayMaxSize, 
-    IsDateString, 
-    ValidateIf 
+import {
+  IsEnum,
+  IsString,
+  MaxLength,
+  IsOptional,
+  IsArray,
+  ArrayMaxSize,
+  IsDateString,
+  ValidateIf,
 } from 'class-validator'
 import { UserRole } from './create-user.dto'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -39,12 +38,12 @@ import { UserRole } from './create-user.dto'
 export class GrantRoleDto {
   @IsEnum(UserRole)
   role!: UserRole
- 
+
   @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.PRACTITIONER)
   @IsString()
   @MaxLength(100)
   licenseNumber?: string
- 
+
   @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.PRACTITIONER)
   @IsOptional()
   @IsArray()
@@ -52,11 +51,11 @@ export class GrantRoleDto {
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   specialties?: string[]
- 
+
   @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.PATIENT)
   @IsDateString()
   dateOfBirth?: string
- 
+
   @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.ADMIN)
   @IsOptional()
   @IsString()

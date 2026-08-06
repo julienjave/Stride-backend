@@ -15,12 +15,10 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Injectable, Logger } from '@nestjs/common'
 import { Resend } from 'resend'
-
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -29,7 +27,10 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name)
   private readonly resend = new Resend(process.env.RESEND_API_KEY)
 
-  async sendPasswordResetEmail(toEmail: string, rawToken: string): Promise<void> {
+  async sendPasswordResetEmail(
+    toEmail: string,
+    rawToken: string,
+  ): Promise<void> {
     const resetUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/reset-password?token=${rawToken}`
 
     // Resend's SDK returns errors as a VALUE ({ error }), never throws them —
@@ -50,7 +51,10 @@ export class EmailService {
       // response (500) than the "email doesn't exist" case (204) — leaking
       // exactly the account-existence signal that endpoint exists to hide.
       // A send failure and a nonexistent email must look identical to the caller.
-      this.logger.error(`Failed to send password reset email to ${toEmail}`, error)
+      this.logger.error(
+        `Failed to send password reset email to ${toEmail}`,
+        error,
+      )
       return
     }
 

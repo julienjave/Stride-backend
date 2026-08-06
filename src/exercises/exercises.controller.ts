@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
@@ -46,7 +45,6 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
-
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -85,7 +83,6 @@ export class ExercisesController {
     return this.exercisesService.addImages(id, user, files)
   }
 
-
   // --- GET ROUTES ---
 
   // A SINGLE @Query() binding to one combined DTO — not @Query('search')
@@ -102,7 +99,6 @@ export class ExercisesController {
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.exercisesService.findOne(id)
   }
-
 
   // --- PATCH ROUTES ---
 
@@ -127,7 +123,6 @@ export class ExercisesController {
   ) {
     return this.exercisesService.reorderImages(id, user, dto.order)
   }
-
 
   // --- DELETE ROUTES ---
 

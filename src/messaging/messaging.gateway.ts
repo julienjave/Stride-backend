@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Logger, UseFilters } from '@nestjs/common'
@@ -32,7 +31,6 @@ import { UsersService } from '../users/users.service'
 import { MessagingService } from './messaging.service'
 import { getAllowedOrigins } from '../config/allowed-origins'
 import { WsHttpExceptionFilter } from './ws-exception.filter'
-
 
 // --- GATEWAY ------------------------------------------------------------------------------------------------
 
@@ -84,7 +82,10 @@ export class MessagingGateway implements OnGatewayInit {
         // THIS connection reads it back, the same role @CurrentUser() plays
         // for HTTP requests. Guaranteed set before any handler can possibly
         // run, unlike the old handleConnection-based approach.
-        (socket.data as any).user = { ...user, activeRole: sessionData.activeRole }
+        socket.data.user = {
+          ...user,
+          activeRole: sessionData.activeRole,
+        }
         next()
       } catch {
         next(new Error('Unauthorized'))
@@ -97,7 +98,7 @@ export class MessagingGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { conversationId: number },
   ) {
-    const user = (socket.data as any).user
+    const user = socket.data.user
     // Verifies genuine participation — reusing the EXACT SAME rule as every
     // REST endpoint on this resource (MessagingService.assertParticipant) —
     // before ever letting the socket into the room. Without this, any
@@ -107,7 +108,10 @@ export class MessagingGateway implements OnGatewayInit {
     // NotFoundException/ForbiddenException on failure, caught by
     // WsHttpExceptionFilter above rather than a manual try/catch here — the
     // same "let the filter handle it" pattern REST controllers already rely on.
-    await this.messagingService.assertUserCanJoinConversation(data.conversationId, user)
+    await this.messagingService.assertUserCanJoinConversation(
+      data.conversationId,
+      user,
+    )
     // Room name is just the conversation's own id — everyone who joins this
     // room receives every message broadcast to it, and no one outside it does.
     await socket.join(`conversation:${data.conversationId}`)
@@ -118,11 +122,17 @@ export class MessagingGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { conversationId: number; messageBody: string },
   ) {
-    const user = (socket.data as any).user
-    const message = await this.messagingService.sendMessage(data.conversationId, user, data.messageBody)
+    const user = socket.data.user
+    const message = await this.messagingService.sendMessage(
+      data.conversationId,
+      user,
+      data.messageBody,
+    )
     // Broadcast to everyone in the room — including the sender's own other
     // open tabs/devices, so a multi-device session stays in sync too.
-    this.server.to(`conversation:${data.conversationId}`).emit('newMessage', message)
+    this.server
+      .to(`conversation:${data.conversationId}`)
+      .emit('newMessage', message)
     return message
   }
 
@@ -131,7 +141,7 @@ export class MessagingGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { conversationId: number; messageId: number },
   ) {
-    const user = (socket.data as any).user
+    const user = socket.data.user
     const message = await this.messagingService.deleteMessage(
       data.conversationId,
       data.messageId,
@@ -139,7 +149,9 @@ export class MessagingGateway implements OnGatewayInit {
     )
     // Live tombstone — the other party's open thread updates immediately,
     // same room-broadcast mechanism as a new message.
-    this.server.to(`conversation:${data.conversationId}`).emit('messageDeleted', message)
+    this.server
+      .to(`conversation:${data.conversationId}`)
+      .emit('messageDeleted', message)
     return message
   }
 }

@@ -15,19 +15,28 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { and, eq, inArray } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-import { assignedPrograms, assignedProgramExercises, templateExercises, exercises } from '../database/schema'
+import {
+  assignedPrograms,
+  assignedProgramExercises,
+  templateExercises,
+  exercises,
+} from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateAssignedProgramDto } from './dto/create-assigned-program.dto'
 import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
 import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
-
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -45,15 +54,19 @@ export class AssignedProgramsService {
     private readonly usersService: UsersService,
   ) {}
 
-
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
 
   async create(currentUser: CurrentUser, dto: CreateAssignedProgramDto) {
-    const managed = await this.usersService.isPatientManagedBy(dto.patientId, currentUser.id)
+    const managed = await this.usersService.isPatientManagedBy(
+      dto.patientId,
+      currentUser.id,
+    )
     if (!managed) {
-      throw new ForbiddenException('You can only assign programs to patients you manage')
+      throw new ForbiddenException(
+        'You can only assign programs to patients you manage',
+      )
     }
 
     const sourceExercises = await this.resolveSourceExercises(dto)
@@ -96,11 +109,17 @@ export class AssignedProgramsService {
     return this.findProgramWithExercises(programId)
   }
 
-  async addExercise(assignedProgramId: number, currentUser: CurrentUser, dto: AssignedExerciseInputDto) {
+  async addExercise(
+    assignedProgramId: number,
+    currentUser: CurrentUser,
+    dto: AssignedExerciseInputDto,
+  ) {
     const program = await this.findProgramOrThrow(assignedProgramId)
     await this.assertCanManage(program.patientId, currentUser)
 
-    const exercise = await this.db.query.exercises.findFirst({ where: eq(exercises.id, dto.exerciseId) })
+    const exercise = await this.db.query.exercises.findFirst({
+      where: eq(exercises.id, dto.exerciseId),
+    })
     if (!exercise) {
       throw new NotFoundException(`Exercise ${dto.exerciseId} not found`)
     }
@@ -120,7 +139,6 @@ export class AssignedProgramsService {
     return row
   }
 
-
   // --- GET ROUTES ---
 
   // Role-scoped, not a single "list everything": patient sees their own,
@@ -134,16 +152,24 @@ export class AssignedProgramsService {
     }
     if (currentUser.activeRole === 'patient') {
       return this.db.query.assignedPrograms.findMany({
-        where: and(eq(assignedPrograms.patientId, currentUser.id), eq(assignedPrograms.isArchived, false)),
+        where: and(
+          eq(assignedPrograms.patientId, currentUser.id),
+          eq(assignedPrograms.isArchived, false),
+        ),
       })
     }
-    const managedPatients = await this.usersService.findPatientsForPractitioner(currentUser.id)
+    const managedPatients = await this.usersService.findPatientsForPractitioner(
+      currentUser.id,
+    )
     const patientIds = managedPatients.map((p) => p.id)
     if (patientIds.length === 0) {
       return []
     }
     return this.db.query.assignedPrograms.findMany({
-      where: and(inArray(assignedPrograms.patientId, patientIds), eq(assignedPrograms.isArchived, false)),
+      where: and(
+        inArray(assignedPrograms.patientId, patientIds),
+        eq(assignedPrograms.isArchived, false),
+      ),
     })
   }
 
@@ -153,10 +179,13 @@ export class AssignedProgramsService {
     return this.findProgramWithExercises(id)
   }
 
-
   // --- PATCH ROUTES ---
 
-  async update(id: number, currentUser: CurrentUser, dto: UpdateAssignedProgramDto) {
+  async update(
+    id: number,
+    currentUser: CurrentUser,
+    dto: UpdateAssignedProgramDto,
+  ) {
     const program = await this.findProgramOrThrow(id)
     await this.assertCanManage(program.patientId, currentUser)
     const [updated] = await this.db
@@ -185,7 +214,11 @@ export class AssignedProgramsService {
     return updated
   }
 
-  async reorderExercises(assignedProgramId: number, currentUser: CurrentUser, newOrder: number[]) {
+  async reorderExercises(
+    assignedProgramId: number,
+    currentUser: CurrentUser,
+    newOrder: number[],
+  ) {
     const program = await this.findProgramOrThrow(assignedProgramId)
     await this.assertCanManage(program.patientId, currentUser)
 
@@ -195,7 +228,8 @@ export class AssignedProgramsService {
     const currentIds = new Set(currentRows.map((r) => r.id))
     const newIds = new Set(newOrder)
     const isSamePermutation =
-      currentIds.size === newIds.size && [...currentIds].every((rowId) => newIds.has(rowId))
+      currentIds.size === newIds.size &&
+      [...currentIds].every((rowId) => newIds.has(rowId))
 
     if (!isSamePermutation) {
       throw new BadRequestException(
@@ -215,7 +249,6 @@ export class AssignedProgramsService {
     return this.findProgramWithExercises(assignedProgramId)
   }
 
-
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: CurrentUser) {
@@ -229,18 +262,25 @@ export class AssignedProgramsService {
     return archived
   }
 
-  async removeExercise(assignedProgramId: number, rowId: number, currentUser: CurrentUser) {
+  async removeExercise(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+  ) {
     const program = await this.findProgramOrThrow(assignedProgramId)
     await this.assertCanManage(program.patientId, currentUser)
     await this.findProgramExerciseOrThrow(assignedProgramId, rowId)
 
-    await this.db.delete(assignedProgramExercises).where(eq(assignedProgramExercises.id, rowId))
+    await this.db
+      .delete(assignedProgramExercises)
+      .where(eq(assignedProgramExercises.id, rowId))
   }
-
 
   // === HELPER FUNCTIONS =================================================================
 
-  private async resolveSourceExercises(dto: CreateAssignedProgramDto): Promise<AssignedExerciseInputDto[]> {
+  private async resolveSourceExercises(
+    dto: CreateAssignedProgramDto,
+  ): Promise<AssignedExerciseInputDto[]> {
     if (dto.basedOnTemplateId) {
       const rows = await this.db.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, dto.basedOnTemplateId),
@@ -262,7 +302,9 @@ export class AssignedProgramsService {
     }
 
     if (!dto.exercises || dto.exercises.length === 0) {
-      throw new BadRequestException('Provide either basedOnTemplateId or an inline exercises array')
+      throw new BadRequestException(
+        'Provide either basedOnTemplateId or an inline exercises array',
+      )
     }
     return dto.exercises
   }
@@ -286,7 +328,10 @@ export class AssignedProgramsService {
     return program
   }
 
-  private async findProgramExerciseOrThrow(assignedProgramId: number, rowId: number) {
+  private async findProgramExerciseOrThrow(
+    assignedProgramId: number,
+    rowId: number,
+  ) {
     const row = await this.db.query.assignedProgramExercises.findFirst({
       where: and(
         eq(assignedProgramExercises.id, rowId),
@@ -294,7 +339,9 @@ export class AssignedProgramsService {
       ),
     })
     if (!row) {
-      throw new NotFoundException(`Exercise ${rowId} not found in this assigned program`)
+      throw new NotFoundException(
+        `Exercise ${rowId} not found in this assigned program`,
+      )
     }
     return row
   }
@@ -303,12 +350,18 @@ export class AssignedProgramsService {
   // own program.
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
     if (currentUser.activeRole === 'admin') return
-    if (currentUser.activeRole === 'patient' && patientId === currentUser.id) return
+    if (currentUser.activeRole === 'patient' && patientId === currentUser.id)
+      return
     if (currentUser.activeRole === 'practitioner') {
-      const managed = await this.usersService.isPatientManagedBy(patientId, currentUser.id)
+      const managed = await this.usersService.isPatientManagedBy(
+        patientId,
+        currentUser.id,
+      )
       if (managed) return
     }
-    throw new ForbiddenException('You do not have permission to view this assigned program')
+    throw new ForbiddenException(
+      'You do not have permission to view this assigned program',
+    )
   }
 
   // Managing (create/update/archive/exercise CRUD) never allows the patient
@@ -316,9 +369,14 @@ export class AssignedProgramsService {
   private async assertCanManage(patientId: number, currentUser: CurrentUser) {
     if (currentUser.activeRole === 'admin') return
     if (currentUser.activeRole === 'practitioner') {
-      const managed = await this.usersService.isPatientManagedBy(patientId, currentUser.id)
+      const managed = await this.usersService.isPatientManagedBy(
+        patientId,
+        currentUser.id,
+      )
       if (managed) return
     }
-    throw new ForbiddenException('You do not have permission to manage this assigned program')
+    throw new ForbiddenException(
+      'You do not have permission to manage this assigned program',
+    )
   }
 }

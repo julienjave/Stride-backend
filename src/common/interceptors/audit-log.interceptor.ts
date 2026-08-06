@@ -15,14 +15,18 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor } from '@nestjs/common'
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  NestInterceptor,
+} from '@nestjs/common'
 import { Observable } from 'rxjs'
 import { tap } from 'rxjs/operators'
 import { AuditService } from '../../audit/audit.service'
-
 
 // --- INTERCEPTOR -------------------------------------------------------------------------------------------
 
@@ -44,7 +48,9 @@ export class AuditLogInterceptor implements NestInterceptor {
     // password" on a failed login) than this generic interceptor could
     // ever infer from the request alone.
     const isMutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)
-    const isExplicitlyAudited = originalUrl.startsWith('/auth') || originalUrl.startsWith('/medical-files')
+    const isExplicitlyAudited =
+      originalUrl.startsWith('/auth') ||
+      originalUrl.startsWith('/medical-files')
 
     if (!isMutating || isExplicitlyAudited || !user) {
       return next.handle()
@@ -59,7 +65,8 @@ export class AuditLogInterceptor implements NestInterceptor {
         // affected row, a direct payoff of the earlier 204->200 decision),
         // falling back to the URL's own :id param otherwise.
         const entityType = originalUrl.split('/')[1]?.split('?')[0] ?? 'unknown'
-        const entityId = response?.id ?? (params?.id ? Number(params.id) : undefined)
+        const entityId =
+          response?.id ?? (params?.id ? Number(params.id) : undefined)
 
         // Fire-and-forget, deliberately — awaiting this would add latency
         // to every single mutating request for the sake of a secondary

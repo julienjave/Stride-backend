@@ -15,13 +15,11 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { BadRequestException } from '@nestjs/common'
 import { memoryStorage } from 'multer'
 import type { Request } from 'express'
-
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 
@@ -46,7 +44,10 @@ export const imageUploadOptions = {
     callback: (error: Error | null, acceptFile: boolean) => void,
   ) => {
     if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-      callback(new BadRequestException('Only JPEG, PNG, and WebP images are allowed'), false)
+      callback(
+        new BadRequestException('Only JPEG, PNG, and WebP images are allowed'),
+        false,
+      )
       return
     }
     callback(null, true)

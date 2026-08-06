@@ -15,15 +15,24 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
-import { pgTable, serial, varchar, text, integer, boolean, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core'
+import {
+  pgTable,
+  serial,
+  varchar,
+  text,
+  integer,
+  boolean,
+  pgEnum,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
 
-
 export const exerciseSourceEnum = pgEnum('exercise_source', ['api', 'custom'])
 
-export const exercises = pgTable('exercises', {
+export const exercises = pgTable(
+  'exercises',
+  {
     id: serial('id').primaryKey(),
     externalId: varchar('external_id', { length: 255 }),
     name: varchar('name', { length: 255 }).notNull(),
@@ -33,14 +42,18 @@ export const exercises = pgTable('exercises', {
     instructions: text('instructions').array().notNull(),
     mediaUrls: text('media_urls').array().notNull().default([]),
     source: exerciseSourceEnum('source').notNull(),
-    createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdBy: integer('created_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     isArchived: boolean('is_archived').notNull().default(false),
-}, (table) => ({
+  },
+  (table) => ({
     // A PARTIAL unique index: the .where() means the constraint only applies to rows
     // where it's true. Custom exercises (external_id = null) never collide with each
     // other or block one another — only two rows both claiming the same real
     // external_id would be rejected.
     externalIdUnique: uniqueIndex('exercises_external_id_unique')
-        .on(table.externalId)
-        .where(sql`${table.externalId} IS NOT NULL`),
-}))
+      .on(table.externalId)
+      .where(sql`${table.externalId} IS NOT NULL`),
+  }),
+)

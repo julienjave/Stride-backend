@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { Module } from '@nestjs/common'
 import { PassportModule } from '@nestjs/passport'
@@ -24,7 +23,6 @@ import { EmailModule } from '../email/email.module'
 import { AuthService } from './auth.service'
 import { AuthController } from './auth.controller'
 import { SessionSerializer } from './strategies/session.serializer'
-
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 @Module({

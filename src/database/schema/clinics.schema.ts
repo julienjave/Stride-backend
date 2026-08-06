@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 import { pgTable, serial, varchar, boolean } from 'drizzle-orm/pg-core'
 
 export const clinics = pgTable('clinics', {

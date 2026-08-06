@@ -15,13 +15,11 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsOptional, IsString, MaxLength, IsInt } from 'class-validator'
 import { Type } from 'class-transformer'
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -30,12 +28,12 @@ export class FindAuditLogsQueryDto extends PaginationQueryDto {
   @IsString()
   @MaxLength(100) // matches audit_logs.action's own varchar(100)
   action?: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(100) // matches audit_logs.entity_type's own varchar(100)
   entityType?: string
- 
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()

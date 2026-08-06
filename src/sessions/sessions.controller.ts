@@ -15,10 +15,18 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { SessionsService } from './sessions.service'
 import { CreateSessionDto } from './dto/create-session.dto'
@@ -29,7 +37,6 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 
-
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
@@ -37,7 +44,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 @Controller('sessions')
 export class SessionsController {
   constructor(private readonly sessionsService: SessionsService) {}
-
 
   // === ROUTES =============================================================
 
@@ -52,7 +58,6 @@ export class SessionsController {
     return this.sessionsService.create(user, dto)
   }
 
-
   // --- GET ROUTES ---
 
   // Role-scoped inside the service, same as AssignedPrograms — every role
@@ -66,7 +71,6 @@ export class SessionsController {
   findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.sessionsService.findOne(id, user)
   }
-
 
   // --- PATCH ROUTES ---
 

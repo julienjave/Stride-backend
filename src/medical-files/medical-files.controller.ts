@@ -15,10 +15,18 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { MedicalFilesService } from './medical-files.service'
 import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
@@ -26,7 +34,6 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
-
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -37,7 +44,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 @Controller('medical-files')
 export class MedicalFilesController {
   constructor(private readonly medicalFilesService: MedicalFilesService) {}
-
 
   // === ROUTES =============================================================
 
@@ -50,14 +56,16 @@ export class MedicalFilesController {
     return this.medicalFilesService.create(user, dto)
   }
 
-
   // --- GET ROUTES ---
 
   // Patient: their own history, no query param needed. Practitioner/admin:
   // must specify which patient's file to view.
   @Get()
   findAll(@CurrentUser() user: any, @Query('patientId') patientId?: string) {
-    return this.medicalFilesService.findAll(user, patientId ? Number(patientId) : undefined)
+    return this.medicalFilesService.findAll(
+      user,
+      patientId ? Number(patientId) : undefined,
+    )
   }
 
   @Get(':id')

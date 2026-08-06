@@ -15,15 +15,17 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Controller, Get } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
-import { HealthCheckService, HealthCheck, MemoryHealthIndicator } from '@nestjs/terminus'
+import {
+  HealthCheckService,
+  HealthCheck,
+  MemoryHealthIndicator,
+} from '@nestjs/terminus'
 import { SkipThrottle } from '@nestjs/throttler'
 import { DrizzleHealthIndicator } from './drizzle-health.indicator'
-
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 

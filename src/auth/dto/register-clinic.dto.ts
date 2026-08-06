@@ -15,11 +15,15 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MinLength, MaxLength, IsOptional } from 'class-validator'
-
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  IsOptional,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -28,39 +32,39 @@ export class RegisterClinicDto {
   @IsString()
   @MaxLength(255)
   clinicName!: string
- 
+
   @IsEmail()
   @MaxLength(255)
   clinicEmail!: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(50)
   clinicPhone?: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(255)
   clinicWebsite?: string
- 
+
   // Founding admin account fields
   @IsEmail()
   @MaxLength(255)
   email!: string
- 
+
   @IsString()
   @MinLength(8)
   @MaxLength(128)
   password!: string
- 
+
   @IsString()
   @MaxLength(100)
   firstName!: string
- 
+
   @IsString()
   @MaxLength(100)
   lastName!: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

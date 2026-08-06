@@ -15,26 +15,40 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
-import { pgTable, serial, integer, timestamp, jsonb, index } from 'drizzle-orm/pg-core'
+import {
+  pgTable,
+  serial,
+  integer,
+  timestamp,
+  jsonb,
+  index,
+} from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
 
-export const medicalFiles = pgTable('medical_files', {
+export const medicalFiles = pgTable(
+  'medical_files',
+  {
     id: serial('id').primaryKey(),
     patientId: integer('patient_id')
-        .notNull()
-        .references(() => users.id, { onDelete: 'restrict' }),
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
     createdBy: integer('created_by')
-        .notNull()
-        .references(() => users.id, { onDelete: 'restrict' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     // Unlike the array .default([]), a raw sql`` template is used here — Drizzle's plain
     // .default({}) would try to insert a JS object, not tell Postgres "empty jsonb object".
     // sql`` drops a literal fragment of real SQL straight into the generated migration.
-    clinicalData: jsonb('clinical_data').notNull().default(sql`'{}'::jsonb`),
-}, (table) => ({
-  // Every findAll()/findOne() call filters on this — the exact column
-  // ACCESS_MEDICAL_FILE(_LIST) auditing runs against constantly.
-  patientIdIdx: index('medical_files_patient_id_idx').on(table.patientId),
-}))
+    clinicalData: jsonb('clinical_data')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+  },
+  (table) => ({
+    // Every findAll()/findOne() call filters on this — the exact column
+    // ACCESS_MEDICAL_FILE(_LIST) auditing runs against constantly.
+    patientIdIdx: index('medical_files_patient_id_idx').on(table.patientId),
+  }),
+)

@@ -15,11 +15,15 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, ArrayMaxSize, IsString, MaxLength } from 'class-validator'
-
+import {
+  IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
+  IsString,
+  MaxLength,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 

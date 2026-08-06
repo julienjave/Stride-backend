@@ -15,10 +15,15 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { and, eq, count, ilike } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { exercises } from '../database/schema'
@@ -28,13 +33,12 @@ import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 
-
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 @Injectable()
 export class ExercisesService {
   constructor(
-    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
   ) {}
 
@@ -72,14 +76,14 @@ export class ExercisesService {
   ) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
- 
+
     const newKeys: string[] = []
     for (const [index, file] of files.entries()) {
       const objectKey = `exercises/${id}/upload-${Date.now()}-${index}.${extensionForMimeType(file.mimetype)}`
       await this.storageService.upload(objectKey, file.buffer, file.mimetype)
       newKeys.push(objectKey)
     }
- 
+
     const [updated] = await this.db
       .update(exercises)
       .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
@@ -87,7 +91,6 @@ export class ExercisesService {
       .returning()
     return updated
   }
-
 
   // --- GET ROUTES ---
 
@@ -99,11 +102,14 @@ export class ExercisesService {
     const page = query.page ?? 1
     const limit = query.limit ?? 20
     const offset = (page - 1) * limit
- 
+
     const whereClause = query.search
-      ? and(eq(exercises.isArchived, false), ilike(exercises.name, `%${query.search}%`))
+      ? and(
+          eq(exercises.isArchived, false),
+          ilike(exercises.name, `%${query.search}%`),
+        )
       : eq(exercises.isArchived, false)
- 
+
     // Run the page of rows and the total count as two separate, PARALLEL
     // queries (Promise.all) rather than sequentially — no reason to wait on
     // one before starting the other, since neither depends on the other's
@@ -113,7 +119,7 @@ export class ExercisesService {
       this.db.query.exercises.findMany({ where: whereClause, limit, offset }),
       this.db.select({ total: count() }).from(exercises).where(whereClause),
     ])
- 
+
     return {
       data: rows,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
@@ -132,7 +138,11 @@ export class ExercisesService {
 
   // --- PATCH ROUTES ---
 
-  async update(id: number, currentUser: { id: number; activeRole: string }, dto: UpdateExerciseDto) {
+  async update(
+    id: number,
+    currentUser: { id: number; activeRole: string },
+    dto: UpdateExerciseDto,
+  ) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
     const [updated] = await this.db
@@ -159,18 +169,19 @@ export class ExercisesService {
   ) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
- 
+
     const currentSet = new Set(exercise.mediaUrls)
     const newSet = new Set(newOrder)
     const isSamePermutation =
-      currentSet.size === newSet.size && [...currentSet].every((key) => newSet.has(key))
- 
+      currentSet.size === newSet.size &&
+      [...currentSet].every((key) => newSet.has(key))
+
     if (!isSamePermutation) {
       throw new BadRequestException(
         'The new order must contain exactly the same images as the current gallery, just reordered',
       )
     }
- 
+
     const [updated] = await this.db
       .update(exercises)
       .set({ mediaUrls: newOrder })
@@ -178,7 +189,6 @@ export class ExercisesService {
       .returning()
     return updated
   }
-
 
   // --- DELETE ROUTES ---
 
@@ -201,13 +211,13 @@ export class ExercisesService {
   ) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
- 
+
     if (!exercise.mediaUrls.includes(objectKey)) {
       throw new NotFoundException('This image does not belong to this exercise')
     }
- 
+
     await this.storageService.delete(objectKey)
- 
+
     const [updated] = await this.db
       .update(exercises)
       .set({ mediaUrls: exercise.mediaUrls.filter((url) => url !== objectKey) })
@@ -215,7 +225,6 @@ export class ExercisesService {
       .returning()
     return updated
   }
-
 
   // === HELPER FUNCTIONS =====================================================
 
@@ -226,7 +235,8 @@ export class ExercisesService {
     currentUser: { id: number; activeRole: string },
   ) {
     const isAdmin = currentUser.activeRole === 'admin'
-    const isOwner = exercise.source === 'custom' && exercise.createdBy === currentUser.id
+    const isOwner =
+      exercise.source === 'custom' && exercise.createdBy === currentUser.id
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException(
         'You can only modify custom exercises you created, unless you are an administrator',
@@ -234,4 +244,3 @@ export class ExercisesService {
     }
   }
 }
- 

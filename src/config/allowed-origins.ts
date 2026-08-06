@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // Shared by both main.ts's HTTP CORS config and MessagingGateway's separate
 // WebSocket CORS config — one parsing implementation, not two copies that
 // could quietly drift apart. Comma-separated, so a real deployment can allow

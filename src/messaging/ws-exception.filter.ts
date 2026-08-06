@@ -15,12 +15,10 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Catch, ArgumentsHost, HttpException } from '@nestjs/common'
 import { BaseWsExceptionFilter, WsException } from '@nestjs/websockets'
-
 
 // --- FILTER ------------------------------------------------------------------------------------------------
 
@@ -44,7 +42,9 @@ export class WsHttpExceptionFilter extends BaseWsExceptionFilter {
       const status = exception.getStatus()
       const response = exception.getResponse()
       const message =
-        typeof response === 'string' ? response : ((response as { message?: string }).message ?? exception.message)
+        typeof response === 'string'
+          ? response
+          : ((response as { message?: string }).message ?? exception.message)
       return super.catch(new WsException({ status, message }), host)
     }
     return super.catch(exception, host)

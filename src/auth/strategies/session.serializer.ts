@@ -15,13 +15,11 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Injectable } from '@nestjs/common'
 import { PassportSerializer } from '@nestjs/passport'
 import { UsersService } from '../../users/users.service'
-
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 
@@ -40,7 +38,10 @@ export class SessionSerializer extends PassportSerializer {
   // Stores {id, activeRole} instead of a bare id — the session needs to
   // remember not just WHO is logged in, but WHICH of their roles is active
   // for this particular session.
-  serializeUser(user: { id: number; activeRole: string }, done: (err: Error | null, data?: SessionData) => void) {
+  serializeUser(
+    user: { id: number; activeRole: string },
+    done: (err: Error | null, data?: SessionData) => void,
+  ) {
     done(null, { id: user.id, activeRole: user.activeRole })
   }
 

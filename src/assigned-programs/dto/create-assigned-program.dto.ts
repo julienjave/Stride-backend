@@ -15,29 +15,27 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { 
-    IsInt, 
-    IsOptional, 
-    IsString, 
-    MaxLength, 
-    IsDateString, 
-    IsArray, 
-    ArrayMaxSize, 
-    ValidateNested 
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  IsDateString,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
-
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
 
 export class CreateAssignedProgramDto {
   @IsInt()
   patientId!: number
- 
+
   // Provide EITHER basedOnTemplateId (server copies the template's current
   // exercises) OR exercises (an ad-hoc list) — validated together in the
   // service, since "required unless the other is present" isn't expressible
@@ -45,7 +43,7 @@ export class CreateAssignedProgramDto {
   @IsOptional()
   @IsInt()
   basedOnTemplateId?: number
- 
+
   // ValidateNested + @Type() is what's new here: for an array of PLAIN
   // VALUES (like specialties: string[]), @IsString({ each: true }) alone is
   // enough. For an array of OBJECTS, each one needs its own full DTO
@@ -62,14 +60,14 @@ export class CreateAssignedProgramDto {
   @ValidateNested({ each: true })
   @Type(() => AssignedExerciseInputDto)
   exercises?: AssignedExerciseInputDto[]
- 
+
   @IsString()
   @MaxLength(200)
   title!: string
- 
+
   @IsDateString()
   startDate!: string
- 
+
   @IsOptional()
   @IsDateString()
   endDate?: string

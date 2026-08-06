@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
@@ -23,7 +22,6 @@ import { MessagingController } from './messaging.controller'
 import { MessagingService } from './messaging.service'
 import { MessagingGateway } from './messaging.gateway'
 import { UsersModule } from '../users/users.module'
-
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 

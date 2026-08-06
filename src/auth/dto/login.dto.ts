@@ -15,12 +15,16 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MaxLength, IsOptional, IsEnum } from 'class-validator'
+import {
+  IsEmail,
+  IsString,
+  MaxLength,
+  IsOptional,
+  IsEnum,
+} from 'class-validator'
 import { UserRole } from '../../users/dto/create-user.dto'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -28,11 +32,11 @@ export class LoginDto {
   @IsEmail()
   @MaxLength(255)
   email!: string
- 
+
   @IsString()
   @MaxLength(128)
   password!: string
- 
+
   // Only required if the account holds more than one role. Now genuinely
   // validated and used directly — login() reads this DTO normally via
   // @Body(), unlike the earlier LocalStrategy-based version where this

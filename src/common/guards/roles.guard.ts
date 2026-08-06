@@ -15,13 +15,16 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common'
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { ROLES_KEY } from '../decorators/roles.decorator'
-
 
 // --- GUARD -------------------------------------------------------------------------------------------------
 
@@ -35,19 +38,21 @@ export class RolesGuard implements CanActivate {
     // Reads whatever @Roles(...) declared on the specific route handler, or —
     // if absent there — on the whole controller. getAllAndOverride checks
     // both, with the handler's own metadata taking precedence.
-    const requiredRoles = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ])
- 
+    const requiredRoles = this.reflector.getAllAndOverride<string[]>(
+      ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    )
+
     // No @Roles() at all on this route = open to any authenticated user.
     if (!requiredRoles || requiredRoles.length === 0) {
       return true
     }
- 
+
     const { user } = context.switchToHttp().getRequest()
     if (!requiredRoles.includes(user.activeRole)) {
-      throw new ForbiddenException('You do not have permission to access this resource')
+      throw new ForbiddenException(
+        'You do not have permission to access this resource',
+      )
     }
     return true
   }

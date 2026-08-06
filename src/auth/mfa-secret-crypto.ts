@@ -15,11 +15,9 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
-
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 
@@ -39,7 +37,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
 // plain environment variable. Accepted here deliberately, for this
 // deployment's actual stakes (a demo, no real patient data).
 const ALGORITHM = 'aes-256-gcm'
-const IV_LENGTH = 12; // 96 bits — the recommended IV length for GCM specifically
+const IV_LENGTH = 12 // 96 bits — the recommended IV length for GCM specifically
 
 function getEncryptionKey(): Buffer {
   // validateEnv() already guarantees MFA_ENCRYPTION_KEY is present and
@@ -52,7 +50,10 @@ export function encryptMfaSecret(plaintext: string): string {
   const key = getEncryptionKey()
   const iv = randomBytes(IV_LENGTH)
   const cipher = createCipheriv(ALGORITHM, key, iv)
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, 'utf8'),
+    cipher.final(),
+  ])
   // getAuthTag() must be called AFTER final() — GCM only finalizes the tag
   // once encryption is complete.
   const authTag = cipher.getAuthTag()

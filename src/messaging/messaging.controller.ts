@@ -15,17 +15,25 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Body, Controller, Get, Param, ParseIntPipe, Delete, Patch, Post, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Delete,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { MessagingService } from './messaging.service'
 import { CreateConversationDto } from './dto/create-conversation.dto'
 import { SendMessageDto } from './dto/send-message.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
-
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -34,7 +42,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 @Controller('conversations')
 export class MessagingController {
   constructor(private readonly messagingService: MessagingService) {}
-
 
   // === ROUTES =============================================================
 
@@ -58,7 +65,6 @@ export class MessagingController {
     return this.messagingService.sendMessage(id, user, dto.messageBody)
   }
 
-
   // --- GET ROUTES ---
 
   @Get()
@@ -71,7 +77,6 @@ export class MessagingController {
     return this.messagingService.getMessages(id, user)
   }
 
-
   // --- PATCH ROUTES ---
 
   @Patch(':id/read')
@@ -83,12 +88,11 @@ export class MessagingController {
   archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.messagingService.archiveConversation(id, user)
   }
- 
+
   @Patch(':id/unarchive')
   unarchive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.messagingService.unarchiveConversation(id, user)
   }
-
 
   // --- DELETE ROUTES ---
 

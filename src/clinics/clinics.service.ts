@@ -15,10 +15,14 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { clinics, userClinics, users, userRoles } from '../database/schema'
@@ -26,7 +30,6 @@ import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
-
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -38,7 +41,7 @@ export class ClinicsService {
   // Avoids a circular module dependency (Clinics <-> Users) that would
   // otherwise appear the moment UsersModule also needs to check clinics.
   constructor(
-    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
   ) {}
 
@@ -54,13 +57,18 @@ export class ClinicsService {
   async addMember(clinicId: number, userId: number) {
     await this.findOne(clinicId)
 
-    const userExists = await this.db.query.users.findFirst({ where: eq(users.id, userId) })
+    const userExists = await this.db.query.users.findFirst({
+      where: eq(users.id, userId),
+    })
     if (!userExists) {
       throw new NotFoundException(`User ${userId} not found`)
     }
 
     const existing = await this.db.query.userClinics.findFirst({
-      where: and(eq(userClinics.clinicId, clinicId), eq(userClinics.userId, userId)),
+      where: and(
+        eq(userClinics.clinicId, clinicId),
+        eq(userClinics.userId, userId),
+      ),
     })
     if (existing) {
       throw new ConflictException('This user already belongs to this clinic')
@@ -92,7 +100,9 @@ export class ClinicsService {
   }
 
   async findOne(id: number) {
-    const clinic = await this.db.query.clinics.findFirst({ where: eq(clinics.id, id) })
+    const clinic = await this.db.query.clinics.findFirst({
+      where: eq(clinics.id, id),
+    })
     if (!clinic) {
       throw new NotFoundException(`Clinic ${id} not found`)
     }
@@ -104,7 +114,9 @@ export class ClinicsService {
   // on a missing clinic, which is the wrong shape for a caller that wants to
   // decide for itself how to react.
   async exists(id: number): Promise<boolean> {
-    const clinic = await this.db.query.clinics.findFirst({ where: eq(clinics.id, id) })
+    const clinic = await this.db.query.clinics.findFirst({
+      where: eq(clinics.id, id),
+    })
     return !!clinic
   }
 
@@ -120,7 +132,7 @@ export class ClinicsService {
       .from(userClinics)
       .innerJoin(users, eq(users.id, userClinics.userId))
       .where(eq(userClinics.clinicId, clinicId))
- 
+
     // Attaches each member's full roles array
     return Promise.all(
       members.map(async (member) => {
@@ -160,6 +172,8 @@ export class ClinicsService {
   async removeMember(clinicId: number, userId: number) {
     await this.db
       .delete(userClinics)
-      .where(and(eq(userClinics.clinicId, clinicId), eq(userClinics.userId, userId)))
+      .where(
+        and(eq(userClinics.clinicId, clinicId), eq(userClinics.userId, userId)),
+      )
   }
 }

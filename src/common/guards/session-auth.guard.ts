@@ -15,10 +15,13 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common'
-
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common'
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 // AUTHENTICATION check: "is there a valid, currently logged-in session at all?"
@@ -31,7 +34,9 @@ export class SessionAuthGuard implements CanActivate {
     // middleware (registered in main.ts) — true only if deserializeUser
     // successfully loaded a real user for this request's session cookie.
     if (!request.isAuthenticated()) {
-      throw new UnauthorizedException('You must be logged in to access this resource')
+      throw new UnauthorizedException(
+        'You must be logged in to access this resource',
+      )
     }
     return true
   }

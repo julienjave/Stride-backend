@@ -15,24 +15,22 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { 
-  pgTable, 
-  serial, 
-  integer, 
-  varchar, 
-  boolean, 
-  timestamp, 
-  date, 
-  text, 
-  pgEnum, 
+import {
+  pgTable,
+  serial,
+  integer,
+  varchar,
+  boolean,
+  timestamp,
+  date,
+  text,
+  pgEnum,
   unique,
-  index
+  index,
 } from 'drizzle-orm/pg-core'
 import { clinics } from './clinics.schema'
-
 
 // --- SCHEMA ------------------------------------------------------------------------------------------------
 
@@ -49,9 +47,13 @@ export const users = pgTable('users', {
   lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarPath: varchar('avatar_path', { length: 500 }),
   isActive: boolean('is_active').notNull().default(true),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   passwordResetTokenHash: varchar('password_reset_token_hash', { length: 255 }),
-  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', { withTimezone: true }),
+  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', {
+    withTimezone: true,
+  }),
   // Nullable — only present once MFA setup has been initiated. isEnabled
   // gates whether login actually requires it; a generated-but-unconfirmed
   // secret sitting here is harmless, since it has no effect until enabled.
@@ -70,33 +72,47 @@ export const users = pgTable('users', {
 // AND a treating practitioner) — this is why it's its own table with a
 // generated id, rather than userId-as-primary-key the way the profile
 // tables below work (those are strictly 1:1; this is 1:many).
-export const userRoles = pgTable('user_roles', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  role: roleEnum('role').notNull(),
-}, (table) => ({
-  // Prevents granting the same role to the same user twice.
-  userRoleUnique: unique('user_roles_user_role_unique').on(table.userId, table.role),
-  userIdIdx: index('user_roles_user_id_idx').on(table.userId),
-}))
+export const userRoles = pgTable(
+  'user_roles',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: roleEnum('role').notNull(),
+  },
+  (table) => ({
+    // Prevents granting the same role to the same user twice.
+    userRoleUnique: unique('user_roles_user_role_unique').on(
+      table.userId,
+      table.role,
+    ),
+    userIdIdx: index('user_roles_user_id_idx').on(table.userId),
+  }),
+)
 
 // A join table: no independent meaning of its own, just links two other tables.
-export const userClinics = pgTable('user_clinics', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'restrict' }),
-  clinicId: integer('clinic_id')
-    .notNull()
-    .references(() => clinics.id, { onDelete: 'cascade' }),
-}, (table) => ({
-  // Prevents the same user/clinic pairing from being inserted twice.
-  userClinicUnique: unique('user_clinics_user_clinic_unique').on(table.userId, table.clinicId),
-  userIdIdx: index('user_clinics_user_id_idx').on(table.userId),
-  clinicIdIdx: index('user_clinics_clinic_id_idx').on(table.clinicId),
-}))
+export const userClinics = pgTable(
+  'user_clinics',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    clinicId: integer('clinic_id')
+      .notNull()
+      .references(() => clinics.id, { onDelete: 'cascade' }),
+  },
+  (table) => ({
+    // Prevents the same user/clinic pairing from being inserted twice.
+    userClinicUnique: unique('user_clinics_user_clinic_unique').on(
+      table.userId,
+      table.clinicId,
+    ),
+    userIdIdx: index('user_clinics_user_id_idx').on(table.userId),
+    clinicIdIdx: index('user_clinics_clinic_id_idx').on(table.clinicId),
+  }),
+)
 
 // One row per practitioner user. userId is BOTH the primary key AND the foreign key —
 // this is what makes the 1:1 relationship structurally enforced, not just conventional.

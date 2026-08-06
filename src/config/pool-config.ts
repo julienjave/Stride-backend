@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // Centralizes Postgres connection pool sizing — used by BOTH the main
 // Drizzle pool (drizzle.provider.ts) and the session-store pool (main.ts),
 // so the two can be tuned independently but through one consistent,
@@ -41,6 +40,8 @@ export function getPoolConfig(role: 'app' | 'session') {
     // deliberate, fast-failing alternative: if the pool is genuinely
     // exhausted, callers get a clear error quickly, rather than a hung
     // request with no indication anything is wrong.
-    connectionTimeoutMillis: Number(process.env.DATABASE_POOL_CONNECTION_TIMEOUT_MS ?? 5000),
+    connectionTimeoutMillis: Number(
+      process.env.DATABASE_POOL_CONNECTION_TIMEOUT_MS ?? 5000,
+    ),
   }
 }

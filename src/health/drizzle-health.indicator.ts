@@ -15,14 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Inject, Injectable } from '@nestjs/common'
 import { HealthIndicatorService } from '@nestjs/terminus'
 import { sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-
 
 // --- HEALTH INDICATOR --------------------------------------------------------------------------------------
 
@@ -36,7 +34,7 @@ export class DrizzleHealthIndicator {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly healthIndicatorService: HealthIndicatorService,
   ) {}
- 
+
   async isHealthy(key: string) {
     const indicator = this.healthIndicatorService.check(key)
     try {

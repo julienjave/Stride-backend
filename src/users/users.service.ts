@@ -15,14 +15,13 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import {
   ConflictException,
   Inject,
   Injectable,
   NotFoundException,
-  ForbiddenException
+  ForbiddenException,
 } from '@nestjs/common'
 import { eq, and, inArray } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
@@ -42,12 +41,11 @@ import { GrantRoleDto } from './dto/grant-role.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 
-
 // --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
 export class UsersService {
   constructor(
-    @Inject(DRIZZLE) private readonly db: DrizzleDb, 
+    @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
   ) {}
 
@@ -55,12 +53,20 @@ export class UsersService {
 
   // --- POST ROUTES ---
 
-  // requestingUser is checked against ACTIVE role, not just "has this role somewhere" 
-  async create(dto: CreateUserDto, requestingUser?: { id: number; activeRole: string }) {
-    if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.role !== UserRole.PATIENT) {
-      throw new ForbiddenException('Practitioners can only create patient accounts')
+  // requestingUser is checked against ACTIVE role, not just "has this role somewhere"
+  async create(
+    dto: CreateUserDto,
+    requestingUser?: { id: number; activeRole: string },
+  ) {
+    if (
+      requestingUser?.activeRole === UserRole.PRACTITIONER &&
+      dto.role !== UserRole.PATIENT
+    ) {
+      throw new ForbiddenException(
+        'Practitioners can only create patient accounts',
+      )
     }
- 
+
     // The one place in this app that actually CREATES a practitioner-patient
     // relationship — every other path that trusts one already going through
     // it (findOne/update/remove on users, AssignedPrograms, Sessions,
@@ -75,19 +81,21 @@ export class UsersService {
     if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.clinicId) {
       const ownClinicIds = await this.getClinicIdsForUser(requestingUser.id)
       if (!ownClinicIds.includes(dto.clinicId)) {
-        throw new ForbiddenException('You can only add patients to a clinic you belong to')
+        throw new ForbiddenException(
+          'You can only add patients to a clinic you belong to',
+        )
       }
     }
- 
+
     const existing = await this.db.query.users.findFirst({
       where: eq(users.email, dto.email),
     })
     if (existing) {
       throw new ConflictException('A user with this email already exists')
     }
- 
+
     const passwordHash = await bcrypt.hash(dto.password, 10)
- 
+
     return this.db.transaction(async (tx) => {
       const [user] = await tx
         .insert(users)
@@ -98,9 +106,9 @@ export class UsersService {
           lastName: dto.lastName,
         })
         .returning()
- 
-      await tx.insert(userRoles).values({ userId: user.id, role: dto.role });
- 
+
+      await tx.insert(userRoles).values({ userId: user.id, role: dto.role })
+
       if (dto.role === UserRole.PRACTITIONER) {
         await tx.insert(practitionerProfiles).values({
           userId: user.id,
@@ -118,7 +126,7 @@ export class UsersService {
           position: dto.position,
         })
       }
- 
+
       // Validated as a plain query against the clinics table — not by
       // injecting ClinicsService, which would create a circular dependency
       // between UsersModule and ClinicsModule. Both services independently
@@ -136,7 +144,7 @@ export class UsersService {
           clinicId: dto.clinicId,
         })
       }
- 
+
       return { ...this.toPublic(user), roles: [dto.role] }
     })
   }
@@ -144,17 +152,17 @@ export class UsersService {
   // Grants an ADDITIONAL role to an already-existing user
   async grantRole(userId: number, dto: GrantRoleDto) {
     await this.findOne(userId)
- 
+
     const existingRole = await this.db.query.userRoles.findFirst({
       where: and(eq(userRoles.userId, userId), eq(userRoles.role, dto.role)),
     })
     if (existingRole) {
       throw new ConflictException(`User already has the "${dto.role}" role`)
     }
- 
+
     return this.db.transaction(async (tx) => {
       await tx.insert(userRoles).values({ userId, role: dto.role })
- 
+
       // Only creates the profile row if this user doesn't already have one
       // for this role (relevant if a role was previously granted, then
       // somehow re-granted after removal — defensive, not expected in
@@ -175,17 +183,21 @@ export class UsersService {
           where: eq(patientProfiles.userId, userId),
         })
         if (!hasProfile) {
-          await tx.insert(patientProfiles).values({ userId, dateOfBirth: dto.dateOfBirth! })
+          await tx
+            .insert(patientProfiles)
+            .values({ userId, dateOfBirth: dto.dateOfBirth! })
         }
       } else if (dto.role === UserRole.ADMIN) {
         const hasProfile = await tx.query.adminProfiles.findFirst({
           where: eq(adminProfiles.userId, userId),
         })
         if (!hasProfile) {
-          await tx.insert(adminProfiles).values({ userId, position: dto.position })
+          await tx
+            .insert(adminProfiles)
+            .values({ userId, position: dto.position })
         }
       }
- 
+
       return this.getRolesForUser(userId)
     })
   }
@@ -206,7 +218,6 @@ export class UsersService {
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(updated), roles }
   }
-
 
   // --- GET ROUTES ---
 
@@ -243,7 +254,7 @@ export class UsersService {
     if (clinicIds.length === 0) {
       return []
     }
- 
+
     const rows = await this.db
       .selectDistinct({ user: users })
       .from(users)
@@ -256,30 +267,40 @@ export class UsersService {
           inArray(userClinics.clinicId, clinicIds),
         ),
       )
- 
+
     return rows.map((r) => this.toPublic(r.user))
   }
 
   // The shared building block behind the PATCH/DELETE ownership checks below
   // — "is this patient one this practitioner can act on," using the same
   // clinic-sharing definition as findPatientsForPractitioner.
-  async isPatientManagedBy(patientId: number, practitionerId: number): Promise<boolean> {
+  async isPatientManagedBy(
+    patientId: number,
+    practitionerId: number,
+  ): Promise<boolean> {
     const clinicIds = await this.getClinicIdsForUser(practitionerId)
     if (clinicIds.length === 0) {
       return false
     }
- 
+
     const match = await this.db
       .select()
       .from(userClinics)
-      .where(and(eq(userClinics.userId, patientId), inArray(userClinics.clinicId, clinicIds)))
+      .where(
+        and(
+          eq(userClinics.userId, patientId),
+          inArray(userClinics.clinicId, clinicIds),
+        ),
+      )
       .limit(1)
- 
+
     return match.length > 0
   }
 
   async findOne(id: number) {
-    const user = await this.db.query.users.findFirst({ where: eq(users.id, id) })
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.id, id),
+    })
     if (!user) {
       throw new NotFoundException(`User ${id} not found`)
     }
@@ -294,7 +315,6 @@ export class UsersService {
     return this.db.query.users.findFirst({ where: eq(users.email, email) })
   }
 
-
   // --- PATCH ROUTES ---
 
   async update(id: number, dto: UpdateUserDto) {
@@ -307,7 +327,6 @@ export class UsersService {
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(updated), roles }
   }
-
 
   // --- DELETE ROUTES ---
 
@@ -323,7 +342,6 @@ export class UsersService {
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(deactivated), roles }
   }
-
 
   // === HELPER FUNCTIONS =====================================================
 

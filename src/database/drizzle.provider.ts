@@ -15,14 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 import { Injectable, OnModuleDestroy, Inject } from '@nestjs/common'
 import { Pool } from 'pg'
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from './schema'
 import { getDatabaseUrl } from '../config/database-url'
 import { getPoolConfig } from '../config/pool-config'
-
 
 export const DRIZZLE = Symbol('DRIZZLE')
 // A separate token for the raw pool — exists specifically so something can
@@ -34,7 +32,8 @@ export type DrizzleDb = NodePgDatabase<typeof schema>
 
 export const pgPoolProvider = {
   provide: PG_POOL,
-  useFactory: (): Pool => new Pool({ connectionString: getDatabaseUrl(), ...getPoolConfig('app') }),
+  useFactory: (): Pool =>
+    new Pool({ connectionString: getDatabaseUrl(), ...getPoolConfig('app') }),
 }
 
 export const drizzleProvider = {

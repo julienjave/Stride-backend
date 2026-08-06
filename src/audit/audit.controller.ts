@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Controller, Get, Query, UseGuards } from '@nestjs/common'
@@ -25,7 +24,6 @@ import { FindAuditLogsQueryDto } from './dto/find-audit-logs-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
-
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -38,7 +36,6 @@ import { Roles } from '../common/decorators/roles.decorator'
 @Controller('audit-logs')
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
-
 
   // === ROUTES =============================================================
 

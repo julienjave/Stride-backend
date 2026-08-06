@@ -15,14 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
 import { MedicalFilesController } from './medical-files.controller'
 import { MedicalFilesService } from './medical-files.service'
 import { UsersModule } from '../users/users.module'
-
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 

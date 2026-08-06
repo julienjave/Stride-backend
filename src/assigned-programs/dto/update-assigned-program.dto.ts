@@ -15,11 +15,15 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsOptional, IsString, MaxLength, IsDateString, IsEnum } from 'class-validator'
-
+import {
+  IsOptional,
+  IsString,
+  MaxLength,
+  IsDateString,
+  IsEnum,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -35,15 +39,15 @@ export class UpdateAssignedProgramDto {
   @IsString()
   @MaxLength(200)
   title?: string
- 
+
   @IsOptional()
   @IsDateString()
   startDate?: string
- 
+
   @IsOptional()
   @IsDateString()
   endDate?: string
- 
+
   @IsOptional()
   @IsEnum(AssignedProgramStatus)
   status?: AssignedProgramStatus

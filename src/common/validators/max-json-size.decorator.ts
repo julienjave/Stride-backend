@@ -15,11 +15,13 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { registerDecorator, ValidationOptions, ValidationArguments } from 'class-validator'
-
+import {
+  registerDecorator,
+  ValidationOptions,
+  ValidationArguments,
+} from 'class-validator'
 
 // --- DECORATOR ---------------------------------------------------------------------------------------------
 
@@ -29,7 +31,10 @@ import { registerDecorator, ValidationOptions, ValidationArguments } from 'class
 // built-ins: here, "how long is this string" doesn't apply to an
 // intentionally unstructured object — what actually needs bounding is how
 // large the value becomes once serialized, regardless of its internal shape.
-export function MaxJsonSize(maxBytes: number, validationOptions?: ValidationOptions) {
+export function MaxJsonSize(
+  maxBytes: number,
+  validationOptions?: ValidationOptions,
+) {
   return function (object: object, propertyName: string) {
     registerDecorator({
       name: 'maxJsonSize',
@@ -47,7 +52,7 @@ export function MaxJsonSize(maxBytes: number, validationOptions?: ValidationOpti
           try {
             return Buffer.byteLength(JSON.stringify(value), 'utf8') <= max
           } catch {
-            return false; // not serializable at all — definitely invalid
+            return false // not serializable at all — definitely invalid
           }
         },
         defaultMessage(args: ValidationArguments) {

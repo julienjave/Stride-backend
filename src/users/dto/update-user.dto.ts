@@ -15,11 +15,9 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsOptional, IsString, MaxLength } from 'class-validator'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -29,7 +27,7 @@ import { IsOptional, IsString, MaxLength } from 'class-validator'
 // wants re-verification; password change belongs in AuthService, not here).
 //
 // avatarPath is deliberately absent too, for a reason worth being explicit
-// about — same principle CreateClinicDto's logoPath already followed: 
+// about — same principle CreateClinicDto's logoPath already followed:
 // a file-backed field should only ever be settable
 // through the flow that actually verifies a real object was uploaded
 // (POST /users/:id/avatar, via StorageService). Allowing it here as a plain
@@ -42,7 +40,7 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(100)
   firstName?: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

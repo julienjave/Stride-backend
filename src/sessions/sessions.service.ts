@@ -15,18 +15,26 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { and, eq, inArray } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-import { sessions, sessionExercises, assignedPrograms, assignedProgramExercises } from '../database/schema'
+import {
+  sessions,
+  sessionExercises,
+  assignedPrograms,
+  assignedProgramExercises,
+} from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateSessionDto } from './dto/create-session.dto'
 import { UpdateSessionDto } from './dto/update-session.dto'
 import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
-
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -39,7 +47,6 @@ export class SessionsService {
     private readonly usersService: UsersService,
   ) {}
 
-
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
@@ -49,36 +56,46 @@ export class SessionsService {
       where: eq(assignedPrograms.id, dto.assignedProgramId),
     })
     if (!program) {
-      throw new NotFoundException(`Assigned program ${dto.assignedProgramId} not found`)
+      throw new NotFoundException(
+        `Assigned program ${dto.assignedProgramId} not found`,
+      )
     }
     // Self only — no clinic-scoping here at all, unlike practitioner
     // management elsewhere. A patient can only ever start a session for
     // THEIR OWN assigned program.
     if (program.patientId !== currentUser.id) {
-      throw new ForbiddenException('You can only create sessions for your own assigned programs')
+      throw new ForbiddenException(
+        'You can only create sessions for your own assigned programs',
+      )
     }
- 
+
     const sessionId = await this.db.transaction(async (tx) => {
       const [session] = await tx
         .insert(sessions)
         .values({
           assignedProgramId: dto.assignedProgramId,
           patientId: currentUser.id,
-          scheduledDate: dto.scheduledDate ? new Date(dto.scheduledDate) : new Date(),
+          scheduledDate: dto.scheduledDate
+            ? new Date(dto.scheduledDate)
+            : new Date(),
           status: 'pending',
         })
         .returning()
- 
+
       // Pre-populates today's checklist from the program's CURRENT
       // prescribed exercises — each row REFERENCES its
       // assignedProgramExerciseId, it doesn't duplicate sets/reps. The
       // prescription lives on the assigned program; this just tracks
       // actual performance against it.
-      const programExerciseRows = await tx.query.assignedProgramExercises.findMany({
-        where: eq(assignedProgramExercises.assignedProgramId, dto.assignedProgramId),
-        orderBy: (row, { asc }) => [asc(row.sortOrder)],
-      })
- 
+      const programExerciseRows =
+        await tx.query.assignedProgramExercises.findMany({
+          where: eq(
+            assignedProgramExercises.assignedProgramId,
+            dto.assignedProgramId,
+          ),
+          orderBy: (row, { asc }) => [asc(row.sortOrder)],
+        })
+
       for (const pe of programExerciseRows) {
         await tx.insert(sessionExercises).values({
           sessionId: session.id,
@@ -87,13 +104,12 @@ export class SessionsService {
           sortOrder: pe.sortOrder,
         })
       }
- 
+
       return session.id
     })
- 
+
     return this.findSessionWithExercises(sessionId)
   }
-
 
   // --- GET ROUTES ---
 
@@ -102,14 +118,20 @@ export class SessionsService {
       return this.db.query.sessions.findMany()
     }
     if (currentUser.activeRole === 'patient') {
-      return this.db.query.sessions.findMany({ where: eq(sessions.patientId, currentUser.id) })
+      return this.db.query.sessions.findMany({
+        where: eq(sessions.patientId, currentUser.id),
+      })
     }
-    const managedPatients = await this.usersService.findPatientsForPractitioner(currentUser.id)
+    const managedPatients = await this.usersService.findPatientsForPractitioner(
+      currentUser.id,
+    )
     const patientIds = managedPatients.map((p) => p.id)
     if (patientIds.length === 0) {
       return []
     }
-    return this.db.query.sessions.findMany({ where: inArray(sessions.patientId, patientIds) })
+    return this.db.query.sessions.findMany({
+      where: inArray(sessions.patientId, patientIds),
+    })
   }
 
   async findOne(id: number, currentUser: CurrentUser) {
@@ -117,7 +139,6 @@ export class SessionsService {
     await this.assertCanView(session.patientId, currentUser)
     return this.findSessionWithExercises(id)
   }
-
 
   // --- PATCH ROUTES ---
 
@@ -137,7 +158,11 @@ export class SessionsService {
       updates.completedAt = new Date()
     }
 
-    const [updated] = await this.db.update(sessions).set(updates).where(eq(sessions.id, id)).returning()
+    const [updated] = await this.db
+      .update(sessions)
+      .set(updates)
+      .where(eq(sessions.id, id))
+      .returning()
     return updated
   }
 
@@ -159,11 +184,10 @@ export class SessionsService {
     return updated
   }
 
-
   // === HELPER FUNCTIONS =====================================================
 
   private async findSessionWithExercises(id: number) {
-    const session = await this.findSessionOrThrow(id);
+    const session = await this.findSessionOrThrow(id)
     const exerciseRows = await this.db.query.sessionExercises.findMany({
       where: eq(sessionExercises.sessionId, id),
       orderBy: (row, { asc }) => [asc(row.sortOrder)],
@@ -172,7 +196,9 @@ export class SessionsService {
   }
 
   private async findSessionOrThrow(id: number) {
-    const session = await this.db.query.sessions.findFirst({ where: eq(sessions.id, id) })
+    const session = await this.db.query.sessions.findFirst({
+      where: eq(sessions.id, id),
+    })
     if (!session) {
       throw new NotFoundException(`Session ${id} not found`)
     }
@@ -181,7 +207,10 @@ export class SessionsService {
 
   private async findSessionExerciseOrThrow(sessionId: number, rowId: number) {
     const row = await this.db.query.sessionExercises.findFirst({
-      where: and(eq(sessionExercises.id, rowId), eq(sessionExercises.sessionId, sessionId)),
+      where: and(
+        eq(sessionExercises.id, rowId),
+        eq(sessionExercises.sessionId, sessionId),
+      ),
     })
     if (!row) {
       throw new NotFoundException(`Exercise ${rowId} not found in this session`)
@@ -190,20 +219,32 @@ export class SessionsService {
   }
 
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') return;
-    if (currentUser.activeRole === 'patient' && patientId === currentUser.id) return
+    if (currentUser.activeRole === 'admin') return
+    if (currentUser.activeRole === 'patient' && patientId === currentUser.id)
+      return
     if (currentUser.activeRole === 'practitioner') {
-      const managed = await this.usersService.isPatientManagedBy(patientId, currentUser.id)
-      if (managed) return;
+      const managed = await this.usersService.isPatientManagedBy(
+        patientId,
+        currentUser.id,
+      )
+      if (managed) return
     }
-    throw new ForbiddenException('You do not have permission to view this session')
+    throw new ForbiddenException(
+      'You do not have permission to view this session',
+    )
   }
 
   // No practitioner/admin branch at all — sessions are patient-only to
   // modify, full stop. Practitioners and admins get read access via
   // assertCanView, never write access via this check.
-  private assertIsOwner(session: typeof sessions.$inferSelect, currentUser: CurrentUser) {
-    if (currentUser.activeRole !== 'patient' || session.patientId !== currentUser.id) {
+  private assertIsOwner(
+    session: typeof sessions.$inferSelect,
+    currentUser: CurrentUser,
+  ) {
+    if (
+      currentUser.activeRole !== 'patient' ||
+      session.patientId !== currentUser.id
+    ) {
       throw new ForbiddenException('You can only modify your own sessions')
     }
   }

@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // Called as the very first thing bootstrap() does, before NestFactory.create()
 // even runs — nothing about this app should construct a single module if a
 // critical piece of config is missing or still set to a known-insecure
@@ -43,7 +42,7 @@ export function validateEnv(): void {
     )
   }
 
-  // Email sending is now a real, working feature (Resend), 
+  // Email sending is now a real, working feature (Resend),
   // a missing key here would otherwise only surface the first
   // time someone actually requests a password reset, as a confusing runtime
   // failure deep inside EmailService, rather than a clear error at boot.

@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
@@ -41,15 +40,15 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 
-
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
 @ApiTags('Users')
 @Controller('assigned-programs')
 export class AssignedProgramsController {
-  constructor(private readonly assignedProgramsService: AssignedProgramsService) {}
-
+  constructor(
+    private readonly assignedProgramsService: AssignedProgramsService,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -77,7 +76,6 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.addExercise(id, user, dto)
   }
 
-
   // --- GET ROUTES ---
 
   // Role-scoped inside the service — patient sees their own, practitioner
@@ -92,7 +90,6 @@ export class AssignedProgramsController {
   findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
     return this.assignedProgramsService.findOne(id, user)
   }
-
 
   // --- PATCH ROUTES ---
 
@@ -116,7 +113,12 @@ export class AssignedProgramsController {
     @CurrentUser() user: any,
     @Body() dto: UpdateAssignedProgramExerciseDto,
   ) {
-    return this.assignedProgramsService.updateExercise(id, exerciseRowId, user, dto)
+    return this.assignedProgramsService.updateExercise(
+      id,
+      exerciseRowId,
+      user,
+      dto,
+    )
   }
 
   @UseGuards(RolesGuard)
@@ -129,7 +131,6 @@ export class AssignedProgramsController {
   ) {
     return this.assignedProgramsService.reorderExercises(id, user, dto.order)
   }
-
 
   // --- DELETE ROUTES ---
 

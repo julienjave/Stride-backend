@@ -15,11 +15,15 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MinLength, MaxLength, IsDateString } from 'class-validator'
-
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  IsDateString,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -30,20 +34,20 @@ export class RegisterDto {
   @IsEmail()
   @MaxLength(255)
   email!: string
- 
+
   @IsString()
   @MinLength(8)
   @MaxLength(128)
   password!: string
- 
+
   @IsString()
   @MaxLength(100)
   firstName!: string
- 
+
   @IsString()
   @MaxLength(100)
   lastName!: string
- 
+
   @IsDateString()
   dateOfBirth!: string
 }

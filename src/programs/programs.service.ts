@@ -15,18 +15,26 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
-import { programTemplates, templateExercises, exercises } from '../database/schema'
+import {
+  programTemplates,
+  templateExercises,
+  exercises,
+} from '../database/schema'
 import { CreateTemplateDto } from './dto/create-template.dto'
 import { UpdateTemplateDto } from './dto/update-template.dto'
 import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
 import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
-
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -38,7 +46,6 @@ export class ProgramsService {
   // reasoning used for Clinics/Users.
   constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
 
-
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
@@ -46,7 +53,11 @@ export class ProgramsService {
   async create(practitionerId: number, dto: CreateTemplateDto) {
     const [template] = await this.db
       .insert(programTemplates)
-      .values({ practitionerId, title: dto.title, description: dto.description })
+      .values({
+        practitionerId,
+        title: dto.title,
+        description: dto.description,
+      })
       .returning()
     return template
   }
@@ -95,7 +106,8 @@ export class ProgramsService {
     const currentIds = new Set(currentRows.map((r) => r.id))
     const newIds = new Set(newOrder)
     const isSamePermutation =
-      currentIds.size === newIds.size && [...currentIds].every((rowId) => newIds.has(rowId))
+      currentIds.size === newIds.size &&
+      [...currentIds].every((rowId) => newIds.has(rowId))
 
     if (!isSamePermutation) {
       throw new BadRequestException(
@@ -118,7 +130,6 @@ export class ProgramsService {
     return this.findOne(templateId)
   }
 
-
   // --- GET ROUTES ---
 
   // Visible to any authenticated user, same as exercises — a preset library
@@ -132,7 +143,7 @@ export class ProgramsService {
   }
 
   async findOne(id: number) {
-    const template = await this.findTemplateOrThrow(id);
+    const template = await this.findTemplateOrThrow(id)
     const exerciseRows = await this.db.query.templateExercises.findMany({
       where: eq(templateExercises.templateId, id),
       orderBy: (te, { asc: ascend }) => [ascend(te.sortOrder)],
@@ -140,10 +151,13 @@ export class ProgramsService {
     return { ...template, exercises: exerciseRows }
   }
 
-
   // --- PATCH ROUTES ---
 
-  async update(id: number, currentUser: { id: number; activeRole: string }, dto: UpdateTemplateDto) {
+  async update(
+    id: number,
+    currentUser: { id: number; activeRole: string },
+    dto: UpdateTemplateDto,
+  ) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
     const [updated] = await this.db
@@ -172,7 +186,6 @@ export class ProgramsService {
     return updated
   }
 
-
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: { id: number; activeRole: string }) {
@@ -192,12 +205,13 @@ export class ProgramsService {
     currentUser: { id: number; activeRole: string },
   ) {
     const template = await this.findTemplateOrThrow(templateId)
-    this.assertCanModify(template, currentUser);
+    this.assertCanModify(template, currentUser)
     await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
-    await this.db.delete(templateExercises).where(eq(templateExercises.id, templateExerciseId))
+    await this.db
+      .delete(templateExercises)
+      .where(eq(templateExercises.id, templateExerciseId))
   }
-
 
   // === HELPER FUNCTIONS =================================================================
 
@@ -217,7 +231,10 @@ export class ProgramsService {
   // this, a valid row id from a DIFFERENT template (which its owner has
   // every right to modify on ITS OWN template) could be edited through
   // this template's URL instead.
-  private async findTemplateExerciseOrThrow(templateId: number, templateExerciseId: number) {
+  private async findTemplateExerciseOrThrow(
+    templateId: number,
+    templateExerciseId: number,
+  ) {
     const row = await this.db.query.templateExercises.findFirst({
       where: and(
         eq(templateExercises.id, templateExerciseId),
@@ -225,7 +242,9 @@ export class ProgramsService {
       ),
     })
     if (!row) {
-      throw new NotFoundException(`Exercise ${templateExerciseId} not found in this template`)
+      throw new NotFoundException(
+        `Exercise ${templateExerciseId} not found in this template`,
+      )
     }
     return row
   }

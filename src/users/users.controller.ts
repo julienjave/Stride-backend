@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
@@ -45,118 +44,125 @@ import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
 
-
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
 @ApiTags('Users')
 @Controller('users')
 export class UsersController {
-    constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) {}
 
-    // === ROUTES =============================================================
+  // === ROUTES =============================================================
 
-    // --- POST ROUTES ---
+  // --- POST ROUTES ---
 
-    @UseGuards(RolesGuard)
-    @Roles('practitioner', 'admin')
-    @Post()
-    create(@CurrentUser() currentUser: any, @Body() dto: CreateUserDto) {
-        return this.usersService.create(dto, currentUser)
+  @UseGuards(RolesGuard)
+  @Roles('practitioner', 'admin')
+  @Post()
+  create(@CurrentUser() currentUser: any, @Body() dto: CreateUserDto) {
+    return this.usersService.create(dto, currentUser)
+  }
+
+  // Admin-only: grants an existing user an ADDITIONAL role
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Post(':id/roles')
+  grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
+    return this.usersService.grantRole(id, dto)
+  }
+
+  // @UseInterceptors(FileInterceptor('file', ...)) parses a multipart/form-data
+  // body, extracts the single part named "file", validates/buffers it per
+  // imageUploadOptions, and makes the result available via @UploadedFile()
+  // below — the file-upload equivalent of @Body() + a DTO for JSON routes.
+  @Post(':id/avatar')
+  @UseInterceptors(FileInterceptor('file', imageUploadOptions))
+  uploadAvatar(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() currentUser: any,
+  ) {
+    const isSelf = currentUser.id === id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    if (!isSelf && !isAdmin) {
+      throw new ForbiddenException('You can only update your own avatar')
     }
-
-    // Admin-only: grants an existing user an ADDITIONAL role
-    @UseGuards(RolesGuard)
-    @Roles('admin')
-    @Post(':id/roles')
-    grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
-        return this.usersService.grantRole(id, dto)
+    if (!file) {
+      throw new BadRequestException('No file uploaded')
     }
+    return this.usersService.updateAvatar(id, file)
+  }
 
-    // @UseInterceptors(FileInterceptor('file', ...)) parses a multipart/form-data
-    // body, extracts the single part named "file", validates/buffers it per
-    // imageUploadOptions, and makes the result available via @UploadedFile()
-    // below — the file-upload equivalent of @Body() + a DTO for JSON routes.
-    @Post(':id/avatar')
-    @UseInterceptors(FileInterceptor('file', imageUploadOptions))
-    uploadAvatar(
-        @Param('id', ParseIntPipe) id: number,
-        @UploadedFile() file: Express.Multer.File,
-        @CurrentUser() currentUser: any,
-    ) {
-        const isSelf = currentUser.id === id
-        const isAdmin = currentUser.activeRole === UserRole.ADMIN
-        if (!isSelf && !isAdmin) {
-        throw new ForbiddenException('You can only update your own avatar')
-        }
-        if (!file) {
-        throw new BadRequestException('No file uploaded')
-        }
-        return this.usersService.updateAvatar(id, file)
+  // --- GET ROUTES ---
+
+  // Admin: every account. Practitioner: their own patients (clinic-scoped).
+  // Patient: no blanket listing at all.
+  @UseGuards(RolesGuard)
+  @Roles('practitioner', 'admin')
+  @Get()
+  findAll(@CurrentUser() currentUser: any) {
+    if (currentUser.activeRole === UserRole.ADMIN) {
+      return this.usersService.findAll()
     }
+    return this.usersService.findPatientsForPractitioner(currentUser.id)
+  }
 
-
-    // --- GET ROUTES ---
-
-    // Admin: every account. Practitioner: their own patients (clinic-scoped).
-    // Patient: no blanket listing at all.
-    @UseGuards(RolesGuard)
-    @Roles('practitioner', 'admin')
-    @Get()
-    findAll(@CurrentUser() currentUser: any) {
-        if (currentUser.activeRole === UserRole.ADMIN) {
-        return this.usersService.findAll()
-        }
-        return this.usersService.findPatientsForPractitioner(currentUser.id)
+  @Get(':id')
+  async findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() currentUser: any,
+  ) {
+    const isSelf = currentUser.id === id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    const isManagingPractitioner =
+      currentUser.activeRole === UserRole.PRACTITIONER &&
+      (await this.usersService.isPatientManagedBy(id, currentUser.id))
+    if (!isSelf && !isAdmin && !isManagingPractitioner) {
+      throw new ForbiddenException('You can only view your own profile')
     }
-    
-    @Get(':id')
-    async findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
-        const isSelf = currentUser.id === id
-        const isAdmin = currentUser.activeRole === UserRole.ADMIN
-        const isManagingPractitioner =
-        currentUser.activeRole === UserRole.PRACTITIONER &&
-        (await this.usersService.isPatientManagedBy(id, currentUser.id))
-        if (!isSelf && !isAdmin && !isManagingPractitioner) {
-        throw new ForbiddenException('You can only view your own profile')
-        }
-        return this.usersService.findOne(id)
-    }
+    return this.usersService.findOne(id)
+  }
 
+  // --- PATCH ROUTES ---
 
-    // --- PATCH ROUTES ---
-    
-    @Patch(':id')
-    async update(
-        @Param('id', ParseIntPipe) id: number,
-        @CurrentUser() currentUser: any,
-        @Body() dto: UpdateUserDto,
-    ) {
-        const isSelf = currentUser.id === id
-        const isAdmin = currentUser.activeRole === UserRole.ADMIN
-        const isManagingPractitioner =
-        currentUser.activeRole === UserRole.PRACTITIONER &&
-        (await this.usersService.isPatientManagedBy(id, currentUser.id))
-    
-        if (!isSelf && !isAdmin && !isManagingPractitioner) {
-        throw new ForbiddenException('You do not have permission to update this profile')
-        }
-        return this.usersService.update(id, dto)
+  @Patch(':id')
+  async update(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() currentUser: any,
+    @Body() dto: UpdateUserDto,
+  ) {
+    const isSelf = currentUser.id === id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    const isManagingPractitioner =
+      currentUser.activeRole === UserRole.PRACTITIONER &&
+      (await this.usersService.isPatientManagedBy(id, currentUser.id))
+
+    if (!isSelf && !isAdmin && !isManagingPractitioner) {
+      throw new ForbiddenException(
+        'You do not have permission to update this profile',
+      )
     }
-    
-    // Self (any role deactivating their own account), a practitioner
-    // deactivating one of their own patients, or an admin acting on anyone.
-    @Delete(':id')
-    async remove(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
-        const isSelf = currentUser.id === id
-        const isAdmin = currentUser.activeRole === UserRole.ADMIN
-        const isManagingPractitioner =
-        currentUser.activeRole === UserRole.PRACTITIONER &&
-        (await this.usersService.isPatientManagedBy(id, currentUser.id))
-    
-        if (!isSelf && !isAdmin && !isManagingPractitioner) {
-        throw new ForbiddenException('You do not have permission to deactivate this account')
-        }
-        return this.usersService.softDelete(id)
+    return this.usersService.update(id, dto)
+  }
+
+  // Self (any role deactivating their own account), a practitioner
+  // deactivating one of their own patients, or an admin acting on anyone.
+  @Delete(':id')
+  async remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() currentUser: any,
+  ) {
+    const isSelf = currentUser.id === id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    const isManagingPractitioner =
+      currentUser.activeRole === UserRole.PRACTITIONER &&
+      (await this.usersService.isPatientManagedBy(id, currentUser.id))
+
+    if (!isSelf && !isAdmin && !isManagingPractitioner) {
+      throw new ForbiddenException(
+        'You do not have permission to deactivate this account',
+      )
     }
+    return this.usersService.softDelete(id)
+  }
 }

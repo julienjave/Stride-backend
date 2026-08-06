@@ -15,21 +15,20 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
-import { 
-  Body, 
-  Controller, 
-  Get, 
-  ForbiddenException, 
+import {
+  Body,
+  Controller,
+  Get,
+  ForbiddenException,
   UnauthorizedException,
   BadRequestException,
-  HttpCode, 
-  HttpStatus, 
-  Post, 
-  Req, 
-  Res, 
-  UseGuards 
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  Res,
+  UseGuards,
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { Throttle, seconds } from '@nestjs/throttler'
@@ -47,14 +46,13 @@ import { ResetPasswordDto } from './dto/reset-password.dto'
 import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
 
-
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @ApiTags('Users')
 @Controller('auth')
 export class AuthController {
   constructor(
-    private readonly authService: AuthService, 
+    private readonly authService: AuthService,
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
   ) {}
@@ -84,7 +82,7 @@ export class AuthController {
       req.login(user, (err) => (err ? reject(err) : resolve(user)))
     })
   }
-  
+
   // == Login / MFA ==
 
   // No longer uses LocalAuthGuard/LocalStrategy — an explicit method,
@@ -97,11 +95,15 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request) {
-    const user = await this.authService.validateUser(dto.email, dto.password, dto.role)
+    const user = await this.authService.validateUser(
+      dto.email,
+      dto.password,
+      dto.role,
+    )
     if (!user) {
       throw new UnauthorizedException('Invalid email or password')
     }
- 
+
     if (user.mfaEnabled) {
       // Password verified, but req.login() is deliberately NOT called yet.
       // mfaPending is a SEPARATE session key from the one Passport itself
@@ -110,15 +112,18 @@ export class AuthController {
       // succeeds. The resolved activeRole is carried through here too, so
       // the role-selection logic already run inside validateUser() doesn't
       // need to be repeated once MFA completes.
-      (req.session as any).mfaPending = { userId: user.id, activeRole: user.activeRole }
+      ;(req.session as any).mfaPending = {
+        userId: user.id,
+        activeRole: user.activeRole,
+      }
       return { mfaRequired: true }
     }
- 
+
     return new Promise((resolve, reject) => {
       req.login(user, (err) => (err ? reject(err) : resolve(user)))
     })
   }
- 
+
   // The second step of a two-factor login. Deliberately no SessionAuthGuard
   // here — the session isn't authenticated yet, by design; this route's own
   // check of req.session.mfaPending is what stands in for a guard.
@@ -127,39 +132,46 @@ export class AuthController {
   async verifyMfaLogin(@Body() dto: MfaCodeDto, @Req() req: Request) {
     const pending = (req.session as any).mfaPending
     if (!pending) {
-      throw new BadRequestException('No pending MFA verification for this session')
+      throw new BadRequestException(
+        'No pending MFA verification for this session',
+      )
     }
- 
-    const isValid = await this.authService.verifyMfaCode(pending.userId, dto.code)
+
+    const isValid = await this.authService.verifyMfaCode(
+      pending.userId,
+      dto.code,
+    )
     if (!isValid) {
       throw new UnauthorizedException('Invalid authentication code')
     }
- 
+
     delete (req.session as any).mfaPending
- 
+
     const user = await this.usersService.findOne(pending.userId)
     const authenticatedUser = { ...user, activeRole: pending.activeRole }
- 
+
     return new Promise((resolve, reject) => {
-      req.login(authenticatedUser, (err) => (err ? reject(err) : resolve(authenticatedUser)))
+      req.login(authenticatedUser, (err) =>
+        err ? reject(err) : resolve(authenticatedUser),
+      )
     })
   }
- 
+
   // --- MFA enrollment (requires an already-authenticated session) ---
- 
+
   @UseGuards(SessionAuthGuard)
   @Post('mfa/setup')
   setupMfa(@CurrentUser() user: any) {
     return this.authService.setupMfa(user.id)
   }
- 
+
   @UseGuards(SessionAuthGuard)
   @Post('mfa/enable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async enableMfa(@CurrentUser() user: any, @Body() dto: MfaCodeDto) {
     await this.authService.enableMfa(user.id, dto.code)
   }
- 
+
   @UseGuards(SessionAuthGuard)
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -175,13 +187,19 @@ export class AuthController {
   // session data. Only lets someone switch to a role they actually hold.
   @UseGuards(SessionAuthGuard)
   @Post('switch-role')
-  switchRole(@Body() dto: SwitchRoleDto, @CurrentUser() user: any, @Req() req: Request) {
+  switchRole(
+    @Body() dto: SwitchRoleDto,
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
     if (!user.roles.includes(dto.role)) {
       throw new ForbiddenException(`You do not have the "${dto.role}" role`)
     }
     const updatedUser = { ...user, activeRole: dto.role }
     return new Promise((resolve, reject) => {
-      req.login(updatedUser, (err) => (err ? reject(err) : resolve(updatedUser)))
+      req.login(updatedUser, (err) =>
+        err ? reject(err) : resolve(updatedUser),
+      )
     })
   }
 
@@ -218,14 +236,13 @@ export class AuthController {
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     await this.authService.forgotPassword(dto.email)
   }
- 
+
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @Post('reset-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto.token, dto.newPassword)
   }
-
 
   // --- GET ROUTES ---
 

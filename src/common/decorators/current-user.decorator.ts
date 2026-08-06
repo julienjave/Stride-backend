@@ -15,16 +15,16 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { createParamDecorator, ExecutionContext } from '@nestjs/common'
-
 
 // --- DECORATOR ---------------------------------------------------------------------------------------------
 // A custom parameter decorator — lets a controller method write
 // @CurrentUser() user instead of manually reaching into the raw request for
 // req.user every time.
-export const CurrentUser = createParamDecorator((_data: unknown, ctx: ExecutionContext) => {
-  const request = ctx.switchToHttp().getRequest()
-  return request.user
-})
+export const CurrentUser = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext) => {
+    const request = ctx.switchToHttp().getRequest()
+    return request.user
+  },
+)

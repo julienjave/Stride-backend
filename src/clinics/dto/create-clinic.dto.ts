@@ -15,11 +15,9 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsEmail, IsString, MaxLength, IsOptional } from 'class-validator'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -30,16 +28,16 @@ export class CreateClinicDto {
   @IsString()
   @MaxLength(255)
   name!: string
- 
+
   @IsEmail()
   @MaxLength(255)
   email!: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(50)
   phone?: string
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(255)

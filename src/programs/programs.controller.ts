@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
@@ -41,7 +40,6 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 
-
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
@@ -49,7 +47,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 @Controller('programs')
 export class ProgramsController {
   constructor(private readonly programsService: ProgramsService) {}
-
 
   // === ROUTES =============================================================
 
@@ -76,7 +73,6 @@ export class ProgramsController {
     return this.programsService.addExercise(id, user, dto)
   }
 
-
   // --- GET ROUTES ---
 
   @Get()
@@ -88,7 +84,6 @@ export class ProgramsController {
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.programsService.findOne(id)
   }
-
 
   // --- PATCH ROUTES ---
 
@@ -112,7 +107,12 @@ export class ProgramsController {
     @CurrentUser() user: any,
     @Body() dto: UpdateTemplateExerciseDto,
   ) {
-    return this.programsService.updateExercise(id, templateExerciseId, user, dto)
+    return this.programsService.updateExercise(
+      id,
+      templateExerciseId,
+      user,
+      dto,
+    )
   }
 
   // A separate PATCH on the collection path (:id/exercises, no further
@@ -129,7 +129,6 @@ export class ProgramsController {
   ) {
     return this.programsService.reorderExercises(id, user, dto.order)
   }
-
 
   // --- DELETE ROUTES ---
 

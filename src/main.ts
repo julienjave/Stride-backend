@@ -15,7 +15,6 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import 'dotenv/config'
@@ -35,127 +34,124 @@ import { getAllowedOrigins } from './config/allowed-origins'
 import { getPoolConfig } from './config/pool-config'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
 
-
 // --- MAIN LOGIC ---------------------------------------------------------------------------------------------
 
 async function bootstrap() {
-    // The very first thing that runs, before even NestFactory.create() — no
-    // module in this app should be constructed at all if a critical piece of
-    // config is missing or insecure.
-    validateEnv()
+  // The very first thing that runs, before even NestFactory.create() — no
+  // module in this app should be constructed at all if a critical piece of
+  // config is missing or insecure.
+  validateEnv()
 
-    const app = await NestFactory.create<NestExpressApplication>(AppModule)
+  const app = await NestFactory.create<NestExpressApplication>(AppModule)
 
+  // === LOGGER =================================================================
 
-    // === LOGGER =================================================================
+  // Swaps Nest's default console logger for pino GLOBALLY
+  app.useLogger(app.get(Logger))
 
-    // Swaps Nest's default console logger for pino GLOBALLY
-    app.useLogger(app.get(Logger))
+  // === SHUTDOWN SIGNALS =======================================================
 
-    // === SHUTDOWN SIGNALS =======================================================
-    
-    // Relays OS shutdown signals (SIGTERM, SIGINT)
-    app.enableShutdownHooks()
+  // Relays OS shutdown signals (SIGTERM, SIGINT)
+  app.enableShutdownHooks()
 
+  // === PROXY ==================================================================
 
-    // === PROXY ==================================================================
- 
-    // Needed to allow for rate-limiting to see the real client IP, not
-    // whatever's directly in front of this process. The number of hops to
-    // trust is genuinely different between environments — locally, nothing
-    // sits in front of the app at all; in production, it's TWO hops
-    // (Cloudflare, then Caddy). Hardcoding either number would make the
-    // OTHER environment wrong, so this reads from an env var instead, with
-    // a default (1) that preserves prior behavior when unset.
-    app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1))
- 
-    // Verified against this project's OWN real production logs, not just
-    // assumed from generic documentation: Cloudflare's docs claim
-    // X-Forwarded-For includes the original client IP — but captured
-    // production logs showed it containing ONLY Cloudflare's own edge IP
-    // (itself within Cloudflare's published ranges), while cf-connecting-ip
-    // correctly carried the real visitor's IP every single time. Given this
-    // specific, observed behavior in our own chain, relying on generic
-    // X-Forwarded-For + trust-proxy hop-counting alone is not reliable here.
-    // Overwriting X-Forwarded-For with Cloudflare's own dedicated header,
-    // before anything downstream (rate limiting, logging) ever reads
-    // req.ip, is the robust fix — every consumer of req.ip benefits
-    // automatically, with no changes needed anywhere else in the app.
-    if (process.env.NODE_ENV === 'production') {
-        app.use((req: any, res: any, next: any) => {
-            const cfConnectingIp = req.headers['cf-connecting-ip']
-            if (typeof cfConnectingIp === 'string') {
-                req.headers['x-forwarded-for'] = cfConnectingIp
-            }
-            next()
-        })
-    }
+  // Needed to allow for rate-limiting to see the real client IP, not
+  // whatever's directly in front of this process. The number of hops to
+  // trust is genuinely different between environments — locally, nothing
+  // sits in front of the app at all; in production, it's TWO hops
+  // (Cloudflare, then Caddy). Hardcoding either number would make the
+  // OTHER environment wrong, so this reads from an env var instead, with
+  // a default (1) that preserves prior behavior when unset.
+  app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1))
 
-
-    // === CORS ===================================================================
-
-    app.enableCors({
-        origin: getAllowedOrigins(),
-        credentials: true,
+  // Verified against this project's OWN real production logs, not just
+  // assumed from generic documentation: Cloudflare's docs claim
+  // X-Forwarded-For includes the original client IP — but captured
+  // production logs showed it containing ONLY Cloudflare's own edge IP
+  // (itself within Cloudflare's published ranges), while cf-connecting-ip
+  // correctly carried the real visitor's IP every single time. Given this
+  // specific, observed behavior in our own chain, relying on generic
+  // X-Forwarded-For + trust-proxy hop-counting alone is not reliable here.
+  // Overwriting X-Forwarded-For with Cloudflare's own dedicated header,
+  // before anything downstream (rate limiting, logging) ever reads
+  // req.ip, is the robust fix — every consumer of req.ip benefits
+  // automatically, with no changes needed anywhere else in the app.
+  if (process.env.NODE_ENV === 'production') {
+    app.use((req: any, res: any, next: any) => {
+      const cfConnectingIp = req.headers['cf-connecting-ip']
+      if (typeof cfConnectingIp === 'string') {
+        req.headers['x-forwarded-for'] = cfConnectingIp
+      }
+      next()
     })
+  }
 
+  // === CORS ===================================================================
 
-    // === VALIDATION =============================================================
+  app.enableCors({
+    origin: getAllowedOrigins(),
+    credentials: true,
+  })
 
-    // --- VALIDATION PIPE ---
-    // Registered ONCE here, globally — applies to every route in the app
-    app.useGlobalPipes(
-        new ValidationPipe({
-            whitelist: true,             // strips any property NOT declared on the DTO
-            forbidNonWhitelisted: true,  // ...and rejects the request outright if it finds one
-            transform: true,             // converts plain incoming JSON into a real instance of the DTO class
-        }),
-    )
+  // === VALIDATION =============================================================
 
+  // --- VALIDATION PIPE ---
+  // Registered ONCE here, globally — applies to every route in the app
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true, // strips any property NOT declared on the DTO
+      forbidNonWhitelisted: true, // ...and rejects the request outright if it finds one
+      transform: true, // converts plain incoming JSON into a real instance of the DTO class
+    }),
+  )
 
-    // === AUTHENTICATION ===========================================================
+  // === AUTHENTICATION ===========================================================
 
-    // --- SESSION ---
-    // A SEPARATE pool from Drizzle's own — connect-pg-simple manages its own
-    // "session" table directly with raw SQL, entirely outside Drizzle's schema/migration system.
-    const sessionPool = new Pool({ connectionString: getDatabaseUrl(), ...getPoolConfig('session') })
-    const PgSessionStore = connectPgSimple(session)
-    
-    // Named, rather than passed inline to app.use() — this exact same
-    // middleware instance is reused below for WebSocket connections too, via
-    // SessionIoAdapter. One session store, one cookie, two transports.
-    const sessionMiddleware = session({
-        store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
-        secret: process.env.SESSION_SECRET!,
-        resave: false,
-        saveUninitialized: false,
-        cookie: {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
-        },
-    })
+  // --- SESSION ---
+  // A SEPARATE pool from Drizzle's own — connect-pg-simple manages its own
+  // "session" table directly with raw SQL, entirely outside Drizzle's schema/migration system.
+  const sessionPool = new Pool({
+    connectionString: getDatabaseUrl(),
+    ...getPoolConfig('session'),
+  })
+  const PgSessionStore = connectPgSimple(session)
 
-    app.use(sessionMiddleware)
+  // Named, rather than passed inline to app.use() — this exact same
+  // middleware instance is reused below for WebSocket connections too, via
+  // SessionIoAdapter. One session store, one cookie, two transports.
+  const sessionMiddleware = session({
+    store: new PgSessionStore({
+      pool: sessionPool,
+      createTableIfMissing: true,
+    }),
+    secret: process.env.SESSION_SECRET!,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    },
+  })
 
+  app.use(sessionMiddleware)
 
-    // --- PASSPORT ---
-    app.use(passport.initialize())
-    app.use(passport.session())
+  // --- PASSPORT ---
+  app.use(passport.initialize())
+  app.use(passport.session())
 
+  // --- WEBSOCKET ---
+  // Applies sessionMiddleware to every WebSocket handshake too — without
+  // this, MessagingGateway would have no way to know who's connecting at
+  // all, since Socket.IO's handshake never runs through Express's normal
+  // middleware chain on its own.
+  app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))
 
-    // --- WEBSOCKET ---
-    // Applies sessionMiddleware to every WebSocket handshake too — without
-    // this, MessagingGateway would have no way to know who's connecting at
-    // all, since Socket.IO's handshake never runs through Express's normal
-    // middleware chain on its own.
-    app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))
+  // === SWAGGER ==================================================================
 
-
-    // === SWAGGER ==================================================================
-
-    // Auto-generated from the DTOs and decorators already written throughout
+  // Auto-generated from the DTOs and decorators already written throughout
   // this app — the @nestjs/swagger CLI plugin (see nest-cli.json) is what
   // makes this possible without manually adding @ApiProperty() to every
   // field of every DTO: it statically reads each class's TypeScript types
@@ -172,9 +168,8 @@ async function bootstrap() {
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig)
   SwaggerModule.setup('api-docs', app, swaggerDocument)
 
+  // === START APP ================================================================
 
-    // === START APP ================================================================
-
-    await app.listen(process.env.PORT ?? 3000)
+  await app.listen(process.env.PORT ?? 3000)
 }
 bootstrap()

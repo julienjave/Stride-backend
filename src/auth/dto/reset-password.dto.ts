@@ -15,19 +15,17 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsString, MinLength, MaxLength } from 'class-validator'
-
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class ResetPasswordDto {
   @IsString()
   @MaxLength(256)
-  token!: string;
- 
+  token!: string
+
   @IsString()
   @MinLength(8)
   @MaxLength(128)

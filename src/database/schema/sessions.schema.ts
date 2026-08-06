@@ -15,54 +15,78 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
-import { pgTable, bigserial, bigint, integer, timestamp, boolean, text, pgEnum, check, index } from 'drizzle-orm/pg-core'
+import {
+  pgTable,
+  bigserial,
+  bigint,
+  integer,
+  timestamp,
+  boolean,
+  text,
+  pgEnum,
+  check,
+  index,
+} from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
 import { assignedPrograms, assignedProgramExercises } from './programs.schema'
 
+export const sessionStatusEnum = pgEnum('session_status', [
+  'pending',
+  'in_progress',
+  'completed',
+  'skipped',
+])
 
-export const sessionStatusEnum = pgEnum('session_status', ['pending', 'in_progress', 'completed', 'skipped'])
-
-export const sessions = pgTable('sessions', {
+export const sessions = pgTable(
+  'sessions',
+  {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     assignedProgramId: integer('assigned_program_id')
-        .notNull()
-        .references(() => assignedPrograms.id, { onDelete: 'restrict' }),
+      .notNull()
+      .references(() => assignedPrograms.id, { onDelete: 'restrict' }),
     patientId: integer('patient_id')
-        .notNull()
-        .references(() => users.id, { onDelete: 'restrict' }),
-    scheduledDate: timestamp('scheduled_date', { withTimezone: true }).notNull(),
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    scheduledDate: timestamp('scheduled_date', {
+      withTimezone: true,
+    }).notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     totalDurationInSeconds: integer('total_duration_in_seconds'),
     status: sessionStatusEnum('status').notNull().default('pending'),
     sessionFeedback: text('session_feedback'),
-}, (table) => ({
-  patientIdIdx: index('sessions_patient_id_idx').on(table.patientId),
-}))
+  },
+  (table) => ({
+    patientIdIdx: index('sessions_patient_id_idx').on(table.patientId),
+  }),
+)
 
-export const sessionExercises = pgTable('session_exercises', {
+export const sessionExercises = pgTable(
+  'session_exercises',
+  {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     // sessions.id is bigserial (a bigint) — the column referencing it must match that
     // width, so this is bigint too, not integer. Getting this mismatched is a real,
     // easy-to-miss bug: Postgres will still accept it, but we risk overflow the moment
     // sessions.id exceeds the range a plain integer can hold.
     sessionId: bigint('session_id', { mode: 'number' })
-        .notNull()
-        .references(() => sessions.id, { onDelete: 'cascade' }),
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
     assignedProgramExerciseId: integer('assigned_program_exercise_id')
-        .notNull()
-        .references(() => assignedProgramExercises.id, { onDelete: 'restrict' }),
+      .notNull()
+      .references(() => assignedProgramExercises.id, { onDelete: 'restrict' }),
     completed: boolean('completed').notNull().default(false),
     durationActualInSeconds: integer('duration_actual_in_seconds'),
     difficultyRating: integer('difficulty_rating'),
     sortOrder: integer('sort_order').notNull(),
     feedback: text('feedback'),
-}, (table) => ({
+  },
+  (table) => ({
     difficultyRatingRange: check(
-        'difficulty_rating_range',
-        sql`${table.difficultyRating} IS NULL OR ${table.difficultyRating} BETWEEN 1 AND 10`,
+      'difficulty_rating_range',
+      sql`${table.difficultyRating} IS NULL OR ${table.difficultyRating} BETWEEN 1 AND 10`,
     ),
     sessionIdIdx: index('session_exercises_session_id_idx').on(table.sessionId),
-}))
+  }),
+)

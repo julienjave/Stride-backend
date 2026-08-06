@@ -15,12 +15,17 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from '@nestjs/common'
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common'
 import { Request, Response } from 'express'
-
 
 // --- FILTER ------------------------------------------------------------------------------------------------
 
@@ -38,7 +43,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>()
 
     const isHttpException = exception instanceof HttpException
-    const status = isHttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR
+    const status = isHttpException
+      ? exception.getStatus()
+      : HttpStatus.INTERNAL_SERVER_ERROR
 
     // A deliberately thrown HttpException (a 404, a 403, a validation 400)
     // was written with a message that's safe and meant to be shown to the
@@ -53,7 +60,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message =
         typeof exceptionResponse === 'string'
           ? exceptionResponse
-          : ((exceptionResponse as { message?: string | object }).message ?? exception.message)
+          : ((exceptionResponse as { message?: string | object }).message ??
+            exception.message)
     } else {
       this.logger.error(
         `Unhandled exception on ${request.method} ${request.url}`,

@@ -15,11 +15,16 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsOptional, IsEnum, IsInt, IsString, MaxLength, Min } from 'class-validator'
-
+import {
+  IsOptional,
+  IsEnum,
+  IsInt,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -34,12 +39,12 @@ export class UpdateSessionDto {
   @IsOptional()
   @IsEnum(SessionStatus)
   status?: SessionStatus
- 
+
   @IsOptional()
   @IsInt()
   @Min(0)
   totalDurationInSeconds?: number
- 
+
   @IsOptional()
   @IsString()
   @MaxLength(2000)
