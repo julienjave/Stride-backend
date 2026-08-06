@@ -27,6 +27,7 @@ import {
 import { Observable } from 'rxjs'
 import { tap } from 'rxjs/operators'
 import { AuditService } from '../../audit/audit.service'
+import { AuthenticatedRequest } from '../decorators/current-user.decorator'
 
 // --- INTERCEPTOR -------------------------------------------------------------------------------------------
 
@@ -37,7 +38,7 @@ export class AuditLogInterceptor implements NestInterceptor {
   constructor(private readonly auditService: AuditService) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const request = context.switchToHttp().getRequest()
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>()
     const { method, originalUrl, params, user } = request
 
     // Only mutating methods are worth auditing here — GET requests are
@@ -57,7 +58,7 @@ export class AuditLogInterceptor implements NestInterceptor {
     }
 
     return next.handle().pipe(
-      tap((response: any) => {
+      tap((response: { id?: number } | null | undefined) => {
         // A generic, always-available heuristic: the URL's first path
         // segment as entityType ("exercises", "users", "clinics", ...),
         // and the affected row's id — read from the response body if

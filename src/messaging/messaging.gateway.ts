@@ -26,11 +26,35 @@ import {
   ConnectedSocket,
   OnGatewayInit,
 } from '@nestjs/websockets'
-import { Server, Socket } from 'socket.io'
+import { DefaultEventsMap, Server, Socket } from 'socket.io'
+import type { IncomingMessage } from 'http'
+import type { Session, SessionData } from 'express-session'
 import { UsersService } from '../users/users.service'
 import { MessagingService } from './messaging.service'
 import { getAllowedOrigins } from '../config/allowed-origins'
 import { WsHttpExceptionFilter } from './ws-exception.filter'
+import { CurrentUser } from '../common/decorators/current-user.decorator'
+
+// --- TYPES ---------------------------------------------------------------------------------------------------
+// socket.data is `any` by default — this narrows it to what the
+// server.use() middleware below actually stashes on it (the same shape
+// @CurrentUser() extracts for HTTP requests, see current-user.decorator.ts).
+type AuthenticatedSocket = Socket<
+  DefaultEventsMap,
+  DefaultEventsMap,
+  DefaultEventsMap,
+  { user: CurrentUser }
+>
+
+// Socket.IO types socket.request as a bare IncomingMessage — it has no idea
+// SessionIoAdapter runs Express's session middleware directly against it
+// (see session-io.adapter.ts), which is what actually attaches `.session`
+// at runtime. This describes that real, augmented shape; `session` stays
+// optional to match the existing `?.` below (defensive against a socket
+// that somehow reaches this middleware before the session middleware ran).
+type RequestWithSession = IncomingMessage & {
+  session?: Session & Partial<SessionData>
+}
 
 // --- GATEWAY ------------------------------------------------------------------------------------------------
 
@@ -66,36 +90,44 @@ export class MessagingGateway implements OnGatewayInit {
   // machinery is Express-specific. socket.request.session exists at all
   // only because of SessionIoAdapter.
   afterInit(server: Server) {
-    server.use(async (socket: Socket, next) => {
-      const sessionData = (socket.request as any).session?.passport?.user
-      if (!sessionData) {
-        this.logger.warn(`Socket ${socket.id} rejected — no session`)
-        return next(new Error('Unauthorized'))
-      }
-
-      try {
-        const user = await this.usersService.findOne(sessionData.id)
-        if (!user.roles.includes(sessionData.activeRole)) {
+    // Socket.IO's middleware type expects a void-returning callback, but the
+    // check below is genuinely async (it awaits a DB lookup) — wrapping the
+    // logic in an inner async IIFE keeps the outer function itself
+    // synchronous (satisfying that type) while still only calling next()
+    // once the awaits inside have resolved, exactly as before.
+    server.use((socket: AuthenticatedSocket, next) => {
+      void (async () => {
+        const sessionData = (socket.request as RequestWithSession).session
+          ?.passport?.user
+        if (!sessionData) {
+          this.logger.warn(`Socket ${socket.id} rejected — no session`)
           return next(new Error('Unauthorized'))
         }
-        // Stashed on the socket itself — every subsequent event handler for
-        // THIS connection reads it back, the same role @CurrentUser() plays
-        // for HTTP requests. Guaranteed set before any handler can possibly
-        // run, unlike the old handleConnection-based approach.
-        socket.data.user = {
-          ...user,
-          activeRole: sessionData.activeRole,
+
+        try {
+          const user = await this.usersService.findOne(sessionData.id)
+          if (!user.roles.includes(sessionData.activeRole)) {
+            return next(new Error('Unauthorized'))
+          }
+          // Stashed on the socket itself — every subsequent event handler for
+          // THIS connection reads it back, the same role @CurrentUser() plays
+          // for HTTP requests. Guaranteed set before any handler can possibly
+          // run, unlike the old handleConnection-based approach.
+          socket.data.user = {
+            ...user,
+            activeRole: sessionData.activeRole,
+          }
+          next()
+        } catch {
+          next(new Error('Unauthorized'))
         }
-        next()
-      } catch {
-        next(new Error('Unauthorized'))
-      }
+      })()
     })
   }
 
   @SubscribeMessage('joinConversation')
   async handleJoin(
-    @ConnectedSocket() socket: Socket,
+    @ConnectedSocket() socket: AuthenticatedSocket,
     @MessageBody() data: { conversationId: number },
   ) {
     const user = socket.data.user
@@ -119,7 +151,7 @@ export class MessagingGateway implements OnGatewayInit {
 
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
-    @ConnectedSocket() socket: Socket,
+    @ConnectedSocket() socket: AuthenticatedSocket,
     @MessageBody() data: { conversationId: number; messageBody: string },
   ) {
     const user = socket.data.user
@@ -138,7 +170,7 @@ export class MessagingGateway implements OnGatewayInit {
 
   @SubscribeMessage('deleteMessage')
   async handleDeleteMessage(
-    @ConnectedSocket() socket: Socket,
+    @ConnectedSocket() socket: AuthenticatedSocket,
     @MessageBody() data: { conversationId: number; messageId: number },
   ) {
     const user = socket.data.user

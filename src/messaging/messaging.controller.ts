@@ -48,7 +48,7 @@ export class MessagingController {
   // --- POST ROUTES ---
 
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateConversationDto) {
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateConversationDto) {
     return this.messagingService.createConversation(user, dto)
   }
 
@@ -59,7 +59,7 @@ export class MessagingController {
   @Post(':id/messages')
   sendMessage(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: SendMessageDto,
   ) {
     return this.messagingService.sendMessage(id, user, dto.messageBody)
@@ -68,29 +68,41 @@ export class MessagingController {
   // --- GET ROUTES ---
 
   @Get()
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: CurrentUser) {
     return this.messagingService.findConversationsForUser(user)
   }
 
   @Get(':id/messages')
-  getMessages(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  getMessages(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.messagingService.getMessages(id, user)
   }
 
   // --- PATCH ROUTES ---
 
   @Patch(':id/read')
-  markAsRead(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  markAsRead(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.messagingService.markAsRead(id, user)
   }
 
   @Patch(':id/archive')
-  archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  archive(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.messagingService.archiveConversation(id, user)
   }
 
   @Patch(':id/unarchive')
-  unarchive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  unarchive(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.messagingService.unarchiveConversation(id, user)
   }
 
@@ -102,7 +114,7 @@ export class MessagingController {
   deleteMessage(
     @Param('id', ParseIntPipe) id: number,
     @Param('messageId', ParseIntPipe) messageId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     return this.messagingService.deleteMessage(id, messageId, user)
   }

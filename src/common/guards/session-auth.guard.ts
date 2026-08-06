@@ -22,6 +22,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common'
+import { AuthenticatedRequest } from '../decorators/current-user.decorator'
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 // AUTHENTICATION check: "is there a valid, currently logged-in session at all?"
@@ -29,7 +30,7 @@ import {
 @Injectable()
 export class SessionAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest()
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>()
     // isAuthenticated() is attached to the request by Passport's session
     // middleware (registered in main.ts) — true only if deserializeUser
     // successfully loaded a real user for this request's session cookie.

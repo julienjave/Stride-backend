@@ -25,6 +25,7 @@ import {
 } from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { ROLES_KEY } from '../decorators/roles.decorator'
+import { AuthenticatedRequest } from '../decorators/current-user.decorator'
 
 // --- GUARD -------------------------------------------------------------------------------------------------
 
@@ -48,8 +49,12 @@ export class RolesGuard implements CanActivate {
       return true
     }
 
-    const { user } = context.switchToHttp().getRequest()
-    if (!requiredRoles.includes(user.activeRole)) {
+    // Non-null assertion, not a new runtime check: this guard only ever runs
+    // after SessionAuthGuard (every controller pairs them — SessionAuthGuard
+    // at the controller level, RolesGuard at the method level), which
+    // already guarantees an authenticated request has req.user set.
+    const { user } = context.switchToHttp().getRequest<AuthenticatedRequest>()
+    if (!requiredRoles.includes(user!.activeRole)) {
       throw new ForbiddenException(
         'You do not have permission to access this resource',
       )

@@ -36,12 +36,6 @@ interface AuditEntry {
   details?: Record<string, unknown>
 }
 
-interface AuditFilters {
-  action?: string
-  entityType?: string
-  performedBy?: number
-}
-
 // ------
 
 @Injectable()

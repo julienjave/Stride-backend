@@ -61,7 +61,7 @@ export class ExercisesController {
   @UseGuards(RolesGuard)
   @Roles('practitioner')
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateExerciseDto) {
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateExerciseDto) {
     return this.exercisesService.create(user.id, dto)
   }
 
@@ -75,7 +75,7 @@ export class ExercisesController {
   uploadImages(
     @Param('id', ParseIntPipe) id: number,
     @UploadedFiles() files: Express.Multer.File[],
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('No files uploaded')
@@ -107,7 +107,7 @@ export class ExercisesController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateExerciseDto,
   ) {
     return this.exercisesService.update(id, user, dto)
@@ -119,7 +119,7 @@ export class ExercisesController {
   reorderImages(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ReorderImagesDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     return this.exercisesService.reorderImages(id, user, dto.order)
   }
@@ -129,7 +129,10 @@ export class ExercisesController {
   @UseGuards(RolesGuard)
   @Roles('practitioner', 'admin')
   @Delete(':id')
-  archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  archive(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.exercisesService.archive(id, user)
   }
 
@@ -139,7 +142,7 @@ export class ExercisesController {
   removeImage(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RemoveImageDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     return this.exercisesService.removeImage(id, user, dto.objectKey)
   }

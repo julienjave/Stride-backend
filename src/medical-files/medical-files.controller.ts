@@ -52,7 +52,7 @@ export class MedicalFilesController {
   @UseGuards(RolesGuard)
   @Roles('practitioner')
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateMedicalFileDto) {
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateMedicalFileDto) {
     return this.medicalFilesService.create(user, dto)
   }
 
@@ -61,7 +61,10 @@ export class MedicalFilesController {
   // Patient: their own history, no query param needed. Practitioner/admin:
   // must specify which patient's file to view.
   @Get()
-  findAll(@CurrentUser() user: any, @Query('patientId') patientId?: string) {
+  findAll(
+    @CurrentUser() user: CurrentUser,
+    @Query('patientId') patientId?: string,
+  ) {
     return this.medicalFilesService.findAll(
       user,
       patientId ? Number(patientId) : undefined,
@@ -69,7 +72,10 @@ export class MedicalFilesController {
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.medicalFilesService.findOne(id, user)
   }
 }

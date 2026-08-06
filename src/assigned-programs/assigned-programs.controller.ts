@@ -61,7 +61,10 @@ export class AssignedProgramsController {
   @UseGuards(RolesGuard)
   @Roles('practitioner')
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateAssignedProgramDto) {
+  create(
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: CreateAssignedProgramDto,
+  ) {
     return this.assignedProgramsService.create(user, dto)
   }
 
@@ -70,7 +73,7 @@ export class AssignedProgramsController {
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: AssignedExerciseInputDto,
   ) {
     return this.assignedProgramsService.addExercise(id, user, dto)
@@ -82,12 +85,15 @@ export class AssignedProgramsController {
   // sees their managed patients', admin sees all. No @Roles() restriction
   // here since every role is allowed, just to a different slice of data.
   @Get()
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: CurrentUser) {
     return this.assignedProgramsService.findAllForCurrentUser(user)
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.assignedProgramsService.findOne(id, user)
   }
 
@@ -98,7 +104,7 @@ export class AssignedProgramsController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateAssignedProgramDto,
   ) {
     return this.assignedProgramsService.update(id, user, dto)
@@ -110,7 +116,7 @@ export class AssignedProgramsController {
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
     @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateAssignedProgramExerciseDto,
   ) {
     return this.assignedProgramsService.updateExercise(
@@ -126,7 +132,7 @@ export class AssignedProgramsController {
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: ReorderAssignedProgramExercisesDto,
   ) {
     return this.assignedProgramsService.reorderExercises(id, user, dto.order)
@@ -137,7 +143,10 @@ export class AssignedProgramsController {
   @UseGuards(RolesGuard)
   @Roles('practitioner', 'admin')
   @Delete(':id')
-  archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  archive(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.assignedProgramsService.archive(id, user)
   }
 
@@ -147,7 +156,7 @@ export class AssignedProgramsController {
   removeExercise(
     @Param('id', ParseIntPipe) id: number,
     @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     return this.assignedProgramsService.removeExercise(id, exerciseRowId, user)
   }

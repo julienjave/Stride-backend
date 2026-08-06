@@ -59,7 +59,7 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles('practitioner', 'admin')
   @Post()
-  create(@CurrentUser() currentUser: any, @Body() dto: CreateUserDto) {
+  create(@CurrentUser() currentUser: CurrentUser, @Body() dto: CreateUserDto) {
     return this.usersService.create(dto, currentUser)
   }
 
@@ -80,7 +80,7 @@ export class UsersController {
   uploadAvatar(
     @Param('id', ParseIntPipe) id: number,
     @UploadedFile() file: Express.Multer.File,
-    @CurrentUser() currentUser: any,
+    @CurrentUser() currentUser: CurrentUser,
   ) {
     const isSelf = currentUser.id === id
     const isAdmin = currentUser.activeRole === UserRole.ADMIN
@@ -100,7 +100,7 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles('practitioner', 'admin')
   @Get()
-  findAll(@CurrentUser() currentUser: any) {
+  findAll(@CurrentUser() currentUser: CurrentUser) {
     if (currentUser.activeRole === UserRole.ADMIN) {
       return this.usersService.findAll()
     }
@@ -110,7 +110,7 @@ export class UsersController {
   @Get(':id')
   async findOne(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() currentUser: any,
+    @CurrentUser() currentUser: CurrentUser,
   ) {
     const isSelf = currentUser.id === id
     const isAdmin = currentUser.activeRole === UserRole.ADMIN
@@ -128,7 +128,7 @@ export class UsersController {
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() currentUser: any,
+    @CurrentUser() currentUser: CurrentUser,
     @Body() dto: UpdateUserDto,
   ) {
     const isSelf = currentUser.id === id
@@ -150,7 +150,7 @@ export class UsersController {
   @Delete(':id')
   async remove(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() currentUser: any,
+    @CurrentUser() currentUser: CurrentUser,
   ) {
     const isSelf = currentUser.id === id
     const isAdmin = currentUser.activeRole === UserRole.ADMIN

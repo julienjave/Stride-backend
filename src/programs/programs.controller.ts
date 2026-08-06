@@ -58,7 +58,7 @@ export class ProgramsController {
   @UseGuards(RolesGuard)
   @Roles('practitioner')
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateTemplateDto) {
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateTemplateDto) {
     return this.programsService.create(user.id, dto)
   }
 
@@ -67,7 +67,7 @@ export class ProgramsController {
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: AddTemplateExerciseDto,
   ) {
     return this.programsService.addExercise(id, user, dto)
@@ -92,7 +92,7 @@ export class ProgramsController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateTemplateDto,
   ) {
     return this.programsService.update(id, user, dto)
@@ -104,7 +104,7 @@ export class ProgramsController {
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
     @Param('templateExerciseId', ParseIntPipe) templateExerciseId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateTemplateExerciseDto,
   ) {
     return this.programsService.updateExercise(
@@ -124,7 +124,7 @@ export class ProgramsController {
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: ReorderTemplateExercisesDto,
   ) {
     return this.programsService.reorderExercises(id, user, dto.order)
@@ -135,7 +135,10 @@ export class ProgramsController {
   @UseGuards(RolesGuard)
   @Roles('practitioner', 'admin')
   @Delete(':id')
-  archive(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  archive(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.programsService.archive(id, user)
   }
 
@@ -145,7 +148,7 @@ export class ProgramsController {
   removeExercise(
     @Param('id', ParseIntPipe) id: number,
     @Param('templateExerciseId', ParseIntPipe) templateExerciseId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
   ) {
     return this.programsService.removeExercise(id, templateExerciseId, user)
   }

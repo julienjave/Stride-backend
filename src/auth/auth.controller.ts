@@ -68,7 +68,9 @@ export class AuthController {
   async register(@Body() dto: RegisterDto, @Req() req: Request) {
     const user = await this.authService.register(dto)
     return new Promise((resolve, reject) => {
-      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+      req.login(user, (err: Error | null) =>
+        err ? reject(err) : resolve(user),
+      )
     })
   }
 
@@ -79,7 +81,9 @@ export class AuthController {
   async registerClinic(@Body() dto: RegisterClinicDto, @Req() req: Request) {
     const user = await this.authService.registerClinic(dto)
     return new Promise((resolve, reject) => {
-      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+      req.login(user, (err: Error | null) =>
+        err ? reject(err) : resolve(user),
+      )
     })
   }
 
@@ -112,7 +116,7 @@ export class AuthController {
       // succeeds. The resolved activeRole is carried through here too, so
       // the role-selection logic already run inside validateUser() doesn't
       // need to be repeated once MFA completes.
-      ;(req.session as any).mfaPending = {
+      req.session.mfaPending = {
         userId: user.id,
         activeRole: user.activeRole,
       }
@@ -120,7 +124,9 @@ export class AuthController {
     }
 
     return new Promise((resolve, reject) => {
-      req.login(user, (err) => (err ? reject(err) : resolve(user)))
+      req.login(user, (err: Error | null) =>
+        err ? reject(err) : resolve(user),
+      )
     })
   }
 
@@ -130,7 +136,7 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @Post('mfa/verify')
   async verifyMfaLogin(@Body() dto: MfaCodeDto, @Req() req: Request) {
-    const pending = (req.session as any).mfaPending
+    const pending = req.session.mfaPending
     if (!pending) {
       throw new BadRequestException(
         'No pending MFA verification for this session',
@@ -145,13 +151,13 @@ export class AuthController {
       throw new UnauthorizedException('Invalid authentication code')
     }
 
-    delete (req.session as any).mfaPending
+    delete req.session.mfaPending
 
     const user = await this.usersService.findOne(pending.userId)
     const authenticatedUser = { ...user, activeRole: pending.activeRole }
 
     return new Promise((resolve, reject) => {
-      req.login(authenticatedUser, (err) =>
+      req.login(authenticatedUser, (err: Error | null) =>
         err ? reject(err) : resolve(authenticatedUser),
       )
     })
@@ -161,21 +167,21 @@ export class AuthController {
 
   @UseGuards(SessionAuthGuard)
   @Post('mfa/setup')
-  setupMfa(@CurrentUser() user: any) {
+  setupMfa(@CurrentUser() user: CurrentUser) {
     return this.authService.setupMfa(user.id)
   }
 
   @UseGuards(SessionAuthGuard)
   @Post('mfa/enable')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async enableMfa(@CurrentUser() user: any, @Body() dto: MfaCodeDto) {
+  async enableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
     await this.authService.enableMfa(user.id, dto.code)
   }
 
   @UseGuards(SessionAuthGuard)
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async disableMfa(@CurrentUser() user: any, @Body() dto: MfaCodeDto) {
+  async disableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
     await this.authService.disableMfa(user.id, dto.code)
   }
 
@@ -189,7 +195,7 @@ export class AuthController {
   @Post('switch-role')
   switchRole(
     @Body() dto: SwitchRoleDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Req() req: Request,
   ) {
     if (!user.roles.includes(dto.role)) {
@@ -197,7 +203,7 @@ export class AuthController {
     }
     const updatedUser = { ...user, activeRole: dto.role }
     return new Promise((resolve, reject) => {
-      req.login(updatedUser, (err) =>
+      req.login(updatedUser, (err: Error | null) =>
         err ? reject(err) : resolve(updatedUser),
       )
     })
@@ -208,7 +214,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(@Req() req: Request, @Res() res: Response) {
-    const user = req.user as any
+    const user = req.user as CurrentUser | undefined
     if (user) {
       await this.auditService.log({
         performedBy: user.id,
@@ -248,7 +254,7 @@ export class AuthController {
 
   @UseGuards(SessionAuthGuard)
   @Get('me')
-  me(@CurrentUser() user: unknown) {
+  me(@CurrentUser() user: CurrentUser) {
     return user
   }
 }

@@ -54,7 +54,7 @@ export class SessionsController {
   @UseGuards(RolesGuard)
   @Roles('patient')
   @Post()
-  create(@CurrentUser() user: any, @Body() dto: CreateSessionDto) {
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateSessionDto) {
     return this.sessionsService.create(user, dto)
   }
 
@@ -63,12 +63,15 @@ export class SessionsController {
   // Role-scoped inside the service, same as AssignedPrograms — every role
   // is allowed, just to a different slice of data.
   @Get()
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: CurrentUser) {
     return this.sessionsService.findAllForCurrentUser(user)
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
     return this.sessionsService.findOne(id, user)
   }
 
@@ -82,7 +85,7 @@ export class SessionsController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateSessionDto,
   ) {
     return this.sessionsService.update(id, user, dto)
@@ -94,7 +97,7 @@ export class SessionsController {
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
     @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateSessionExerciseDto,
   ) {
     return this.sessionsService.updateExercise(id, exerciseRowId, user, dto)
