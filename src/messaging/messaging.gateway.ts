@@ -18,30 +18,32 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Logger } from '@nestjs/common'
+import { Logger, UseFilters } from '@nestjs/common'
 import {
   WebSocketGateway,
   WebSocketServer,
   SubscribeMessage,
   MessageBody,
   ConnectedSocket,
-  OnGatewayConnection,
+  OnGatewayInit,
 } from '@nestjs/websockets'
 import { Server, Socket } from 'socket.io'
 import { UsersService } from '../users/users.service'
 import { MessagingService } from './messaging.service'
 import { getAllowedOrigins } from '../config/allowed-origins'
+import { WsHttpExceptionFilter } from './ws-exception.filter'
 
 
 // --- GATEWAY ------------------------------------------------------------------------------------------------
 
+@UseFilters(new WsHttpExceptionFilter())
 @WebSocketGateway({
   cors: {
     origin: getAllowedOrigins(),
     credentials: true,
   },
 })
-export class MessagingGateway implements OnGatewayConnection {
+export class MessagingGateway implements OnGatewayInit {
   @WebSocketServer() server!: Server
   private readonly logger = new Logger(MessagingGateway.name)
 
@@ -50,33 +52,44 @@ export class MessagingGateway implements OnGatewayConnection {
     private readonly usersService: UsersService,
   ) {}
 
-  // Runs once, when a socket first connects — this is the WebSocket
-  // equivalent of Passport's deserializeUser, done manually here rather than
-  // through Passport itself (Passport's own machinery is Express-specific;
-  // reusing it for sockets would need wrapping passport.initialize() and
-  // passport.session() too, real added complexity for one connection event).
-  // socket.request.session exists at all only because of SessionIoAdapter.
-  async handleConnection(socket: Socket) {
-    const sessionData = (socket.request as any).session?.passport?.user
-    if (!sessionData) {
-      this.logger.warn(`Socket ${socket.id} rejected — no session`)
-      socket.disconnect()
-      return
-    }
-
-    try {
-      const user = await this.usersService.findOne(sessionData.id)
-      if (!user.roles.includes(sessionData.activeRole)) {
-        socket.disconnect()
-        return
+  // Genuine Socket.IO MIDDLEWARE (server.use), not the handleConnection
+  // lifecycle hook this used to be — a real, previously-latent bug this
+  // change fixes: handleConnection runs asynchronously WITHOUT blocking the
+  // client from sending further events, meaning a client that emits an
+  // event (joinConversation, sendMessage) immediately after connecting
+  // could reach its handler BEFORE handleConnection's own `await
+  // usersService.findOne(...)` had actually finished — socket.data.user
+  // would still be undefined, crashing every handler that reads it.
+  // Middleware registered via server.use() is different in a way that
+  // actually matters here: it must fully resolve, awaits included, before
+  // the connection is considered established at all — no event can reach
+  // ANY handler until this completes. This is the WebSocket equivalent of
+  // Passport's deserializeUser, done manually since Passport's own
+  // machinery is Express-specific. socket.request.session exists at all
+  // only because of SessionIoAdapter.
+  afterInit(server: Server) {
+    server.use(async (socket: Socket, next) => {
+      const sessionData = (socket.request as any).session?.passport?.user
+      if (!sessionData) {
+        this.logger.warn(`Socket ${socket.id} rejected — no session`)
+        return next(new Error('Unauthorized'))
       }
-      // Stashed on the socket itself — every subsequent event handler for
-      // THIS connection reads it back, the same role @CurrentUser() plays
-      // for HTTP requests.
-      (socket.data as any).user = { ...user, activeRole: sessionData.activeRole }
-    } catch {
-      socket.disconnect()
-    }
+
+      try {
+        const user = await this.usersService.findOne(sessionData.id)
+        if (!user.roles.includes(sessionData.activeRole)) {
+          return next(new Error('Unauthorized'))
+        }
+        // Stashed on the socket itself — every subsequent event handler for
+        // THIS connection reads it back, the same role @CurrentUser() plays
+        // for HTTP requests. Guaranteed set before any handler can possibly
+        // run, unlike the old handleConnection-based approach.
+        (socket.data as any).user = { ...user, activeRole: sessionData.activeRole }
+        next()
+      } catch {
+        next(new Error('Unauthorized'))
+      }
+    })
   }
 
   @SubscribeMessage('joinConversation')
@@ -84,6 +97,17 @@ export class MessagingGateway implements OnGatewayConnection {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { conversationId: number },
   ) {
+    const user = (socket.data as any).user
+    // Verifies genuine participation — reusing the EXACT SAME rule as every
+    // REST endpoint on this resource (MessagingService.assertParticipant) —
+    // before ever letting the socket into the room. Without this, any
+    // authenticated socket could join ANY conversation's room purely by
+    // knowing its id, silently receiving every message broadcast to a
+    // clinical conversation they have no legitimate connection to. Throws
+    // NotFoundException/ForbiddenException on failure, caught by
+    // WsHttpExceptionFilter above rather than a manual try/catch here — the
+    // same "let the filter handle it" pattern REST controllers already rely on.
+    await this.messagingService.assertUserCanJoinConversation(data.conversationId, user)
     // Room name is just the conversation's own id — everyone who joins this
     // room receives every message broadcast to it, and no one outside it does.
     await socket.join(`conversation:${data.conversationId}`)
@@ -107,7 +131,7 @@ export class MessagingGateway implements OnGatewayConnection {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { conversationId: number; messageId: number },
   ) {
-    const user = (socket.data as any).user;
+    const user = (socket.data as any).user
     const message = await this.messagingService.deleteMessage(
       data.conversationId,
       data.messageId,

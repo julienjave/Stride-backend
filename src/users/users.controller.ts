@@ -111,11 +111,13 @@ export class UsersController {
     }
     
     @Get(':id')
-    findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
+    async findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: any) {
         const isSelf = currentUser.id === id
-        const isElevated =
-        currentUser.activeRole === UserRole.PRACTITIONER || currentUser.activeRole === UserRole.ADMIN
-        if (!isSelf && !isElevated) {
+        const isAdmin = currentUser.activeRole === UserRole.ADMIN
+        const isManagingPractitioner =
+        currentUser.activeRole === UserRole.PRACTITIONER &&
+        (await this.usersService.isPatientManagedBy(id, currentUser.id))
+        if (!isSelf && !isAdmin && !isManagingPractitioner) {
         throw new ForbiddenException('You can only view your own profile')
         }
         return this.usersService.findOne(id)
