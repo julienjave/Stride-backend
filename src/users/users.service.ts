@@ -56,9 +56,27 @@ export class UsersService {
   // --- POST ROUTES ---
 
   // requestingUser is checked against ACTIVE role, not just "has this role somewhere" 
-  async create(dto: CreateUserDto, requestingUser?: { activeRole: string }) {
+  async create(dto: CreateUserDto, requestingUser?: { id: number; activeRole: string }) {
     if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.role !== UserRole.PATIENT) {
       throw new ForbiddenException('Practitioners can only create patient accounts')
+    }
+ 
+    // The one place in this app that actually CREATES a practitioner-patient
+    // relationship — every other path that trusts one already going through
+    // it (findOne/update/remove on users, AssignedPrograms, Sessions,
+    // MedicalFiles, Messaging) does so via isPatientManagedBy, which checks
+    // REAL shared clinic membership. This check was missing here entirely:
+    // dto.clinicId was only ever verified to exist as a real clinic, never
+    // verified as one the REQUESTING practitioner actually belongs to —
+    // meaning a practitioner in Clinic A could plant a patient record
+    // directly into Clinic B's roster purely by knowing Clinic B's id.
+    // Admin is exempt — admins have legitimate oversight across every
+    // clinic, consistent with every other admin-bypass check in this app.
+    if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.clinicId) {
+      const ownClinicIds = await this.getClinicIdsForUser(requestingUser.id)
+      if (!ownClinicIds.includes(dto.clinicId)) {
+        throw new ForbiddenException('You can only add patients to a clinic you belong to')
+      }
     }
  
     const existing = await this.db.query.users.findFirst({
@@ -207,19 +225,21 @@ export class UsersService {
     return rows.map((r) => r.role)
   }
 
-  // "My patients," for a practitioner — defined as any active patient who
-  // shares at least one clinic with them. This is the only relationship
-  // table we have between users and anything shared right now; a stricter
-  // definition ("patients I've actually assigned a program to") becomes
-  // possible once AssignedProgramsModule exists, and would be worth
-  // tightening to at that point.
-  async findPatientsForPractitioner(practitionerId: number) {
-    const practitionerClinics = await this.db
+  // Shared by findPatientsForPractitioner, isPatientManagedBy, and (new)
+  // create()'s clinic-ownership check below — three places that all
+  // needed "which clinics does this user actually belong to".
+  private async getClinicIdsForUser(userId: number): Promise<number[]> {
+    const rows = await this.db
       .select({ clinicId: userClinics.clinicId })
       .from(userClinics)
-      .where(eq(userClinics.userId, practitionerId))
- 
-    const clinicIds = practitionerClinics.map((c) => c.clinicId)
+      .where(eq(userClinics.userId, userId))
+    return rows.map((r) => r.clinicId)
+  }
+
+  // "My patients," for a practitioner — defined as any active patient who
+  // shares at least one clinic with them.
+  async findPatientsForPractitioner(practitionerId: number) {
+    const clinicIds = await this.getClinicIdsForUser(practitionerId)
     if (clinicIds.length === 0) {
       return []
     }
@@ -244,12 +264,7 @@ export class UsersService {
   // — "is this patient one this practitioner can act on," using the same
   // clinic-sharing definition as findPatientsForPractitioner.
   async isPatientManagedBy(patientId: number, practitionerId: number): Promise<boolean> {
-    const practitionerClinics = await this.db
-      .select({ clinicId: userClinics.clinicId })
-      .from(userClinics)
-      .where(eq(userClinics.userId, practitionerId))
- 
-    const clinicIds = practitionerClinics.map((c) => c.clinicId)
+    const clinicIds = await this.getClinicIdsForUser(practitionerId)
     if (clinicIds.length === 0) {
       return false
     }
