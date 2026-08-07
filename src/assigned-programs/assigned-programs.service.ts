@@ -226,10 +226,14 @@ export class AssignedProgramsService {
       where: eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
     })
     const currentIds = new Set(currentRows.map((r) => r.id))
-    const newIds = new Set(newOrder)
+    // Same fix as ProgramsService.reorderExercises — a genuine permutation
+    // check needs length + no-internal-duplicates + valid-membership
+    // together, not just a comparison of deduplicated Set sizes. See that
+    // method's comment for the full exploit trace.
     const isSamePermutation =
-      currentIds.size === newIds.size &&
-      [...currentIds].every((rowId) => newIds.has(rowId))
+      newOrder.length === currentRows.length &&
+      new Set(newOrder).size === newOrder.length &&
+      newOrder.every((id) => currentIds.has(id))
 
     if (!isSamePermutation) {
       throw new BadRequestException(

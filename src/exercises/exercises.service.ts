@@ -171,10 +171,19 @@ export class ExercisesService {
     this.assertCanModify(exercise, currentUser)
 
     const currentSet = new Set(exercise.mediaUrls)
-    const newSet = new Set(newOrder)
+    // Same fix as the two reorderExercises methods — a genuine permutation
+    // check needs length + no-internal-duplicates + valid-membership
+    // together. Here specifically, since mediaUrls gets OVERWRITTEN
+    // directly with newOrder (not looped per-row like the two exercise
+    // reorder methods), the old, incomplete check could let a client
+    // submit an array with a duplicated image key padding it to the right
+    // unique count — silently DROPPING a real image from the gallery
+    // entirely, replaced by a duplicate of another, rather than just
+    // producing a sortOrder gap.
     const isSamePermutation =
-      currentSet.size === newSet.size &&
-      [...currentSet].every((key) => newSet.has(key))
+      newOrder.length === exercise.mediaUrls.length &&
+      new Set(newOrder).size === newOrder.length &&
+      newOrder.every((key) => currentSet.has(key))
 
     if (!isSamePermutation) {
       throw new BadRequestException(

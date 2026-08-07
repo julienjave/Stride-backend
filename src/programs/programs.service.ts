@@ -104,10 +104,20 @@ export class ProgramsService {
       where: eq(templateExercises.templateId, templateId),
     })
     const currentIds = new Set(currentRows.map((r) => r.id))
-    const newIds = new Set(newOrder)
+    // A genuine permutation check needs THREE conditions together — the
+    // previous version only compared deduplicated Set sizes, which a
+    // client could satisfy by submitting a newOrder array containing a
+    // DUPLICATE id (padding it to the right unique count) while silently
+    // OMITTING a real exercise entirely. That array would pass the old
+    // check, then get looped over directly below using its RAW length —
+    // the duplicated id's later occurrence would silently overwrite its
+    // own earlier sortOrder update, leaving a genuine gap in the final
+    // sequence (e.g. sortOrder 1,2,3 with 0 never actually applied to any
+    // row) while the omitted exercise's real sortOrder went untouched.
     const isSamePermutation =
-      currentIds.size === newIds.size &&
-      [...currentIds].every((rowId) => newIds.has(rowId))
+      newOrder.length === currentRows.length &&
+      new Set(newOrder).size === newOrder.length &&
+      newOrder.every((id) => currentIds.has(id))
 
     if (!isSamePermutation) {
       throw new BadRequestException(
