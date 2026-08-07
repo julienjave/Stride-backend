@@ -40,7 +40,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
-@ApiTags('Users')
+@ApiTags('Sessions')
 @Controller('sessions')
 export class SessionsController {
   constructor(private readonly sessionsService: SessionsService) {}

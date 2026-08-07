@@ -48,7 +48,7 @@ import { AuditService } from '../audit/audit.service'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
-@ApiTags('Users')
+@ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(

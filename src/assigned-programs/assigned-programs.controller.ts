@@ -43,7 +43,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
-@ApiTags('Users')
+@ApiTags('Assigned Programs')
 @Controller('assigned-programs')
 export class AssignedProgramsController {
   constructor(

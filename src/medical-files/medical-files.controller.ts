@@ -40,7 +40,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // No PATCH, no DELETE routes anywhere in this controller — deliberate, not
 // an incomplete module. See MedicalFilesService for the reasoning.
 @UseGuards(SessionAuthGuard)
-@ApiTags('Users')
+@ApiTags('Medical Files')
 @Controller('medical-files')
 export class MedicalFilesController {
   constructor(private readonly medicalFilesService: MedicalFilesService) {}

@@ -38,7 +38,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
-@ApiTags('Users')
+@ApiTags('Messaging')
 @Controller('conversations')
 export class MessagingController {
   constructor(private readonly messagingService: MessagingService) {}

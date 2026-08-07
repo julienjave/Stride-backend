@@ -45,7 +45,7 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
-@ApiTags('Users')
+@ApiTags('Clinics')
 @Controller('clinics')
 export class ClinicsController {
   constructor(private readonly clinicsService: ClinicsService) {}
