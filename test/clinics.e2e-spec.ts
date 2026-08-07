@@ -168,6 +168,9 @@ describe('Clinics (e2e)', () => {
 
     const addRes = await practitioner.post(`/clinics/${clinicId}/members`).send({ userId: practitionerId });
     expect(addRes.status).toBe(403);
+
+    const removeRes = await practitioner.delete(`/clinics/${clinicId}/members/${practitionerId}`);
+    expect(removeRes.status).toBe(403);
   });
 
   it('lets an admin add a member, rejects a duplicate add, then lets an admin remove the member', async () => {

@@ -14,12 +14,14 @@ describe('UsersService.create', () => {
   let db: {
     query: { users: { findFirst: jest.Mock } }
     transaction: jest.Mock
+    select: jest.Mock
   }
 
   beforeEach(async () => {
     db = {
       query: { users: { findFirst: jest.fn() } },
       transaction: jest.fn(),
+      select: jest.fn(),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -44,7 +46,7 @@ describe('UsersService.create', () => {
           lastName: 'Practitioner',
           licenseNumber: 'PT-1',
         },
-        { activeRole: UserRole.PRACTITIONER },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
       ),
     ).rejects.toThrow(ForbiddenException)
 
@@ -85,7 +87,7 @@ describe('UsersService.create', () => {
         lastName: 'Patient',
         dateOfBirth: '1990-01-01',
       },
-      { activeRole: UserRole.PRACTITIONER },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
     )
 
     expect(result.roles).toEqual([UserRole.PATIENT])
@@ -144,6 +146,125 @@ describe('UsersService.create', () => {
         clinicId: 999,
       }),
     ).rejects.toThrow(NotFoundException)
+  })
+
+  // Security-fix regression coverage: dto.clinicId used to only be checked
+  // for existing as a real clinic, never as one the REQUESTING practitioner
+  // actually belongs to — see the comment on the check itself in
+  // users.service.ts.
+  it("rejects a practitioner creating a patient in a clinic they don't belong to", async () => {
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ clinicId: 5 }]),
+      }),
+    })
+
+    await expect(
+      usersService.create(
+        {
+          email: 'other-clinic-patient@example.com',
+          password: 'password123',
+          role: UserRole.PATIENT,
+          firstName: 'New',
+          lastName: 'Patient',
+          dateOfBirth: '1990-01-01',
+          clinicId: 6,
+        },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+      ),
+    ).rejects.toThrow(ForbiddenException)
+
+    // Rejected before ever checking for a duplicate email.
+    expect(db.query.users.findFirst).not.toHaveBeenCalled()
+  })
+
+  it('allows a practitioner to create a patient in a clinic they belong to', async () => {
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ clinicId: 6 }]),
+      }),
+    })
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    db.transaction.mockImplementation((cb: any) =>
+      cb({
+        insert: jest.fn().mockReturnValue({
+          values: jest.fn().mockReturnValue({
+            returning: jest.fn().mockResolvedValue([
+              {
+                id: 12,
+                email: 'own-clinic-patient@example.com',
+                passwordHash: 'hashed',
+                firstName: 'New',
+                lastName: 'Patient',
+                avatarPath: null,
+                isActive: true,
+              },
+            ]),
+          }),
+        }),
+        query: {
+          clinics: { findFirst: jest.fn().mockResolvedValue({ id: 6 }) },
+        },
+      }),
+    )
+
+    const result = await usersService.create(
+      {
+        email: 'own-clinic-patient@example.com',
+        password: 'password123',
+        role: UserRole.PATIENT,
+        firstName: 'New',
+        lastName: 'Patient',
+        dateOfBirth: '1990-01-01',
+        clinicId: 6,
+      },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+    )
+
+    expect(result.roles).toEqual([UserRole.PATIENT])
+  })
+
+  it('does not apply the clinic-ownership check to an admin', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    db.transaction.mockImplementation((cb: any) =>
+      cb({
+        insert: jest.fn().mockReturnValue({
+          values: jest.fn().mockReturnValue({
+            returning: jest.fn().mockResolvedValue([
+              {
+                id: 13,
+                email: 'admin-created-patient@example.com',
+                passwordHash: 'hashed',
+                firstName: 'New',
+                lastName: 'Patient',
+                avatarPath: null,
+                isActive: true,
+              },
+            ]),
+          }),
+        }),
+        query: {
+          clinics: { findFirst: jest.fn().mockResolvedValue({ id: 999 }) },
+        },
+      }),
+    )
+
+    const result = await usersService.create(
+      {
+        email: 'admin-created-patient@example.com',
+        password: 'password123',
+        role: UserRole.PATIENT,
+        firstName: 'New',
+        lastName: 'Patient',
+        dateOfBirth: '1990-01-01',
+        clinicId: 999,
+      },
+      { id: 1, activeRole: UserRole.ADMIN },
+    )
+
+    expect(result.roles).toEqual([UserRole.PATIENT])
+    // Admin never triggers getClinicIdsForUser's db.select lookup at all.
+    expect(db.select).not.toHaveBeenCalled()
   })
 })
 

@@ -7,6 +7,18 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 
+// AuthService now decrypts the stored MFA secret (encryptMfaSecret/
+// decryptMfaSecret, AES-256-GCM) before ever handing it to otp.verify() —
+// real encrypted values require MFA_ENCRYPTION_KEY, which isn't set up for
+// these mocked unit tests. Mocking the module as a passthrough lets the
+// existing convention below (a plain string like 'SECRET' standing in for
+// "whatever is in mfaSecret") keep working, without pulling real AES or env
+// config into what's otherwise a pure, isolated unit test.
+jest.mock('./mfa-secret-crypto', () => ({
+  encryptMfaSecret: jest.fn((plaintext: string) => plaintext),
+  decryptMfaSecret: jest.fn((stored: string) => stored),
+}))
+
 describe('AuthService.validateUser', () => {
   let authService: AuthService
   let usersService: {

@@ -3,6 +3,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common'
 import { SessionsService } from './sessions.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { SessionStatus } from './dto/update-session.dto'
 
 describe('SessionsService.create', () => {
   let service: SessionsService
@@ -227,7 +228,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
       service.update(
         500,
         { id: 7, activeRole: 'practitioner' },
-        { status: 'in_progress' as any },
+        { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
   })
@@ -243,7 +244,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
       service.update(
         500,
         { id: 1, activeRole: 'admin' },
-        { status: 'in_progress' as any },
+        { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
   })
@@ -259,7 +260,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
       service.update(
         500,
         { id: 999, activeRole: 'patient' },
-        { status: 'in_progress' as any },
+        { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
   })
@@ -274,7 +275,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await service.update(
       500,
       { id: 20, activeRole: 'patient' },
-      { status: 'in_progress' as any },
+      { status: SessionStatus.IN_PROGRESS },
     )
 
     expect(setArgs.startedAt).toBeInstanceOf(Date)
@@ -291,7 +292,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await service.update(
       500,
       { id: 20, activeRole: 'patient' },
-      { status: 'in_progress' as any },
+      { status: SessionStatus.IN_PROGRESS },
     )
 
     expect(setArgs.startedAt).toBeUndefined()
@@ -307,7 +308,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await service.update(
       500,
       { id: 20, activeRole: 'patient' },
-      { status: 'completed' as any },
+      { status: SessionStatus.COMPLETED },
     )
 
     expect(setArgs.completedAt).toBeInstanceOf(Date)

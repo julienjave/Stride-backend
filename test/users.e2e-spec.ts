@@ -313,4 +313,61 @@ describe('Users (e2e)', () => {
     });
     expect(res.status).toBe(403);
   });
+
+  it('rejects a practitioner creating a patient in a clinic they do not belong to', async () => {
+    const stamp = Date.now();
+    const res = await practitionerA.post('/users').send({
+      email: `cross-clinic-patient-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Cross',
+      lastName: 'Clinic',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicYId,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a practitioner create a patient in their own clinic', async () => {
+    const stamp = Date.now();
+    const res = await practitionerA.post('/users').send({
+      email: `own-clinic-patient-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Own',
+      lastName: 'Clinic',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('lets an admin create a patient in any clinic, exempt from the clinic-ownership check', async () => {
+    const stamp = Date.now();
+    const res = await admin.post('/users').send({
+      email: `admin-cross-clinic-patient-${stamp}@example.com`,
+      password: 'password123',
+      role: 'patient',
+      firstName: 'Admin',
+      lastName: 'CrossClinic',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicYId,
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('scopes GET /users/:id: rejects an unrelated practitioner, allows the managing practitioner, self, and admin', async () => {
+    const unrelated = await practitionerB.get(`/users/${patient1Id}`);
+    expect(unrelated.status).toBe(403);
+
+    const managing = await practitionerA.get(`/users/${patient1Id}`);
+    expect(managing.status).toBe(200);
+    expect(managing.body.id).toBe(patient1Id);
+
+    const self = await patient1.get(`/users/${patient1Id}`);
+    expect(self.status).toBe(200);
+
+    const adminView = await admin.get(`/users/${patient1Id}`);
+    expect(adminView.status).toBe(200);
+  });
 });

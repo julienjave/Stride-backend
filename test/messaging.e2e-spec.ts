@@ -264,6 +264,17 @@ describe('Messaging (e2e)', () => {
     expect(senderDelete.body.messageBody).toBe('[message deleted]');
   });
 
+  it('rejects an admin from archiving or unarchiving a conversation — participant-only action', async () => {
+    const convoRes = await practitionerA.post('/conversations').send({ userId: patientAId });
+    const conversationId = convoRes.body.id;
+
+    const archiveRes = await admin.patch(`/conversations/${conversationId}/archive`);
+    expect(archiveRes.status).toBe(403);
+
+    const unarchiveRes = await admin.patch(`/conversations/${conversationId}/unarchive`);
+    expect(unarchiveRes.status).toBe(403);
+  });
+
   it('deleteMessage: rejects deleting a message that has already been read', async () => {
     const convoRes = await practitionerA.post('/conversations').send({ userId: patientAId });
     const conversationId = convoRes.body.id;

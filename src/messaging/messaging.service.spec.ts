@@ -159,6 +159,30 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
 
     expect(setArgs).toEqual({ practitionerArchivedAt: null })
   })
+
+  // assertParticipant() itself lets an admin through (admins bypass the
+  // "not a participant" check everywhere else), so this is a DIFFERENT
+  // rejection path than the "non-participant" test above — the explicit
+  // admin check inside archiveConversation/unarchiveConversation, added
+  // because archiving is deliberately a participant-only inbox concern that
+  // admin oversight should not touch.
+  it('rejects an admin from archiving a conversation, even though they pass the participant check', async () => {
+    await expect(
+      service.archiveConversation(900, { id: 1, activeRole: 'admin' }),
+    ).rejects.toThrow(ForbiddenException)
+  })
+
+  it('rejects an admin from unarchiving a conversation, even though they pass the participant check', async () => {
+    await expect(
+      service.unarchiveConversation(900, { id: 1, activeRole: 'admin' }),
+    ).rejects.toThrow(ForbiddenException)
+  })
+
+  it('allows the actual patient participant to unarchive the conversation', async () => {
+    await service.unarchiveConversation(900, { id: 20, activeRole: 'patient' })
+
+    expect(setArgs).toEqual({ patientArchivedAt: null })
+  })
 })
 
 describe('MessagingService.deleteMessage', () => {

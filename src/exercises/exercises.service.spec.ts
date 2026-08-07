@@ -285,3 +285,69 @@ describe('ExercisesService.findOne', () => {
     )
   })
 })
+
+// findAll's pagination math (offset/total/totalPages) was added later and
+// had no coverage at all — worth pinning down given it's genuine arithmetic,
+// not just a passthrough.
+describe('ExercisesService.findAll', () => {
+  let exercisesService: ExercisesService
+  let db: {
+    query: { exercises: { findMany: jest.Mock } }
+    select: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        exercises: {
+          findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        },
+      },
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ total: 42 }]),
+        }),
+      }),
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ExercisesService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: {} },
+      ],
+    }).compile()
+
+    exercisesService = moduleRef.get(ExercisesService)
+  })
+
+  it('defaults to page 1 and limit 20, computing offset 0, when neither is provided', async () => {
+    const result = await exercisesService.findAll({})
+
+    expect(db.query.exercises.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20, offset: 0 }),
+    )
+    expect(result.data).toEqual([{ id: 1 }, { id: 2 }])
+    expect(result.meta).toEqual({
+      total: 42,
+      page: 1,
+      limit: 20,
+      totalPages: 3,
+    })
+  })
+
+  it('computes the offset from the requested page and limit', async () => {
+    await exercisesService.findAll({ page: 3, limit: 10 })
+
+    expect(db.query.exercises.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 10, offset: 20 }),
+    )
+  })
+
+  it('rounds totalPages up so a partial last page still counts as a page', async () => {
+    const result = await exercisesService.findAll({ page: 1, limit: 10 })
+
+    // total: 42, limit: 10 -> 4.2 pages -> rounds up to 5
+    expect(result.meta.totalPages).toBe(5)
+  })
+})
