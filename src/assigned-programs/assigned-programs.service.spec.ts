@@ -115,7 +115,7 @@ describe('AssignedProgramsService.create', () => {
     const inserted: any[] = []
     db.transaction.mockImplementation((cb: any) =>
       cb({
-        insert: jest.fn().mockImplementation((_table: any) => ({
+        insert: jest.fn().mockImplementation(() => ({
           values: jest.fn().mockImplementation((values: any) => {
             inserted.push(values)
             return {
