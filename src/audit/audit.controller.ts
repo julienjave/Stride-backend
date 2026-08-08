@@ -24,6 +24,7 @@ import { FindAuditLogsQueryDto } from './dto/find-audit-logs-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -31,7 +32,7 @@ import { Roles } from '../common/decorators/roles.decorator'
 // capability, not something practitioners or
 // patients have any access to.
 @UseGuards(SessionAuthGuard, RolesGuard)
-@Roles('admin')
+@Roles(UserRole.ADMIN)
 @ApiTags('Audit')
 @Controller('audit-logs')
 export class AuditController {

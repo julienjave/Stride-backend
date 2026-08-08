@@ -21,6 +21,7 @@
 // is the standard, type-safe way to extend a third-party library's types —
 // this removes the need for an `as any` cast at every access site.
 import 'express-session'
+import type { UserRole } from '../users/dto/create-user.dto'
 
 declare module 'express-session' {
   interface SessionData {
@@ -31,7 +32,7 @@ declare module 'express-session' {
     // key Passport itself manages.
     mfaPending?: {
       userId: number
-      activeRole: string
+      activeRole: UserRole
     }
 
     // The key Passport's session strategy writes on every successful
@@ -44,7 +45,7 @@ declare module 'express-session' {
     passport?: {
       user: {
         id: number
-        activeRole: string
+        activeRole: UserRole
       }
     }
   }

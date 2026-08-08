@@ -4,6 +4,7 @@ import { SessionsService } from './sessions.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { SessionStatus } from './dto/update-session.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 describe('SessionsService.create', () => {
   let service: SessionsService
@@ -44,7 +45,7 @@ describe('SessionsService.create', () => {
 
     await expect(
       service.create(
-        { id: 20, activeRole: 'patient' },
+        { id: 20, activeRole: UserRole.PATIENT },
         { assignedProgramId: 999 },
       ),
     ).rejects.toThrow(NotFoundException)
@@ -58,7 +59,7 @@ describe('SessionsService.create', () => {
 
     await expect(
       service.create(
-        { id: 20, activeRole: 'patient' },
+        { id: 20, activeRole: UserRole.PATIENT },
         { assignedProgramId: 5 },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -101,7 +102,7 @@ describe('SessionsService.create', () => {
     )
 
     const result = await service.create(
-      { id: 20, activeRole: 'patient' },
+      { id: 20, activeRole: UserRole.PATIENT },
       { assignedProgramId: 5 },
     )
 
@@ -151,33 +152,33 @@ describe('SessionsService.assertCanView (via findOne)', () => {
 
   it('allows an admin to view any session', async () => {
     await expect(
-      service.findOne(500, { id: 1, activeRole: 'admin' }),
+      service.findOne(500, { id: 1, activeRole: UserRole.ADMIN }),
     ).resolves.toBeDefined()
   })
 
   it('allows the owning patient to view their own session', async () => {
     await expect(
-      service.findOne(500, { id: 20, activeRole: 'patient' }),
+      service.findOne(500, { id: 20, activeRole: UserRole.PATIENT }),
     ).resolves.toBeDefined()
   })
 
   it('rejects a different patient viewing a session that is not theirs', async () => {
     await expect(
-      service.findOne(500, { id: 999, activeRole: 'patient' }),
+      service.findOne(500, { id: 999, activeRole: UserRole.PATIENT }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it('allows a managing practitioner to view the session', async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true)
     await expect(
-      service.findOne(500, { id: 7, activeRole: 'practitioner' }),
+      service.findOne(500, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).resolves.toBeDefined()
   })
 
   it('rejects a non-managing practitioner from viewing the session', async () => {
     usersService.isPatientManagedBy.mockResolvedValue(false)
     await expect(
-      service.findOne(500, { id: 7, activeRole: 'practitioner' }),
+      service.findOne(500, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
   })
 })
@@ -227,7 +228,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await expect(
       service.update(
         500,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -243,7 +244,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await expect(
       service.update(
         500,
-        { id: 1, activeRole: 'admin' },
+        { id: 1, activeRole: UserRole.ADMIN },
         { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -259,7 +260,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
     await expect(
       service.update(
         500,
-        { id: 999, activeRole: 'patient' },
+        { id: 999, activeRole: UserRole.PATIENT },
         { status: SessionStatus.IN_PROGRESS },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -274,7 +275,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
 
     await service.update(
       500,
-      { id: 20, activeRole: 'patient' },
+      { id: 20, activeRole: UserRole.PATIENT },
       { status: SessionStatus.IN_PROGRESS },
     )
 
@@ -291,7 +292,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
 
     await service.update(
       500,
-      { id: 20, activeRole: 'patient' },
+      { id: 20, activeRole: UserRole.PATIENT },
       { status: SessionStatus.IN_PROGRESS },
     )
 
@@ -307,7 +308,7 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
 
     await service.update(
       500,
-      { id: 20, activeRole: 'patient' },
+      { id: 20, activeRole: UserRole.PATIENT },
       { status: SessionStatus.COMPLETED },
     )
 
@@ -360,7 +361,7 @@ describe('SessionsService IDOR check (updateExercise)', () => {
       service.updateExercise(
         500,
         999,
-        { id: 20, activeRole: 'patient' },
+        { id: 20, activeRole: UserRole.PATIENT },
         { completed: true },
       ),
     ).rejects.toThrow(NotFoundException)
@@ -376,7 +377,7 @@ describe('SessionsService IDOR check (updateExercise)', () => {
       service.updateExercise(
         500,
         30,
-        { id: 20, activeRole: 'patient' },
+        { id: 20, activeRole: UserRole.PATIENT },
         { completed: true },
       ),
     ).resolves.toEqual({ id: 30 })

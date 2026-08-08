@@ -6,6 +6,7 @@ import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // AuthService now decrypts the stored MFA secret (encryptMfaSecret/
 // decryptMfaSecret, AES-256-GCM) before ever handing it to otp.verify() —
@@ -114,7 +115,11 @@ describe('AuthService.validateUser', () => {
     usersService.getRolesForUser.mockResolvedValue(['practitioner'])
 
     await expect(
-      authService.validateUser('jane@example.com', 'password123', 'admin'),
+      authService.validateUser(
+        'jane@example.com',
+        'password123',
+        UserRole.ADMIN,
+      ),
     ).rejects.toThrow(ForbiddenException)
   })
 })

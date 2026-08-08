@@ -7,6 +7,7 @@ import {
 import { ExercisesService } from './exercises.service'
 import { StorageService } from '../storage/storage.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
 describe('ExercisesService.assertCanModify (via update)', () => {
   let exercisesService: ExercisesService
@@ -51,7 +52,7 @@ describe('ExercisesService.assertCanModify (via update)', () => {
     await expect(
       exercisesService.update(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { name: 'Updated' },
       ),
     ).resolves.toEqual({ id: 1, name: 'Updated' })
@@ -68,7 +69,7 @@ describe('ExercisesService.assertCanModify (via update)', () => {
     await expect(
       exercisesService.update(
         1,
-        { id: 999, activeRole: 'admin' },
+        { id: 999, activeRole: UserRole.ADMIN },
         { name: 'Updated' },
       ),
     ).resolves.toEqual({ id: 1, name: 'Updated' })
@@ -85,7 +86,7 @@ describe('ExercisesService.assertCanModify (via update)', () => {
     await expect(
       exercisesService.update(
         1,
-        { id: 999, activeRole: 'practitioner' },
+        { id: 999, activeRole: UserRole.PRACTITIONER },
         { name: 'Updated' },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -102,7 +103,7 @@ describe('ExercisesService.assertCanModify (via update)', () => {
     await expect(
       exercisesService.update(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { name: 'Updated' },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -155,7 +156,7 @@ describe('ExercisesService.reorderImages', () => {
   it('accepts a reordering that is an exact permutation of the current images', async () => {
     const result = await exercisesService.reorderImages(
       1,
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       ['c.jpg', 'a.jpg', 'b.jpg'],
     )
 
@@ -164,21 +165,21 @@ describe('ExercisesService.reorderImages', () => {
 
   it('rejects a reordering that drops an existing image', async () => {
     await expect(
-      exercisesService.reorderImages(1, { id: 7, activeRole: 'practitioner' }, [
-        'a.jpg',
-        'b.jpg',
-      ]),
+      exercisesService.reorderImages(
+        1,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        ['a.jpg', 'b.jpg'],
+      ),
     ).rejects.toThrow(BadRequestException)
   })
 
   it('rejects a reordering that introduces a key that was never uploaded', async () => {
     await expect(
-      exercisesService.reorderImages(1, { id: 7, activeRole: 'practitioner' }, [
-        'a.jpg',
-        'b.jpg',
-        'c.jpg',
-        'never-uploaded.jpg',
-      ]),
+      exercisesService.reorderImages(
+        1,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        ['a.jpg', 'b.jpg', 'c.jpg', 'never-uploaded.jpg'],
+      ),
     ).rejects.toThrow(BadRequestException)
   })
 
@@ -186,7 +187,7 @@ describe('ExercisesService.reorderImages', () => {
     await expect(
       exercisesService.reorderImages(
         1,
-        { id: 999, activeRole: 'practitioner' },
+        { id: 999, activeRole: UserRole.PRACTITIONER },
         ['c.jpg', 'a.jpg', 'b.jpg'],
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -239,7 +240,7 @@ describe('ExercisesService.removeImage', () => {
   it('removes an image key that belongs to this exercise', async () => {
     const result = await exercisesService.removeImage(
       1,
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       'a.jpg',
     )
 
@@ -251,7 +252,7 @@ describe('ExercisesService.removeImage', () => {
     await expect(
       exercisesService.removeImage(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         'not-mine.jpg',
       ),
     ).rejects.toThrow(NotFoundException)

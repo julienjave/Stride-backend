@@ -45,6 +45,7 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -59,7 +60,7 @@ export class ExercisesController {
   // --- POST ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner')
+  @Roles(UserRole.PRACTITIONER)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateExerciseDto) {
     return this.exercisesService.create(user.id, dto)
@@ -69,7 +70,7 @@ export class ExercisesController {
   // avatar/logo routes: up to 5 files under the field name "files" in one
   // request, delivered as an array via @UploadedFiles().
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Post(':id/images')
   @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
   uploadImages(
@@ -103,7 +104,7 @@ export class ExercisesController {
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -114,7 +115,7 @@ export class ExercisesController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id/images')
   reorderImages(
     @Param('id', ParseIntPipe) id: number,
@@ -127,7 +128,7 @@ export class ExercisesController {
   // --- DELETE ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,
@@ -137,7 +138,7 @@ export class ExercisesController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id/images')
   removeImage(
     @Param('id', ParseIntPipe) id: number,

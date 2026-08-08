@@ -20,12 +20,13 @@
 import { Injectable } from '@nestjs/common'
 import { PassportSerializer } from '@nestjs/passport'
 import { UsersService } from '../../users/users.service'
+import { UserRole } from '../../users/dto/create-user.dto'
 
 // --- MAIN LOGIC --------------------------------------------------------------------------------------------
 
 interface SessionData {
   id: number
-  activeRole: string
+  activeRole: UserRole
 }
 
 @Injectable()
@@ -39,7 +40,7 @@ export class SessionSerializer extends PassportSerializer {
   // remember not just WHO is logged in, but WHICH of their roles is active
   // for this particular session.
   serializeUser(
-    user: { id: number; activeRole: string },
+    user: { id: number; activeRole: UserRole },
     done: (err: Error | null, data?: SessionData) => void,
   ) {
     done(null, { id: user.id, activeRole: user.activeRole })

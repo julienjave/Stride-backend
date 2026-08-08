@@ -39,6 +39,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -59,7 +60,7 @@ export class AssignedProgramsController {
   // practitioner-only at creation. Service-level clinic-scope check (does
   // this practitioner actually manage this patient) happens on top.
   @UseGuards(RolesGuard)
-  @Roles('practitioner')
+  @Roles(UserRole.PRACTITIONER)
   @Post()
   create(
     @CurrentUser() user: CurrentUser,
@@ -69,7 +70,7 @@ export class AssignedProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -100,7 +101,7 @@ export class AssignedProgramsController {
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -111,7 +112,7 @@ export class AssignedProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id/exercises/:exerciseRowId')
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -128,7 +129,7 @@ export class AssignedProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
@@ -141,7 +142,7 @@ export class AssignedProgramsController {
   // --- DELETE ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,
@@ -151,7 +152,7 @@ export class AssignedProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id/exercises/:exerciseRowId')
   removeExercise(
     @Param('id', ParseIntPipe) id: number,

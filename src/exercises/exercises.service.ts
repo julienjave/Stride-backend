@@ -32,6 +32,7 @@ import { UpdateExerciseDto } from './dto/update-exercise.dto'
 import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -71,7 +72,7 @@ export class ExercisesService {
   // uploading something new.
   async addImages(
     id: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     files: Express.Multer.File[],
   ) {
     const exercise = await this.findOne(id)
@@ -140,7 +141,7 @@ export class ExercisesService {
 
   async update(
     id: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     dto: UpdateExerciseDto,
   ) {
     const exercise = await this.findOne(id)
@@ -164,7 +165,7 @@ export class ExercisesService {
   // in keys that were never uploaded, or silently drop ones that were.
   async reorderImages(
     id: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     newOrder: string[],
   ) {
     const exercise = await this.findOne(id)
@@ -201,7 +202,7 @@ export class ExercisesService {
 
   // --- DELETE ROUTES ---
 
-  async archive(id: number, currentUser: { id: number; activeRole: string }) {
+  async archive(id: number, currentUser: { id: number; activeRole: UserRole }) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
     const [archived] = await this.db
@@ -215,7 +216,7 @@ export class ExercisesService {
   // Validates the key actually belongs to THIS exercise before deleting anything
   async removeImage(
     id: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     objectKey: string,
   ) {
     const exercise = await this.findOne(id)
@@ -241,9 +242,9 @@ export class ExercisesService {
   // an admin can correct anything, including the shared api-sourced library.
   private assertCanModify(
     exercise: typeof exercises.$inferSelect,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
   ) {
-    const isAdmin = currentUser.activeRole === 'admin'
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isOwner =
       exercise.source === 'custom' && exercise.createdBy === currentUser.id
     if (!isAdmin && !isOwner) {

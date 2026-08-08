@@ -36,6 +36,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -52,7 +53,7 @@ export class SessionsController {
   // Patient-only — starting a session is something a patient does for
   // themselves, not something staff initiate on their behalf.
   @UseGuards(RolesGuard)
-  @Roles('patient')
+  @Roles(UserRole.PATIENT)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateSessionDto) {
     return this.sessionsService.create(user, dto)
@@ -81,7 +82,7 @@ export class SessionsController {
   // skipped) through one generic endpoint — the frontend's "Start" and
   // "Finish" buttons both just PATCH a new status.
   @UseGuards(RolesGuard)
-  @Roles('patient')
+  @Roles(UserRole.PATIENT)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -92,7 +93,7 @@ export class SessionsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('patient')
+  @Roles(UserRole.PATIENT)
   @Patch(':id/exercises/:exerciseRowId')
   updateExercise(
     @Param('id', ParseIntPipe) id: number,

@@ -26,6 +26,7 @@ import {
 import { Reflector } from '@nestjs/core'
 import { ROLES_KEY } from '../decorators/roles.decorator'
 import { AuthenticatedRequest } from '../decorators/current-user.decorator'
+import type { UserRole } from '../../users/dto/create-user.dto'
 
 // --- GUARD -------------------------------------------------------------------------------------------------
 
@@ -39,7 +40,7 @@ export class RolesGuard implements CanActivate {
     // Reads whatever @Roles(...) declared on the specific route handler, or —
     // if absent there — on the whole controller. getAllAndOverride checks
     // both, with the handler's own metadata taking precedence.
-    const requiredRoles = this.reflector.getAllAndOverride<string[]>(
+    const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(
       ROLES_KEY,
       [context.getHandler(), context.getClass()],
     )

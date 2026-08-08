@@ -41,6 +41,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -57,21 +58,21 @@ export class ClinicsController {
   // Creating ADDITIONAL clinics, by an existing admin — distinct from
   // POST /auth/register-clinic, which only ever creates the very first one.
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Post()
   create(@Body() dto: CreateClinicDto) {
     return this.clinicsService.create(dto)
   }
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Post(':id/members')
   addMember(@Param('id', ParseIntPipe) id: number, @Body() dto: AddMemberDto) {
     return this.clinicsService.addMember(id, dto.userId)
   }
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Post(':id/logo')
   @UseInterceptors(FileInterceptor('file', imageUploadOptions))
   uploadLogo(
@@ -99,7 +100,7 @@ export class ClinicsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Get(':id/members')
   listMembers(@Param('id', ParseIntPipe) id: number) {
     return this.clinicsService.listMembers(id)
@@ -108,7 +109,7 @@ export class ClinicsController {
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Patch(':id')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateClinicDto) {
     return this.clinicsService.update(id, dto)
@@ -117,14 +118,14 @@ export class ClinicsController {
   // --- DELETE ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Delete(':id')
   deactivate(@Param('id', ParseIntPipe) id: number) {
     return this.clinicsService.deactivate(id)
   }
 
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Delete(':id/members/:userId')
   removeMember(
     @Param('id', ParseIntPipe) id: number,

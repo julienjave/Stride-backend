@@ -39,6 +39,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -56,14 +57,14 @@ export class ProgramsController {
   // same reasoning as exercises.create() staying practitioner-only even
   // though admins can correct/archive afterward.
   @UseGuards(RolesGuard)
-  @Roles('practitioner')
+  @Roles(UserRole.PRACTITIONER)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateTemplateDto) {
     return this.programsService.create(user.id, dto)
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -88,7 +89,7 @@ export class ProgramsController {
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -99,7 +100,7 @@ export class ProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id/exercises/:templateExerciseId')
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -120,7 +121,7 @@ export class ProgramsController {
   // same "reorder the whole collection" shape as ExercisesController's
   // image reordering.
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
@@ -133,7 +134,7 @@ export class ProgramsController {
   // --- DELETE ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,
@@ -143,7 +144,7 @@ export class ProgramsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Delete(':id/exercises/:templateExerciseId')
   removeExercise(
     @Param('id', ParseIntPipe) id: number,

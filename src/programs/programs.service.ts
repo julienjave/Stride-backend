@@ -35,6 +35,7 @@ import { CreateTemplateDto } from './dto/create-template.dto'
 import { UpdateTemplateDto } from './dto/update-template.dto'
 import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
 import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -64,7 +65,7 @@ export class ProgramsService {
 
   async addExercise(
     templateId: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     dto: AddTemplateExerciseDto,
   ) {
     const template = await this.findTemplateOrThrow(templateId)
@@ -94,7 +95,7 @@ export class ProgramsService {
 
   async reorderExercises(
     templateId: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     newOrder: number[],
   ) {
     const template = await this.findTemplateOrThrow(templateId)
@@ -165,7 +166,7 @@ export class ProgramsService {
 
   async update(
     id: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     dto: UpdateTemplateDto,
   ) {
     const template = await this.findTemplateOrThrow(id)
@@ -181,7 +182,7 @@ export class ProgramsService {
   async updateExercise(
     templateId: number,
     templateExerciseId: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
     dto: UpdateTemplateExerciseDto,
   ) {
     const template = await this.findTemplateOrThrow(templateId)
@@ -198,7 +199,7 @@ export class ProgramsService {
 
   // --- DELETE ROUTES ---
 
-  async archive(id: number, currentUser: { id: number; activeRole: string }) {
+  async archive(id: number, currentUser: { id: number; activeRole: UserRole }) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
     const [archived] = await this.db
@@ -212,7 +213,7 @@ export class ProgramsService {
   async removeExercise(
     templateId: number,
     templateExerciseId: number,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
   ) {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
@@ -261,9 +262,9 @@ export class ProgramsService {
 
   private assertCanModify(
     template: typeof programTemplates.$inferSelect,
-    currentUser: { id: number; activeRole: string },
+    currentUser: { id: number; activeRole: UserRole },
   ) {
-    const isAdmin = currentUser.activeRole === 'admin'
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isOwner = template.practitionerId === currentUser.id
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException(

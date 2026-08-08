@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { createParamDecorator, ExecutionContext } from '@nestjs/common'
 import type { Request } from 'express'
+import type { UserRole } from '../../users/dto/create-user.dto'
 
 // --- TYPES ---------------------------------------------------------------------------------------------------
 // The exact shape Passport attaches to req.user on every authenticated
@@ -40,7 +41,7 @@ export interface CurrentUser {
   mfaSecret: string | null
   mfaEnabled: boolean
   roles: string[]
-  activeRole: string
+  activeRole: UserRole
 }
 
 // For code that reads req.user OUTSIDE this decorator — interceptors and

@@ -56,7 +56,7 @@ export class UsersService {
   // requestingUser is checked against ACTIVE role, not just "has this role somewhere"
   async create(
     dto: CreateUserDto,
-    requestingUser?: { id: number; activeRole: string },
+    requestingUser?: { id: number; activeRole: UserRole },
   ) {
     if (
       requestingUser?.activeRole === UserRole.PRACTITIONER &&

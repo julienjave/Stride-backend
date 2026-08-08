@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common'
 import { ProgramsService } from './programs.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
 describe('ProgramsService.assertCanModify (via update)', () => {
   let programsService: ProgramsService
@@ -44,7 +45,7 @@ describe('ProgramsService.assertCanModify (via update)', () => {
     await expect(
       programsService.update(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { title: 'Updated' },
       ),
     ).resolves.toEqual({ id: 1, title: 'Updated' })
@@ -59,7 +60,7 @@ describe('ProgramsService.assertCanModify (via update)', () => {
     await expect(
       programsService.update(
         1,
-        { id: 999, activeRole: 'admin' },
+        { id: 999, activeRole: UserRole.ADMIN },
         { title: 'Updated' },
       ),
     ).resolves.toEqual({ id: 1, title: 'Updated' })
@@ -74,7 +75,7 @@ describe('ProgramsService.assertCanModify (via update)', () => {
     await expect(
       programsService.update(
         1,
-        { id: 999, activeRole: 'practitioner' },
+        { id: 999, activeRole: UserRole.PRACTITIONER },
         { title: 'Updated' },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -115,7 +116,7 @@ describe('ProgramsService.addExercise', () => {
     await expect(
       programsService.addExercise(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         {
           exerciseId: 999,
           sortOrder: 0,
@@ -128,7 +129,7 @@ describe('ProgramsService.addExercise', () => {
     await expect(
       programsService.addExercise(
         1,
-        { id: 999, activeRole: 'practitioner' },
+        { id: 999, activeRole: UserRole.PRACTITIONER },
         {
           exerciseId: 5,
           sortOrder: 0,
@@ -150,7 +151,7 @@ describe('ProgramsService.addExercise', () => {
 
     const result = await programsService.addExercise(
       1,
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       {
         exerciseId: 5,
         sortOrder: 0,
@@ -207,7 +208,7 @@ describe('ProgramsService.reorderExercises', () => {
     // template — reuse the same findFirst/findMany mocks already configured.
     await programsService.reorderExercises(
       1,
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       [102, 100, 101],
     )
 
@@ -218,7 +219,7 @@ describe('ProgramsService.reorderExercises', () => {
     await expect(
       programsService.reorderExercises(
         1,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         [100, 101],
       ),
     ).rejects.toThrow(BadRequestException)
@@ -229,7 +230,7 @@ describe('ProgramsService.reorderExercises', () => {
     await expect(
       programsService.reorderExercises(
         1,
-        { id: 999, activeRole: 'practitioner' },
+        { id: 999, activeRole: UserRole.PRACTITIONER },
         [100, 101, 102],
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -274,7 +275,7 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
     await expect(
       programsService.removeExercise(1, 999, {
         id: 7,
-        activeRole: 'practitioner',
+        activeRole: UserRole.PRACTITIONER,
       }),
     ).rejects.toThrow(NotFoundException)
   })
@@ -287,7 +288,7 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
 
     await programsService.removeExercise(1, 50, {
       id: 7,
-      activeRole: 'practitioner',
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(db.delete).toHaveBeenCalled()

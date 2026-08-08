@@ -7,6 +7,7 @@ import {
 import { AssignedProgramsService } from './assigned-programs.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
 describe('AssignedProgramsService.create', () => {
   let service: AssignedProgramsService
@@ -57,7 +58,7 @@ describe('AssignedProgramsService.create', () => {
 
     await expect(
       service.create(
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         {
           patientId: 20,
           title: 'Rehab Plan',
@@ -75,7 +76,7 @@ describe('AssignedProgramsService.create', () => {
 
     await expect(
       service.create(
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { patientId: 20, title: 'Rehab Plan', startDate: '2026-01-01' },
       ),
     ).rejects.toThrow(BadRequestException)
@@ -87,7 +88,7 @@ describe('AssignedProgramsService.create', () => {
 
     await expect(
       service.create(
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         {
           patientId: 20,
           title: 'Rehab Plan',
@@ -126,7 +127,7 @@ describe('AssignedProgramsService.create', () => {
     )
 
     await service.create(
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       {
         patientId: 20,
         title: 'Rehab Plan',
@@ -166,7 +167,7 @@ describe('AssignedProgramsService.create', () => {
     )
 
     await service.create(
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       {
         patientId: 20,
         title: 'Ad-hoc Plan',
@@ -213,13 +214,16 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
   })
 
   it('returns every program for an admin', async () => {
-    await service.findAllForCurrentUser({ id: 1, activeRole: 'admin' })
+    await service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN })
     expect(db.query.assignedPrograms.findMany).toHaveBeenCalled()
     expect(usersService.findPatientsForPractitioner).not.toHaveBeenCalled()
   })
 
   it("returns only the patient's own programs for a patient", async () => {
-    await service.findAllForCurrentUser({ id: 20, activeRole: 'patient' })
+    await service.findAllForCurrentUser({
+      id: 20,
+      activeRole: UserRole.PATIENT,
+    })
     expect(db.query.assignedPrograms.findMany).toHaveBeenCalled()
     expect(usersService.findPatientsForPractitioner).not.toHaveBeenCalled()
   })
@@ -229,7 +233,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
 
     const result = await service.findAllForCurrentUser({
       id: 7,
-      activeRole: 'practitioner',
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(result).toEqual([])
@@ -241,7 +245,10 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
       { id: 21 },
     ])
 
-    await service.findAllForCurrentUser({ id: 7, activeRole: 'practitioner' })
+    await service.findAllForCurrentUser({
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    })
 
     expect(db.query.assignedPrograms.findMany).toHaveBeenCalled()
   })
@@ -281,33 +288,33 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
 
   it('allows an admin to view any program', async () => {
     await expect(
-      service.findOne(900, { id: 1, activeRole: 'admin' }),
+      service.findOne(900, { id: 1, activeRole: UserRole.ADMIN }),
     ).resolves.toBeDefined()
   })
 
   it('allows the owning patient to view their own program', async () => {
     await expect(
-      service.findOne(900, { id: 20, activeRole: 'patient' }),
+      service.findOne(900, { id: 20, activeRole: UserRole.PATIENT }),
     ).resolves.toBeDefined()
   })
 
   it('rejects a different patient viewing a program that is not theirs', async () => {
     await expect(
-      service.findOne(900, { id: 999, activeRole: 'patient' }),
+      service.findOne(900, { id: 999, activeRole: UserRole.PATIENT }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it('allows a managing practitioner to view the program', async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true)
     await expect(
-      service.findOne(900, { id: 7, activeRole: 'practitioner' }),
+      service.findOne(900, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).resolves.toBeDefined()
   })
 
   it('rejects a non-managing practitioner from viewing the program', async () => {
     usersService.isPatientManagedBy.mockResolvedValue(false)
     await expect(
-      service.findOne(900, { id: 7, activeRole: 'practitioner' }),
+      service.findOne(900, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
   })
 })
@@ -354,7 +361,7 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
     await expect(
       service.update(
         900,
-        { id: 20, activeRole: 'patient' },
+        { id: 20, activeRole: UserRole.PATIENT },
         { title: 'New Title' },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -365,7 +372,7 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
     await expect(
       service.update(
         900,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { title: 'New Title' },
       ),
     ).resolves.toEqual({ id: 900 })
@@ -376,7 +383,7 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
     await expect(
       service.update(
         900,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { title: 'New Title' },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -386,7 +393,7 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
     await expect(
       service.update(
         900,
-        { id: 1, activeRole: 'admin' },
+        { id: 1, activeRole: UserRole.ADMIN },
         { title: 'New Title' },
       ),
     ).resolves.toEqual({ id: 900 })
@@ -442,7 +449,7 @@ describe('AssignedProgramsService.reorderExercises', () => {
   it('accepts an exact permutation of the current exercise rows', async () => {
     await service.reorderExercises(
       900,
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       [3, 1, 2],
     )
     expect(db.transaction).toHaveBeenCalled()
@@ -452,7 +459,7 @@ describe('AssignedProgramsService.reorderExercises', () => {
     await expect(
       service.reorderExercises(
         900,
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         [1, 2],
       ),
     ).rejects.toThrow(BadRequestException)

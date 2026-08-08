@@ -57,7 +57,7 @@ export class UsersController {
   // --- POST ROUTES ---
 
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Post()
   create(@CurrentUser() currentUser: CurrentUser, @Body() dto: CreateUserDto) {
     return this.usersService.create(dto, currentUser)
@@ -65,7 +65,7 @@ export class UsersController {
 
   // Admin-only: grants an existing user an ADDITIONAL role
   @UseGuards(RolesGuard)
-  @Roles('admin')
+  @Roles(UserRole.ADMIN)
   @Post(':id/roles')
   grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
     return this.usersService.grantRole(id, dto)
@@ -98,7 +98,7 @@ export class UsersController {
   // Admin: every account. Practitioner: their own patients (clinic-scoped).
   // Patient: no blanket listing at all.
   @UseGuards(RolesGuard)
-  @Roles('practitioner', 'admin')
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Get()
   findAll(@CurrentUser() currentUser: CurrentUser) {
     if (currentUser.activeRole === UserRole.ADMIN) {

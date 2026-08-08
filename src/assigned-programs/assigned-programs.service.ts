@@ -37,10 +37,11 @@ import { CreateAssignedProgramDto } from './dto/create-assigned-program.dto'
 import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
 import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: string }
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class AssignedProgramsService {
@@ -145,12 +146,12 @@ export class AssignedProgramsService {
   // practitioner sees programs for patients they manage (clinic-scoped,
   // reusing UsersService's existing definition), admin sees all.
   async findAllForCurrentUser(currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') {
+    if (currentUser.activeRole === UserRole.ADMIN) {
       return this.db.query.assignedPrograms.findMany({
         where: eq(assignedPrograms.isArchived, false),
       })
     }
-    if (currentUser.activeRole === 'patient') {
+    if (currentUser.activeRole === UserRole.PATIENT) {
       return this.db.query.assignedPrograms.findMany({
         where: and(
           eq(assignedPrograms.patientId, currentUser.id),
@@ -353,10 +354,13 @@ export class AssignedProgramsService {
   // Viewing allows a third case beyond manage: the patient viewing their
   // own program.
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') return
-    if (currentUser.activeRole === 'patient' && patientId === currentUser.id)
+    if (currentUser.activeRole === UserRole.ADMIN) return
+    if (
+      currentUser.activeRole === UserRole.PATIENT &&
+      patientId === currentUser.id
+    )
       return
-    if (currentUser.activeRole === 'practitioner') {
+    if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,
         currentUser.id,
@@ -371,8 +375,8 @@ export class AssignedProgramsService {
   // Managing (create/update/archive/exercise CRUD) never allows the patient
   // themselves — a patient can see their program, not edit its prescription.
   private async assertCanManage(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') return
-    if (currentUser.activeRole === 'practitioner') {
+    if (currentUser.activeRole === UserRole.ADMIN) return
+    if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,
         currentUser.id,

@@ -30,10 +30,11 @@ import { medicalFiles } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
 import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: string }
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class MedicalFilesService {
@@ -87,13 +88,13 @@ export class MedicalFilesService {
   async findAll(currentUser: CurrentUser, patientId?: number) {
     let targetPatientId: number
 
-    if (currentUser.activeRole === 'patient') {
+    if (currentUser.activeRole === UserRole.PATIENT) {
       targetPatientId = currentUser.id
     } else {
       if (!patientId) {
         throw new BadRequestException('patientId is required')
       }
-      if (currentUser.activeRole === 'practitioner') {
+      if (currentUser.activeRole === UserRole.PRACTITIONER) {
         const managed = await this.usersService.isPatientManagedBy(
           patientId,
           currentUser.id,
@@ -136,10 +137,11 @@ export class MedicalFilesService {
     }
 
     const isSelf =
-      currentUser.activeRole === 'patient' && entry.patientId === currentUser.id
-    const isAdmin = currentUser.activeRole === 'admin'
+      currentUser.activeRole === UserRole.PATIENT &&
+      entry.patientId === currentUser.id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isManaging =
-      currentUser.activeRole === 'practitioner' &&
+      currentUser.activeRole === UserRole.PRACTITIONER &&
       (await this.usersService.isPatientManagedBy(
         entry.patientId,
         currentUser.id,

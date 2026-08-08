@@ -28,10 +28,11 @@ import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { conversations, messages } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateConversationDto } from './dto/create-conversation.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: string }
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class MessagingService {
@@ -51,10 +52,10 @@ export class MessagingService {
     let practitionerId: number
     let patientId: number
 
-    if (currentUser.activeRole === 'practitioner') {
+    if (currentUser.activeRole === UserRole.PRACTITIONER) {
       practitionerId = currentUser.id
       patientId = dto.userId
-    } else if (currentUser.activeRole === 'patient') {
+    } else if (currentUser.activeRole === UserRole.PATIENT) {
       practitionerId = dto.userId
       patientId = currentUser.id
     } else {
@@ -117,12 +118,12 @@ export class MessagingService {
   // --- GET ROUTES ---
 
   async findConversationsForUser(currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'practitioner') {
+    if (currentUser.activeRole === UserRole.PRACTITIONER) {
       return this.db.query.conversations.findMany({
         where: eq(conversations.practitionerId, currentUser.id),
       })
     }
-    if (currentUser.activeRole === 'patient') {
+    if (currentUser.activeRole === UserRole.PATIENT) {
       return this.db.query.conversations.findMany({
         where: eq(conversations.patientId, currentUser.id),
       })
@@ -167,14 +168,14 @@ export class MessagingService {
   async archiveConversation(id: number, currentUser: CurrentUser) {
     const conversation = await this.findConversationOrThrow(id)
     this.assertParticipant(conversation, currentUser)
-    if (currentUser.activeRole === 'admin') {
+    if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
         'Archiving a conversation is a participant-only action',
       )
     }
 
     const column =
-      currentUser.activeRole === 'practitioner'
+      currentUser.activeRole === UserRole.PRACTITIONER
         ? { practitionerArchivedAt: new Date() }
         : { patientArchivedAt: new Date() }
 
@@ -189,14 +190,14 @@ export class MessagingService {
   async unarchiveConversation(id: number, currentUser: CurrentUser) {
     const conversation = await this.findConversationOrThrow(id)
     this.assertParticipant(conversation, currentUser)
-    if (currentUser.activeRole === 'admin') {
+    if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
         'Unarchiving a conversation is a participant-only action',
       )
     }
 
     const column =
-      currentUser.activeRole === 'practitioner'
+      currentUser.activeRole === UserRole.PRACTITIONER
         ? { practitionerArchivedAt: null }
         : { patientArchivedAt: null }
 
@@ -303,11 +304,11 @@ export class MessagingService {
     currentUser: CurrentUser,
   ) {
     const isParticipant =
-      (currentUser.activeRole === 'practitioner' &&
+      (currentUser.activeRole === UserRole.PRACTITIONER &&
         conversation.practitionerId === currentUser.id) ||
-      (currentUser.activeRole === 'patient' &&
+      (currentUser.activeRole === UserRole.PATIENT &&
         conversation.patientId === currentUser.id)
-    if (!isParticipant && currentUser.activeRole !== 'admin') {
+    if (!isParticipant && currentUser.activeRole !== UserRole.ADMIN) {
       throw new ForbiddenException(
         'You are not a participant in this conversation',
       )

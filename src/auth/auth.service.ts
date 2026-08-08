@@ -182,7 +182,11 @@ export class AuthService {
   // nonexistent account to. This is a real, deliberate scope limitation,
   // not an oversight — a genuinely anonymous failed attempt simply cannot
   // be represented under this schema's constraint as written.
-  async validateUser(email: string, password: string, requestedRole?: string) {
+  async validateUser(
+    email: string,
+    password: string,
+    requestedRole?: UserRole,
+  ) {
     const user = await this.usersService.findByEmailWithHash(email)
     if (!user) {
       return null
@@ -205,7 +209,7 @@ export class AuthService {
 
     const roles = await this.usersService.getRolesForUser(user.id)
 
-    let activeRole: string
+    let activeRole: UserRole
     if (requestedRole) {
       if (!roles.includes(requestedRole)) {
         throw new ForbiddenException(
@@ -214,7 +218,19 @@ export class AuthService {
       }
       activeRole = requestedRole
     } else if (roles.length === 1) {
-      activeRole = roles[0]
+      // Boundary cast, not a workaround: roles comes from
+      // UsersService.getRolesForUser(), which reads the userRoles.role
+      // column — a Drizzle pgEnum. Drizzle infers that column as its own
+      // string literal union ("admin" | "practitioner" | "patient"), which
+      // is never unified with this app's own UserRole enum (a separate,
+      // hand-maintained type — see the comment on UserRole itself). The two
+      // are value-identical but nominally distinct, so TypeScript won't
+      // accept the DB-sourced value here without a cast, even though it's
+      // one of the exact three strings UserRole itself is built from. This
+      // is the one place a raw DB role value becomes an enum-typed
+      // activeRole; every other assignment in this file already starts
+      // from a genuine UserRole.
+      activeRole = roles[0] as UserRole
     } else {
       throw new BadRequestException(
         'This account has multiple roles. Specify which one to log in as.',

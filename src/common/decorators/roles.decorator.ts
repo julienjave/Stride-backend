@@ -17,11 +17,12 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import { SetMetadata } from '@nestjs/common'
+import type { UserRole } from '../../users/dto/create-user.dto'
 
 // --- DECORATOR ---------------------------------------------------------------------------------------------
 // SetMetadata attaches arbitrary metadata to a route handler (or a whole
 // controller) that Nest's Reflector can read back later — this is how
-// @Roles('practitioner') actually "tags" a route without RolesGuard needing
-// any special-case code per role.
+// @Roles(UserRole.PRACTITIONER) actually "tags" a route without RolesGuard
+// needing any special-case code per role.
 export const ROLES_KEY = 'roles'
-export const Roles = (...roles: string[]) => SetMetadata(ROLES_KEY, roles)
+export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles)

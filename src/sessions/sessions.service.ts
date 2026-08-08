@@ -33,12 +33,13 @@ import {
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateSessionDto } from './dto/create-session.dto'
-import { UpdateSessionDto } from './dto/update-session.dto'
+import { UpdateSessionDto, SessionStatus } from './dto/update-session.dto'
 import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
+import { UserRole } from '../users/dto/create-user.dto'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: string }
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class SessionsService {
@@ -114,10 +115,10 @@ export class SessionsService {
   // --- GET ROUTES ---
 
   async findAllForCurrentUser(currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') {
+    if (currentUser.activeRole === UserRole.ADMIN) {
       return this.db.query.sessions.findMany()
     }
-    if (currentUser.activeRole === 'patient') {
+    if (currentUser.activeRole === UserRole.PATIENT) {
       return this.db.query.sessions.findMany({
         where: eq(sessions.patientId, currentUser.id),
       })
@@ -151,10 +152,10 @@ export class SessionsService {
     this.assertIsOwner(session, currentUser)
 
     const updates: Record<string, unknown> = { ...dto }
-    if (dto.status === 'in_progress' && !session.startedAt) {
+    if (dto.status === SessionStatus.IN_PROGRESS && !session.startedAt) {
       updates.startedAt = new Date()
     }
-    if (dto.status === 'completed') {
+    if (dto.status === SessionStatus.COMPLETED) {
       updates.completedAt = new Date()
     }
 
@@ -219,10 +220,13 @@ export class SessionsService {
   }
 
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === 'admin') return
-    if (currentUser.activeRole === 'patient' && patientId === currentUser.id)
+    if (currentUser.activeRole === UserRole.ADMIN) return
+    if (
+      currentUser.activeRole === UserRole.PATIENT &&
+      patientId === currentUser.id
+    )
       return
-    if (currentUser.activeRole === 'practitioner') {
+    if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,
         currentUser.id,
@@ -242,7 +246,7 @@ export class SessionsService {
     currentUser: CurrentUser,
   ) {
     if (
-      currentUser.activeRole !== 'patient' ||
+      currentUser.activeRole !== UserRole.PATIENT ||
       session.patientId !== currentUser.id
     ) {
       throw new ForbiddenException('You can only modify your own sessions')

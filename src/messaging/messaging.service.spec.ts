@@ -3,6 +3,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common'
 import { MessagingService } from './messaging.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
 describe('MessagingService.createConversation', () => {
   let service: MessagingService
@@ -33,7 +34,7 @@ describe('MessagingService.createConversation', () => {
   it('rejects an admin starting a conversation — only practitioners and patients may', async () => {
     await expect(
       service.createConversation(
-        { id: 1, activeRole: 'admin' },
+        { id: 1, activeRole: UserRole.ADMIN },
         { userId: 20 },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -44,7 +45,7 @@ describe('MessagingService.createConversation', () => {
 
     await expect(
       service.createConversation(
-        { id: 7, activeRole: 'practitioner' },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
         { userId: 20 },
       ),
     ).rejects.toThrow(ForbiddenException)
@@ -59,7 +60,7 @@ describe('MessagingService.createConversation', () => {
     })
 
     const result = await service.createConversation(
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       { userId: 20 },
     )
 
@@ -79,7 +80,7 @@ describe('MessagingService.createConversation', () => {
     })
 
     const result = await service.createConversation(
-      { id: 7, activeRole: 'practitioner' },
+      { id: 7, activeRole: UserRole.PRACTITIONER },
       { userId: 20 },
     )
 
@@ -131,7 +132,7 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
   it("only ever writes the archiving PRACTITIONER's own column, never the patient's", async () => {
     await service.archiveConversation(900, {
       id: 7,
-      activeRole: 'practitioner',
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(setArgs).toHaveProperty('practitionerArchivedAt')
@@ -139,7 +140,10 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
   })
 
   it("only ever writes the archiving PATIENT's own column, never the practitioner's", async () => {
-    await service.archiveConversation(900, { id: 20, activeRole: 'patient' })
+    await service.archiveConversation(900, {
+      id: 20,
+      activeRole: UserRole.PATIENT,
+    })
 
     expect(setArgs).toHaveProperty('patientArchivedAt')
     expect(setArgs).not.toHaveProperty('practitionerArchivedAt')
@@ -147,14 +151,17 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
 
   it('rejects a non-participant from archiving the conversation at all', async () => {
     await expect(
-      service.archiveConversation(900, { id: 999, activeRole: 'practitioner' }),
+      service.archiveConversation(900, {
+        id: 999,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it("clears only the calling role's own archived-at column on unarchive", async () => {
     await service.unarchiveConversation(900, {
       id: 7,
-      activeRole: 'practitioner',
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(setArgs).toEqual({ practitionerArchivedAt: null })
@@ -168,18 +175,21 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
   // admin oversight should not touch.
   it('rejects an admin from archiving a conversation, even though they pass the participant check', async () => {
     await expect(
-      service.archiveConversation(900, { id: 1, activeRole: 'admin' }),
+      service.archiveConversation(900, { id: 1, activeRole: UserRole.ADMIN }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it('rejects an admin from unarchiving a conversation, even though they pass the participant check', async () => {
     await expect(
-      service.unarchiveConversation(900, { id: 1, activeRole: 'admin' }),
+      service.unarchiveConversation(900, { id: 1, activeRole: UserRole.ADMIN }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it('allows the actual patient participant to unarchive the conversation', async () => {
-    await service.unarchiveConversation(900, { id: 20, activeRole: 'patient' })
+    await service.unarchiveConversation(900, {
+      id: 20,
+      activeRole: UserRole.PATIENT,
+    })
 
     expect(setArgs).toEqual({ patientArchivedAt: null })
   })
@@ -238,7 +248,10 @@ describe('MessagingService.deleteMessage', () => {
     })
 
     await expect(
-      service.deleteMessage(900, 50, { id: 7, activeRole: 'practitioner' }),
+      service.deleteMessage(900, 50, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).rejects.toThrow(ForbiddenException)
   })
 
@@ -251,7 +264,10 @@ describe('MessagingService.deleteMessage', () => {
     })
 
     await expect(
-      service.deleteMessage(900, 50, { id: 7, activeRole: 'practitioner' }),
+      service.deleteMessage(900, 50, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).rejects.toThrow(ForbiddenException)
   })
 
@@ -264,7 +280,10 @@ describe('MessagingService.deleteMessage', () => {
     })
 
     await expect(
-      service.deleteMessage(900, 50, { id: 7, activeRole: 'practitioner' }),
+      service.deleteMessage(900, 50, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).rejects.toThrow(ForbiddenException)
   })
 
@@ -278,7 +297,7 @@ describe('MessagingService.deleteMessage', () => {
 
     const result = await service.deleteMessage(900, 50, {
       id: 7,
-      activeRole: 'practitioner',
+      activeRole: UserRole.PRACTITIONER,
     })
 
     // toPublicMessage() replaces the body with a tombstone for everyone,
@@ -290,7 +309,10 @@ describe('MessagingService.deleteMessage', () => {
     db.query.messages.findFirst.mockResolvedValue(undefined)
 
     await expect(
-      service.deleteMessage(900, 999, { id: 7, activeRole: 'practitioner' }),
+      service.deleteMessage(900, 999, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).rejects.toThrow(NotFoundException)
   })
 })
@@ -329,31 +351,31 @@ describe('MessagingService.assertParticipant (via getMessages)', () => {
 
   it('allows the practitioner participant to read messages', async () => {
     await expect(
-      service.getMessages(900, { id: 7, activeRole: 'practitioner' }),
+      service.getMessages(900, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).resolves.toEqual([])
   })
 
   it('allows the patient participant to read messages', async () => {
     await expect(
-      service.getMessages(900, { id: 20, activeRole: 'patient' }),
+      service.getMessages(900, { id: 20, activeRole: UserRole.PATIENT }),
     ).resolves.toEqual([])
   })
 
   it('allows an admin to read any conversation', async () => {
     await expect(
-      service.getMessages(900, { id: 1, activeRole: 'admin' }),
+      service.getMessages(900, { id: 1, activeRole: UserRole.ADMIN }),
     ).resolves.toEqual([])
   })
 
   it('rejects a practitioner who is not part of this conversation', async () => {
     await expect(
-      service.getMessages(900, { id: 999, activeRole: 'practitioner' }),
+      service.getMessages(900, { id: 999, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
   })
 
   it('rejects a patient who is not part of this conversation', async () => {
     await expect(
-      service.getMessages(900, { id: 999, activeRole: 'patient' }),
+      service.getMessages(900, { id: 999, activeRole: UserRole.PATIENT }),
     ).rejects.toThrow(ForbiddenException)
   })
 })
