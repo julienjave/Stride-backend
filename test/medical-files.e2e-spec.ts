@@ -236,6 +236,18 @@ describe('MedicalFiles (e2e)', () => {
     expect(res.status).toBe(404);
   });
 
+  // clinicalData is deliberately unstructured (@IsObject() only) but bounded
+  // by @MaxJsonSize(50 * 1024) — this is the only place that limit is
+  // actually exercised through the real ValidationPipe + HTTP pipeline,
+  // rather than just at the decorator's own unit-test level.
+  it('rejects a clinicalData payload that exceeds the 50KB MaxJsonSize limit', async () => {
+    const res = await practitionerA.post('/medical-files').send({
+      patientId: patientAId,
+      clinicalData: { note: 'x'.repeat(51 * 1024) },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('exposes no update or delete route at all — clinical entries are append-only', async () => {
     const createRes = await practitionerA
       .post('/medical-files')
