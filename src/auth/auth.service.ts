@@ -148,7 +148,20 @@ export class AuthService {
           clinicId: clinic.id,
         })
 
-        const { passwordHash: _omit, ...publicUser } = user
+        // Same bypass as validateUser() further down this file — this
+        // insert's .returning() is a raw row, never routed through
+        // UsersService.toPublic(), so it needs its own strip. Harmless
+        // today (a brand-new row has all three as their column defaults,
+        // null), but the shape is identical to every other leak this pass
+        // closed, so it gets the same treatment rather than relying on
+        // "currently always null".
+        const {
+          passwordHash: _omit,
+          mfaSecret: _omitMfaSecret,
+          passwordResetTokenHash: _omitResetHash,
+          passwordResetTokenExpiresAt: _omitResetExpiry,
+          ...publicUser
+        } = user
         return {
           ...publicUser,
           roles: [UserRole.ADMIN],
@@ -245,7 +258,21 @@ export class AuthService {
       details: { activeRole },
     })
 
-    const { passwordHash, mfaSecret, ...publicUser } = user
+    // This method reads from findByEmailWithHash() — the one place that
+    // deliberately bypasses UsersService.toPublic(), since it needs the
+    // real passwordHash for the bcrypt.compare() above — so it has to do
+    // its own stripping here rather than inheriting toPublic()'s. It was
+    // already stripping passwordHash and mfaSecret, but had the same gap
+    // toPublic() itself had: passwordResetTokenHash and
+    // passwordResetTokenExpiresAt were still riding along in the login
+    // response for any account with a pending reset request.
+    const {
+      passwordHash,
+      mfaSecret,
+      passwordResetTokenHash,
+      passwordResetTokenExpiresAt,
+      ...publicUser
+    } = user
     return { ...publicUser, roles, activeRole }
   }
 

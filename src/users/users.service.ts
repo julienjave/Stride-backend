@@ -345,9 +345,24 @@ export class UsersService {
 
   // === HELPER FUNCTIONS =====================================================
 
-  // Strips passwordHash before anything leaves the service
+  // Strips every server-internal field before anything leaves the
+  // service: passwordHash (obviously), but also mfaSecret (still an
+  // encrypted secret that should never reach a client), and
+  // passwordResetTokenHash/passwordResetTokenExpiresAt (reveal whether a
+  // password reset is currently pending, and when it expires). This is
+  // the one funnel findOne()/findAll()/update()/softDelete()/
+  // updateAvatar() all go through — findOne() is also what
+  // SessionSerializer.deserializeUser() calls to build req.user on every
+  // authenticated request, so this one change is what keeps these fields
+  // out of GET /auth/me, POST /auth/mfa/verify, and POST /auth/switch-role.
   private toPublic(user: typeof users.$inferSelect) {
-    const { passwordHash, ...publicUser } = user
+    const {
+      passwordHash,
+      mfaSecret,
+      passwordResetTokenHash,
+      passwordResetTokenExpiresAt,
+      ...publicUser
+    } = user
     return publicUser
   }
 }

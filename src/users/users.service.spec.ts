@@ -508,10 +508,17 @@ describe('UsersService.isPatientManagedBy', () => {
 
 describe('UsersService.findOne', () => {
   let usersService: UsersService
-  let db: { query: { users: { findFirst: jest.Mock } } }
+  let db: { query: { users: { findFirst: jest.Mock } }; select: jest.Mock }
 
   beforeEach(async () => {
-    db = { query: { users: { findFirst: jest.fn() } } }
+    db = { query: { users: { findFirst: jest.fn() } }, select: jest.fn() }
+    // getRolesForUser() (called at the end of findOne, via this.db) needs a
+    // resolvable roles query for the success-path test below.
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+      }),
+    })
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -528,5 +535,31 @@ describe('UsersService.findOne', () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
 
     await expect(usersService.findOne(999)).rejects.toThrow(NotFoundException)
+  })
+
+  // Regression coverage for the toPublic() leak: findOne() is what
+  // SessionSerializer.deserializeUser() calls to build req.user on every
+  // authenticated request, so anything it fails to strip here reaches
+  // GET /auth/me, POST /auth/mfa/verify, and POST /auth/switch-role.
+  it('strips passwordHash, mfaSecret, and password-reset token fields from the returned user', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'user@example.com',
+      firstName: 'Test',
+      lastName: 'User',
+      passwordHash: 'bcrypt-hash',
+      mfaSecret: 'iv:authTag:ciphertext',
+      mfaEnabled: true,
+      passwordResetTokenHash: 'reset-hash',
+      passwordResetTokenExpiresAt: new Date(),
+    })
+
+    const result = await usersService.findOne(1)
+
+    expect(result).not.toHaveProperty('passwordHash')
+    expect(result).not.toHaveProperty('mfaSecret')
+    expect(result).not.toHaveProperty('passwordResetTokenHash')
+    expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
+    expect(result.email).toBe('user@example.com')
   })
 })

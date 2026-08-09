@@ -122,6 +122,35 @@ describe('AuthService.validateUser', () => {
       ),
     ).rejects.toThrow(ForbiddenException)
   })
+
+  // Regression coverage: findByEmailWithHash() is the one place that
+  // deliberately bypasses UsersService.toPublic() (it needs the real
+  // passwordHash for bcrypt.compare()), so validateUser() has to strip
+  // sensitive fields itself. It was already stripping mfaSecret but not
+  // passwordResetTokenHash/passwordResetTokenExpiresAt — meaning a login
+  // response for an account with a pending password reset leaked the
+  // token's hash and expiry.
+  it('strips passwordHash, mfaSecret, and password-reset token fields from the login result', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: await bcrypt.hash('password123', 10),
+      mfaSecret: 'iv:authTag:ciphertext',
+      passwordResetTokenHash: 'reset-hash',
+      passwordResetTokenExpiresAt: new Date(),
+    })
+    usersService.getRolesForUser.mockResolvedValue(['practitioner'])
+
+    const result = await authService.validateUser(
+      'jane@example.com',
+      'password123',
+    )
+
+    expect(result).not.toHaveProperty('passwordHash')
+    expect(result).not.toHaveProperty('mfaSecret')
+    expect(result).not.toHaveProperty('passwordResetTokenHash')
+    expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
+  })
 })
 
 describe('AuthService.registerClinic', () => {
@@ -228,6 +257,12 @@ describe('AuthService.registerClinic', () => {
     expect(auditService.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'REGISTER_CLINIC', entityId: 501 }),
     )
+    // The users insert's .returning() is a raw row, never routed through
+    // UsersService.toPublic() — regression coverage for that bypass.
+    expect(result).not.toHaveProperty('passwordHash')
+    expect(result).not.toHaveProperty('mfaSecret')
+    expect(result).not.toHaveProperty('passwordResetTokenHash')
+    expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
   })
 })
 
