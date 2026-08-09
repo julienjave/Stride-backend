@@ -171,7 +171,15 @@ export class AuthController {
     return this.authService.setupMfa(user.id)
   }
 
+  // Same 5/60s throttle as mfa/verify, for consistency with this app's own
+  // rationale for requiring a fresh code on sensitive MFA actions — enabling
+  // or disabling MFA is exactly that. (A concrete brute-force scenario was
+  // not found: otplib here uses the default epochTolerance of 0, so only the
+  // single exact 30s window is ever valid, and there's no account-lockout
+  // layer behind this — but tightening this is cheap and has no meaningful
+  // downside for a legitimate user entering a fresh code.)
   @UseGuards(SessionAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @Post('mfa/enable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async enableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
@@ -179,6 +187,7 @@ export class AuthController {
   }
 
   @UseGuards(SessionAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async disableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
