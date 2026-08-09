@@ -195,6 +195,141 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
   })
 })
 
+describe('MessagingService.sendMessage', () => {
+  let service: MessagingService
+  let db: {
+    query: { conversations: { findFirst: jest.Mock } }
+    insert: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        conversations: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 900, practitionerId: 7, patientId: 20 }),
+        },
+      },
+      insert: jest.fn().mockReturnValue({
+        values: jest.fn().mockReturnValue({
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 50, senderId: 7, messageBody: 'hi' }]),
+        }),
+      }),
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MessagingService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: UsersService, useValue: {} },
+      ],
+    }).compile()
+
+    service = moduleRef.get(MessagingService)
+  })
+
+  it('allows the practitioner participant to send a message', async () => {
+    await expect(
+      service.sendMessage(
+        900,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        'hi',
+      ),
+    ).resolves.toEqual({ id: 50, senderId: 7, messageBody: 'hi' })
+  })
+
+  it('rejects a non-participant from sending a message', async () => {
+    await expect(
+      service.sendMessage(
+        900,
+        { id: 999, activeRole: UserRole.PRACTITIONER },
+        'hi',
+      ),
+    ).rejects.toThrow(ForbiddenException)
+  })
+
+  // assertParticipant() itself lets an admin through (admins bypass the
+  // "not a participant" check everywhere else) — this is what previously
+  // let an admin write a message into any conversation, regardless of
+  // whether they had any clinical relationship to it. Same explicit
+  // admin-block pattern as archiveConversation/unarchiveConversation.
+  it('rejects an admin from sending a message, even though they pass the participant check', async () => {
+    await expect(
+      service.sendMessage(900, { id: 1, activeRole: UserRole.ADMIN }, 'hi'),
+    ).rejects.toThrow(ForbiddenException)
+
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+})
+
+describe('MessagingService.markAsRead', () => {
+  let service: MessagingService
+  let db: {
+    query: { conversations: { findFirst: jest.Mock } }
+    update: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        conversations: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 900, practitionerId: 7, patientId: 20 }),
+        },
+      },
+      update: jest.fn().mockReturnValue({
+        set: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
+        }),
+      }),
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MessagingService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: UsersService, useValue: {} },
+      ],
+    }).compile()
+
+    service = moduleRef.get(MessagingService)
+  })
+
+  it('allows the practitioner participant to mark the conversation as read', async () => {
+    await service.markAsRead(900, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    })
+
+    expect(db.update).toHaveBeenCalled()
+  })
+
+  it('rejects a non-participant from marking the conversation as read', async () => {
+    await expect(
+      service.markAsRead(900, {
+        id: 999,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toThrow(ForbiddenException)
+  })
+
+  // Same admin bypass as sendMessage — an admin with no clinical
+  // relationship to this conversation used to be able to mark its
+  // messages as read, silently closing the real sender's 15-minute
+  // deleteMessage window out from under them.
+  it('rejects an admin from marking a conversation as read, even though they pass the participant check', async () => {
+    await expect(
+      service.markAsRead(900, { id: 1, activeRole: UserRole.ADMIN }),
+    ).rejects.toThrow(ForbiddenException)
+
+    expect(db.update).not.toHaveBeenCalled()
+  })
+})
+
 describe('MessagingService.deleteMessage', () => {
   let service: MessagingService
   let db: {

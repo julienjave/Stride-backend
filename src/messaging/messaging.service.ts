@@ -107,6 +107,11 @@ export class MessagingService {
   ) {
     const conversation = await this.findConversationOrThrow(conversationId)
     this.assertParticipant(conversation, currentUser)
+    if (currentUser.activeRole === UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Sending a message is a participant-only action',
+      )
+    }
 
     const [message] = await this.db
       .insert(messages)
@@ -145,6 +150,11 @@ export class MessagingService {
   async markAsRead(conversationId: number, currentUser: CurrentUser) {
     const conversation = await this.findConversationOrThrow(conversationId)
     this.assertParticipant(conversation, currentUser)
+    if (currentUser.activeRole === UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Marking a conversation as read is a participant-only action',
+      )
+    }
 
     // Marks every unread message NOT sent by the current user — reading your
     // own sent messages isn't a meaningful concept.
