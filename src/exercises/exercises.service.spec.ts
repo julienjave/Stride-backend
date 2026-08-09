@@ -183,6 +183,18 @@ describe('ExercisesService.reorderImages', () => {
     ).rejects.toThrow(BadRequestException)
   })
 
+  it('rejects a duplicate-padded reordering instead of silently corrupting the gallery', async () => {
+    await expect(
+      exercisesService.reorderImages(
+        1,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        ['a.jpg', 'b.jpg', 'c.jpg', 'a.jpg'],
+      ),
+    ).rejects.toThrow(BadRequestException)
+
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('rejects a reordering from someone who does not own the exercise', async () => {
     await expect(
       exercisesService.reorderImages(
