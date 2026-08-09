@@ -170,6 +170,7 @@ export class ClinicsService {
   }
 
   async removeMember(clinicId: number, userId: number) {
+    await this.findOne(clinicId)
     await this.db
       .delete(userClinics)
       .where(

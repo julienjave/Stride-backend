@@ -454,10 +454,10 @@ describe('ClinicsService.deactivate', () => {
 
 describe('ClinicsService.removeMember', () => {
   let clinicsService: ClinicsService
-  let db: { delete: jest.Mock }
+  let db: { query: { clinics: { findFirst: jest.Mock } }; delete: jest.Mock }
 
   beforeEach(async () => {
-    db = { delete: jest.fn() }
+    db = { query: { clinics: { findFirst: jest.fn() } }, delete: jest.fn() }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -470,10 +470,15 @@ describe('ClinicsService.removeMember', () => {
     clinicsService = moduleRef.get(ClinicsService)
   })
 
-  // No existence pre-check here, unlike every other method above — deleting
-  // a membership that was never there (or is already gone) is a no-op, not
-  // an error, so this deliberately doesn't call findOne first.
+  it('throws NotFoundException when the clinic does not exist, without touching the delete', async () => {
+    db.query.clinics.findFirst.mockResolvedValue(undefined)
+
+    await expect(clinicsService.removeMember(1, 10)).rejects.toThrow(NotFoundException)
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
   it('deletes the membership row for the given clinic and user', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
     const where = jest.fn().mockResolvedValue(undefined)
     db.delete.mockReturnValue({ where })
 

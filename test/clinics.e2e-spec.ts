@@ -158,6 +158,11 @@ describe('Clinics (e2e)', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 when removing a member from a clinic that does not exist', async () => {
+    const res = await admin.delete(`/clinics/999999/members/${practitionerId}`);
+    expect(res.status).toBe(404);
+  });
+
   it('rejects a non-admin from adding or removing a clinic member', async () => {
     const stamp = Date.now();
     const clinicRes = await admin.post('/clinics').send({
