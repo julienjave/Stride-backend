@@ -171,8 +171,15 @@ describe('ProgramsService.reorderExercises', () => {
     }
     transaction: jest.Mock
   }
+  let txUpdate: jest.Mock
+  let txWhere: jest.Mock
 
   beforeEach(async () => {
+    txWhere = jest.fn().mockResolvedValue(undefined)
+    txUpdate = jest.fn().mockReturnValue({
+      set: jest.fn().mockReturnValue({ where: txWhere }),
+    })
+
     db = {
       query: {
         programTemplates: {
@@ -180,18 +187,26 @@ describe('ProgramsService.reorderExercises', () => {
         },
         templateExercises: {
           findFirst: jest.fn(),
+          // Used by findOne() AFTER the transaction commits, to return the
+          // freshly reordered template from real post-write state.
           findMany: jest
             .fn()
             .mockResolvedValue([{ id: 100 }, { id: 101 }, { id: 102 }]),
         },
       },
+      // The read-validate-write now all happen inside this callback (via
+      // tx.query), not against the top-level db — see the comment in
+      // ProgramsService.reorderExercises for why.
       transaction: jest.fn().mockImplementation((cb: any) =>
         cb({
-          update: jest.fn().mockReturnValue({
-            set: jest.fn().mockReturnValue({
-              where: jest.fn().mockResolvedValue(undefined),
-            }),
-          }),
+          query: {
+            templateExercises: {
+              findMany: jest
+                .fn()
+                .mockResolvedValue([{ id: 100 }, { id: 101 }, { id: 102 }]),
+            },
+          },
+          update: txUpdate,
         }),
       ),
     }
@@ -213,9 +228,10 @@ describe('ProgramsService.reorderExercises', () => {
     )
 
     expect(db.transaction).toHaveBeenCalled()
+    expect(txUpdate).toHaveBeenCalledTimes(3)
   })
 
-  it('rejects a reordering that omits one of the current rows', async () => {
+  it('rejects a reordering that omits one of the current rows, without writing anything', async () => {
     await expect(
       programsService.reorderExercises(
         1,
@@ -223,7 +239,11 @@ describe('ProgramsService.reorderExercises', () => {
         [100, 101],
       ),
     ).rejects.toThrow(BadRequestException)
-    expect(db.transaction).not.toHaveBeenCalled()
+    // The permutation check now runs inside the transaction (alongside the
+    // read it validates against), so the transaction IS entered — it just
+    // never reaches the update loop before throwing.
+    expect(db.transaction).toHaveBeenCalled()
+    expect(txUpdate).not.toHaveBeenCalled()
   })
 
   it('rejects a reordering from a practitioner who does not own the template', async () => {
@@ -234,6 +254,33 @@ describe('ProgramsService.reorderExercises', () => {
         [100, 101, 102],
       ),
     ).rejects.toThrow(ForbiddenException)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // Regression coverage for the TOCTOU fix: the permutation check must
+  // validate against the transaction's OWN read, not a snapshot taken
+  // before the transaction opened — otherwise a row removed/added in the
+  // gap between the two could slip past validation. Simulated here by
+  // making the pre-transaction (db.query) view stale/wrong on purpose: if
+  // the service were still reading via this.db.query instead of tx.query,
+  // this reordering would wrongly pass (it's a valid permutation of the
+  // STALE set) instead of being rejected against the tx's real set.
+  it('validates the permutation against the transaction, not a pre-transaction snapshot', async () => {
+    db.query.templateExercises.findMany.mockResolvedValue([
+      { id: 100 },
+      { id: 101 },
+      { id: 102 },
+      { id: 999 }, // a row the tx-scoped read does NOT see
+    ])
+
+    await expect(
+      programsService.reorderExercises(
+        1,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        [100, 101, 102, 999],
+      ),
+    ).rejects.toThrow(BadRequestException)
+    expect(txUpdate).not.toHaveBeenCalled()
   })
 })
 

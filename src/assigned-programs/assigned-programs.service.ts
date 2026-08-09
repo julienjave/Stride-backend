@@ -223,26 +223,36 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(assignedProgramId)
     await this.assertCanManage(program.patientId, currentUser)
 
-    const currentRows = await this.db.query.assignedProgramExercises.findMany({
-      where: eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
-    })
-    const currentIds = new Set(currentRows.map((r) => r.id))
-    // Same fix as ProgramsService.reorderExercises — a genuine permutation
-    // check needs length + no-internal-duplicates + valid-membership
-    // together, not just a comparison of deduplicated Set sizes. See that
-    // method's comment for the full exploit trace.
-    const isSamePermutation =
-      newOrder.length === currentRows.length &&
-      new Set(newOrder).size === newOrder.length &&
-      newOrder.every((id) => currentIds.has(id))
-
-    if (!isSamePermutation) {
-      throw new BadRequestException(
-        'The new order must contain exactly the exercises currently in this program, just reordered',
-      )
-    }
-
+    // Read, permutation-check, and write all happen inside ONE transaction
+    // (tx.query instead of this.db.query) — same fix as
+    // ProgramsService.reorderExercises, closing the same "separate
+    // transaction" TOCTOU gap where a concurrent addExercise/removeExercise
+    // could land between the old read and the old write. See that method's
+    // comment for the full trace of why this narrows rather than fully
+    // closes the race, and why full closure (row locking / SERIALIZABLE +
+    // retry) isn't justified given the confirmed failure mode is a harmless
+    // sortOrder inconsistency, never a privilege or data-boundary issue —
+    // and the response below already reflects genuine post-write state.
     await this.db.transaction(async (tx) => {
+      const currentRows = await tx.query.assignedProgramExercises.findMany({
+        where: eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
+      })
+      const currentIds = new Set(currentRows.map((r) => r.id))
+      // Same fix as ProgramsService.reorderExercises — a genuine permutation
+      // check needs length + no-internal-duplicates + valid-membership
+      // together, not just a comparison of deduplicated Set sizes. See that
+      // method's comment for the full exploit trace.
+      const isSamePermutation =
+        newOrder.length === currentRows.length &&
+        new Set(newOrder).size === newOrder.length &&
+        newOrder.every((id) => currentIds.has(id))
+
+      if (!isSamePermutation) {
+        throw new BadRequestException(
+          'The new order must contain exactly the exercises currently in this program, just reordered',
+        )
+      }
+
       for (const [index, rowId] of newOrder.entries()) {
         await tx
           .update(assignedProgramExercises)

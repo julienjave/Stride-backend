@@ -101,35 +101,54 @@ export class ProgramsService {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
 
-    const currentRows = await this.db.query.templateExercises.findMany({
-      where: eq(templateExercises.templateId, templateId),
-    })
-    const currentIds = new Set(currentRows.map((r) => r.id))
-    // A genuine permutation check needs THREE conditions together — the
-    // previous version only compared deduplicated Set sizes, which a
-    // client could satisfy by submitting a newOrder array containing a
-    // DUPLICATE id (padding it to the right unique count) while silently
-    // OMITTING a real exercise entirely. That array would pass the old
-    // check, then get looped over directly below using its RAW length —
-    // the duplicated id's later occurrence would silently overwrite its
-    // own earlier sortOrder update, leaving a genuine gap in the final
-    // sequence (e.g. sortOrder 1,2,3 with 0 never actually applied to any
-    // row) while the omitted exercise's real sortOrder went untouched.
-    const isSamePermutation =
-      newOrder.length === currentRows.length &&
-      new Set(newOrder).size === newOrder.length &&
-      newOrder.every((id) => currentIds.has(id))
-
-    if (!isSamePermutation) {
-      throw new BadRequestException(
-        'The new order must contain exactly the exercises currently in this template, just reordered',
-      )
-    }
-
-    // A transaction — a reorder is meant to be all-or-nothing. If one row's
-    // update failed partway through a plain loop, the template would be
-    // left with an inconsistent, partially-reordered sortOrder sequence.
+    // Read, permutation-check, and write all happen inside ONE transaction
+    // (tx.query instead of this.db.query) — this used to read currentRows
+    // via a separate, already-committed round trip and only open the write
+    // transaction afterwards, leaving a window where a concurrent
+    // addExercise/removeExercise could land: the update loop would then
+    // silently no-op on a since-deleted id, or leave a since-added row's
+    // sortOrder untouched. Folding the read into the same transaction as
+    // the write closes that specific "separate transaction" gap.
+    //
+    // This narrows the race rather than closing it outright: Postgres's
+    // default READ COMMITTED isolation still lets each statement inside a
+    // transaction see newly-committed data, so a concurrent write between
+    // this SELECT and the UPDATE loop below is still theoretically
+    // possible. Fully closing that would need row locking (SELECT ... FOR
+    // UPDATE — not used anywhere else in this codebase) or SERIALIZABLE
+    // isolation with retry-on-conflict logic, neither justified here: the
+    // actual failure mode, even in the worst case, is a harmless sortOrder
+    // inconsistency (a stale row keeping its old value, or two rows
+    // sharing one), never a privilege or data-boundary violation — and the
+    // response below already reflects genuine post-write state (re-read
+    // from the DB, not echoed back from the request), so a caller can
+    // never be misled about what actually happened.
     await this.db.transaction(async (tx) => {
+      const currentRows = await tx.query.templateExercises.findMany({
+        where: eq(templateExercises.templateId, templateId),
+      })
+      const currentIds = new Set(currentRows.map((r) => r.id))
+      // A genuine permutation check needs THREE conditions together — the
+      // previous version only compared deduplicated Set sizes, which a
+      // client could satisfy by submitting a newOrder array containing a
+      // DUPLICATE id (padding it to the right unique count) while silently
+      // OMITTING a real exercise entirely. That array would pass the old
+      // check, then get looped over directly below using its RAW length —
+      // the duplicated id's later occurrence would silently overwrite its
+      // own earlier sortOrder update, leaving a genuine gap in the final
+      // sequence (e.g. sortOrder 1,2,3 with 0 never actually applied to any
+      // row) while the omitted exercise's real sortOrder went untouched.
+      const isSamePermutation =
+        newOrder.length === currentRows.length &&
+        new Set(newOrder).size === newOrder.length &&
+        newOrder.every((id) => currentIds.has(id))
+
+      if (!isSamePermutation) {
+        throw new BadRequestException(
+          'The new order must contain exactly the exercises currently in this template, just reordered',
+        )
+      }
+
       for (const [index, templateExerciseId] of newOrder.entries()) {
         await tx
           .update(templateExercises)
