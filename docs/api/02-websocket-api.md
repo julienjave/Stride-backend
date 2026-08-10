@@ -1,65 +1,92 @@
 # WebSocket API — `MessagingGateway`
 
-Source of truth: [`src/messaging/messaging.gateway.ts`](../../src/messaging/messaging.gateway.ts),
+Verified against commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`. Source of
+truth: [`src/messaging/messaging.gateway.ts`](../../src/messaging/messaging.gateway.ts),
+[`src/messaging/ws-exception.filter.ts`](../../src/messaging/ws-exception.filter.ts),
 [`src/messaging/session-io.adapter.ts`](../../src/messaging/session-io.adapter.ts),
-[`src/messaging/messaging.service.ts`](../../src/messaging/messaging.service.ts).
+[`src/messaging/messaging.service.ts`](../../src/messaging/messaging.service.ts),
+and [`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
+(the only test file that drives a real socket connection end-to-end — every
+concrete payload and status below is cross-checked against its assertions).
 
 This has **zero** Swagger coverage — Swagger only documents HTTP routes.
-Everything below was read directly from the gateway and service
-implementations.
+Everything below was read directly from the gateway and service source.
 
-Transport: [Socket.IO](https://socket.io/) v4, default namespace (`/`), no
-custom path configured. CORS is configured separately from the HTTP API but
-identically in practice — same `getAllowedOrigins()` allowlist,
-`credentials: true`.
+Transport: [Socket.IO](https://socket.io/) v4 (`socket.io@^4.8.3`,
+`@nestjs/platform-socket.io@^11`), default namespace (`/`), no custom path
+configured. CORS for the gateway is configured separately from the HTTP API
+(`@WebSocketGateway({ cors: { origin: getAllowedOrigins(), credentials: true } })`)
+but reads the exact same `FRONTEND_URLS`-derived allowlist as the REST API.
 
-## Connection: authenticated via the same session cookie as REST
+## Connection: authenticated via the same session cookie as REST, via real Socket.IO middleware
 
-There is no separate WebSocket login/token flow. `SessionIoAdapter`
-(registered in `main.ts` via `app.useWebSocketAdapter(...)`) wraps Socket.IO's
-server creation to run the **exact same `express-session` middleware
-instance** used for HTTP requests against every socket handshake, before the
-connection is accepted. Socket.IO's handshake does not go through Express's
-middleware chain by default — this adapter is what makes it do so anyway. The
-payoff: `socket.request.session` inside the gateway is the real, shared
-session store, not a parallel mechanism invented for sockets.
+There is no separate WebSocket login or token exchange. Socket.IO's handshake
+does **not** go through Express's normal middleware chain by default — two
+pieces of this app work together to make it do so anyway:
+
+1. **`SessionIoAdapter`** (registered in `main.ts` via
+   `app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))`)
+   wraps Socket.IO's own server creation to run the *same*
+   `express-session` middleware instance used for HTTP requests against
+   every socket handshake, before Socket.IO does anything else with it. This
+   is what makes `socket.request.session` available at all inside the
+   gateway — the real, shared session store, not a parallel mechanism
+   invented for sockets.
+2. **`MessagingGateway.afterInit`** registers genuine **Socket.IO
+   middleware** via `server.use(...)` — *not* the `handleConnection`
+   lifecycle hook. This distinction matters and is worth being precise
+   about: `server.use()` middleware must fully resolve — including the
+   `await usersService.findOne(...)` call inside it — before Socket.IO
+   considers the connection established at all, and *no event from that
+   client can reach any handler until it does*. (`handleConnection`, by
+   contrast, does not block delivery of the client's own subsequent events;
+   an earlier version of this gateway used `handleConnection` for this same
+   check and had a real race condition as a result — a client emitting an
+   event immediately after `'connect'` could reach a handler before the
+   async user lookup had resolved, crashing on an unset `socket.data.user`.
+   [`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
+   has a dedicated regression test for this — "handles a joinConversation
+   event emitted immediately on connect, with no delay".)
+
+The middleware itself, on every handshake:
+
+1. Reads `socket.request.session?.passport?.user` — the exact
+   `{ id, activeRole }` shape `SessionSerializer.serializeUser` stores for
+   HTTP sessions (see [Authentication](./01-authentication.md)). If absent,
+   the handshake is rejected by calling `next(new Error('Unauthorized'))`.
+2. Otherwise, re-loads the full user via `UsersService.findOne(id)`. If the
+   session's stored `activeRole` is no longer among the user's actual roles
+   (a role was revoked since this session was established — the same check
+   `SessionSerializer` performs for HTTP), the handshake is rejected the
+   same way.
+3. On success, stashes `{ ...user, activeRole }` on `socket.data.user` —
+   every event handler below reads this to know who's connected; it plays
+   the same role `@CurrentUser()` plays for HTTP controllers.
+
+**What the client actually sees on rejection:** calling `next(new Error(...))`
+inside Socket.IO server middleware makes the handshake itself fail — the
+client's `'connect'` event never fires at all; only `'connect_error'` does,
+and the socket never reports as connected
+(`socket.connected` stays `false`). This is exactly what
+[`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
+asserts ("rejects a socket connection with no session cookie" — listens for
+`'connect'` vs `'connect_error'` and asserts only the latter fires). There is
+no structured error payload describing *why* the handshake was rejected
+(invalid session vs. revoked role) — treat any `connect_error` as "this
+session isn't valid for a socket connection; the user needs to be
+re-authenticated over REST first."
 
 **Practical implications for the frontend:**
 
-- The user must already have a valid HTTP session (i.e. have already
-  completed `POST /auth/login`, and — if MFA is enabled — `POST
-  /auth/mfa/verify`) *before* opening the socket connection. There is no way
-  to authenticate a socket on its own.
-- The client must connect with credentials enabled so the browser attaches
-  the `connect.sid` cookie to the handshake — with `socket.io-client`, this
-  is `io(url, { withCredentials: true })`. Without this, the handshake
-  carries no session and is rejected (see below).
-
-### `handleConnection` — what happens on connect
-
-On every new connection (`messaging.gateway.ts:59`), the gateway:
-
-1. Reads `socket.request.session?.passport?.user` — this is the exact
-   `{ id, activeRole }` shape `SessionSerializer.serializeUser` stores for
-   HTTP sessions (see [Authentication](./01-authentication.md)). If it's
-   missing, the socket is disconnected immediately
-   (`socket.disconnect()`) — **no error event is emitted, the socket
-   simply closes.** Your client-side `connect_error` / `disconnect` handler
-   is the only signal you'll get; there's no message payload explaining
-   why.
-2. Re-loads the full user via `UsersService.findOne(id)`. If the session's
-   stored `activeRole` is no longer among the user's actual roles (a role
-   was revoked after the session was established — the same check
-   `SessionSerializer` does for HTTP), the socket is disconnected the same
-   silent way.
-3. On success, stashes `{ ...user, activeRole }` on `socket.data.user` —
-   this is what every event handler below reads to know who's connected;
-   it plays the same role `@CurrentUser()` plays for HTTP controllers.
-
-**Frontend guidance:** always attach a `disconnect` listener right after
-calling `.connect()` and treat an immediate disconnect (no prior successful
-event) as "the session isn't valid for sockets" — send the user through the
-normal re-authentication path, the same as you'd handle a `401` on REST.
+- The user must already hold a valid, fully-authenticated HTTP session
+  (`POST /auth/login` completed — and `POST /auth/mfa/verify` too, if MFA is
+  enabled) *before* opening the socket connection. There is no way to
+  authenticate a socket independently.
+- Connect with credentials enabled so the handshake request carries the
+  `connect.sid` cookie. With `socket.io-client`, `extraHeaders: { Cookie:
+  '...' }` (as the e2e tests do, since they don't run in a browser) or,
+  in an actual browser, `io(url, { withCredentials: true })` is what makes
+  the browser attach the cookie automatically.
 
 ## Client → Server events
 
@@ -69,35 +96,41 @@ normal re-authentication path, the same as you'd handle a `401` on REST.
 socket.emit('joinConversation', { conversationId: number })
 ```
 
-Joins the Socket.IO room `conversation:<conversationId>`. Everyone in that
-room receives every `newMessage`/`messageDeleted` event broadcast to it.
+Handled by `MessagingGateway.handleJoin`. Joins the Socket.IO room
+`conversation:<conversationId>` — everyone in that room receives every
+`newMessage`/`messageDeleted` event broadcast to it.
 
-**Two things worth flagging explicitly, verified directly from
-`messaging.gateway.ts:82-90`:**
+**This performs a real authorization check**, via
+`MessagingService.assertUserCanJoinConversation`, which is deliberately the
+exact same check (`findConversationOrThrow` + `assertParticipant`) that
+every REST endpoint on this resource uses: the conversation must exist, and
+the caller must be one of its two participants (practitioner or patient) —
+or an admin, who is allowed to join/view any conversation but, as covered in
+[Roles & Authorization](./04-authorization.md), cannot send into one. Failing
+either check throws `NotFoundException`/`ForbiddenException`, caught by
+`WsHttpExceptionFilter` (see below) rather than a manual `try`/`catch` in the
+handler — the same "let the filter handle it" pattern REST controllers rely
+on.
+[`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
+exercises this directly: a genuinely authenticated socket with no
+relationship to the target conversation gets a `403` `exception` event with
+message `"You are not a participant in this conversation"` — not a silent
+join.
 
-- **There is no payload validation.** Unlike HTTP routes, WebSocket message
-  bodies in this app are **not** run through Nest's global `ValidationPipe`
-  — that pipe is wired into the HTTP request pipeline only
-  (`app.useGlobalPipes(...)` in `main.ts`), and the gateway does not apply
-  any `@UsePipes()` of its own. A malformed payload (missing
-  `conversationId`, wrong type) is not rejected with a clean validation
-  error — it will either produce a nonsensical room name
-  (`conversation:undefined`) or fail in some less-predictable way
-  downstream. **The client is entirely responsible for sending well-formed
-  payloads here** — there's no server-side safety net to lean on the way
-  there is for REST bodies.
-- **There is no participant/membership check on join.** The handler calls
-  `socket.join(...)` directly with no call into `MessagingService` at all —
-  unlike every other operation in this gateway/controller (`sendMessage`,
-  `getMessages`, etc.), which all go through
-  `MessagingService.assertParticipant` first. As implemented, any
-  authenticated socket can join any conversation's room by id and receive
-  its live message broadcasts, regardless of whether that user is actually
-  one of the two participants. This is a real, verified gap in the current
-  implementation, not a design decision described anywhere in the code —
-  worth flagging to the backend team rather than relying on client-side
-  behavior (e.g. "the UI never lets you type an arbitrary conversation id")
-  as the actual security boundary.
+**Payload validation:** `data` is typed as a plain TypeScript interface
+(`{ conversationId: number }`), not a `class`-based DTO the way REST body
+payloads are. The global `ValidationPipe` registered in `main.ts` does apply
+across NestJS's request-handling pipeline generically, but `ValidationPipe`
+only actually validates a parameter when its reflected type is a real class
+with `class-validator` decorators — a plain object-literal type has no such
+metadata, so it passes through untouched. In practice this means a
+malformed or missing `conversationId` isn't rejected with a clean validation
+error the way a malformed REST body would be; it flows straight into the
+service layer, where a non-existent/undefined id will surface as a
+`NotFoundException` from `findConversationOrThrow` (translated to a `404`
+`exception` event by the filter) rather than a `400`. Send well-formed
+payloads — there's no dedicated schema-validation safety net on this
+transport the way there is for REST bodies.
 
 ### `sendMessage`
 
@@ -105,20 +138,24 @@ room receives every `newMessage`/`messageDeleted` event broadcast to it.
 socket.emit('sendMessage', { conversationId: number, messageBody: string })
 ```
 
-Calls the exact same `MessagingService.sendMessage()` used by the REST
-fallback (`POST /conversations/:id/messages`), so behavior is identical
-either way *except for what happens next* — see the REST-vs-WebSocket
-divergence note below. Authorization here **is** enforced
-(`assertParticipant`): the conversation must exist, and the caller must be
-one of its two participants (or an admin). On success, the handler:
+Handled by `MessagingGateway.handleSendMessage`, which calls the exact same
+`MessagingService.sendMessage()` used by the REST fallback
+(`POST /conversations/:id/messages`) — persistence behavior is identical
+either way (see the REST-vs-WebSocket divergence note below for what is
+*not* identical). Authorization: the conversation must exist and the caller
+must be a genuine participant (`assertParticipant`); additionally, **an
+admin is explicitly blocked from sending** — `ForbiddenException`,
+`"Sending a message is a participant-only action"` — even though an admin
+passes the participant check for read purposes elsewhere in this module. On
+success:
 
 1. Broadcasts a `newMessage` event to the whole room
    `conversation:<conversationId>` — including the sender's own other open
    tabs/devices, so a multi-device session stays in sync.
-2. Returns the created message as a Socket.IO **acknowledgement** — if your
-   client passes a callback as the third argument to `.emit()`, it receives
-   the same payload directly, without needing to also listen for the
-   broadcast.
+2. Returns the created message row as a Socket.IO **acknowledgement** — if
+   your client passes a callback as the third argument to `.emit()`, it
+   receives the same payload directly, without needing to separately listen
+   for the broadcast.
 
 ### `deleteMessage`
 
@@ -126,25 +163,32 @@ one of its two participants (or an admin). On success, the handler:
 socket.emit('deleteMessage', { conversationId: number, messageId: number })
 ```
 
-Calls `MessagingService.deleteMessage()` — this is a **soft delete** gated
-by two conditions that must **both** hold:
+Handled by `MessagingGateway.handleDeleteMessage`, calling
+`MessagingService.deleteMessage()` — a **soft delete** gated by conditions
+that must **all** hold:
 
-- The caller must be the message's original sender (not just a conversation
-  participant).
-- The message must be **unread** (`readAt` still null) **and** within a
-  **15-minute** window of `sentAt`.
+- The caller must be a genuine conversation participant (`assertParticipant`).
+- The caller must be the message's original sender — not just a
+  participant. `ForbiddenException`, `"You can only delete your own
+  messages"`.
+- The message must be **unread** (`readAt` still `null`). `ForbiddenException`,
+  `"This message has already been read and can no longer be deleted"`.
+- The message must be within **15 minutes** of `sentAt`.
+  `ForbiddenException`, `"This message can no longer be deleted — the 15
+  minute window has passed"`.
+- The message must actually belong to the given `conversationId`
+  (`NotFoundException` otherwise).
 
-Violating either condition throws a `ForbiddenException` (see error-handling
-note below); deleting a message that doesn't exist in that conversation
-throws `NotFoundException`. On success, broadcasts `messageDeleted` to the
-room and returns the same payload as an ack.
+On success, broadcasts `messageDeleted` to the room and returns the same
+tombstoned payload as an acknowledgement (see `messageDeleted` below for the
+exact shape).
 
 ## Server → Client events
 
 ### `newMessage`
 
 Emitted to `conversation:<conversationId>` whenever a message is created via
-the `sendMessage` WS handler. Payload is the **raw inserted row**:
+the `sendMessage` WS handler. Payload is the raw inserted `messages` row:
 
 ```json
 {
@@ -161,10 +205,10 @@ the `sendMessage` WS handler. Payload is the **raw inserted row**:
 ### `messageDeleted`
 
 Emitted to `conversation:<conversationId>` after a successful
-`deleteMessage`. Payload is the updated row with the message body replaced
-by a tombstone (`MessagingService.toPublicMessage`, `messaging.service.ts:231`)
-— the row is never actually removed, so every subsequent read of this
-conversation's history shows the same tombstone too:
+`deleteMessage`. Payload is the updated row with `messageBody` replaced by a
+tombstone (`MessagingService.toPublicMessage`) — the row is never physically
+removed, so every later read of this conversation's history (REST or
+WebSocket) shows the same tombstone:
 
 ```json
 {
@@ -178,49 +222,52 @@ conversation's history shows the same tombstone too:
 }
 ```
 
-### ⚠️ REST-sent messages do **not** broadcast over the socket
+### `exception` — thrown errors, translated to real status codes and messages
+
+`@UseFilters(new WsHttpExceptionFilter())` is applied at the gateway class
+level (`messaging.gateway.ts`), so it runs for every handler in this file.
+This matters: `MessagingService` throws ordinary Nest `HttpException`
+subclasses (`NotFoundException`, `ForbiddenException`) — the *same* classes
+used throughout the REST API — not `WsException`. Nest's default WebSocket
+exception handling (`BaseWsExceptionFilter`) only gives special treatment to
+actual `WsException` instances; anything else collapses into a generic
+"Internal server error" with no useful detail. `WsHttpExceptionFilter`
+exists specifically to prevent that: it catches any `HttpException`, pulls
+out its real `status` and `message`, wraps them in a `WsException`, and
+*then* hands off to `BaseWsExceptionFilter`'s own handling — so the caller
+gets the real reason, not a generic failure.
+
+Concretely, a rejected handler emits an `exception` event on the throwing
+client's own socket, shaped:
+
+```json
+{ "status": 403, "message": "You are not a participant in this conversation" }
+```
+
+This exact shape and value is what
+[`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
+asserts for an unrelated practitioner's rejected `joinConversation`. The same
+translation applies to every thrown `HttpException` from any handler in this
+gateway — a rejected `sendMessage`/`deleteMessage` (wrong 15-minute window,
+not the sender, not a participant, etc.) surfaces its real, specific message
+the same way a REST caller of the identical underlying service method would
+see in the JSON error body. Listen for `'exception'` on the socket to catch
+these.
+
+## REST-sent messages do **not** broadcast over the socket
 
 `POST /conversations/:id/messages` (the REST fallback) and the `sendMessage`
 WS event both call the identical `MessagingService.sendMessage()`, so the
-message is created identically either way — but the `this.server.to(...)
-.emit('newMessage', ...)` broadcast line lives **only** inside
-`MessagingGateway.handleSendMessage`, not inside `MessagingService` itself.
-A message created via the REST endpoint is persisted correctly and will
-show up on the next `GET /conversations/:id/messages` poll, but **no
-connected client — including the sender's own other tabs — receives a live
-`newMessage` event for it.** If your frontend mixes both paths (e.g. REST
-for initial send, WS for live updates), be aware the REST path will feel
-"silent" until something else triggers a refetch. For a fully live chat
-experience, send messages exclusively through the `sendMessage` WS event.
-
-### ⚠️ Errors thrown inside a handler are **not** returned with their real message
-
-None of `messaging.service.ts`'s exceptions (`ForbiddenException`,
-`NotFoundException`, etc. — all standard Nest `HttpException`s) are
-instances of `WsException`. This project registers no custom WebSocket
-exception filter, so Nest's built-in `BaseWsExceptionFilter` handles them —
-and that filter only gives special treatment to actual `WsException`
-instances. Everything else falls through to `handleUnknownError`, which
-emits a **generic, detail-free** `exception` event back to the throwing
-client:
-
-```json
-{ "status": "error", "message": "Internal server error" }
-```
-
-This happens even for an entirely expected, well-formed rejection like
-trying to delete someone else's message or a message outside the 15-minute
-window — the specific, human-readable reason
-(`"You can only delete your own messages"`, etc.) that a REST caller of the
-same underlying service method would see in the JSON error body is
-**swallowed** on the WebSocket path. (It's also not logged server-side,
-since `HttpException` counts as an "expected" `IntrinsicException` in this
-Nest version.) **Don't rely on the WS `exception` event's `message` field
-for user-facing error text** — if you need the real reason for a rejected
-`sendMessage`/`deleteMessage`, either duplicate the relevant validation
-client-side before emitting, or fall back to calling the equivalent REST
-endpoint, whose JSON error body does carry the specific message (see
-[Response Conventions](./03-conventions.md)).
+message is created identically either way — but the
+`this.server.to(...).emit('newMessage', ...)` broadcast line lives *only*
+inside `MessagingGateway.handleSendMessage`, not inside `MessagingService`
+itself. A message sent via the REST endpoint is persisted correctly and
+appears on the next `GET /conversations/:id/messages` poll, but **no
+connected socket — including the sender's own other tabs — receives a live
+`newMessage` event for it.** If a frontend mixes both paths, the REST path
+will feel "silent" until something else triggers a refetch. For a genuinely
+live chat experience, send messages exclusively through the `sendMessage` WS
+event.
 
 ## End-to-end example
 
@@ -235,14 +282,14 @@ await fetch('https://api.example.com/auth/login', {
   body: JSON.stringify({ email: 'patient@example.com', password: '...' }),
 })
 
-// 2. Connect the socket, reusing that same cookie.
+// 2. Connect the socket, reusing that same cookie via the browser's cookie jar.
 const socket = io('https://api.example.com', { withCredentials: true })
 
 socket.on('connect', () => console.log('connected'))
-socket.on('disconnect', (reason) => console.log('disconnected:', reason))
-socket.on('exception', (err) => console.warn('ws error (generic):', err))
+socket.on('connect_error', (err) => console.warn('handshake rejected:', err.message))
+socket.on('exception', (err) => console.warn('server rejected an event:', err.status, err.message))
 
-// 3. Join the conversation's room.
+// 3. Join the conversation's room — server verifies real participation first.
 socket.emit('joinConversation', { conversationId: 12 })
 
 // 4. Listen for incoming messages.
@@ -250,7 +297,7 @@ socket.on('newMessage', (message) => {
   console.log('new message:', message)
 })
 
-// 5. Send a message, and also get it back as an ack.
+// 5. Send a message, and also get it back as an acknowledgement.
 socket.emit(
   'sendMessage',
   { conversationId: 12, messageBody: 'See you at 3pm' },
