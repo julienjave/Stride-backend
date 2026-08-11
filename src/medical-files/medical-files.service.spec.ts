@@ -14,7 +14,7 @@ describe('MedicalFilesService.create', () => {
   let service: MedicalFilesService
   let usersService: { isPatientManagedBy: jest.Mock }
   let auditService: { log: jest.Mock }
-  let db: { insert: jest.Mock }
+  let db: { insert: jest.Mock; transaction: jest.Mock; execute: jest.Mock }
 
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn() }
@@ -27,6 +27,8 @@ describe('MedicalFilesService.create', () => {
             .mockResolvedValue([{ id: 1, patientId: 20, clinicalData: {} }]),
         }),
       }),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -75,13 +77,19 @@ describe('MedicalFilesService.findAll', () => {
   let service: MedicalFilesService
   let usersService: { isPatientManagedBy: jest.Mock }
   let auditService: { log: jest.Mock }
-  let db: { query: { medicalFiles: { findMany: jest.Mock } } }
+  let db: {
+    query: { medicalFiles: { findMany: jest.Mock } }
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn() }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
     db = {
       query: { medicalFiles: { findMany: jest.fn().mockResolvedValue([]) } },
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -140,12 +148,20 @@ describe('MedicalFilesService.findOne', () => {
   let service: MedicalFilesService
   let usersService: { isPatientManagedBy: jest.Mock }
   let auditService: { log: jest.Mock }
-  let db: { query: { medicalFiles: { findFirst: jest.Mock } } }
+  let db: {
+    query: { medicalFiles: { findFirst: jest.Mock } }
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn() }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
-    db = { query: { medicalFiles: { findFirst: jest.fn() } } }
+    db = {
+      query: { medicalFiles: { findFirst: jest.fn() } },
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [

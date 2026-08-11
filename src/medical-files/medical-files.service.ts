@@ -24,7 +24,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { medicalFiles } from '../database/schema'
 import { UsersService } from '../users/users.service'
@@ -63,14 +63,16 @@ export class MedicalFilesService {
       )
     }
 
-    const [entry] = await this.db
-      .insert(medicalFiles)
-      .values({
-        patientId: dto.patientId,
-        createdBy: currentUser.id,
-        clinicalData: dto.clinicalData,
-      })
-      .returning()
+    const [entry] = await this.withRlsContext(currentUser, (tx) =>
+      tx
+        .insert(medicalFiles)
+        .values({
+          patientId: dto.patientId,
+          createdBy: currentUser.id,
+          clinicalData: dto.clinicalData,
+        })
+        .returning(),
+    )
 
     await this.auditService.log({
       performedBy: currentUser.id,
@@ -108,10 +110,12 @@ export class MedicalFilesService {
       targetPatientId = patientId
     }
 
-    const entries = await this.db.query.medicalFiles.findMany({
-      where: eq(medicalFiles.patientId, targetPatientId),
-      orderBy: (mf, { desc }) => [desc(mf.createdAt)],
-    })
+    const entries = await this.withRlsContext(currentUser, (tx) =>
+      tx.query.medicalFiles.findMany({
+        where: eq(medicalFiles.patientId, targetPatientId),
+        orderBy: (mf, { desc }) => [desc(mf.createdAt)],
+      }),
+    )
 
     // The first real use of targetUserId — logged for EVERY viewer,
     // including the patient viewing their own record. HIPAA's actual
@@ -129,9 +133,11 @@ export class MedicalFilesService {
   }
 
   async findOne(id: number, currentUser: CurrentUser) {
-    const entry = await this.db.query.medicalFiles.findFirst({
-      where: eq(medicalFiles.id, id),
-    })
+    const entry = await this.withRlsContext(currentUser, (tx) =>
+      tx.query.medicalFiles.findFirst({
+        where: eq(medicalFiles.id, id),
+      }),
+    )
     if (!entry) {
       throw new NotFoundException(`Medical file entry ${id} not found`)
     }
@@ -167,4 +173,28 @@ export class MedicalFilesService {
   // Deliberately no update() or archive() method — see MedicalFilesModule
   // writeup for the reasoning: clinical entries are append-only. A
   // correction belongs as a new entry, not an edit to an existing one.
+
+  // === HELPER FUNCTIONS =====================================================
+
+  // Session-local context for the medical_files RLS policies (see the "Row-Level
+  // Security" writeup) — set_config(..., true) scopes both settings to just this
+  // transaction, matching the request they were derived from. Only the three
+  // queries that actually touch medicalFiles run through here; the
+  // isPatientManagedBy/isSelf/isAdmin/isManaging checks above and the
+  // auditService.log() calls below stay on the normal connection, deliberately
+  // unaffected by RLS — both layers enforce the same rule on purpose.
+  private async withRlsContext<T>(
+    currentUser: CurrentUser,
+    fn: (tx: DrizzleDb) => Promise<T>,
+  ): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT set_config('app.current_user_id', ${String(currentUser.id)}, true)`,
+      )
+      await tx.execute(
+        sql`SELECT set_config('app.current_role', ${currentUser.activeRole}, true)`,
+      )
+      return fn(tx)
+    })
+  }
 }

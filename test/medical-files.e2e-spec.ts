@@ -228,11 +228,17 @@ describe('MedicalFiles (e2e)', () => {
     const asManagingPractitioner = await practitionerA.get(`/medical-files/${entryId}`);
     expect(asManagingPractitioner.status).toBe(200);
 
+    // Once findOne's fetch-by-id runs under RLS (see the "Row-Level Security"
+    // writeup), a row that exists but isn't visible to this session's RLS
+    // context simply doesn't come back from the database — indistinguishable
+    // from a genuinely nonexistent id, hence 404 rather than 403 here. This is
+    // a deliberate, accepted tradeoff, not a bug: not confirming a record's
+    // existence to someone unauthorized to see it is the stricter posture.
     const asOtherPatient = await patientB.get(`/medical-files/${entryId}`);
-    expect(asOtherPatient.status).toBe(403);
+    expect(asOtherPatient.status).toBe(404);
 
     const asNonManagingPractitioner = await practitionerB.get(`/medical-files/${entryId}`);
-    expect(asNonManagingPractitioner.status).toBe(403);
+    expect(asNonManagingPractitioner.status).toBe(404);
   });
 
   it('returns 404 for a medical file entry that does not exist', async () => {
