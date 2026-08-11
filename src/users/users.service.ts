@@ -274,6 +274,14 @@ export class UsersService {
   // The shared building block behind the PATCH/DELETE ownership checks below
   // — "is this patient one this practitioner can act on," using the same
   // clinic-sharing definition as findPatientsForPractitioner.
+  //
+  // Mirrored independently in SQL by rls_practitioner_manages_patient() in
+  // src/database/migrations/0003_assigned_programs_rls.sql — same rule,
+  // TypeScript here vs. a Postgres function there, with no automatic check
+  // keeping the two in sync. A future change to either one needs the other
+  // checked too. RLS can only narrow what a query returns, never broaden
+  // it, so a drift here would fail silently: rows would just start going
+  // quietly missing for a practitioner, never throw an error.
   async isPatientManagedBy(
     patientId: number,
     practitionerId: number,
