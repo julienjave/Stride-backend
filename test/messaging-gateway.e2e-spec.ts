@@ -96,7 +96,11 @@ describe('MessagingGateway (e2e)', () => {
         `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test".`,
       );
     }
-    await db.execute(sql`TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE`);
+    // Uses sessionPool (the owner connection), not db (the restricted
+    // stride_app connection) — TRUNCATE needs a privilege this app role is
+    // deliberately never granted, since real app traffic never truncates
+    // tables. This is test cleanup infrastructure only.
+    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
 
     // port 0 = let the OS assign a free port. WebSocket connections need a
     // REAL, listening network server, unlike the REST e2e tests, which can

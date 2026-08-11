@@ -1,5 +1,13 @@
 name: stride
 
+# No `create-app-role` service here, unlike docker-compose.prod.yml —
+# local dev never containerizes the app (it runs directly on the host,
+# reaching `db` through its published port below), so there's no builder
+# stage to run the script from. Once `db` is up, just run the script
+# directly on the host instead: `npm run db:create-app-role`. It reads
+# POSTGRES_APP_USER/POSTGRES_APP_PASSWORD and connects using the same
+# POSTGRES_HOST=localhost owner connection the host-run app itself uses.
+
 services:
   db:
     image: postgres:16

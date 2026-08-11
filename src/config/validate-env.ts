@@ -70,4 +70,23 @@ export function validateEnv(): void {
         'Generate one with `openssl rand -hex 32`.',
     )
   }
+
+  // The app's own runtime queries connect as this restricted role, not the
+  // Postgres superuser — required so RLS policies (added in a later step)
+  // will actually have any effect. Missing here should fail loudly at boot,
+  // same as every other required secret above, rather than surfacing as a
+  // confusing connection error deep inside drizzle.provider.ts.
+  if (!process.env.POSTGRES_APP_USER) {
+    throw new Error(
+      'Missing required environment variable: POSTGRES_APP_USER. Run ' +
+        '`npm run db:create-app-role` to create the restricted stride_app ' +
+        'role, then set this to its name.',
+    )
+  }
+  if (!process.env.POSTGRES_APP_PASSWORD) {
+    throw new Error(
+      'Missing required environment variable: POSTGRES_APP_PASSWORD. Set a ' +
+        'long, random string (e.g. `openssl rand -hex 24`) before starting the app.',
+    )
+  }
 }

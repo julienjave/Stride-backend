@@ -92,7 +92,11 @@ describe('Exercises (e2e)', () => {
     // users/clinics regardless of that FK's own ON DELETE rule — safe ONLY
     // because this is the dedicated, disposable stride_test database,
     // confirmed by the check just above.
-    await db.execute(sql`TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE`);
+    // Uses sessionPool (the owner connection), not db (the restricted
+    // stride_app connection) — TRUNCATE needs a privilege this app role is
+    // deliberately never granted, since real app traffic never truncates
+    // tables. This is test cleanup infrastructure only.
+    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
 
     admin = adminAgent();
     practitionerA = practitionerAAgent();

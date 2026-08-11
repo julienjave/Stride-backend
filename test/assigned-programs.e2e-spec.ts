@@ -83,7 +83,11 @@ describe('AssignedPrograms (e2e)', () => {
       );
     }
 
-    await db.execute(sql`TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE`);
+    // Uses sessionPool (the owner connection), not db (the restricted
+    // stride_app connection) — TRUNCATE needs a privilege this app role is
+    // deliberately never granted, since real app traffic never truncates
+    // tables. This is test cleanup infrastructure only.
+    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
 
     admin = adminAgent();
     practitionerA = practitionerAAgent();

@@ -87,6 +87,35 @@ services:
     profiles: ["tools"]
     command: ["npx", "drizzle-kit", "migrate"]
 
+  # Run once, before the app first starts, with:
+  # docker compose -f docker-compose.prod.yml run --rm create-app-role
+  #
+  # Creates/syncs the restricted stride_app role the app's own runtime
+  # queries connect as (step 0 of the RLS rollout — superuser connections
+  # bypass RLS unconditionally, so this role has to exist first). Same
+  # builder-stage/env_file shape as the `migrate` service above, for the
+  # same reason: this needs the owner connection's admin rights to create
+  # a role and grant privileges, which the runtime image deliberately
+  # never has, and ts-node (a devDependency) only exists in the builder
+  # stage.
+  #
+  # `profiles: ["tools"]` keeps this from running automatically with
+  # `docker compose up` — it only runs when explicitly invoked, and is
+  # safe to re-run any time (idempotent: creates the role if missing,
+  # syncs its password otherwise).
+  create-app-role:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: stride-create-app-role
+    env_file:
+      - .env
+    depends_on:
+      - db
+    profiles: ["tools"]
+    command: ["npx", "ts-node", "scripts/create-app-role.ts"]
+
   caddy:
     image: caddy:2
     container_name: stride-caddy

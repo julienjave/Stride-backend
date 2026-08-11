@@ -27,6 +27,9 @@ export default defineConfig({
   out: './src/database/migrations',
   dialect: 'postgresql',
   dbCredentials: {
+    // Deliberately stays on the owner connection, not stride_app — generating
+    // and running migrations requires real DDL rights (CREATE/ALTER TABLE),
+    // which the restricted app role intentionally does not have.
     url: getDatabaseUrl(),
   },
 })

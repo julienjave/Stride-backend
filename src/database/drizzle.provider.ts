@@ -19,7 +19,7 @@ import { Injectable, OnModuleDestroy, Inject } from '@nestjs/common'
 import { Pool } from 'pg'
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from './schema'
-import { getDatabaseUrl } from '../config/database-url'
+import { getAppDatabaseUrl } from '../config/database-url'
 import { getPoolConfig } from '../config/pool-config'
 
 export const DRIZZLE = Symbol('DRIZZLE')
@@ -33,7 +33,15 @@ export type DrizzleDb = NodePgDatabase<typeof schema>
 export const pgPoolProvider = {
   provide: PG_POOL,
   useFactory: (): Pool =>
-    new Pool({ connectionString: getDatabaseUrl(), ...getPoolConfig('app') }),
+    // Runs as stride_app, a restricted, non-superuser, non-table-owning
+    // role — not the owner connection getDatabaseUrl() returns. RLS
+    // policies have no effect on a superuser or table-owning connection,
+    // so this is the connection every future policy will actually depend
+    // on; behavior is unchanged for now since no policies exist yet.
+    new Pool({
+      connectionString: getAppDatabaseUrl(),
+      ...getPoolConfig('app'),
+    }),
 }
 
 export const drizzleProvider = {
