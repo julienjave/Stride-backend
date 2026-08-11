@@ -36,6 +36,7 @@ import { CreateSessionDto } from './dto/create-session.dto'
 import { UpdateSessionDto, SessionStatus } from './dto/update-session.dto'
 import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
 import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -53,9 +54,16 @@ export class SessionsService {
   // --- POST ROUTES ---
 
   async create(currentUser: CurrentUser, dto: CreateSessionDto) {
-    const program = await this.db.query.assignedPrograms.findFirst({
-      where: eq(assignedPrograms.id, dto.assignedProgramId),
-    })
+    // assigned_programs has RLS (see AssignedProgramsService) — this is
+    // the one other place in the app that reads it directly, so it needs
+    // the same withRlsContext() scoping, or FORCE ROW LEVEL SECURITY makes
+    // every row here invisible (no app.current_role/app.current_user_id
+    // set on a plain connection), not just out-of-scope ones.
+    const program = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.assignedPrograms.findFirst({
+        where: eq(assignedPrograms.id, dto.assignedProgramId),
+      }),
+    )
     if (!program) {
       throw new NotFoundException(
         `Assigned program ${dto.assignedProgramId} not found`,
@@ -70,7 +78,7 @@ export class SessionsService {
       )
     }
 
-    const sessionId = await this.db.transaction(async (tx) => {
+    const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
       const [session] = await tx
         .insert(sessions)
         .values({
@@ -87,7 +95,10 @@ export class SessionsService {
       // prescribed exercises — each row REFERENCES its
       // assignedProgramExerciseId, it doesn't duplicate sets/reps. The
       // prescription lives on the assigned program; this just tracks
-      // actual performance against it.
+      // actual performance against it. assigned_program_exercises also has
+      // RLS, hence this whole insert running through withRlsContext too —
+      // sessions/session_exercises have none of their own, so scoping the
+      // transaction is harmless for them.
       const programExerciseRows =
         await tx.query.assignedProgramExercises.findMany({
           where: eq(

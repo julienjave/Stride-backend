@@ -21,6 +21,8 @@ describe('AssignedProgramsService.create', () => {
       assignedPrograms: { findFirst: jest.Mock }
       assignedProgramExercises: { findMany: jest.Mock }
     }
+    insert: jest.Mock
+    execute: jest.Mock
     transaction: jest.Mock
   }
 
@@ -39,7 +41,13 @@ describe('AssignedProgramsService.create', () => {
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      transaction: jest.fn(),
+      insert: jest.fn(),
+      // withRlsContext() runs every query through db.transaction(), setting
+      // two session GUCs via tx.execute() before invoking the callback —
+      // tx === db here, so the callback's queries resolve against the same
+      // mocks configured above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -113,18 +121,14 @@ describe('AssignedProgramsService.create', () => {
     ])
 
     const inserted: any[] = []
-    db.transaction.mockImplementation((cb: any) =>
-      cb({
-        insert: jest.fn().mockImplementation(() => ({
-          values: jest.fn().mockImplementation((values: any) => {
-            inserted.push(values)
-            return {
-              returning: jest.fn().mockResolvedValue([{ id: 900, ...values }]),
-            }
-          }),
-        })),
+    db.insert.mockImplementation(() => ({
+      values: jest.fn().mockImplementation((values: any) => {
+        inserted.push(values)
+        return {
+          returning: jest.fn().mockResolvedValue([{ id: 900, ...values }]),
+        }
       }),
-    )
+    }))
 
     await service.create(
       { id: 7, activeRole: UserRole.PRACTITIONER },
@@ -153,18 +157,14 @@ describe('AssignedProgramsService.create', () => {
     usersService.isPatientManagedBy.mockResolvedValue(true)
 
     const inserted: any[] = []
-    db.transaction.mockImplementation((cb: any) =>
-      cb({
-        insert: jest.fn().mockImplementation(() => ({
-          values: jest.fn().mockImplementation((values: any) => {
-            inserted.push(values)
-            return {
-              returning: jest.fn().mockResolvedValue([{ id: 901, ...values }]),
-            }
-          }),
-        })),
+    db.insert.mockImplementation(() => ({
+      values: jest.fn().mockImplementation((values: any) => {
+        inserted.push(values)
+        return {
+          returning: jest.fn().mockResolvedValue([{ id: 901, ...values }]),
+        }
       }),
-    )
+    }))
 
     await service.create(
       { id: 7, activeRole: UserRole.PRACTITIONER },
@@ -187,7 +187,11 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
     isPatientManagedBy: jest.Mock
     findPatientsForPractitioner: jest.Mock
   }
-  let db: { query: { assignedPrograms: { findMany: jest.Mock } } }
+  let db: {
+    query: { assignedPrograms: { findMany: jest.Mock } }
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     usersService = {
@@ -200,6 +204,8 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
           findMany: jest.fn().mockResolvedValue([{ id: 1 }]),
         },
       },
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -262,6 +268,8 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
       assignedPrograms: { findFirst: jest.Mock }
       assignedProgramExercises: { findMany: jest.Mock }
     }
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -273,6 +281,8 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -325,6 +335,8 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
   let db: {
     query: { assignedPrograms: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -342,6 +354,8 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
           }),
         }),
       }),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -408,6 +422,8 @@ describe('AssignedProgramsService.reorderExercises', () => {
       assignedPrograms: { findFirst: jest.Mock }
       assignedProgramExercises: { findMany: jest.Mock }
     }
+    update: jest.Mock
+    execute: jest.Mock
     transaction: jest.Mock
   }
   let txUpdate: jest.Mock
@@ -425,29 +441,25 @@ describe('AssignedProgramsService.reorderExercises', () => {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
         },
-        // Used by findProgramWithExercises() AFTER the transaction commits,
-        // to return real post-write state.
+        // Two calls happen per successful reorder: reorderExercises' own
+        // transaction (the permutation-check read), then
+        // findProgramWithExercises' read of real post-write state once
+        // that transaction has committed. Both default to the same three
+        // rows unless a test targets the first call specifically via
+        // mockResolvedValueOnce.
         assignedProgramExercises: {
           findMany: jest
             .fn()
             .mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]),
         },
       },
-      // The read-validate-write now all happen inside this callback (via
-      // tx.query), not against the top-level db — see the comment in
-      // AssignedProgramsService.reorderExercises for why.
-      transaction: jest.fn().mockImplementation((cb: any) =>
-        cb({
-          query: {
-            assignedProgramExercises: {
-              findMany: jest
-                .fn()
-                .mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]),
-            },
-          },
-          update: txUpdate,
-        }),
-      ),
+      update: txUpdate,
+      // withRlsContext() wraps EVERY query in its own db.transaction() call
+      // now (findProgramOrThrow, reorderExercises' own read-validate-write,
+      // and findProgramWithExercises' two reads) — tx === db throughout, so
+      // all of them resolve against the mocks configured above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -488,21 +500,23 @@ describe('AssignedProgramsService.reorderExercises', () => {
 
   // Regression coverage for the TOCTOU fix — see the matching test in
   // programs.service.spec.ts for the full rationale: the permutation check
-  // must validate against the transaction's own read, not a snapshot taken
-  // before the transaction opened.
-  it('validates the permutation against the transaction, not a pre-transaction snapshot', async () => {
-    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+  // must validate against the read taken INSIDE reorderExercises' own
+  // transaction. findProgramOrThrow's assignedPrograms.findFirst is a
+  // separate, prior call, so the very first assignedProgramExercises.findMany
+  // call is unambiguously that transaction's own read — mockResolvedValueOnce
+  // targets exactly it, independent of the default the later
+  // findProgramWithExercises call still sees.
+  it("validates the permutation against the transaction's own read", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValueOnce([
       { id: 1 },
       { id: 2 },
-      { id: 3 },
-      { id: 999 }, // a row the tx-scoped read does NOT see
     ])
 
     await expect(
       service.reorderExercises(
         900,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        [1, 2, 3, 999],
+        [1, 2, 3],
       ),
     ).rejects.toThrow(BadRequestException)
     expect(txUpdate).not.toHaveBeenCalled()

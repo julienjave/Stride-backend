@@ -264,11 +264,14 @@ describe('AssignedPrograms (e2e)', () => {
     const asManagingPractitioner = await practitionerA.get(`/assigned-programs/${programId}`);
     expect(asManagingPractitioner.status).toBe(200);
 
+    // Both become 404, not 403: RLS makes this row invisible to their
+    // session before assertCanView's own check is ever reached — same
+    // reasoning as the equivalent medical_files test.
     const asOtherPatient = await patientB.get(`/assigned-programs/${programId}`);
-    expect(asOtherPatient.status).toBe(403);
+    expect(asOtherPatient.status).toBe(404);
 
     const asNonManagingPractitioner = await practitionerB.get(`/assigned-programs/${programId}`);
-    expect(asNonManagingPractitioner.status).toBe(403);
+    expect(asNonManagingPractitioner.status).toBe(404);
   });
 
   it('enforces assertCanManage: the owning PATIENT may never manage their own program', async () => {
@@ -319,10 +322,13 @@ describe('AssignedPrograms (e2e)', () => {
       .send({ order: [secondRowId, firstRowId] });
     expect(goodOrder.status).toBe(200);
 
+    // 404, not 403: the program row is invisible to practitionerB's RLS
+    // session (they manage no patients), so findProgramOrThrow throws
+    // before assertCanManage ever runs.
     const foreignOrder = await practitionerB
       .patch(`/assigned-programs/${programId}/exercises`)
       .send({ order: [secondRowId, firstRowId] });
-    expect(foreignOrder.status).toBe(403);
+    expect(foreignOrder.status).toBe(404);
   });
 
   it('rejects updating or removing an exercise row through the wrong assigned program (IDOR check)', async () => {

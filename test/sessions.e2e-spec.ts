@@ -180,9 +180,13 @@ describe('Sessions (e2e)', () => {
     await sessionPool.end();
   });
 
+  // 404, not 403: assigned_programs' RLS SELECT policy makes patientA's
+  // program invisible to patientB's session before SessionsService.create()
+  // ever reaches its own patientId-ownership check — same RLS-driven
+  // 403->404 shift as the equivalent assigned-programs tests.
   it('rejects a patient creating a session for an assigned program that is not their own', async () => {
     const res = await patientB.post('/sessions').send({ assignedProgramId });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("rejects a practitioner or admin from creating a session at all — sessions role-restrict to 'patient'", async () => {

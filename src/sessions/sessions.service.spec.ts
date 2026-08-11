@@ -11,9 +11,12 @@ describe('SessionsService.create', () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock }
+      assignedProgramExercises: { findMany: jest.Mock }
       sessions: { findFirst: jest.Mock }
       sessionExercises: { findMany: jest.Mock }
     }
+    insert: jest.Mock
+    execute: jest.Mock
     transaction: jest.Mock
   }
 
@@ -21,12 +24,18 @@ describe('SessionsService.create', () => {
     db = {
       query: {
         assignedPrograms: { findFirst: jest.fn() },
+        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         sessions: {
           findFirst: jest.fn().mockResolvedValue({ id: 500, patientId: 20 }),
         },
         sessionExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      transaction: jest.fn(),
+      insert: jest.fn(),
+      // withRlsContext() now wraps both the assignedPrograms lookup and the
+      // session-creation transaction in db.transaction()/db.execute() —
+      // tx === db here, so both resolve against the mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -72,34 +81,24 @@ describe('SessionsService.create', () => {
     })
 
     const sessionExerciseInserts: any[] = []
-    db.transaction.mockImplementation((cb: any) =>
-      cb({
-        insert: jest.fn().mockImplementation(() => ({
-          values: jest.fn().mockImplementation((values: any) => {
-            if (
-              values.assignedProgramId !== undefined &&
-              values.status === 'pending'
-            ) {
-              return {
-                returning: jest
-                  .fn()
-                  .mockResolvedValue([{ id: 500, ...values }]),
-              }
-            }
-            sessionExerciseInserts.push(values)
-            return Promise.resolve(undefined)
-          }),
-        })),
-        query: {
-          assignedProgramExercises: {
-            findMany: jest.fn().mockResolvedValue([
-              { id: 30, sortOrder: 0 },
-              { id: 31, sortOrder: 1 },
-            ]),
-          },
-        },
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      { id: 30, sortOrder: 0 },
+      { id: 31, sortOrder: 1 },
+    ])
+    db.insert.mockImplementation(() => ({
+      values: jest.fn().mockImplementation((values: any) => {
+        if (
+          values.assignedProgramId !== undefined &&
+          values.status === 'pending'
+        ) {
+          return {
+            returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+          }
+        }
+        sessionExerciseInserts.push(values)
+        return Promise.resolve(undefined)
       }),
-    )
+    }))
 
     const result = await service.create(
       { id: 20, activeRole: UserRole.PATIENT },
