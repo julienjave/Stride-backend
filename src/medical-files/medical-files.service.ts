@@ -24,13 +24,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { medicalFiles } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
 import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
 import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -63,7 +64,7 @@ export class MedicalFilesService {
       )
     }
 
-    const [entry] = await this.withRlsContext(currentUser, (tx) =>
+    const [entry] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .insert(medicalFiles)
         .values({
@@ -110,7 +111,7 @@ export class MedicalFilesService {
       targetPatientId = patientId
     }
 
-    const entries = await this.withRlsContext(currentUser, (tx) =>
+    const entries = await withRlsContext(this.db, currentUser, (tx) =>
       tx.query.medicalFiles.findMany({
         where: eq(medicalFiles.patientId, targetPatientId),
         orderBy: (mf, { desc }) => [desc(mf.createdAt)],
@@ -133,7 +134,7 @@ export class MedicalFilesService {
   }
 
   async findOne(id: number, currentUser: CurrentUser) {
-    const entry = await this.withRlsContext(currentUser, (tx) =>
+    const entry = await withRlsContext(this.db, currentUser, (tx) =>
       tx.query.medicalFiles.findFirst({
         where: eq(medicalFiles.id, id),
       }),
@@ -174,27 +175,9 @@ export class MedicalFilesService {
   // writeup for the reasoning: clinical entries are append-only. A
   // correction belongs as a new entry, not an edit to an existing one.
 
-  // === HELPER FUNCTIONS =====================================================
-
-  // Session-local context for the medical_files RLS policies (see the "Row-Level
-  // Security" writeup) — set_config(..., true) scopes both settings to just this
-  // transaction, matching the request they were derived from. Only the three
-  // queries that actually touch medicalFiles run through here; the
-  // isPatientManagedBy/isSelf/isAdmin/isManaging checks above and the
-  // auditService.log() calls below stay on the normal connection, deliberately
-  // unaffected by RLS — both layers enforce the same rule on purpose.
-  private async withRlsContext<T>(
-    currentUser: CurrentUser,
-    fn: (tx: DrizzleDb) => Promise<T>,
-  ): Promise<T> {
-    return this.db.transaction(async (tx) => {
-      await tx.execute(
-        sql`SELECT set_config('app.current_user_id', ${String(currentUser.id)}, true)`,
-      )
-      await tx.execute(
-        sql`SELECT set_config('app.current_role', ${currentUser.activeRole}, true)`,
-      )
-      return fn(tx)
-    })
-  }
+  // withRlsContext() (see ../database/rls-context.ts) is used above for the medical_files
+  // RLS policies (see the "Row-Level Security" writeup). Only the three queries that
+  // actually touch medicalFiles run through it; the isPatientManagedBy/isSelf/isAdmin/
+  // isManaging checks above and the auditService.log() calls below stay on the normal
+  // connection, deliberately unaffected by RLS — both layers enforce the same rule on purpose.
 }
