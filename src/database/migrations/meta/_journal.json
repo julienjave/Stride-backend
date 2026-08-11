@@ -15,6 +15,13 @@
       "when": 1786528345000,
       "tag": "0001_medical_files_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786614745000,
+      "tag": "0002_audit_logs_rls",
+      "breakpoints": true
     }
   ]
 }

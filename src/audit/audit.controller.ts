@@ -24,6 +24,7 @@ import { FindAuditLogsQueryDto } from './dto/find-audit-logs-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
+import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -43,7 +44,10 @@ export class AuditController {
   // --- GET ROUTES ---
 
   @Get()
-  findAll(@Query() query: FindAuditLogsQueryDto) {
-    return this.auditService.findAll(query)
+  findAll(
+    @CurrentUser() user: CurrentUser,
+    @Query() query: FindAuditLogsQueryDto,
+  ) {
+    return this.auditService.findAll(user, query)
   }
 }
