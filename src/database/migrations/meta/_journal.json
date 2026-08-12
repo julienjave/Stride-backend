@@ -43,6 +43,13 @@
       "when": 1786873945000,
       "tag": "0005_messaging_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786960345000,
+      "tag": "0006_exercises_programs_rls",
+      "breakpoints": true
     }
   ]
 }
