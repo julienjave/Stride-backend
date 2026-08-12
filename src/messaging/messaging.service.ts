@@ -29,6 +29,7 @@ import { conversations, messages } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateConversationDto } from './dto/create-conversation.dto'
 import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -79,22 +80,28 @@ export class MessagingService {
 
     // Idempotent "start or get" — the UNIQUE(practitionerId, patientId)
     // constraint means a second attempt should return the existing
-    // conversation, not error.
-    const existing = await this.db.query.conversations.findFirst({
-      where: and(
-        eq(conversations.practitionerId, practitionerId),
-        eq(conversations.patientId, patientId),
-      ),
-    })
-    if (existing) {
-      return existing
-    }
+    // conversation, not error. Both the existence check and the insert run
+    // through the SAME withRlsContext transaction: conversations has FORCE
+    // ROW LEVEL SECURITY, so an unscoped existence check would always find
+    // nothing, and a second attempt at the same pair would hit the UNIQUE
+    // constraint instead of returning the existing row.
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const existing = await tx.query.conversations.findFirst({
+        where: and(
+          eq(conversations.practitionerId, practitionerId),
+          eq(conversations.patientId, patientId),
+        ),
+      })
+      if (existing) {
+        return existing
+      }
 
-    const [conversation] = await this.db
-      .insert(conversations)
-      .values({ practitionerId, patientId })
-      .returning()
-    return conversation
+      const [conversation] = await tx
+        .insert(conversations)
+        .values({ practitionerId, patientId })
+        .returning()
+      return conversation
+    })
   }
 
   // The one place a message is ever actually created — called identically
@@ -105,7 +112,10 @@ export class MessagingService {
     currentUser: CurrentUser,
     messageBody: string,
   ) {
-    const conversation = await this.findConversationOrThrow(conversationId)
+    const conversation = await this.findConversationOrThrow(
+      conversationId,
+      currentUser,
+    )
     this.assertParticipant(conversation, currentUser)
     if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
@@ -113,10 +123,12 @@ export class MessagingService {
       )
     }
 
-    const [message] = await this.db
-      .insert(messages)
-      .values({ conversationId, senderId: currentUser.id, messageBody })
-      .returning()
+    const [message] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .insert(messages)
+        .values({ conversationId, senderId: currentUser.id, messageBody })
+        .returning(),
+    )
     return message
   }
 
@@ -124,31 +136,46 @@ export class MessagingService {
 
   async findConversationsForUser(currentUser: CurrentUser) {
     if (currentUser.activeRole === UserRole.PRACTITIONER) {
-      return this.db.query.conversations.findMany({
-        where: eq(conversations.practitionerId, currentUser.id),
-      })
+      return withRlsContext(this.db, currentUser, (tx) =>
+        tx.query.conversations.findMany({
+          where: eq(conversations.practitionerId, currentUser.id),
+        }),
+      )
     }
     if (currentUser.activeRole === UserRole.PATIENT) {
-      return this.db.query.conversations.findMany({
-        where: eq(conversations.patientId, currentUser.id),
-      })
+      return withRlsContext(this.db, currentUser, (tx) =>
+        tx.query.conversations.findMany({
+          where: eq(conversations.patientId, currentUser.id),
+        }),
+      )
     }
-    return this.db.query.conversations.findMany() // admin: full oversight
+    // admin: full oversight
+    return withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.conversations.findMany(),
+    )
   }
 
   async getMessages(conversationId: number, currentUser: CurrentUser) {
-    const conversation = await this.findConversationOrThrow(conversationId)
+    const conversation = await this.findConversationOrThrow(
+      conversationId,
+      currentUser,
+    )
     this.assertParticipant(conversation, currentUser)
-    return this.db.query.messages.findMany({
-      where: eq(messages.conversationId, conversationId),
-      orderBy: (m, { asc }) => [asc(m.sentAt)],
-    })
+    return withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.messages.findMany({
+        where: eq(messages.conversationId, conversationId),
+        orderBy: (m, { asc }) => [asc(m.sentAt)],
+      }),
+    )
   }
 
   // --- PATCH ROUTES ---
 
   async markAsRead(conversationId: number, currentUser: CurrentUser) {
-    const conversation = await this.findConversationOrThrow(conversationId)
+    const conversation = await this.findConversationOrThrow(
+      conversationId,
+      currentUser,
+    )
     this.assertParticipant(conversation, currentUser)
     if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
@@ -158,16 +185,18 @@ export class MessagingService {
 
     // Marks every unread message NOT sent by the current user — reading your
     // own sent messages isn't a meaningful concept.
-    await this.db
-      .update(messages)
-      .set({ readAt: new Date() })
-      .where(
-        and(
-          eq(messages.conversationId, conversationId),
-          ne(messages.senderId, currentUser.id),
-          isNull(messages.readAt),
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(messages)
+        .set({ readAt: new Date() })
+        .where(
+          and(
+            eq(messages.conversationId, conversationId),
+            ne(messages.senderId, currentUser.id),
+            isNull(messages.readAt),
+          ),
         ),
-      )
+    )
   }
 
   // Two explicit actions rather than one ambiguous "toggle" endpoint — each
@@ -176,7 +205,7 @@ export class MessagingService {
   // personal inbox-management concern for the two actual participants, not
   // something oversight touches.
   async archiveConversation(id: number, currentUser: CurrentUser) {
-    const conversation = await this.findConversationOrThrow(id)
+    const conversation = await this.findConversationOrThrow(id, currentUser)
     this.assertParticipant(conversation, currentUser)
     if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
@@ -189,16 +218,18 @@ export class MessagingService {
         ? { practitionerArchivedAt: new Date() }
         : { patientArchivedAt: new Date() }
 
-    const [updated] = await this.db
-      .update(conversations)
-      .set(column)
-      .where(eq(conversations.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(conversations)
+        .set(column)
+        .where(eq(conversations.id, id))
+        .returning(),
+    )
     return updated
   }
 
   async unarchiveConversation(id: number, currentUser: CurrentUser) {
-    const conversation = await this.findConversationOrThrow(id)
+    const conversation = await this.findConversationOrThrow(id, currentUser)
     this.assertParticipant(conversation, currentUser)
     if (currentUser.activeRole === UserRole.ADMIN) {
       throw new ForbiddenException(
@@ -211,11 +242,13 @@ export class MessagingService {
         ? { practitionerArchivedAt: null }
         : { patientArchivedAt: null }
 
-    const [updated] = await this.db
-      .update(conversations)
-      .set(column)
-      .where(eq(conversations.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(conversations)
+        .set(column)
+        .where(eq(conversations.id, id))
+        .returning(),
+    )
     return updated
   }
 
@@ -234,15 +267,20 @@ export class MessagingService {
     messageId: number,
     currentUser: CurrentUser,
   ) {
-    const conversation = await this.findConversationOrThrow(conversationId)
+    const conversation = await this.findConversationOrThrow(
+      conversationId,
+      currentUser,
+    )
     this.assertParticipant(conversation, currentUser)
 
-    const message = await this.db.query.messages.findFirst({
-      where: and(
-        eq(messages.id, messageId),
-        eq(messages.conversationId, conversationId),
-      ),
-    })
+    const message = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.messages.findFirst({
+        where: and(
+          eq(messages.id, messageId),
+          eq(messages.conversationId, conversationId),
+        ),
+      }),
+    )
     if (!message) {
       throw new NotFoundException(
         `Message ${messageId} not found in this conversation`,
@@ -262,11 +300,13 @@ export class MessagingService {
       )
     }
 
-    const [updated] = await this.db
-      .update(messages)
-      .set({ deletedAt: new Date() })
-      .where(eq(messages.id, messageId))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(messages)
+        .set({ deletedAt: new Date() })
+        .where(eq(messages.id, messageId))
+        .returning(),
+    )
     return this.toPublicMessage(updated)
   }
 
@@ -295,14 +335,23 @@ export class MessagingService {
     conversationId: number,
     currentUser: CurrentUser,
   ): Promise<void> {
-    const conversation = await this.findConversationOrThrow(conversationId)
+    const conversation = await this.findConversationOrThrow(
+      conversationId,
+      currentUser,
+    )
     this.assertParticipant(conversation, currentUser)
   }
 
-  private async findConversationOrThrow(id: number) {
-    const conversation = await this.db.query.conversations.findFirst({
-      where: eq(conversations.id, id),
-    })
+  private async findConversationOrThrow(id: number, currentUser: CurrentUser) {
+    const conversation = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.conversations.findFirst({
+        where: eq(conversations.id, id),
+      }),
+    )
+    // Covers both "genuinely does not exist" and "exists, but RLS made it
+    // invisible to this session" — assertParticipant never runs on a
+    // conversation this query didn't return, so an out-of-scope row reads
+    // as 404, not 403.
     if (!conversation) {
       throw new NotFoundException(`Conversation ${id} not found`)
     }

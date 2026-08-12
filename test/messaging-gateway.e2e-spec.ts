@@ -280,9 +280,14 @@ describe('MessagingGateway (e2e)', () => {
     });
 
     // The whole point of WsHttpExceptionFilter: MessagingService throws an
-    // ordinary ForbiddenException (assertParticipant), same as the REST API
-    // would, and the filter must translate it into a real, specific
-    // 'exception' payload — not a generic "an error occurred" message.
+    // ordinary NestJS exception, same as the REST API would, and the
+    // filter must translate it into a real, specific 'exception' payload —
+    // not a generic "an error occurred" message. Under RLS, this unrelated
+    // practitioner's session can't even see the conversation row (no
+    // shared clinic, so conversations_select filters it out) — the
+    // conversation reads as NotFoundException from findConversationOrThrow,
+    // before assertParticipant ever runs, rather than the
+    // ForbiddenException it used to be.
     const exception = new Promise<{ status: number; message: string }>((resolve) => {
       socket.on('exception', (err) => resolve(err));
     });
@@ -290,8 +295,8 @@ describe('MessagingGateway (e2e)', () => {
     socket.emit('joinConversation', { conversationId: sharedConversationId });
 
     const err = await exception;
-    expect(err.status).toBe(403);
-    expect(err.message).toBe('You are not a participant in this conversation');
+    expect(err.status).toBe(404);
+    expect(err.message).toBe(`Conversation ${sharedConversationId} not found`);
 
     socket.close();
   });

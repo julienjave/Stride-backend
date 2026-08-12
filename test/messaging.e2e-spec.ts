@@ -234,12 +234,12 @@ describe('Messaging (e2e)', () => {
     const nonParticipantRead = await practitionerB.get(
       `/conversations/${conversationId}/messages`,
     )
-    expect(nonParticipantRead.status).toBe(403)
+    expect(nonParticipantRead.status).toBe(404)
 
     const nonParticipantSend = await practitionerB
       .post(`/conversations/${conversationId}/messages`)
       .send({ messageBody: 'Should not work' })
-    expect(nonParticipantSend.status).toBe(403)
+    expect(nonParticipantSend.status).toBe(404)
   })
 
   it("marks the other participant's unread messages as read, never the reader's own", async () => {

@@ -11,6 +11,8 @@ describe('MessagingService.createConversation', () => {
   let db: {
     query: { conversations: { findFirst: jest.Mock } }
     insert: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -18,6 +20,11 @@ describe('MessagingService.createConversation', () => {
     db = {
       query: { conversations: { findFirst: jest.fn() } },
       insert: jest.fn(),
+      // withRlsContext() wraps both the existence check and the insert in
+      // db.transaction() — tx === db here, so both resolve against the
+      // mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -93,6 +100,8 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
   let db: {
     query: { conversations: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
   let setArgs: any
 
@@ -116,6 +125,11 @@ describe('MessagingService.archiveConversation / unarchiveConversation', () => {
           }
         }),
       }),
+      // withRlsContext() wraps findConversationOrThrow and the update in
+      // db.transaction() — tx === db here, so both resolve against the
+      // mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -200,6 +214,8 @@ describe('MessagingService.sendMessage', () => {
   let db: {
     query: { conversations: { findFirst: jest.Mock } }
     insert: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -218,6 +234,11 @@ describe('MessagingService.sendMessage', () => {
             .mockResolvedValue([{ id: 50, senderId: 7, messageBody: 'hi' }]),
         }),
       }),
+      // withRlsContext() wraps findConversationOrThrow and the insert in
+      // db.transaction() — tx === db here, so both resolve against the
+      // mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -270,6 +291,8 @@ describe('MessagingService.markAsRead', () => {
   let db: {
     query: { conversations: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -286,6 +309,11 @@ describe('MessagingService.markAsRead', () => {
           where: jest.fn().mockResolvedValue(undefined),
         }),
       }),
+      // withRlsContext() wraps findConversationOrThrow and the update in
+      // db.transaction() — tx === db here, so both resolve against the
+      // mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -338,6 +366,8 @@ describe('MessagingService.deleteMessage', () => {
       messages: { findFirst: jest.Mock }
     }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -361,6 +391,11 @@ describe('MessagingService.deleteMessage', () => {
           }),
         }),
       }),
+      // withRlsContext() wraps findConversationOrThrow, the messages
+      // existence check, and the update in db.transaction() — tx === db
+      // here, so all three resolve against the mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -459,6 +494,8 @@ describe('MessagingService.assertParticipant (via getMessages)', () => {
       conversations: { findFirst: jest.Mock }
       messages: { findMany: jest.Mock }
     }
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -471,6 +508,11 @@ describe('MessagingService.assertParticipant (via getMessages)', () => {
         },
         messages: { findMany: jest.fn().mockResolvedValue([]) },
       },
+      // withRlsContext() wraps findConversationOrThrow and getMessages'
+      // own query in db.transaction() — tx === db here, so both resolve
+      // against the mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
