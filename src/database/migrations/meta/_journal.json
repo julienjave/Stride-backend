@@ -50,6 +50,13 @@
       "when": 1786960345000,
       "tag": "0006_exercises_programs_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787046745000,
+      "tag": "0007_users_rls",
+      "breakpoints": true
     }
   ]
 }
