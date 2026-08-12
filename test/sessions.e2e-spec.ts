@@ -239,15 +239,19 @@ describe('Sessions (e2e)', () => {
     expect(adminWrite.status).toBe(403);
   });
 
+  // 404, not 403: sessions' RLS SELECT policy makes patientA's session
+  // invisible to both an unrelated patient and a non-managing
+  // practitioner before SessionsService.assertCanView() ever runs — same
+  // RLS-driven 403->404 shift as the equivalent assigned-programs tests.
   it('rejects a non-managing practitioner and an unrelated patient from viewing the session at all', async () => {
     const createRes = await patientA.post('/sessions').send({ assignedProgramId });
     const sessionId = createRes.body.id;
 
     const foreignPractitioner = await practitionerB.get(`/sessions/${sessionId}`);
-    expect(foreignPractitioner.status).toBe(403);
+    expect(foreignPractitioner.status).toBe(404);
 
     const foreignPatient = await patientB.get(`/sessions/${sessionId}`);
-    expect(foreignPatient.status).toBe(403);
+    expect(foreignPatient.status).toBe(404);
   });
 
   it('rejects updating a session-exercise row through the wrong session (IDOR check)', async () => {

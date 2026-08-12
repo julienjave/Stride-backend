@@ -95,10 +95,12 @@ export class SessionsService {
       // prescribed exercises — each row REFERENCES its
       // assignedProgramExerciseId, it doesn't duplicate sets/reps. The
       // prescription lives on the assigned program; this just tracks
-      // actual performance against it. assigned_program_exercises also has
-      // RLS, hence this whole insert running through withRlsContext too —
-      // sessions/session_exercises have none of their own, so scoping the
-      // transaction is harmless for them.
+      // actual performance against it. assigned_program_exercises,
+      // sessions, and session_exercises all have RLS now, so this whole
+      // insert running through withRlsContext isn't just harmless, it's
+      // required — sessions_insert/session_exercises_insert only pass
+      // WITH CHECK for the owning patient, which currentUser genuinely is
+      // here (see the patientId check above).
       const programExerciseRows =
         await tx.query.assignedProgramExercises.findMany({
           where: eq(
@@ -120,19 +122,26 @@ export class SessionsService {
       return session.id
     })
 
-    return this.findSessionWithExercises(sessionId)
+    // Deliberately its own, separate RLS-scoped transaction — by the time
+    // this runs, the transaction above has committed, so the newly
+    // inserted rows are safely visible.
+    return this.findSessionWithExercises(sessionId, currentUser)
   }
 
   // --- GET ROUTES ---
 
   async findAllForCurrentUser(currentUser: CurrentUser) {
     if (currentUser.activeRole === UserRole.ADMIN) {
-      return this.db.query.sessions.findMany()
+      return withRlsContext(this.db, currentUser, (tx) =>
+        tx.query.sessions.findMany(),
+      )
     }
     if (currentUser.activeRole === UserRole.PATIENT) {
-      return this.db.query.sessions.findMany({
-        where: eq(sessions.patientId, currentUser.id),
-      })
+      return withRlsContext(this.db, currentUser, (tx) =>
+        tx.query.sessions.findMany({
+          where: eq(sessions.patientId, currentUser.id),
+        }),
+      )
     }
     const managedPatients = await this.usersService.findPatientsForPractitioner(
       currentUser.id,
@@ -141,15 +150,17 @@ export class SessionsService {
     if (patientIds.length === 0) {
       return []
     }
-    return this.db.query.sessions.findMany({
-      where: inArray(sessions.patientId, patientIds),
-    })
+    return withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.sessions.findMany({
+        where: inArray(sessions.patientId, patientIds),
+      }),
+    )
   }
 
   async findOne(id: number, currentUser: CurrentUser) {
-    const session = await this.findSessionOrThrow(id)
+    const session = await this.findSessionOrThrow(id, currentUser)
     await this.assertCanView(session.patientId, currentUser)
-    return this.findSessionWithExercises(id)
+    return this.findSessionWithExercises(id, currentUser)
   }
 
   // --- PATCH ROUTES ---
@@ -159,7 +170,7 @@ export class SessionsService {
   // matching the same "timestamps are authoritative, server-set" rule
   // applied to created_at/sent_at everywhere else in this schema.
   async update(id: number, currentUser: CurrentUser, dto: UpdateSessionDto) {
-    const session = await this.findSessionOrThrow(id)
+    const session = await this.findSessionOrThrow(id, currentUser)
     this.assertIsOwner(session, currentUser)
 
     const updates: Record<string, unknown> = { ...dto }
@@ -170,11 +181,9 @@ export class SessionsService {
       updates.completedAt = new Date()
     }
 
-    const [updated] = await this.db
-      .update(sessions)
-      .set(updates)
-      .where(eq(sessions.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.update(sessions).set(updates).where(eq(sessions.id, id)).returning(),
+    )
     return updated
   }
 
@@ -184,46 +193,65 @@ export class SessionsService {
     currentUser: CurrentUser,
     dto: UpdateSessionExerciseDto,
   ) {
-    const session = await this.findSessionOrThrow(sessionId)
+    const session = await this.findSessionOrThrow(sessionId, currentUser)
     this.assertIsOwner(session, currentUser)
-    await this.findSessionExerciseOrThrow(sessionId, rowId)
+    await this.findSessionExerciseOrThrow(sessionId, rowId, currentUser)
 
-    const [updated] = await this.db
-      .update(sessionExercises)
-      .set(dto)
-      .where(eq(sessionExercises.id, rowId))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(sessionExercises)
+        .set(dto)
+        .where(eq(sessionExercises.id, rowId))
+        .returning(),
+    )
     return updated
   }
 
   // === HELPER FUNCTIONS =====================================================
 
-  private async findSessionWithExercises(id: number) {
-    const session = await this.findSessionOrThrow(id)
-    const exerciseRows = await this.db.query.sessionExercises.findMany({
-      where: eq(sessionExercises.sessionId, id),
-      orderBy: (row, { asc }) => [asc(row.sortOrder)],
-    })
+  private async findSessionWithExercises(id: number, currentUser: CurrentUser) {
+    const session = await this.findSessionOrThrow(id, currentUser)
+    const exerciseRows = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.sessionExercises.findMany({
+        where: eq(sessionExercises.sessionId, id),
+        orderBy: (row, { asc }) => [asc(row.sortOrder)],
+      }),
+    )
     return { ...session, exercises: exerciseRows }
   }
 
-  private async findSessionOrThrow(id: number) {
-    const session = await this.db.query.sessions.findFirst({
-      where: eq(sessions.id, id),
-    })
+  private async findSessionOrThrow(id: number, currentUser: CurrentUser) {
+    const session = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.sessions.findFirst({
+        where: eq(sessions.id, id),
+      }),
+    )
+    // Covers both "genuinely does not exist" and "exists, but RLS made it
+    // invisible to this session" — assertCanView/assertIsOwner never run on
+    // a session this query didn't return, so an out-of-scope row reads as
+    // 404, not 403. See assertCanView/assertIsOwner below for the one
+    // deliberate exception (a managing practitioner/admin IS visible via
+    // RLS, so the 403 on write there is a real app-layer decision, not RLS
+    // filtering).
     if (!session) {
       throw new NotFoundException(`Session ${id} not found`)
     }
     return session
   }
 
-  private async findSessionExerciseOrThrow(sessionId: number, rowId: number) {
-    const row = await this.db.query.sessionExercises.findFirst({
-      where: and(
-        eq(sessionExercises.id, rowId),
-        eq(sessionExercises.sessionId, sessionId),
-      ),
-    })
+  private async findSessionExerciseOrThrow(
+    sessionId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+  ) {
+    const row = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.sessionExercises.findFirst({
+        where: and(
+          eq(sessionExercises.id, rowId),
+          eq(sessionExercises.sessionId, sessionId),
+        ),
+      }),
+    )
     if (!row) {
       throw new NotFoundException(`Exercise ${rowId} not found in this session`)
     }

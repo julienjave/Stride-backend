@@ -125,6 +125,8 @@ describe('SessionsService.assertCanView (via findOne)', () => {
       sessions: { findFirst: jest.Mock }
       sessionExercises: { findMany: jest.Mock }
     }
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -136,6 +138,11 @@ describe('SessionsService.assertCanView (via findOne)', () => {
         },
         sessionExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
+      // withRlsContext() wraps every query in db.transaction(), setting two
+      // session GUCs via tx.execute() before invoking the callback — tx ===
+      // db here, so the callback's queries resolve against the mocks above.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -187,6 +194,8 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
   let db: {
     query: { sessions: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
   let setArgs: any
 
@@ -204,6 +213,8 @@ describe('SessionsService.update (state machine + assertIsOwner)', () => {
           }
         }),
       }),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -323,6 +334,8 @@ describe('SessionsService IDOR check (updateExercise)', () => {
       sessionExercises: { findFirst: jest.Mock }
     }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -340,6 +353,8 @@ describe('SessionsService IDOR check (updateExercise)', () => {
           }),
         }),
       }),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
