@@ -59,6 +59,9 @@ describe('UsersService.create', () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
+        // withRlsContext() sets two session GUCs via tx.execute() before
+        // invoking the callback, since requestingUser is defined here.
+        execute: jest.fn().mockResolvedValue(undefined),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -187,6 +190,9 @@ describe('UsersService.create', () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
+        // withRlsContext() sets two session GUCs via tx.execute() before
+        // invoking the callback, since requestingUser is defined here.
+        execute: jest.fn().mockResolvedValue(undefined),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -228,6 +234,9 @@ describe('UsersService.create', () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
+        // withRlsContext() sets two session GUCs via tx.execute() before
+        // invoking the callback, since requestingUser is defined here.
+        execute: jest.fn().mockResolvedValue(undefined),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([

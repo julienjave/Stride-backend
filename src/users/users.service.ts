@@ -40,6 +40,7 @@ import { UpdateUserDto } from './dto/update-user.dto'
 import { GrantRoleDto } from './dto/grant-role.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
@@ -96,7 +97,7 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10)
 
-    return this.db.transaction(async (tx) => {
+    return withRlsContext(this.db, requestingUser, async (tx) => {
       const [user] = await tx
         .insert(users)
         .values({
@@ -206,15 +207,21 @@ export class UsersService {
   // Authorization (self-or-admin) happens in the controller, matching
   // update()'s rule — same pattern, just triggered by a file instead of a
   // JSON body.
-  async updateAvatar(id: number, file: Express.Multer.File) {
+  async updateAvatar(
+    id: number,
+    file: Express.Multer.File,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
     await this.findOne(id)
     const objectKey = `avatars/${id}/${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
-    const [updated] = await this.db
-      .update(users)
-      .set({ avatarPath: objectKey })
-      .where(eq(users.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ avatarPath: objectKey })
+        .where(eq(users.id, id))
+        .returning(),
+    )
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(updated), roles }
   }
@@ -325,13 +332,15 @@ export class UsersService {
 
   // --- PATCH ROUTES ---
 
-  async update(id: number, dto: UpdateUserDto) {
+  async update(
+    id: number,
+    dto: UpdateUserDto,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
     await this.findOne(id)
-    const [updated] = await this.db
-      .update(users)
-      .set(dto)
-      .where(eq(users.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.update(users).set(dto).where(eq(users.id, id)).returning(),
+    )
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(updated), roles }
   }
@@ -340,13 +349,18 @@ export class UsersService {
 
   // Soft delete only — matches the is_active pattern from the schema. There is
   // deliberately no method here that issues a real DELETE against users.
-  async softDelete(id: number) {
+  async softDelete(
+    id: number,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
     await this.findOne(id)
-    const [deactivated] = await this.db
-      .update(users)
-      .set({ isActive: false })
-      .where(eq(users.id, id))
-      .returning()
+    const [deactivated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ isActive: false })
+        .where(eq(users.id, id))
+        .returning(),
+    )
     const roles = await this.getRolesForUser(id)
     return { ...this.toPublic(deactivated), roles }
   }

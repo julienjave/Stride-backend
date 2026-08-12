@@ -270,23 +270,33 @@ describe('AuthService.resetPassword', () => {
   let authService: AuthService
   let db: {
     query: { users: { findFirst: jest.Mock } }
-    update: jest.Mock
+    transaction: jest.Mock
     execute: jest.Mock
   }
+  let usersService: { getRolesForUser: jest.Mock }
   let auditService: { log: jest.Mock }
 
   beforeEach(async () => {
     db = {
       query: { users: { findFirst: jest.fn() } },
-      update: jest.fn(),
+      transaction: jest.fn(),
+      // destroyAllSessionsForUser() calls this.db.execute() directly (raw
+      // SQL against connect-pg-simple's session table), separate from the
+      // tx.execute() withRlsContext() issues inside db.transaction() below.
       execute: jest.fn().mockResolvedValue(undefined),
+    }
+    // resetPassword() now fetches the target user's real roles to build a
+    // synthetic self-context for withRlsContext() — see the comment on the
+    // call site in auth.service.ts for why.
+    usersService = {
+      getRolesForUser: jest.fn().mockResolvedValue(['patient']),
     }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: UsersService, useValue: {} },
+        { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
         { provide: EmailService, useValue: {} },
         { provide: DRIZZLE, useValue: db },
@@ -320,11 +330,18 @@ describe('AuthService.resetPassword', () => {
       id: 1,
       passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
     })
-    db.update.mockReturnValue({
-      set: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
-    })
+    // withRlsContext() sets two session GUCs via tx.execute() before
+    // invoking the callback, which then issues the real UPDATE via tx.
+    db.transaction.mockImplementation((cb: any) =>
+      cb({
+        execute: jest.fn().mockResolvedValue(undefined),
+        update: jest.fn().mockReturnValue({
+          set: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue(undefined),
+          }),
+        }),
+      }),
+    )
 
     await authService.resetPassword('valid-token', 'newpassword123')
 
@@ -345,18 +362,26 @@ describe('AuthService.enableMfa', () => {
   let authService: AuthService
   let db: {
     query: { users: { findFirst: jest.Mock } }
-    update: jest.Mock
+    transaction: jest.Mock
   }
   let auditService: { log: jest.Mock }
+  const currentUser = { id: 1, activeRole: UserRole.PATIENT }
 
   beforeEach(async () => {
     db = {
       query: { users: { findFirst: jest.fn() } },
-      update: jest.fn().mockReturnValue({
-        set: jest
-          .fn()
-          .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
-      }),
+      // withRlsContext() sets two session GUCs via tx.execute() before
+      // invoking the callback, which then issues the real UPDATE via tx.
+      transaction: jest.fn().mockImplementation((cb: any) =>
+        cb({
+          execute: jest.fn().mockResolvedValue(undefined),
+          update: jest.fn().mockReturnValue({
+            set: jest.fn().mockReturnValue({
+              where: jest.fn().mockResolvedValue(undefined),
+            }),
+          }),
+        }),
+      ),
     }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
 
@@ -376,9 +401,9 @@ describe('AuthService.enableMfa', () => {
   it('refuses to enable MFA before setupMfa has ever run', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 1, mfaSecret: null })
 
-    await expect(authService.enableMfa(1, '123456')).rejects.toThrow(
-      BadRequestException,
-    )
+    await expect(
+      authService.enableMfa(1, '123456', currentUser),
+    ).rejects.toThrow(BadRequestException)
   })
 
   it('rejects an incorrect TOTP code', async () => {
@@ -391,9 +416,9 @@ describe('AuthService.enableMfa', () => {
       .fn()
       .mockResolvedValue({ valid: false })
 
-    await expect(authService.enableMfa(1, '000000')).rejects.toThrow(
-      BadRequestException,
-    )
+    await expect(
+      authService.enableMfa(1, '000000', currentUser),
+    ).rejects.toThrow(BadRequestException)
   })
 
   it('enables MFA once a correct TOTP code is provided', async () => {
@@ -402,7 +427,7 @@ describe('AuthService.enableMfa', () => {
       .fn()
       .mockResolvedValue({ valid: true })
 
-    await authService.enableMfa(1, '123456')
+    await authService.enableMfa(1, '123456', currentUser)
 
     expect(auditService.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'MFA_ENABLED', performedBy: 1 }),
@@ -414,18 +439,26 @@ describe('AuthService.disableMfa', () => {
   let authService: AuthService
   let db: {
     query: { users: { findFirst: jest.Mock } }
-    update: jest.Mock
+    transaction: jest.Mock
   }
   let auditService: { log: jest.Mock }
+  const currentUser = { id: 1, activeRole: UserRole.PATIENT }
 
   beforeEach(async () => {
     db = {
       query: { users: { findFirst: jest.fn() } },
-      update: jest.fn().mockReturnValue({
-        set: jest
-          .fn()
-          .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
-      }),
+      // withRlsContext() sets two session GUCs via tx.execute() before
+      // invoking the callback, which then issues the real UPDATE via tx.
+      transaction: jest.fn().mockImplementation((cb: any) =>
+        cb({
+          execute: jest.fn().mockResolvedValue(undefined),
+          update: jest.fn().mockReturnValue({
+            set: jest.fn().mockReturnValue({
+              where: jest.fn().mockResolvedValue(undefined),
+            }),
+          }),
+        }),
+      ),
     }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
 
@@ -449,9 +482,9 @@ describe('AuthService.disableMfa', () => {
       mfaSecret: null,
     })
 
-    await expect(authService.disableMfa(1, '123456')).rejects.toThrow(
-      BadRequestException,
-    )
+    await expect(
+      authService.disableMfa(1, '123456', currentUser),
+    ).rejects.toThrow(BadRequestException)
   })
 
   it('rejects an incorrect TOTP code even when MFA is currently enabled', async () => {
@@ -464,9 +497,9 @@ describe('AuthService.disableMfa', () => {
       .fn()
       .mockResolvedValue({ valid: false })
 
-    await expect(authService.disableMfa(1, '000000')).rejects.toThrow(
-      BadRequestException,
-    )
+    await expect(
+      authService.disableMfa(1, '000000', currentUser),
+    ).rejects.toThrow(BadRequestException)
   })
 
   it('disables MFA once a correct TOTP code is provided', async () => {
@@ -479,7 +512,7 @@ describe('AuthService.disableMfa', () => {
       .fn()
       .mockResolvedValue({ valid: true })
 
-    await authService.disableMfa(1, '123456')
+    await authService.disableMfa(1, '123456', currentUser)
 
     expect(auditService.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'MFA_DISABLED', performedBy: 1 }),

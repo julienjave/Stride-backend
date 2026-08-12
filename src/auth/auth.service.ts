@@ -42,6 +42,7 @@ import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { encryptMfaSecret, decryptMfaSecret } from './mfa-secret-crypto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -301,13 +302,34 @@ export class AuthService {
     // per user, which is also what makes a token single-use: it's cleared
     // entirely (not just marked "used") the moment it's successfully
     // redeemed, in resetPassword below.
-    await this.db
-      .update(users)
-      .set({
-        passwordResetTokenHash: tokenHash,
-        passwordResetTokenExpiresAt: expiresAt,
-      })
-      .where(eq(users.id, user.id))
+    //
+    // This UPDATE has no real session to run withRlsContext's usual
+    // caller-identity context through — forgotPassword() is a fully public,
+    // unauthenticated endpoint, the same as register(). But unlike an
+    // INSERT, users_update has no "no session context" branch (deliberately
+    // — see the migration comment on why a blanket no-context UPDATE would
+    // be a materially bigger hole than a no-context INSERT). Instead, this
+    // treats the request as acting AS the resolved target user: their
+    // ownership was already proven out-of-band (matched by email above,
+    // about to be proven for real by whoever redeems the emailed token in
+    // resetPassword), so a synthetic self-context — their own id, any one
+    // of their real roles — satisfies users_update's existing
+    // id = rls_current_user_id() branch exactly the way a genuine session
+    // would. The role value itself is inert here: that branch never
+    // consults app.current_role.
+    const roles = await this.usersService.getRolesForUser(user.id)
+    await withRlsContext(
+      this.db,
+      { id: user.id, activeRole: roles[0] as UserRole },
+      (tx) =>
+        tx
+          .update(users)
+          .set({
+            passwordResetTokenHash: tokenHash,
+            passwordResetTokenExpiresAt: expiresAt,
+          })
+          .where(eq(users.id, user.id)),
+    )
 
     // The raw token — never the hash — is the only thing that ever leaves
     // this server.
@@ -340,14 +362,24 @@ export class AuthService {
 
     const newPasswordHash = await bcrypt.hash(newPassword, 10)
 
-    await this.db
-      .update(users)
-      .set({
-        passwordHash: newPasswordHash,
-        passwordResetTokenHash: null,
-        passwordResetTokenExpiresAt: null,
-      })
-      .where(eq(users.id, user.id))
+    // Same synthetic self-context reasoning as forgotPassword() above —
+    // this request has no session either, but the token match just above
+    // IS the proof of ownership; users_update can't see that proof
+    // directly, so this stands in for it the same way.
+    const roles = await this.usersService.getRolesForUser(user.id)
+    await withRlsContext(
+      this.db,
+      { id: user.id, activeRole: roles[0] as UserRole },
+      (tx) =>
+        tx
+          .update(users)
+          .set({
+            passwordHash: newPasswordHash,
+            passwordResetTokenHash: null,
+            passwordResetTokenExpiresAt: null,
+          })
+          .where(eq(users.id, user.id)),
+    )
 
     // The whole reason a password needed resetting might be that someone
     // else had access to the account — leaving their existing session
@@ -364,7 +396,10 @@ export class AuthService {
 
   // === MFA (TOTP) ===========================================================
 
-  async setupMfa(userId: number) {
+  async setupMfa(
+    userId: number,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
     const user = await this.usersService.findOne(userId)
 
     // A new random secret every time setup() is called — overwrites any
@@ -384,10 +419,12 @@ export class AuthService {
     // encrypted. The two are deliberately different at this point: the
     // returned value here is shown to the user once, right now; what lands
     // in the database is never in plaintext at rest.
-    await this.db
-      .update(users)
-      .set({ mfaSecret: encryptMfaSecret(secret) })
-      .where(eq(users.id, userId))
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ mfaSecret: encryptMfaSecret(secret) })
+        .where(eq(users.id, userId)),
+    )
 
     // The raw secret is included so an authenticator app that can't scan a
     // QR code (or a user who prefers typing it) has a manual-entry option —
@@ -395,7 +432,11 @@ export class AuthService {
     return { secret, otpauthUrl, qrCodeDataUrl }
   }
 
-  async enableMfa(userId: number, code: string): Promise<void> {
+  async enableMfa(
+    userId: number,
+    code: string,
+    currentUser: { id: number; activeRole: UserRole },
+  ): Promise<void> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
     })
@@ -416,10 +457,9 @@ export class AuthService {
       throw new BadRequestException('Invalid authentication code')
     }
 
-    await this.db
-      .update(users)
-      .set({ mfaEnabled: true })
-      .where(eq(users.id, userId))
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx.update(users).set({ mfaEnabled: true }).where(eq(users.id, userId)),
+    )
 
     await this.auditService.log({
       performedBy: userId,
@@ -429,7 +469,11 @@ export class AuthService {
     })
   }
 
-  async disableMfa(userId: number, code: string): Promise<void> {
+  async disableMfa(
+    userId: number,
+    code: string,
+    currentUser: { id: number; activeRole: UserRole },
+  ): Promise<void> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
     })
@@ -450,10 +494,12 @@ export class AuthService {
       throw new BadRequestException('Invalid authentication code')
     }
 
-    await this.db
-      .update(users)
-      .set({ mfaEnabled: false, mfaSecret: null })
-      .where(eq(users.id, userId))
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ mfaEnabled: false, mfaSecret: null })
+        .where(eq(users.id, userId)),
+    )
 
     await this.auditService.log({
       performedBy: userId,

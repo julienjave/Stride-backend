@@ -90,7 +90,7 @@ export class UsersController {
     if (!file) {
       throw new BadRequestException('No file uploaded')
     }
-    return this.usersService.updateAvatar(id, file)
+    return this.usersService.updateAvatar(id, file, currentUser)
   }
 
   // --- GET ROUTES ---
@@ -142,7 +142,7 @@ export class UsersController {
         'You do not have permission to update this profile',
       )
     }
-    return this.usersService.update(id, dto)
+    return this.usersService.update(id, dto, currentUser)
   }
 
   // Self (any role deactivating their own account), a practitioner
@@ -163,6 +163,6 @@ export class UsersController {
         'You do not have permission to deactivate this account',
       )
     }
-    return this.usersService.softDelete(id)
+    return this.usersService.softDelete(id, currentUser)
   }
 }

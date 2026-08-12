@@ -168,7 +168,7 @@ export class AuthController {
   @UseGuards(SessionAuthGuard)
   @Post('mfa/setup')
   setupMfa(@CurrentUser() user: CurrentUser) {
-    return this.authService.setupMfa(user.id)
+    return this.authService.setupMfa(user.id, user)
   }
 
   // Same 5/60s throttle as mfa/verify, for consistency with this app's own
@@ -183,7 +183,7 @@ export class AuthController {
   @Post('mfa/enable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async enableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
-    await this.authService.enableMfa(user.id, dto.code)
+    await this.authService.enableMfa(user.id, dto.code, user)
   }
 
   @UseGuards(SessionAuthGuard)
@@ -191,7 +191,7 @@ export class AuthController {
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async disableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
-    await this.authService.disableMfa(user.id, dto.code)
+    await this.authService.disableMfa(user.id, dto.code, user)
   }
 
   // == Switch Roles ==
