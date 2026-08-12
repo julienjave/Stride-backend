@@ -60,7 +60,7 @@ export class ProgramsController {
   @Roles(UserRole.PRACTITIONER)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateTemplateDto) {
-    return this.programsService.create(user.id, dto)
+    return this.programsService.create(user, dto)
   }
 
   @UseGuards(RolesGuard)

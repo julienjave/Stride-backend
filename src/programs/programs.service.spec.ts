@@ -13,6 +13,8 @@ describe('ProgramsService.assertCanModify (via update)', () => {
   let db: {
     query: { programTemplates: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -27,6 +29,11 @@ describe('ProgramsService.assertCanModify (via update)', () => {
           }),
         }),
       }),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -90,6 +97,8 @@ describe('ProgramsService.addExercise', () => {
       exercises: { findFirst: jest.Mock }
     }
     insert: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -101,6 +110,11 @@ describe('ProgramsService.addExercise', () => {
         exercises: { findFirst: jest.fn() },
       },
       insert: jest.fn(),
+      // withRlsContext() wraps the actual INSERT in db.transaction()/
+      // db.execute() — tx === db here, so the mocked insert() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -196,7 +210,9 @@ describe('ProgramsService.reorderExercises', () => {
       },
       // The read-validate-write now all happen inside this callback (via
       // tx.query), not against the top-level db — see the comment in
-      // ProgramsService.reorderExercises for why.
+      // ProgramsService.reorderExercises for why. withRlsContext() also
+      // issues two set_config calls via tx.execute() before invoking this
+      // callback's own body, hence the added execute() mock below.
       transaction: jest.fn().mockImplementation((cb: any) =>
         cb({
           query: {
@@ -207,6 +223,7 @@ describe('ProgramsService.reorderExercises', () => {
             },
           },
           update: txUpdate,
+          execute: jest.fn().mockResolvedValue(undefined),
         }),
       ),
     }
@@ -293,6 +310,8 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
     }
     update: jest.Mock
     delete: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -307,6 +326,11 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
       delete: jest
         .fn()
         .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+      // withRlsContext() wraps the actual DELETE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked delete() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({

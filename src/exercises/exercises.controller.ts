@@ -63,7 +63,7 @@ export class ExercisesController {
   @Roles(UserRole.PRACTITIONER)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateExerciseDto) {
-    return this.exercisesService.create(user.id, dto)
+    return this.exercisesService.create(user, dto)
   }
 
   // FilesInterceptor (plural) — the only real difference from the single-file

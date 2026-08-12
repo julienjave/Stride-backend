@@ -36,8 +36,11 @@ import { UpdateTemplateDto } from './dto/update-template.dto'
 import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
 import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
 import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
+
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class ProgramsService {
@@ -51,26 +54,31 @@ export class ProgramsService {
 
   // --- POST ROUTES ---
 
-  async create(practitionerId: number, dto: CreateTemplateDto) {
-    const [template] = await this.db
-      .insert(programTemplates)
-      .values({
-        practitionerId,
-        title: dto.title,
-        description: dto.description,
-      })
-      .returning()
+  async create(currentUser: CurrentUser, dto: CreateTemplateDto) {
+    const [template] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .insert(programTemplates)
+        .values({
+          practitionerId: currentUser.id,
+          title: dto.title,
+          description: dto.description,
+        })
+        .returning(),
+    )
     return template
   }
 
   async addExercise(
     templateId: number,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
     dto: AddTemplateExerciseDto,
   ) {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
 
+    // exercises' SELECT policy is USING (true) — unconditional, no
+    // session setting involved — so this existence check stays on the
+    // plain connection, same as findTemplateOrThrow below.
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, dto.exerciseId),
     })
@@ -78,24 +86,26 @@ export class ProgramsService {
       throw new NotFoundException(`Exercise ${dto.exerciseId} not found`)
     }
 
-    const [row] = await this.db
-      .insert(templateExercises)
-      .values({
-        templateId,
-        exerciseId: dto.exerciseId,
-        sets: dto.sets,
-        reps: dto.reps,
-        durationInSeconds: dto.durationInSeconds,
-        sortOrder: dto.sortOrder,
-        notes: dto.notes,
-      })
-      .returning()
+    const [row] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .insert(templateExercises)
+        .values({
+          templateId,
+          exerciseId: dto.exerciseId,
+          sets: dto.sets,
+          reps: dto.reps,
+          durationInSeconds: dto.durationInSeconds,
+          sortOrder: dto.sortOrder,
+          notes: dto.notes,
+        })
+        .returning(),
+    )
     return row
   }
 
   async reorderExercises(
     templateId: number,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
     newOrder: number[],
   ) {
     const template = await this.findTemplateOrThrow(templateId)
@@ -123,7 +133,11 @@ export class ProgramsService {
     // response below already reflects genuine post-write state (re-read
     // from the DB, not echoed back from the request), so a caller can
     // never be misled about what actually happened.
-    await this.db.transaction(async (tx) => {
+    // withRlsContext() supplies this same transaction, scoped to
+    // currentUser, rather than a separate set_config step around a plain
+    // this.db.transaction(...) — same swap as
+    // AssignedProgramsService.reorderExercises.
+    await withRlsContext(this.db, currentUser, async (tx) => {
       const currentRows = await tx.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, templateId),
       })
@@ -183,64 +197,68 @@ export class ProgramsService {
 
   // --- PATCH ROUTES ---
 
-  async update(
-    id: number,
-    currentUser: { id: number; activeRole: UserRole },
-    dto: UpdateTemplateDto,
-  ) {
+  async update(id: number, currentUser: CurrentUser, dto: UpdateTemplateDto) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
-    const [updated] = await this.db
-      .update(programTemplates)
-      .set(dto)
-      .where(eq(programTemplates.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(programTemplates)
+        .set(dto)
+        .where(eq(programTemplates.id, id))
+        .returning(),
+    )
     return updated
   }
 
   async updateExercise(
     templateId: number,
     templateExerciseId: number,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
     dto: UpdateTemplateExerciseDto,
   ) {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
     await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
-    const [updated] = await this.db
-      .update(templateExercises)
-      .set(dto)
-      .where(eq(templateExercises.id, templateExerciseId))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(templateExercises)
+        .set(dto)
+        .where(eq(templateExercises.id, templateExerciseId))
+        .returning(),
+    )
     return updated
   }
 
   // --- DELETE ROUTES ---
 
-  async archive(id: number, currentUser: { id: number; activeRole: UserRole }) {
+  async archive(id: number, currentUser: CurrentUser) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
-    const [archived] = await this.db
-      .update(programTemplates)
-      .set({ isArchived: true })
-      .where(eq(programTemplates.id, id))
-      .returning()
+    const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(programTemplates)
+        .set({ isArchived: true })
+        .where(eq(programTemplates.id, id))
+        .returning(),
+    )
     return archived
   }
 
   async removeExercise(
     templateId: number,
     templateExerciseId: number,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
   ) {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
     await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
-    await this.db
-      .delete(templateExercises)
-      .where(eq(templateExercises.id, templateExerciseId))
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .delete(templateExercises)
+        .where(eq(templateExercises.id, templateExerciseId)),
+    )
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -281,7 +299,7 @@ export class ProgramsService {
 
   private assertCanModify(
     template: typeof programTemplates.$inferSelect,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
   ) {
     const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isOwner = template.practitionerId === currentUser.id

@@ -33,8 +33,11 @@ import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
+
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class ExercisesService {
@@ -47,20 +50,22 @@ export class ExercisesService {
 
   // --- POST ROUTES ---
 
-  async create(userId: number, dto: CreateExerciseDto) {
-    const [exercise] = await this.db
-      .insert(exercises)
-      .values({
-        name: dto.name,
-        primaryMuscles: dto.primaryMuscles,
-        secondaryMuscles: dto.secondaryMuscles ?? [],
-        equipment: dto.equipment ?? [],
-        instructions: dto.instructions,
-        mediaUrls: [],
-        source: 'custom',
-        createdBy: userId,
-      })
-      .returning()
+  async create(currentUser: CurrentUser, dto: CreateExerciseDto) {
+    const [exercise] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .insert(exercises)
+        .values({
+          name: dto.name,
+          primaryMuscles: dto.primaryMuscles,
+          secondaryMuscles: dto.secondaryMuscles ?? [],
+          equipment: dto.equipment ?? [],
+          instructions: dto.instructions,
+          mediaUrls: [],
+          source: 'custom',
+          createdBy: currentUser.id,
+        })
+        .returning(),
+    )
     return exercise
   }
 
@@ -72,7 +77,7 @@ export class ExercisesService {
   // uploading something new.
   async addImages(
     id: number,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
     files: Express.Multer.File[],
   ) {
     const exercise = await this.findOne(id)
@@ -85,11 +90,13 @@ export class ExercisesService {
       newKeys.push(objectKey)
     }
 
-    const [updated] = await this.db
-      .update(exercises)
-      .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
-      .where(eq(exercises.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(exercises)
+        .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
+        .where(eq(exercises.id, id))
+        .returning(),
+    )
     return updated
   }
 
@@ -139,18 +146,12 @@ export class ExercisesService {
 
   // --- PATCH ROUTES ---
 
-  async update(
-    id: number,
-    currentUser: { id: number; activeRole: UserRole },
-    dto: UpdateExerciseDto,
-  ) {
+  async update(id: number, currentUser: CurrentUser, dto: UpdateExerciseDto) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
-    const [updated] = await this.db
-      .update(exercises)
-      .set(dto)
-      .where(eq(exercises.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.update(exercises).set(dto).where(eq(exercises.id, id)).returning(),
+    )
     return updated
   }
 
@@ -163,11 +164,7 @@ export class ExercisesService {
   // Validates newOrder is an exact permutation of the current images — same
   // set of keys, just reordered — so this endpoint can't be used to sneak
   // in keys that were never uploaded, or silently drop ones that were.
-  async reorderImages(
-    id: number,
-    currentUser: { id: number; activeRole: UserRole },
-    newOrder: string[],
-  ) {
+  async reorderImages(id: number, currentUser: CurrentUser, newOrder: string[]) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
 
@@ -192,33 +189,33 @@ export class ExercisesService {
       )
     }
 
-    const [updated] = await this.db
-      .update(exercises)
-      .set({ mediaUrls: newOrder })
-      .where(eq(exercises.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(exercises)
+        .set({ mediaUrls: newOrder })
+        .where(eq(exercises.id, id))
+        .returning(),
+    )
     return updated
   }
 
   // --- DELETE ROUTES ---
 
-  async archive(id: number, currentUser: { id: number; activeRole: UserRole }) {
+  async archive(id: number, currentUser: CurrentUser) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
-    const [archived] = await this.db
-      .update(exercises)
-      .set({ isArchived: true })
-      .where(eq(exercises.id, id))
-      .returning()
+    const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(exercises)
+        .set({ isArchived: true })
+        .where(eq(exercises.id, id))
+        .returning(),
+    )
     return archived
   }
 
   // Validates the key actually belongs to THIS exercise before deleting anything
-  async removeImage(
-    id: number,
-    currentUser: { id: number; activeRole: UserRole },
-    objectKey: string,
-  ) {
+  async removeImage(id: number, currentUser: CurrentUser, objectKey: string) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
 
@@ -228,11 +225,13 @@ export class ExercisesService {
 
     await this.storageService.delete(objectKey)
 
-    const [updated] = await this.db
-      .update(exercises)
-      .set({ mediaUrls: exercise.mediaUrls.filter((url) => url !== objectKey) })
-      .where(eq(exercises.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(exercises)
+        .set({ mediaUrls: exercise.mediaUrls.filter((url) => url !== objectKey) })
+        .where(eq(exercises.id, id))
+        .returning(),
+    )
     return updated
   }
 
@@ -242,7 +241,7 @@ export class ExercisesService {
   // an admin can correct anything, including the shared api-sourced library.
   private assertCanModify(
     exercise: typeof exercises.$inferSelect,
-    currentUser: { id: number; activeRole: UserRole },
+    currentUser: CurrentUser,
   ) {
     const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isOwner =

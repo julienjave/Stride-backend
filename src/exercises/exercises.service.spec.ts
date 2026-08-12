@@ -14,6 +14,8 @@ describe('ExercisesService.assertCanModify (via update)', () => {
   let db: {
     query: { exercises: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -28,6 +30,11 @@ describe('ExercisesService.assertCanModify (via update)', () => {
           }),
         }),
       }),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -115,6 +122,8 @@ describe('ExercisesService.reorderImages', () => {
   let db: {
     query: { exercises: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -140,6 +149,11 @@ describe('ExercisesService.reorderImages', () => {
           }),
         }),
       }),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -212,6 +226,8 @@ describe('ExercisesService.removeImage', () => {
   let db: {
     query: { exercises: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -236,6 +252,11 @@ describe('ExercisesService.removeImage', () => {
           }),
         }),
       }),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
