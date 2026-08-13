@@ -1,5 +1,11 @@
 name: stride
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16
@@ -16,6 +22,7 @@ services:
     # a port exposed to the actual internet. Occasional manual access (a
     # one-off psql session) is better done via an SSH tunnel from your own
     # machine than by leaving a port open permanently for a rare need.
+    logging: *default-logging
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -42,6 +49,7 @@ services:
       RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_VOLUMES: "/data"
+    logging: *default-logging
     volumes:
       - rustfs_data:/data
 
@@ -58,6 +66,7 @@ services:
       - storage
     # No published port either — only Caddy needs to reach this, as "app"
     # on the internal network, matching exactly what the Caddyfile proxies to.
+    logging: *default-logging
 
   # Run migrations with: docker compose -f docker-compose.prod.yml run --rm migrate
   #
@@ -123,6 +132,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    logging: *default-logging
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Caddy's own data volume — CRITICAL that this persists across

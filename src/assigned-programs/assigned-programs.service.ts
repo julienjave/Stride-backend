@@ -119,7 +119,9 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(assignedProgramId, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
 
-    // exercises has no RLS of its own yet — stays on the normal connection.
+    // exercises' SELECT policy is unconditional (USING (true)), so this
+    // needs no RLS context — reading it on the normal connection is
+    // correct, not a gap.
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, dto.exerciseId),
     })
