@@ -62,5 +62,8 @@
       "yargs",
       "yargs-parser"
     ]
+  },
+  "ts-node": {
+    "files": true
   }
 }

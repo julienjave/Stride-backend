@@ -138,33 +138,100 @@ concrete way to verify it actually worked before moving to the next one.
 You need: a DigitalOcean account, a domain registered through (or
 transferable to) Cloudflare, and SSH access set up locally.
 
+**If you're recreating an existing deployment rather than deploying for
+the first time**, note first what does *not* need to be redone — it lives
+independently of the Droplet:
+- The domain and its Cloudflare DNS/SSL configuration — only the `A`
+  record's IP needs updating once the new Droplet exists (Phase 2/8).
+- Any external observability account (Better Stack's uptime monitor and
+  log source) — only the Vector *agent* running on the Droplet itself
+  needs reinstalling (Phase 10).
+
+```bash
+ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
+```
+
 ### Phase 1 — Provision and harden the Droplet
 
-1. Create a Droplet: Ubuntu 24.04 LTS (confirm this is still the current
+1. Create a Droplet — Ubuntu 24.04 LTS (confirm this is still the current
    image DigitalOcean offers when you do this — check the dashboard
-   directly, don't assume; see doc 18 for why this specific check matters).
-2. Add your SSH key during creation — don't use password auth at all.
-3. Once booted, create a non-root sudo user and disable root/password SSH
-   login entirely:
-
+   directly, don't assume; see doc 18 for why this specific check matters),
+   Basic/Regular, 2GB/1vCPU, SSH-key auth only (never set a root password),
+   IPv6 enabled, monitoring left on.
+2. Note the new IPv4 address. If it was previously assigned to a Droplet
+   you've connected to before, clear the stale host key first:
    ```bash
+   ssh-keygen -R <droplet-ip>
+   ```
+3. Connect as root, create a non-root sudo user, and copy your key over:
+   ```bash
+   ssh root@<droplet-ip>
    adduser stride
    usermod -aG sudo stride
-   # then, in /etc/ssh/sshd_config:
+   rsync --archive --chown=stride:stride ~/.ssh /home/stride
+   ```
+4. Disable root and password SSH login entirely:
+   ```bash
+   sudo nano /etc/ssh/sshd_config
    #   PermitRootLogin no
    #   PasswordAuthentication no
-   sudo systemctl restart sshd
+   sudo systemctl restart ssh
+   ```
+   **In a new terminal**, confirm `ssh stride@<droplet-ip>` works before
+   closing the original root session — losing access here means starting
+   over from a fresh Droplet.
+5. Create a DigitalOcean Cloud Firewall. **Leave 80/443 open to everyone
+   for now** — restricting it to Cloudflare's IP ranges happens later, in
+   Phase 8, only after Caddy is confirmed working. Doing it now would risk
+   locking out the very first Let's Encrypt certificate request.
+6. Add swap — a 1vCPU Droplet benefits from it, and this project has
+   already hit single-vCPU resource limits once (Better Stack's eBPF
+   collector, doc 19):
+   ```bash
+   sudo fallocate -l 2G /swapfile
+   sudo chmod 600 /swapfile
+   sudo mkswap /swapfile
+   sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+   sudo sysctl -p
+   ```
+7. Install Docker + the Compose plugin (Ubuntu 24.04's official method —
+   there's no shortcut here worth taking):
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y ca-certificates curl
+   sudo install -m 0755 -d /etc/apt/keyrings
+   sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+   sudo chmod a+r /etc/apt/keyrings/docker.asc
+   echo \
+     "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+     $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+     sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+   sudo apt-get update
+   sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+   sudo usermod -aG docker stride
+   ```
+   **Log out and back in** before continuing — group membership needs a
+   fresh login to take effect.
+8. Install the AWS CLI — needed for the backup script, and Ubuntu 24.04
+   dropped the `awscli` apt package, so use the official installer:
+   ```bash
+   sudo apt install -y curl unzip
+   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+   unzip awscliv2.zip
+   sudo ./aws/install
+   rm -rf awscliv2.zip aws/
+   ```
+9. Avoid the cross-platform file-mode conflict doc 18 hit directly (a
+   commit's executable bit disagreeing across OSes):
+   ```bash
+   git config --global core.fileMode false
    ```
 
-4. Create a DigitalOcean Cloud Firewall. **Leave it open on 80/443 to
-   everyone for now** — restricting it to Cloudflare's IP ranges happens
-   later, in Phase 8, only after Caddy is confirmed working. Doing it now
-   would risk locking out the very first Let's Encrypt certificate request.
-5. Install Docker + Docker Compose plugin on the Droplet.
-
 **Verify**: you can SSH in as `stride` with your key, root/password login
-both fail, and `docker ps` runs without `sudo` (add `stride` to the
-`docker` group if not).
+both fail, `docker ps` runs without `sudo`, and `aws --version` prints a
+real version.
 
 ### Phase 2 — Domain and Cloudflare
 
@@ -181,19 +248,48 @@ both fail, and `docker ps` runs without `sudo` (add `stride` to the
 
 ### Phase 3 — Get the code and configure secrets onto the Droplet
 
+Clone via a **read-only deploy key**, not a personal credential sitting on
+the Droplet:
+
 ```bash
 ssh stride@your-droplet-ip
-git clone <repo-url> Stride-backend
+ssh-keygen -t ed25519 -C "stride-droplet-deploy-key" -f ~/.ssh/stride_deploy_key
+cat ~/.ssh/stride_deploy_key.pub
+# add this as a read-only Deploy key on the repo: Settings → Deploy keys
+git -c core.sshCommand="ssh -i ~/.ssh/stride_deploy_key" clone git@github.com:<you>/Stride-backend.git
 cd Stride-backend
+chmod +x scripts/backup-database.sh
 cp .env.example .env
 ```
 
 Edit `.env` for production values:
 
-- Generate fresh, real secrets — **do not reuse local-dev values.**
-  `SESSION_SECRET`, `MFA_ENCRYPTION_KEY` (exactly 64 hex chars),
-  `POSTGRES_APP_PASSWORD`, `POSTGRES_PASSWORD`, `RUSTFS_ACCESS_KEY`,
-  `RUSTFS_SECRET_KEY` all need `openssl rand -hex N` values.
+- **`POSTGRES_HOST=db` and `STORAGE_ENDPOINT=storage`, not `localhost`** —
+  the single easiest mistake to make here. Local dev uses `localhost`
+  because the app runs on the host; in production the app itself is a
+  container reaching `db`/`storage` by their Compose service names.
+- Generate fresh, real secrets — **do not reuse local-dev values**, and
+  generate each one separately (running `openssl rand -hex N` twice
+  produces two *different* values — don't copy one output into multiple
+  fields):
+  ```bash
+  openssl rand -hex 32   # SESSION_SECRET
+  openssl rand -hex 32   # MFA_ENCRYPTION_KEY — exactly 64 hex chars
+  openssl rand -hex 24   # POSTGRES_PASSWORD
+  openssl rand -hex 24   # RUSTFS_SECRET_KEY
+  openssl rand -hex 24   # POSTGRES_APP_PASSWORD
+  openssl rand -hex 8    # RUSTFS_ACCESS_KEY — see note below
+  ```
+  **`RUSTFS_ACCESS_KEY` needs a shorter value than the other secrets.**
+  `.env.example`'s own comment currently suggests `openssl rand -hex 16`
+  (32 hex characters) — this has been observed to cause RustFS console
+  login failures. `openssl rand -hex 8` (16 characters) has worked in
+  practice. *(I couldn't independently confirm RustFS's exact accepted
+  key-length range in their official docs — treating this as your own
+  verified finding from actually hitting the failure, not something I
+  verified myself. Worth fixing `.env.example`'s own comment to match,
+  since as written it currently points anyone following it toward the
+  same failure.)*
 - `NODE_ENV=production` — required exactly as that string; it's what flips
   session cookies to `secure: true`/`sameSite: 'none'` and pino to raw JSON.
 - `TRUST_PROXY_HOPS=2` — Cloudflare, then Caddy.
@@ -201,6 +297,13 @@ Edit `.env` for production values:
 - `RESEND_API_KEY` — a real key if email delivery should actually work at
   this deploy; note Resend's sandbox mode only delivers to the account's
   own signup address until a sending domain is verified (see doc 17).
+- `EMAIL_FROM` — confirm the real sending subdomain before deploying;
+  double-check this against whatever you actually verified in Resend
+  rather than an old value copied from a previous `.env`.
+
+```bash
+chmod 600 .env
+```
 
 Also copy `Caddyfile` to the Droplet if it isn't already tracked in the
 repo, and confirm it points at your real domain.
@@ -209,11 +312,20 @@ repo, and confirm it points at your real domain.
 script (Phase 9) uploads to an S3 bucket named `backups` — this is a
 *different* bucket from `stride` (which `StorageService` creates
 automatically on first app boot). Nothing currently auto-creates `backups`.
-Create it once, after `storage` is up in Phase 4, via the RustFS console or:
+Create it once, after `storage` is up in Phase 4, either via an SSH tunnel
+to the RustFS console:
+
+```bash
+ssh -L 9101:localhost:9001 stride@<droplet-ip>
+# then browse to http://localhost:9101 locally
+```
+
+or non-interactively:
 
 ```bash
 aws --endpoint-url http://localhost:9000 s3 mb s3://backups
 ```
+make_bucket failed: s3://backups Unable to locate credentials !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 ### Phase 4 — Bring up the database and storage layer
 
@@ -257,6 +369,23 @@ moment it sees real traffic on your domain — this requires the DNS record
 from Phase 2 to already be live and port 80 reachable (which it is, since
 the firewall is still open at this point).
 
+**If you also need to seed the exercise library**: `docker-compose.prod.yml`
+has no dedicated `seed` service (unlike `migrate`/`create-app-role`), so
+run it against the already-built `migrate` image directly on the compose
+network — the network name follows Compose's default
+`<project-name>_default` pattern, `stride_default` here (from `name:
+stride` at the top of the compose file):
+
+```bash
+docker run --rm --network stride_default --env-file .env \
+  stride-migrate npx ts-node scripts/seed-exercises.ts
+```
+
+Worth considering adding a proper `seed` service mirroring `migrate`'s
+shape at some point, for the same reason `migrate` itself got promoted
+from an ad hoc command to a real Compose service (doc 18) — this works,
+but it's the one remaining one-off operation still done by hand.
+
 **Verify**:
 ```bash
 curl -I https://api.yourdomain.com/health
@@ -270,27 +399,28 @@ ACME challenge is the most likely first-deploy issue here.
 Don't stop at a green health check — this is the point where doc 19 found
 its most important real bugs (an `X-Forwarded-For` chain that didn't behave
 as documented, and firewall behavior that only a `tcpdump` capture could
-confirm was actually correct). At minimum:
+confirm was actually correct).
 
-1. Register an account through the real deployed API and confirm a session
-   cookie is actually set (`Set-Cookie` in the response headers).
-2. Confirm the visitor IP the app sees is correct, not Cloudflare's edge IP
-   — check an audit log entry or rate-limit behavior against a known IP.
-3. Test a WebSocket connection against the real deployed URL (a standalone
-   `socket.io-client` script, since `curl` can't do a WS handshake) to
-   confirm Cloudflare + Caddy + session auth all cooperate over the
-   real chain, not just plain HTTP.
-4. Exercise at least one real authorization boundary end-to-end (e.g. a
-   role-restricted action correctly returning `403`) — production RBAC
-   enforcement under real conditions is a different claim than the local
-   test suite passing.
+- [ ] `curl https://<your-domain>/health` → `200`
+- [ ] Register/login through the real deployed API; confirm `Set-Cookie`
+      includes `Secure` and `SameSite=None`
+- [ ] `node scripts/test-websocket-production.js "connect.sid=..."` — a
+      real connection over the full Cloudflare + Caddy + session-auth chain
+- [ ] A real request's logged `x-forwarded-for` matches `cf-connecting-ip`
+      exactly — confirms the IP-resolution fix in `main.ts` is actually
+      active in this specific deployment, not just correct in theory
+- [ ] Exercise at least one real authorization boundary end-to-end (e.g. a
+      role-restricted action correctly returning `403`) — production RBAC
+      enforcement under real conditions is a different claim than the local
+      test suite passing.
 
 ### Phase 8 — Lock down the firewall
 
 Only now, once Phase 6/7 have confirmed Caddy genuinely has a working
 certificate: restrict the DigitalOcean Cloud Firewall's inbound 80/443
-rules to Cloudflare's published IP ranges
-(`https://www.cloudflare.com/ips/`) instead of "everyone."
+rules to Cloudflare's published IP ranges — **re-fetch the current list
+from `https://www.cloudflare.com/ips/` rather than reuse an old copy**,
+since it does change periodically — instead of "everyone."
 
 **Verify properly, not just by re-testing through Cloudflare** (a VPN or
 other network quirk can produce a false pass or false fail — see doc 19):
@@ -301,30 +431,47 @@ dashboard's claimed rule set alone.
 
 ### Phase 9 — Backups
 
+The `backups` bucket should already exist from Phase 3. Confirm it does,
+then:
+
 ```bash
-chmod +x scripts/backup-database.sh
+./scripts/backup-database.sh   # run once by hand first — confirm it works
 crontab -e
 # add: 0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
 ```
 
-**Don't just install the cron job — run it once by hand immediately**, and
-then actually restore what it produces:
-
-```bash
-./scripts/backup-database.sh
-# then, separately, pull the backup back down and restore into a throwaway
-# database, verifying real row counts — not just "no errors occurred"
-```
-
-A backup that's never been restored is an assumption, not a tested fact.
-*(rationale: doc 18)*
+**Don't stop at "the script exited cleanly"** — pull the backup it just
+produced back down and restore it into a throwaway database, verifying
+real row counts. A backup that's never been restored is an assumption, not
+a tested fact. *(rationale: doc 18)*
 
 ### Phase 10 — Observability
 
-Set up uptime monitoring and log shipping (Better Stack + a standalone
-Vector agent, per doc 19) pointed at this Droplet. Verify log shipping is
-genuinely working (Live Tail actually showing container output) before
-trusting it, and confirm graceful shutdown works as expected:
+**Uptime monitor**: point at `https://<your-domain>/health`, HTTP, expect
+`200`. If this is a redeploy and the monitor already targets the domain
+(not the Droplet's IP directly), it may not need touching at all.
+
+**Log shipping**: install Better Stack's Docker-specific Vector agent (not
+the full eBPF collector — it's failed outright on a 1vCPU Droplet before,
+see doc 19):
+
+```bash
+curl -sSL https://telemetry.betterstack.com/setup-vector/docker/YOUR_SOURCE_TOKEN \
+  -o /tmp/setup-vector.sh && bash /tmp/setup-vector.sh
+```
+
+Then fix the Docker socket permission immediately — Vector runs as a
+restricted `vector` user by default and can't reach the socket without
+this:
+
+```bash
+sudo usermod -aG docker vector
+sudo systemctl restart vector
+```
+
+Verify log shipping is genuinely working (Live Tail actually showing
+output from all four containers) before trusting it, and confirm graceful
+shutdown works as expected:
 
 ```bash
 time docker compose -f docker-compose.prod.yml stop app
@@ -375,6 +522,7 @@ redeploy. Re-running this whole Part 2 runbook end-to-end after a `down -v`
 
 | Variable | Required? | Notes |
 |---|---|---|
+| `POSTGRES_HOST` | Yes | `localhost` locally; `db` (the Compose service name) in production — **not** `localhost` there |
 | `POSTGRES_USER`/`PASSWORD`/`DB` | Yes | Owner/superuser connection — migrations, session store, `create-app-role` itself |
 | `POSTGRES_APP_USER`/`APP_PASSWORD` | Yes | The app's own restricted runtime role — see Phase 5 |
 | `STORAGE_ENDPOINT`/`PORT` | Yes | `localhost` locally; RustFS's service name in prod |
