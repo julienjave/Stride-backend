@@ -21,10 +21,13 @@
 import 'dotenv/config'
 import { NestFactory } from '@nestjs/core'
 import { eq } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import { Pool } from 'pg'
 import { AppModule } from '../src/app.module'
-import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { StorageService } from '../src/storage/storage.service'
 import { exercises } from '../src/database/schema'
+import { getDatabaseUrl } from '../src/config/database-url'
+import * as schema from '../src/database/schema'
 
 const SOURCE_JSON_URL =
   'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json'
@@ -45,7 +48,13 @@ interface SourceExercise {
 async function run() {
   console.log('Booting Nest application context (no HTTP server)...')
   const app = await NestFactory.createApplicationContext(AppModule)
-  const db = app.get<DrizzleDb>(DRIZZLE)
+  // Owner connection, not the app's restricted DRIZZLE token — this is a
+  // privileged, one-time operational script (not a real application
+  // request), and exercises has FORCE ROW LEVEL SECURITY with an INSERT
+  // policy that requires session context this script never sets. Same
+  // pattern as scripts/create-app-role.ts.
+  const ownerPool = new Pool({ connectionString: getDatabaseUrl() })
+  const db = drizzle(ownerPool, { schema })
   const storage = app.get(StorageService)
 
   console.log(`Fetching ${SOURCE_JSON_URL} ...`)
@@ -113,6 +122,7 @@ async function run() {
   }
 
   console.log(`Done. Imported ${imported}, skipped ${skipped} (already present).`)
+  await ownerPool.end()
   await app.close()
 }
 
