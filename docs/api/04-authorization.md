@@ -1,6 +1,6 @@
 # Roles & Authorization Model
 
-Verified against commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`. Every
+Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. Every
 claim below was read directly from the `@Roles(...)` decorators on each
 controller and the `assertCan*`/inline authorization checks inside each
 service — never inferred from what a "reasonable" physiotherapy API might

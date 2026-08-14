@@ -1,6 +1,6 @@
 # WebSocket API — `MessagingGateway`
 
-Verified against commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`. Source of
+Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. Source of
 truth: [`src/messaging/messaging.gateway.ts`](../../src/messaging/messaging.gateway.ts),
 [`src/messaging/ws-exception.filter.ts`](../../src/messaging/ws-exception.filter.ts),
 [`src/messaging/session-io.adapter.ts`](../../src/messaging/session-io.adapter.ts),

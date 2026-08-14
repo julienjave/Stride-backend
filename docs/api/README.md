@@ -17,13 +17,13 @@ response looks like*, and *who is allowed to do what*.
 
 ## Verified against
 
-**Commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`.** Every concrete claim
+**Commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`.** Every concrete claim
 in this document set — status codes, payload shapes, event names, stripped
 fields, throttled routes — was re-derived directly from the source files it
 cites (or from an `*.e2e-spec.ts`/`*.spec.ts` test's own assertions, where
 one exists) at that commit, not carried over from an earlier version of this
 documentation. If the backend has moved on since, run `git log --oneline
-4cd2176eca1c8c6c5ec56af968c0af7cd4157666..HEAD -- src/` to see what's
+a3531f1c2a66c113e2fbcdd74365797e9670b949..HEAD -- src/` to see what's
 changed underneath this document, and treat anything it touches as
 unverified until re-checked.
 

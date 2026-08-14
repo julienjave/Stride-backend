@@ -1,6 +1,6 @@
 # Getting Started — A Real Walkthrough
 
-Verified against commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`. A
+Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. A
 complete, working sequence: bootstrap a clinic, create a practitioner and a
 patient, create an exercise, and assign a program to that patient. Every
 request body below was checked against the actual DTO validation rules in

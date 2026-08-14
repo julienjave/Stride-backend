@@ -1,6 +1,6 @@
 # Response Conventions
 
-Verified against commit `4cd2176eca1c8c6c5ec56af968c0af7cd4157666`. These
+Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. These
 conventions apply across the whole REST API — documented once here instead
 of repeated per route.
 
