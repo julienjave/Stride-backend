@@ -103,19 +103,32 @@ Handled by `MessagingGateway.handleJoin`. Joins the Socket.IO room
 **This performs a real authorization check**, via
 `MessagingService.assertUserCanJoinConversation`, which is deliberately the
 exact same check (`findConversationOrThrow` + `assertParticipant`) that
-every REST endpoint on this resource uses: the conversation must exist, and
-the caller must be one of its two participants (practitioner or patient) —
-or an admin, who is allowed to join/view any conversation but, as covered in
-[Roles & Authorization](./04-authorization.md), cannot send into one. Failing
-either check throws `NotFoundException`/`ForbiddenException`, caught by
-`WsHttpExceptionFilter` (see below) rather than a manual `try`/`catch` in the
-handler — the same "let the filter handle it" pattern REST controllers rely
-on.
+every REST endpoint on this resource uses: the conversation must exist and
+be visible to this session, and the caller must be one of its two
+participants (practitioner or patient) — or an admin, who is allowed to
+join/view any conversation but, as covered in
+[Roles & Authorization](./04-authorization.md), cannot send into one.
+Failing either check throws `NotFoundException`/`ForbiddenException`,
+caught by `WsHttpExceptionFilter` (see below) rather than a manual
+`try`/`catch` in the handler — the same "let the filter handle it" pattern
+REST controllers rely on.
+
+**Row-Level Security changes which of those two exceptions a genuinely
+unrelated caller actually gets.** `conversations` carries a `SELECT` policy
+mirroring `assertParticipant`'s own rule, so `findConversationOrThrow`'s
+query simply returns nothing for a socket with no real relationship to the
+conversation — `assertParticipant` never runs at all, because there's no
+row left to check it against.
 [`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
 exercises this directly: a genuinely authenticated socket with no
-relationship to the target conversation gets a `403` `exception` event with
-message `"You are not a participant in this conversation"` — not a silent
-join.
+relationship to the target conversation gets a `404` `exception` event with
+message `` `Conversation <id> not found` `` — not a `403`, and not a silent
+join. An admin, by contrast, *is* visible to `conversations`' RLS policy
+(admins see every conversation by design), so an admin's join always
+succeeds at this particular check — the explicit
+send/markAsRead/archive blocks documented in
+[Roles & Authorization](./04-authorization.md) are what actually stop an
+admin from participating, not this one.
 
 **Payload validation:** `data` is typed as a plain TypeScript interface
 (`{ conversationId: number }`), not a `class`-based DTO the way REST body
@@ -241,18 +254,20 @@ Concretely, a rejected handler emits an `exception` event on the throwing
 client's own socket, shaped:
 
 ```json
-{ "status": 403, "message": "You are not a participant in this conversation" }
+{ "status": 404, "message": "Conversation 12 not found" }
 ```
 
 This exact shape and value is what
 [`test/messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
-asserts for an unrelated practitioner's rejected `joinConversation`. The same
-translation applies to every thrown `HttpException` from any handler in this
-gateway — a rejected `sendMessage`/`deleteMessage` (wrong 15-minute window,
-not the sender, not a participant, etc.) surfaces its real, specific message
-the same way a REST caller of the identical underlying service method would
-see in the JSON error body. Listen for `'exception'` on the socket to catch
-these.
+asserts for an unrelated practitioner's rejected `joinConversation` — see
+the Row-Level Security note above for why this is a `404`, not the `403`
+an unrelated participant might otherwise expect. The same translation
+applies to every thrown `HttpException` from any handler in this gateway —
+a rejected `sendMessage`/`deleteMessage` (wrong 15-minute window, not the
+sender, not a participant, an admin blocked from sending, etc.) surfaces
+its real, specific message and status the same way a REST caller of the
+identical underlying service method would see in the JSON error body.
+Listen for `'exception'` on the socket to catch these.
 
 ## REST-sent messages do **not** broadcast over the socket
 

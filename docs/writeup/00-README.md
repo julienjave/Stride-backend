@@ -47,6 +47,7 @@ where reality diverged from it.
 | 23 | Row-Level Security, step zero | Why RLS had done nothing until now (superuser bypass), the restricted `stride_app` role, and the narrow connection split that makes real policies possible. |
 | 24 | Row-Level Security rollout | The six/eight-table rollout, the `withRlsContext` pattern, what genuinely differed per table, and a real migration-bookkeeping incident caught before it could reach production. |
 | 25 | Closing the log-rotation gap | A `PROJECT.md` claim checked against real git history and found never actually implemented (not a regression) — the fix, its verification via `docker compose config`, and a secrets-in-transcript exposure caught and rotated along the way. |
+| 26 | Redeploying for real | A full Droplet destroy-and-recreate, executed to actually validate `DEPLOYMENT.md` rather than trust it — a genuine RLS-rollout scope gap in the seed script, a second `ts-node`/`tsc` ambient-declaration gap, a stale-image documentation bug, a recurring local-vs-Droplet environment confusion, and several real-but-not-buggy operational characteristics, all found by actually running the pipeline end to end. |
 
 ---
 
@@ -58,18 +59,18 @@ where reality diverged from it.
 | Database schema & design patterns | 02, 23, 24 |
 | Authentication (sessions, login, logout) | 03, 06, 12, 16, 21 |
 | Authorization / RBAC / multi-role | 03, 05, 08, 20, 22 |
-| Row-Level Security | 23, 24 |
+| Row-Level Security | 23, 24, 26 |
 | Real-time messaging / WebSockets | 09, 19, 20, 21 |
 | File & object storage | 04, 07 |
 | Audit logging & compliance | 01, 02, 10, 11, 22, 24 |
 | Clinical domain (programs, sessions, medical files) | 08, 11 |
 | Email & MFA | 12, 17 |
 | Testing infrastructure | 06, 13, 17, 20, 21, 22 |
-| TypeScript / type safety | 06, 08, 13, 21 |
+| TypeScript / type safety | 06, 08, 13, 21, 26 |
 | Security bug hunts | 20, 21, 22 |
-| Deployment & production infrastructure | 16, 18, 19, 25 |
+| Deployment & production infrastructure | 16, 18, 19, 25, 26 |
 | Observability (monitoring, logging) | 19 |
-| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25 |
+| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26 |
 
 ---
 

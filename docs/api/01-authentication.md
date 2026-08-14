@@ -313,12 +313,21 @@ build frontend behavior around:
   *is* valid but the route declares `@Roles(...)` and the current
   `activeRole` isn't in that list, **or** thrown directly by a service for a
   finer-grained, resource-specific check beyond a flat role gate (e.g. a
-  practitioner trying to modify another practitioner's exercise, or a
-  patient trying to view a medical file entry that isn't theirs — see
-  [Roles & Authorization](./04-authorization.md) for the full breakdown). A
+  practitioner trying to modify another practitioner's own custom exercise —
+  see [Roles & Authorization](./04-authorization.md) for the full breakdown). A
   `403` means the user is genuinely who they say they are, just not allowed
   to do this specific thing — the right UI response is an in-context
   "you don't have permission" message, not a redirect to login.
+
+  **One real exception, worth knowing before you build error handling
+  around either status specifically**: for `medical_files`,
+  `assigned_programs`, `sessions`, and `conversations`, Row-Level Security
+  makes an out-of-scope row invisible to the query *before* any
+  service-level ownership check runs — so "this doesn't exist" and "this
+  isn't yours" are genuinely indistinguishable from outside, and both
+  surface as `404 Not Found`, not `403`. See
+  [Roles & Authorization](./04-authorization.md) for exactly which routes
+  this applies to and why.
 
 `RolesGuard` only ever runs after `SessionAuthGuard` on a route that has
 both (every controller in this app pairs them this way) — authentication is

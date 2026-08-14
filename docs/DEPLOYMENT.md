@@ -254,10 +254,21 @@ the Droplet:
 ```bash
 ssh stride@your-droplet-ip
 ssh-keygen -t ed25519 -C "stride-droplet-deploy-key" -f ~/.ssh/stride_deploy_key
+chmod 600 ~/.ssh/stride_deploy_key
 cat ~/.ssh/stride_deploy_key.pub
 # add this as a read-only Deploy key on the repo: Settings → Deploy keys
 git -c core.sshCommand="ssh -i ~/.ssh/stride_deploy_key" clone git@github.com:<you>/Stride-backend.git
 cd Stride-backend
+git config core.sshCommand "ssh -i ~/.ssh/stride_deploy_key"
+```
+The `git config` line matters and is easy to skip: `-c` on the `clone`
+command only applies to that one invocation, not to the repo going
+forward. Without persisting it, the next plain `git pull` here falls back
+to SSH's default key discovery, finds nothing, and fails with `Permission
+denied (publickey)` — worth confirming right after cloning
+(`git pull` should succeed with no error) rather than assuming it carried
+over.
+```bash
 chmod +x scripts/backup-database.sh
 cp .env.example .env
 ```
@@ -325,7 +336,6 @@ or non-interactively:
 ```bash
 aws --endpoint-url http://localhost:9000 s3 mb s3://backups
 ```
-make_bucket failed: s3://backups Unable to locate credentials !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 ### Phase 4 — Bring up the database and storage layer
 
@@ -369,22 +379,21 @@ moment it sees real traffic on your domain — this requires the DNS record
 from Phase 2 to already be live and port 80 reachable (which it is, since
 the firewall is still open at this point).
 
-**If you also need to seed the exercise library**: `docker-compose.prod.yml`
-has no dedicated `seed` service (unlike `migrate`/`create-app-role`), so
-run it against the already-built `migrate` image directly on the compose
-network — the network name follows Compose's default
-`<project-name>_default` pattern, `stride_default` here (from `name:
-stride` at the top of the compose file):
+**If you also need to seed the exercise library**, a dedicated `seed`
+service mirrors `migrate`'s shape (`profiles: ["tools"]`, only ever run
+explicitly):
 
 ```bash
-docker run --rm --network stride_default --env-file .env \
-  stride-migrate npx ts-node scripts/seed-exercises.ts
+docker compose -f docker-compose.prod.yml build seed
+docker compose -f docker-compose.prod.yml run --rm seed
 ```
 
-Worth considering adding a proper `seed` service mirroring `migrate`'s
-shape at some point, for the same reason `migrate` itself got promoted
-from an ad hoc command to a real Compose service (doc 18) — this works,
-but it's the one remaining one-off operation still done by hand.
+Idempotent — safe to re-run; skips any exercise whose `external_id`
+already exists. Always `build` before `run --rm` for any `profiles: ["tools"]`
+service after a `git pull` — Compose only auto-builds an image the first
+time it doesn't exist, and silently reuses a stale one otherwise (see
+Part 3's redeploy note for the general version of this rule — it's cost
+real debugging time twice already in this project's own redeploy).
 
 **Verify**:
 ```bash
@@ -399,20 +408,104 @@ ACME challenge is the most likely first-deploy issue here.
 Don't stop at a green health check — this is the point where doc 19 found
 its most important real bugs (an `X-Forwarded-For` chain that didn't behave
 as documented, and firewall behavior that only a `tcpdump` capture could
-confirm was actually correct).
+confirm was actually correct). No frontend needed for any of this — every
+route is exercised directly.
 
-- [ ] `curl https://<your-domain>/health` → `200`
-- [ ] Register/login through the real deployed API; confirm `Set-Cookie`
-      includes `Secure` and `SameSite=None`
-- [ ] `node scripts/test-websocket-production.js "connect.sid=..."` — a
-      real connection over the full Cloudflare + Caddy + session-auth chain
-- [ ] A real request's logged `x-forwarded-for` matches `cf-connecting-ip`
-      exactly — confirms the IP-resolution fix in `main.ts` is actually
-      active in this specific deployment, not just correct in theory
-- [ ] Exercise at least one real authorization boundary end-to-end (e.g. a
-      role-restricted action correctly returning `403`) — production RBAC
-      enforcement under real conditions is a different claim than the local
-      test suite passing.
+**Run the `curl` and WebSocket steps below from your own machine, not the
+Droplet.** They're all testing the public domain as any external client
+would — running them from your laptop is actually the *more* correct test,
+since it exercises the real "outside the internet → Cloudflare → origin"
+path a real user takes, rather than a Droplet-to-itself round trip. It also
+means you don't need Node installed on the Droplet at all — production
+deliberately has nothing but Docker on the host (Part 1's local setup is
+the only place this project expects a bare Node install). Only the final
+log-checking step genuinely needs to run **on** the Droplet, since Docker's
+logs only exist there — that one's called out explicitly below.
+
+Set your real domain once:
+
+```bash
+DOMAIN=api.stridecare.app
+```
+
+```
+
+- [ ] **Health check**
+  ```bash
+  curl -I https://$DOMAIN/health
+  ```
+  → `200`.
+
+- [ ] **Register, and confirm the cookie itself, not just success** —
+  `-c cookies.txt` saves the session cookie for every following step, and
+  `-i` shows the raw response headers so you can see `Set-Cookie` directly
+  rather than trust `curl` swallowed it silently:
+  ```bash
+  curl -i -c cookies.txt -X POST https://$DOMAIN/auth/register \
+    -H "Content-Type: application/json" \
+    -d '{
+      "email": "verify-deploy@example.com",
+      "password": "SomeStrongPassw0rd!",
+      "firstName": "Deploy",
+      "lastName": "Verify",
+      "dateOfBirth": "1990-01-01"
+    }'
+  ```
+  Check the `Set-Cookie` line in the output directly: it must include
+  `Secure` and `SameSite=None` — if either is missing, `NODE_ENV` isn't
+  actually resolving to `production` in the running container (§ Phase 3).
+
+- [ ] **Confirm the session is real**, using the saved cookie:
+  ```bash
+  curl -i -b cookies.txt https://$DOMAIN/auth/me
+  ```
+  → `200` with your account's data, `passwordHash`/`mfaSecret`/reset-token
+  fields genuinely absent from the body (doc 22).
+
+- [ ] **WebSocket, over the full real chain** (Cloudflare + Caddy +
+  session auth) — extract the raw cookie value first, then run the
+  existing test script:
+  ```bash
+  COOKIE=$(grep connect.sid cookies.txt | awk '{print $6"="$7}')
+  node scripts/test-websocket-production.js "$COOKIE"
+  ```
+
+- [ ] **`CF-Connecting-IP` vs `X-Forwarded-For`, checked directly against
+  real evidence** — this was doc 19's most important finding, and it's
+  worth re-confirming on every fresh deployment, not assumed to still
+  hold. **This is the one step that genuinely needs to run on the
+  Droplet itself** (SSH in), since Docker's logs live only there — fire
+  the request from anywhere (or reuse `cookies.txt` if you copy it over),
+  then check what Caddy actually received and what the app actually
+  resolved for the *same* request, matched by timestamp:
+  ```bash
+  curl -s -b cookies.txt https://$DOMAIN/auth/me >/dev/null   # can run from anywhere with the cookie
+  # then, on the Droplet:
+  docker compose -f docker-compose.prod.yml logs --since 30s caddy \
+    | grep -o '"Cf-Connecting-Ip":\["[^"]*"\].*"X-Forwarded-For":\["[^"]*"\]'
+  docker compose -f docker-compose.prod.yml logs --since 30s app | tail -20
+  ```
+  The IP in the app's own log line for that request should match
+  `Cf-Connecting-Ip` above — and should be a real, non-Cloudflare address
+  (not something in Cloudflare's own published ranges), confirming the
+  `main.ts` middleware fix from doc 19 is genuinely active in *this*
+  deployment, not just correct in theory.
+
+- [ ] **A real authorization boundary, not just an authenticated
+  request** — a freshly registered account has no clinic and no elevated
+  role, so a practitioner-only action should be refused:
+  ```bash
+  curl -i -b cookies.txt -X POST https://$DOMAIN/exercises \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Should be rejected", "primaryMuscles": ["abdominals"]}'
+  ```
+  → `403`. Production RBAC enforcement under real conditions is a
+  different claim than the local test suite passing.
+
+- [ ] **Clean up the verification account** once done — either
+  `DELETE`/soft-deactivate it through the API as an admin, or note it as
+  intentional seed/test data rather than leaving an unexplained account
+  with no real owner.
 
 ### Phase 8 — Lock down the firewall
 
@@ -423,16 +516,46 @@ from `https://www.cloudflare.com/ips/` rather than reuse an old copy**,
 since it does change periodically — instead of "everyone."
 
 **Verify properly, not just by re-testing through Cloudflare** (a VPN or
-other network quirk can produce a false pass or false fail — see doc 19):
-run a direct `curl` against the Droplet's raw IP and confirm it's refused,
-and — if anything looks wrong — capture directly on the box
-(`sudo tcpdump -i eth0 port 80 or port 443`) rather than trust a
-dashboard's claimed rule set alone.
+other network quirk can produce a false pass or false fail — see doc 19).
+Run these from your own machine, not the Droplet — you're testing whether
+the outside world can reach the Droplet's raw IP directly, which is a
+question about the network path *into* the Droplet, not something the
+Droplet can meaningfully test against itself:
+
+```bash
+DROPLET_IP=<your-droplet's-real-IP>
+curl -m 5 -I http://$DROPLET_IP/health
+curl -m 5 -I -k https://$DROPLET_IP/health
+```
+
+Both should **fail to connect** (a timeout or connection-refused, not any
+kind of HTTP response) — `-m 5` caps the wait at 5 seconds so a correctly
+blocked request doesn't just hang. Compare that against the domain, which
+should still work fine, since Cloudflare's own IPs remain allowed:
+
+```bash
+curl -I https://$DOMAIN/health   # should still succeed normally
+```
+
+If the direct-IP requests unexpectedly succeed, don't trust the dashboard's
+claimed rule set — capture directly on the box instead, from an SSH session
+on the Droplet itself:
+
+```bash
+sudo tcpdump -i eth0 port 80 or port 443
+```
+
+then repeat the `curl` commands above from your machine and watch what
+actually arrives. Cloud Firewalls filter at the hypervisor level, so
+blocked traffic never reaches a capture taken on the box at all — seeing
+*nothing* in the capture while a request is in flight is itself
+confirmation the block is working; seeing the request arrive means the
+firewall rule isn't actually applied the way the dashboard claims.
 
 ### Phase 9 — Backups
 
 The `backups` bucket should already exist from Phase 3. Confirm it does,
-then:
+then, **on the Droplet**:
 
 ```bash
 ./scripts/backup-database.sh   # run once by hand first — confirm it works
@@ -440,10 +563,54 @@ crontab -e
 # add: 0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
 ```
 
-**Don't stop at "the script exited cleanly"** — pull the backup it just
-produced back down and restore it into a throwaway database, verifying
-real row counts. A backup that's never been restored is an assumption, not
-a tested fact. *(rationale: doc 18)*
+**Don't stop at "the script exited cleanly"** — actually pull the backup
+it just produced back down and restore it, verifying real row counts. A
+backup that's never been restored is an assumption, not a tested fact.
+*(rationale: doc 18)* Still on the Droplet:
+
+```bash
+# Same credential-extraction the backup script itself uses — see its own
+# comments for why `source .env` is deliberately avoided:
+RUSTFS_ACCESS_KEY=$(grep -E "^RUSTFS_ACCESS_KEY=" .env | cut -d= -f2-)
+RUSTFS_SECRET_KEY=$(grep -E "^RUSTFS_SECRET_KEY=" .env | cut -d= -f2-)
+STORAGE_PORT=$(grep -E "^STORAGE_PORT=" .env | cut -d= -f2-)
+export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY"
+export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY"
+
+# Find the file the manual run above actually produced:
+aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 ls s3://backups/
+```
+
+Pull the most recent one down and restore it into a genuinely separate,
+throwaway database — never directly into `stride`, even to "just check":
+
+```bash
+BACKUP_FILE=<the filename from the ls output above>
+aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 cp \
+  "s3://backups/${BACKUP_FILE}" "/tmp/${BACKUP_FILE}"
+
+docker compose -f docker-compose.prod.yml exec -T db \
+  psql -U postgres -c "CREATE DATABASE restore_verify;"
+gunzip -c "/tmp/${BACKUP_FILE}" | docker compose -f docker-compose.prod.yml \
+  exec -T db psql -U postgres -d restore_verify
+
+# The real check — an actual count, not "no errors occurred":
+docker compose -f docker-compose.prod.yml exec -T db \
+  psql -U postgres -d restore_verify -c "SELECT count(*) FROM exercises;"
+docker compose -f docker-compose.prod.yml exec -T db \
+  psql -U postgres -d restore_verify -c "SELECT count(*) FROM users;"
+```
+
+Compare those counts against what you actually expect (873 exercises if
+seeded, plus however many real accounts exist) — a mismatch here is the
+one thing a clean-looking backup run can't tell you on its own. Clean up
+once confirmed:
+
+```bash
+rm "/tmp/${BACKUP_FILE}"
+docker compose -f docker-compose.prod.yml exec -T db \
+  psql -U postgres -c "DROP DATABASE restore_verify;"
+```
 
 ### Phase 10 — Observability
 
@@ -481,16 +648,87 @@ Should complete in well under the default 10-second grace period — if it
 takes the full 10 seconds and gets killed, `enableShutdownHooks()` isn't
 actually taking effect.
 
+**`stop` only stops the container — it does not come back on its own.**
+Bring it back up before treating this check as done, or you'll leave the
+app genuinely down:
+```bash
+docker compose -f docker-compose.prod.yml start app
+```
+(`start`, not `up -d` — nothing changed, so this just resumes the existing
+container rather than re-evaluating whether to recreate it.)
+
+**Live Tail can lag behind real time by a noticeable amount** — the
+shutdown and restart log lines may not appear immediately. Don't read a
+few seconds of apparent silence as log shipping having failed; give it a
+moment and check again before assuming Vector needs troubleshooting.
+
+### Phase 11 — Final clean reset, once everything's verified (optional)
+
+Phase 7's verification steps leave real artifacts behind: at least one
+test account, and its `REGISTER`/`LOGIN_SUCCESS` rows in `audit_logs`.
+There's no clean way to remove just that — the app has no hard-delete
+route for `users` at all, and the schema's own `RESTRICT` foreign keys
+correctly refuse a direct SQL delete once an audit log entry references
+the account (this is the schema working as designed, not a bug to work
+around). Once Phases 4–10 have all been confirmed working, it's worth one
+full reset to leave the deployment genuinely clean before treating it as
+ready for real use, rather than carrying test data forward indefinitely:
+
+```bash
+docker compose -f docker-compose.prod.yml down -v
+```
+
+This is deliberately destructive — safe specifically because there's no
+real data yet, the same reasoning behind this project's established
+pre-launch reset pattern (doc 04). Know exactly what it does and doesn't
+touch before running it:
+
+**Destroyed** — the four named volumes, nothing else:
+- `pgdata` — the entire database, **including the `stride_app` role
+  itself** (Postgres roles live inside the data directory, not outside it)
+- `rustfs_data` — every bucket, including `stride` (exercise images) and
+  the manually-created `backups` bucket
+- `caddy_data`/`caddy_config` — the TLS certificate
+
+**Untouched** — everything outside those volumes: the Droplet itself
+(Phase 1), DNS/Cloudflare (Phase 2), the cloned repo and `.env` (Phase 3),
+the firewall restriction (Phase 8), the cron entry (Phase 9 — crontab is
+host state, not a volume), and Vector (a host-level systemd service,
+Phase 10).
+
+**To bring it back**: restart from **Phase 4 through Phase 7** — `db`/
+`storage` up, `migrate`, `create-app-role`, `seed` if you need the
+exercise library again, `app`/`caddy`, then re-verify. Also redo the two
+Phase 9 steps tied to volume data specifically — re-create the `backups`
+bucket, and re-run the manual backup + restore check — since both live in
+`rustfs_data`. **Phase 8 and Phase 10 don't need repeating**; nothing they
+configured lived in a wiped volume. Since `users` is empty again, Phase
+7's verification account can reuse its original email — no need for a
+disambiguating suffix this time.
+
 ---
 
 ## Part 3 — Common operations
 
 **Redeploying after a code change:**
 ```bash
-git pull
+git pull   # requires core.sshCommand set once per Phase 3 — see there if this fails with "Permission denied (publickey)"
+docker compose -f docker-compose.prod.yml build migrate   # or: run --build --rm migrate
 docker compose -f docker-compose.prod.yml run --rm migrate   # if migrations changed
 docker compose -f docker-compose.prod.yml up -d --build app
 ```
+**Rebuild before you rely on it, every time, for every service whose
+source actually changed — not just the one you're about to restart.**
+`docker compose run`/`up` only auto-build an image the *first* time it
+doesn't exist yet; once built, both silently reuse that image forever,
+staleness included, unless `--build` is passed explicitly. `app`'s line
+above already had `--build`; `migrate`'s didn't, and it should have —
+this exact gap (a `stride-migrate` image built before a fix landed,
+silently reused after) cost real debugging time during this project's own
+redeploy. If in doubt, `docker compose -f docker-compose.prod.yml build`
+with no service name rebuilds everything that has a `build:` block in one
+pass.
+
 Note: `logging:` config (§ below) only applies at container *creation* —
 a plain `up -d --build` on a service that already exists won't retroactively
 apply a **new** compose-level change like that; use `--force-recreate` if
@@ -513,8 +751,9 @@ directly into production without a reason to believe you need to.
 docker-compose.prod.yml down -v` destroys named volumes (`pgdata`,
 `rustfs_data`, `caddy_data`, `caddy_config`) — this is genuinely
 destructive and appropriate only for a true from-scratch test, not a normal
-redeploy. Re-running this whole Part 2 runbook end-to-end after a `down -v`
-(or a fresh Droplet entirely) is exactly the scenario it's written for.
+redeploy. See Phase 11 for exactly what survives this and what needs
+redoing afterward — a genuine fresh Droplet needs the whole Part 2 runbook
+from Phase 1; an existing Droplet after `down -v` only needs Phase 4 onward.
 
 ---
 

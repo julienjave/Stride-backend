@@ -44,9 +44,29 @@ Most protected routes have **two** independent layers, and both matter:
    `assertCanView`, `assertIsOwner`, `isPatientManagedBy`, direct ownership
    comparisons, etc. — a finer-grained check against the *specific resource*
    being acted on (do you own this exercise; do you actually manage this
-   patient; is this your own session). Also `403 Forbidden` on failure, but
+   patient; is this your own session). Usually `403 Forbidden` on failure,
    with a message specific to the resource and rule that rejected it, not
-   the generic `RolesGuard` text.
+   the generic `RolesGuard` text — **except for four resources, where the
+   real answer is `404` instead. See the callout immediately below.**
+
+**A third, Row-Level-Security-driven outcome, on four specific resources.**
+`medical_files`, `assigned_programs`, `sessions`, and `conversations` all
+carry database-level RLS policies that mirror the service-level check
+above. Every route on these four resources fetches the target row first,
+*then* runs its ownership/participant check against it — and since RLS
+filters an out-of-scope row out of the query entirely, that row is simply
+never there for the check to reject in the first place. The practical
+effect: for these four resources only, a caller with no real relationship
+to the resource gets `404 Not Found` (`"<Resource> <id> not found"`), not
+`403 Forbidden` — the identical status a genuinely nonexistent id would
+produce. This is deliberate, confirmed directly against each service's
+source and its passing tests, not an inconsistency — but it means a
+resource's existence and a caller's right to see it are genuinely
+indistinguishable from outside, for these four tables specifically. `users`
+(the check runs before any RLS-scoped fetch at all), `exercises`, and
+`program_templates` (both fully visible to any authenticated user via RLS
+by design) are unaffected — their service-level checks still produce a real
+`403`. Each affected resource section below is flagged accordingly.
 
 A route with no `@Roles()` at all is reachable by any authenticated user of
 any role — that does not mean it's unrestricted, usually it means the
@@ -133,6 +153,9 @@ A patient's individualized treatment plan, created by copying a template's
 exercises (or an ad-hoc list) at the moment of assignment — later edits to
 the source template never retroactively change an already-assigned program.
 
+> **RLS-affected resource**: fetching a program with no relationship to the
+> caller returns `404 Not Found`, not `403` — see the callout above.
+
 | Action | admin | practitioner | patient |
 |---|---|---|---|
 | **Create** (assign a program to a patient) | — | ✅ **only patients they manage** (clinic-scoped) | — |
@@ -148,6 +171,9 @@ specific case), but never edit its prescription, even their own.
 
 A single workout instance a patient actually performs, generated from an
 assigned program's current exercises at the moment the session is created.
+
+> **RLS-affected resource**: fetching a session with no relationship to the
+> caller returns `404 Not Found`, not `403` — see the callout above.
 
 | Action | admin | practitioner | patient |
 |---|---|---|---|
@@ -169,6 +195,13 @@ Append-only clinical record entries — this controller deliberately has **no
 `PATCH` or `DELETE` route at all**; a correction is a new entry, never an
 edit to an old one.
 
+> **RLS-affected resource**: fetching a single entry (`GET
+> /medical-files/:id`) with no relationship to the caller returns `404 Not
+> Found`, not `403` — see the callout above. The list endpoint's `403` for
+> `?patientId=` a practitioner doesn't manage is unaffected — that check
+> runs before any RLS-scoped query, since it validates the query parameter
+> itself rather than fetching a specific row first.
+
 | Action | admin | practitioner | patient |
 |---|---|---|---|
 | **Create** an entry | — | ✅ **only for patients they manage** | — |
@@ -182,6 +215,15 @@ both the viewer and the patient whose record was viewed — this is the one
 module in the API where *reads*, not just writes, generate an audit trail.
 
 ### Messaging (`/conversations`, WebSocket) — [`messaging.controller.ts`](../../src/messaging/messaging.controller.ts), [`messaging.gateway.ts`](../../src/messaging/messaging.gateway.ts)
+
+> **RLS-affected resource**: fetching or joining a conversation with no
+> relationship to the caller returns `404 Not Found`, not `403` — see the
+> callout above, and [WebSocket API](./02-websocket-api.md) for the exact
+> confirmed payload over the socket transport specifically. An admin is
+> unaffected by this — admins are visible to every conversation's RLS
+> policy by design, so the explicit `403` blocks below (which exist
+> specifically to stop an admin from writing, not to hide the row) still
+> fire normally.
 
 | Action | admin | practitioner | patient |
 |---|---|---|---|

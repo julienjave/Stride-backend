@@ -125,6 +125,31 @@ services:
     profiles: ["tools"]
     command: ["npx", "ts-node", "scripts/create-app-role.ts"]
 
+  # Run once, after migrations, with:
+  # docker compose -f docker-compose.prod.yml run --rm seed
+  #
+  # Seeds the exercise library. Same builder-stage/env_file shape as
+  # `migrate` and `create-app-role` above, but also depends on `storage`
+  # (unlike those two) because scripts/seed-exercises.ts uploads exercise
+  # images via StorageService, not just writing rows to Postgres.
+  #
+  # `profiles: ["tools"]` keeps this from running automatically with
+  # `docker compose up` — it only runs when explicitly invoked, and is
+  # safe to re-run any time (idempotent: skips exercises that already exist).
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: stride-seed
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - storage
+    profiles: ["tools"]
+    command: ["npx", "ts-node", "scripts/seed-exercises.ts"]
+
   caddy:
     image: caddy:2
     container_name: stride-caddy
