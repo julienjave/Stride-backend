@@ -45,7 +45,8 @@ export class WsHttpExceptionFilter extends BaseWsExceptionFilter {
         typeof response === 'string'
           ? response
           : ((response as { message?: string }).message ?? exception.message)
-      return super.catch(new WsException({ status, message }), host)
+      const messages = Array.isArray(message) ? message : [message]
+      return super.catch(new WsException({ status, message: messages }), host)
     }
     return super.catch(exception, host)
   }

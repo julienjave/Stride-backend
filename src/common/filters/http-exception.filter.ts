@@ -69,9 +69,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       )
     }
 
+    const messages = Array.isArray(message) ? message : [message]
+
     response.status(status).json({
       statusCode: status,
-      message,
+      message: messages,
       error: isHttpException ? exception.name : 'InternalServerError',
       timestamp: new Date().toISOString(),
       path: request.url,

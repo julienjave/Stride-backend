@@ -288,7 +288,7 @@ describe('MessagingGateway (e2e)', () => {
     // conversation reads as NotFoundException from findConversationOrThrow,
     // before assertParticipant ever runs, rather than the
     // ForbiddenException it used to be.
-    const exception = new Promise<{ status: number; message: string }>((resolve) => {
+    const exception = new Promise<{ status: number; message: string[] }>((resolve) => {
       socket.on('exception', (err) => resolve(err));
     });
 
@@ -296,7 +296,7 @@ describe('MessagingGateway (e2e)', () => {
 
     const err = await exception;
     expect(err.status).toBe(404);
-    expect(err.message).toBe(`Conversation ${sharedConversationId} not found`);
+    expect(err.message).toEqual([`Conversation ${sharedConversationId} not found`]);
 
     socket.close();
   });

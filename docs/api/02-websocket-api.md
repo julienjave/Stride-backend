@@ -254,7 +254,7 @@ Concretely, a rejected handler emits an `exception` event on the throwing
 client's own socket, shaped:
 
 ```json
-{ "status": 404, "message": "Conversation 12 not found" }
+{ "status": 404, "message": ["Conversation 12 not found"] }
 ```
 
 This exact shape and value is what

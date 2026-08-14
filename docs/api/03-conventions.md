@@ -19,7 +19,7 @@ Every error response, of every status code, has this exact shape:
 ```json
 {
   "statusCode": 404,
-  "message": "Exercise 501 not found",
+  "message": ["Exercise 501 not found"],
   "error": "NotFoundException",
   "timestamp": "2026-08-05T14:22:03.101Z",
   "path": "/exercises/501"
@@ -31,20 +31,21 @@ present on every error response in this API, without exception.
 
 Notes on `message`:
 
-- For a deliberately-thrown `HttpException` — the overwhelming majority of
-  errors an integrating client will encounter: `400`s from validation,
-  `401`/`403`s from the auth guards, `404`s from a missing resource —
-  `message` is the real, human-readable reason from the code, and is safe to
-  surface directly to a user.
+- `message` is **always an array of strings**, one entry per issue. This
+  replaces the old ambiguity where `message` was sometimes a single string
+  and sometimes an array depending on the error type — error-rendering UI
+  never needs to branch on the shape of `message`, only iterate it.
+- For the overwhelming majority of errors — `401`/`403`s from the auth
+  guards, `404`s from a missing resource, and most other deliberately-thrown
+  `HttpException`s — that array has exactly one entry: the real,
+  human-readable reason from the code, safe to surface directly to a user.
 - For a `class-validator` validation failure specifically (a `400 Bad
-  Request` produced by the global `ValidationPipe`), `message` is an
-  **array of strings**, one per failed constraint — e.g.
-  `["email must be an email", "password must be longer than or equal to 8 characters"]`
-  — not a single string. Handle both the string and array shape of
-  `message` in error-rendering UI.
+  Request` produced by the global `ValidationPipe`), `message` can have
+  **multiple entries**, one per failed constraint — e.g.
+  `["email must be an email", "password must be longer than or equal to 8 characters"]`.
 - For anything that is **not** a deliberately-thrown `HttpException` — a
   genuine bug, an unhandled database error, etc. — `message` is always
-  replaced with the literal string `"Internal server error"` and
+  replaced with the single-entry array `["Internal server error"]` and
   `statusCode` is `500`. The real underlying error (which could otherwise
   leak a stack trace, a file path, or raw Postgres error text naming actual
   column/table names) is only ever logged server-side via `nestjs-pino`,
@@ -152,7 +153,7 @@ a body in the exact same global error shape described above:
 ```json
 {
   "statusCode": 429,
-  "message": "ThrottlerException: Too Many Requests",
+  "message": ["ThrottlerException: Too Many Requests"],
   "error": "ThrottlerException",
   "timestamp": "2026-08-05T14:22:03.101Z",
   "path": "/auth/login"
