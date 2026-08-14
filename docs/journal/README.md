@@ -46,6 +46,9 @@ where reality diverged from it.
 | 22 | Scoped bug hunt and verification loop | A five-category hunt built from the prior two hunts' own track record; a real PII-leak fix in `toPublic()`, an admin-bypass gap on `sendMessage`/`markAsRead`, and the investigate-then-fix-then-reverify loop as an explicit process. |
 | 23 | Row-Level Security, step zero | Why RLS had done nothing until now (superuser bypass), the restricted `stride_app` role, and the narrow connection split that makes real policies possible. |
 | 24 | Row-Level Security rollout | The six/eight-table rollout, the `withRlsContext` pattern, what genuinely differed per table, and a real migration-bookkeeping incident caught before it could reach production. |
+| 25 | Closing the log-rotation gap | A `PROJECT.md` claim checked against real git history and found never actually implemented (not a regression) — the fix, its verification via `docker compose config`, and a secrets-in-transcript exposure caught and rotated along the way. |
+| 26 | Redeploying for real | A full Droplet destroy-and-recreate, executed to actually validate `DEPLOYMENT.md` rather than trust it — a genuine RLS-rollout scope gap in the seed script, a second `ts-node`/`tsc` ambient-declaration gap, a stale-image documentation bug, a recurring local-vs-Droplet environment confusion, and several real-but-not-buggy operational characteristics, all found by actually running the pipeline end to end. |
+| 27 | Message normalization & an API docs accuracy pass | A real API contract fix (error `message` is now always an array, in both exception filters) — and a documentation review that found the RLS rollout had silently changed `403` to `404` on four resources, confirmed against a real passing test, with none of the API reference docs ever updated to match. |
 
 ---
 
@@ -57,27 +60,46 @@ where reality diverged from it.
 | Database schema & design patterns | 02, 23, 24 |
 | Authentication (sessions, login, logout) | 03, 06, 12, 16, 21 |
 | Authorization / RBAC / multi-role | 03, 05, 08, 20, 22 |
-| Row-Level Security | 23, 24 |
+| Row-Level Security | 23, 24, 26, 27 |
 | Real-time messaging / WebSockets | 09, 19, 20, 21 |
 | File & object storage | 04, 07 |
 | Audit logging & compliance | 01, 02, 10, 11, 22, 24 |
 | Clinical domain (programs, sessions, medical files) | 08, 11 |
 | Email & MFA | 12, 17 |
 | Testing infrastructure | 06, 13, 17, 20, 21, 22 |
-| TypeScript / type safety | 06, 08, 13, 21 |
+| TypeScript / type safety | 06, 08, 13, 21, 26 |
 | Security bug hunts | 20, 21, 22 |
-| Deployment & production infrastructure | 16, 18, 19 |
+| Deployment & production infrastructure | 16, 18, 19, 25, 26 |
 | Observability (monitoring, logging) | 19 |
-| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24 |
+| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27 |
 
 ---
 
-## Known open items (as of doc 24)
+## Known open items
 
-- Doc 01's RLS framing and doc 02's "(planned)" phrasing should be updated to
-  reflect 23–24, if not already done in the live source files.
+- Doc 02's "(planned)" phrasing for Row-Level Security likely still needs
+  updating to reflect 23–24 — unconfirmed against the live file. (Doc 01's
+  equivalent framing is **not** an open item — see the note at the top of
+  this README: it's deliberately left as-written, by design, not an
+  oversight.)
 - RLS is **not** applied to `user_roles`, the three profile tables, `clinics`,
   or `user_clinics` — `user_clinics` is a deliberate, permanent exception (see
   doc 24); the others are open questions for a future pass.
 - `deferred-improvements.md` (referenced in doc 22) is the terse, changelog-style
   companion to this narrative series, if one exists in the repo.
+- Doc 25's log-rotation fix was confirmed working locally but explicitly
+  left as "not yet live" pending a real container recreation on the
+  Droplet. Doc 26's full redeploy almost certainly picked it up (fresh
+  containers get `logging:` config at creation, no extra step needed) —
+  but that's an inference, not something either confirmed directly (e.g.
+  via `docker inspect` on the running container). Worth a real check
+  before treating it as closed.
+- Two real, verified pieces of work from this exercise are now written up
+  as doc 27: normalizing error `message` to always be an array (both
+  exception filters, a real commit, a full passing test-suite re-run), and
+  a full accuracy review of the `docs/api/` reference against the RLS
+  rollout (docs 01, 02, 04 there needed real fixes — a confirmed `403`→`404`
+  change on four resources the original docs never caught). One thing doc
+  27 leaves open: the five API docs' "Verified against commit" headers
+  still need bumping to the real current commit — flagged there, not yet
+  confirmed done.

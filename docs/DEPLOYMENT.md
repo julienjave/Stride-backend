@@ -6,9 +6,9 @@ to a fresh production host. Both are built directly from the real
 `docker-compose.yml`/`docker-compose.prod.yml`, `.env.example`,
 `package.json`, and `scripts/backup-database.sh` — not reconstructed from
 memory — plus the reasoning behind each step, which lives in the numbered
-journal series (`00-README.md`) and is linked inline rather than repeated.
+journal series ([`README.md`](./journal/README.md)) and is linked inline rather than repeated.
 
-Like `ARCHITECTURE.md`, this is a **living document** — update it in place
+Like [`ARCHITECTURE.md`](ARCHITECTURE.md), this is a **living document** — update it in place
 whenever the real process changes, rather than leaving it to drift.
 
 ---

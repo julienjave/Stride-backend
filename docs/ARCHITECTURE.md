@@ -4,7 +4,7 @@ This document describes the system **as it currently stands**: what exists,
 how the pieces fit together, and what the current guarantees actually are.
 It intentionally does not explain *why* each decision was made, or what was
 tried and rejected along the way — that reasoning lives in the numbered
-writeup series (`00-README.md` is the index) and in `PROJECT.md`'s condensed
+writeup series ([`README.md`](../docs/journal/README.md) is the index) and in [`PROJECT.md`](PROJECT.md)'s condensed
 summary. Every major section below links back to the doc(s) where the
 decision was actually made.
 
