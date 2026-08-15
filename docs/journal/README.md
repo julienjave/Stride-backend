@@ -49,6 +49,8 @@ where reality diverged from it.
 | 25 | Closing the log-rotation gap | A `PROJECT.md` claim checked against real git history and found never actually implemented (not a regression) — the fix, its verification via `docker compose config`, and a secrets-in-transcript exposure caught and rotated along the way. |
 | 26 | Redeploying for real | A full Droplet destroy-and-recreate, executed to actually validate `DEPLOYMENT.md` rather than trust it — a genuine RLS-rollout scope gap in the seed script, a second `ts-node`/`tsc` ambient-declaration gap, a stale-image documentation bug, a recurring local-vs-Droplet environment confusion, and several real-but-not-buggy operational characteristics, all found by actually running the pipeline end to end. |
 | 27 | Message normalization & an API docs accuracy pass | A real API contract fix (error `message` is now always an array, in both exception filters) — and a documentation review that found the RLS rollout had silently changed `403` to `404` on four resources, confirmed against a real passing test, with none of the API reference docs ever updated to match. |
+| 28 | A flaky test, a timing side-channel, and a false claim | A one-line fix for a real flake (a live Resend round-trip in a test) led directly to measuring a genuine account-enumeration timing side-channel in `forgotPassword()`, a fire-and-forget fix for it, and — while confirming the fix's blast radius — discovering doc 17 describes a regression test that, per full git history, was never actually committed. *(Doc 17 is left unedited, per this project's established policy — this is where that gap is named.)* |
+| 29 | Row-Level Security, `user_roles` | Pass 2 of the RLS roadmap: the roadmap's own proposed `SELECT` policy adversarially proven to break login for every non-admin account before being rejected in favor of `USING (true)`; a three-branch `INSERT` policy verified against all eight real allow/reject scenarios; a genuine RLS scope gap in `grantRole()` (no session context reached its own write) and a second, pre-existing, RLS-unrelated bug in the same method (a read-your-own-write race across two connections) both found and fixed. |
 
 ---
 
@@ -59,19 +61,19 @@ where reality diverged from it.
 | Stack & technology rationale | 01, 04, 16 |
 | Database schema & design patterns | 02, 23, 24 |
 | Authentication (sessions, login, logout) | 03, 06, 12, 16, 21 |
-| Authorization / RBAC / multi-role | 03, 05, 08, 20, 22 |
-| Row-Level Security | 23, 24, 26, 27 |
+| Authorization / RBAC / multi-role | 03, 05, 08, 20, 22, 29 |
+| Row-Level Security | 23, 24, 26, 27, 28, 29 |
 | Real-time messaging / WebSockets | 09, 19, 20, 21 |
 | File & object storage | 04, 07 |
 | Audit logging & compliance | 01, 02, 10, 11, 22, 24 |
 | Clinical domain (programs, sessions, medical files) | 08, 11 |
-| Email & MFA | 12, 17 |
-| Testing infrastructure | 06, 13, 17, 20, 21, 22 |
+| Email & MFA | 12, 17, 28 |
+| Testing infrastructure | 06, 13, 17, 20, 21, 22, 28, 29 |
 | TypeScript / type safety | 06, 08, 13, 21, 26 |
-| Security bug hunts | 20, 21, 22 |
+| Security bug hunts | 20, 21, 22, 28, 29 |
 | Deployment & production infrastructure | 16, 18, 19, 25, 26 |
 | Observability (monitoring, logging) | 19 |
-| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27 |
+| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29 |
 
 ---
 
@@ -82,9 +84,11 @@ where reality diverged from it.
   equivalent framing is **not** an open item — see the note at the top of
   this README: it's deliberately left as-written, by design, not an
   oversight.)
-- RLS is **not** applied to `user_roles`, the three profile tables, `clinics`,
-  or `user_clinics` — `user_clinics` is a deliberate, permanent exception (see
-  doc 24); the others are open questions for a future pass.
+- RLS is **not** applied to the three profile tables or `user_clinics` —
+  `user_clinics` is a deliberate, permanent exception (see doc 24); the
+  profile tables are an open question for a future pass. `clinics` (doc 24's
+  Pass 1, migration `0008`) and `user_roles` (doc 29's Pass 2, migration
+  `0009`) are both done.
 - `deferred-improvements.md` (referenced in doc 22) is the terse, changelog-style
   companion to this narrative series, if one exists in the repo.
 - Doc 25's log-rotation fix was confirmed working locally but explicitly

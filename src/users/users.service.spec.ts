@@ -329,10 +329,11 @@ describe('UsersService.grantRole', () => {
     })
 
     await expect(
-      usersService.grantRole(1, {
-        role: UserRole.PRACTITIONER,
-        licenseNumber: 'PT-2',
-      }),
+      usersService.grantRole(
+        1,
+        { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
     ).rejects.toThrow(ConflictException)
   })
 
@@ -342,7 +343,19 @@ describe('UsersService.grantRole', () => {
       .fn()
       .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
     const tx = {
+      // withRlsContext() sets two session GUCs via tx.execute() before
+      // invoking the callback, since the granting admin's session is real.
+      execute: jest.fn().mockResolvedValue(undefined),
       insert,
+      // getRolesForUser(userId, tx) is called through tx, not this.db, so
+      // the just-inserted role is read back through the same still-open
+      // transaction rather than a separate connection that can't see it
+      // yet — see the comment on getRolesForUser itself.
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        }),
+      }),
       query: {
         practitionerProfiles: {
           findFirst: jest.fn().mockResolvedValue(undefined),
@@ -351,10 +364,11 @@ describe('UsersService.grantRole', () => {
     }
     db.transaction.mockImplementation((cb: any) => cb(tx))
 
-    await usersService.grantRole(1, {
-      role: UserRole.PRACTITIONER,
-      licenseNumber: 'PT-2',
-    })
+    await usersService.grantRole(
+      1,
+      { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' },
+      { id: 9, activeRole: UserRole.ADMIN },
+    )
 
     // userRoles insert + practitionerProfiles insert, since none existed yet.
     expect(insert).toHaveBeenCalledTimes(2)
@@ -366,7 +380,13 @@ describe('UsersService.grantRole', () => {
       .fn()
       .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
     const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
       insert,
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        }),
+      }),
       query: {
         practitionerProfiles: {
           findFirst: jest.fn().mockResolvedValue({ userId: 1 }),
@@ -375,10 +395,11 @@ describe('UsersService.grantRole', () => {
     }
     db.transaction.mockImplementation((cb: any) => cb(tx))
 
-    await usersService.grantRole(1, {
-      role: UserRole.PRACTITIONER,
-      licenseNumber: 'PT-2',
-    })
+    await usersService.grantRole(
+      1,
+      { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' },
+      { id: 9, activeRole: UserRole.ADMIN },
+    )
 
     // Only the userRoles insert — the existing profile must not be re-inserted.
     expect(insert).toHaveBeenCalledTimes(1)

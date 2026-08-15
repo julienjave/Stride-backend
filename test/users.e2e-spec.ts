@@ -40,6 +40,7 @@ describe('Users (e2e)', () => {
   let clinicYId: number;
   let patient1Id: number;
   let patient2Id: number;
+  let patient2Email: string;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -171,8 +172,9 @@ describe('Users (e2e)', () => {
       password: 'password123',
     });
 
+    patient2Email = `patient2-${stamp}@example.com`;
     const patient2Res = await admin.post('/users').send({
-      email: `patient2-${stamp}@example.com`,
+      email: patient2Email,
       password: 'password123',
       role: 'patient',
       firstName: 'Patient',
@@ -183,7 +185,7 @@ describe('Users (e2e)', () => {
     expect(patient2Res.status).toBe(201);
     patient2Id = patient2Res.body.id;
     await patient2.post('/auth/login').send({
-      email: `patient2-${stamp}@example.com`,
+      email: patient2Email,
       password: 'password123',
     });
   });
@@ -373,5 +375,50 @@ describe('Users (e2e)', () => {
 
     const adminView = await admin.get(`/users/${patient1Id}`);
     expect(adminView.status).toBe(200);
+  });
+
+  // No route to POST /users/:id/roles was exercised anywhere in this suite
+  // before — real gap, closed here specifically because grantRole()'s own
+  // userRoles INSERT changed as part of the user_roles RLS pass (routed
+  // through withRlsContext with the acting admin's real session now, not a
+  // plain db.transaction() with no RLS context at all — see the migration
+  // comment on user_roles_insert for why the old shape would have failed
+  // outright under FORCE ROW LEVEL SECURITY).
+  it('lets an admin grant an additional role, rejects a non-admin attempting the same, and the granted role is real (not just echoed)', async () => {
+    const stamp = Date.now();
+
+    const forbidden = await practitionerA
+      .post(`/users/${patient2Id}/roles`)
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` });
+    expect(forbidden.status).toBe(403);
+
+    const granted = await admin
+      .post(`/users/${patient2Id}/roles`)
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` });
+    expect(granted.status).toBe(201);
+    expect(granted.body).toEqual(
+      expect.arrayContaining(['patient', 'practitioner']),
+    );
+
+    // Proves the INSERT genuinely committed under user_roles' real RLS
+    // policy, not just that the HTTP response looked right — patient2's
+    // ALREADY-authenticated session (no fresh login, deliberately: /auth/
+    // login is throttled to 5/60s and this file's beforeAll already spends
+    // most of that budget) can now switch to the newly-granted role.
+    // switchRole() only allows switching to a role deserializeUser()'s own
+    // fresh reload (UsersService.findOne() -> getRolesForUser(), a genuinely
+    // separate connection from grantRole()'s own transaction) actually
+    // finds — this exercises exactly the read-after-commit path the
+    // getRolesForUser(userId, tx) fix above was about, from the other side.
+    const switched = await patient2
+      .post('/auth/switch-role')
+      .send({ role: 'practitioner' });
+    expect(switched.status).toBe(201);
+    expect(switched.body.activeRole).toBe('practitioner');
+
+    const duplicate = await admin
+      .post(`/users/${patient2Id}/roles`)
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-DUP-${stamp}` });
+    expect(duplicate.status).toBe(409);
   });
 });

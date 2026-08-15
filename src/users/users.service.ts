@@ -151,7 +151,11 @@ export class UsersService {
   }
 
   // Grants an ADDITIONAL role to an already-existing user
-  async grantRole(userId: number, dto: GrantRoleDto) {
+  async grantRole(
+    userId: number,
+    dto: GrantRoleDto,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
     await this.findOne(userId)
 
     const existingRole = await this.db.query.userRoles.findFirst({
@@ -161,7 +165,7 @@ export class UsersService {
       throw new ConflictException(`User already has the "${dto.role}" role`)
     }
 
-    return this.db.transaction(async (tx) => {
+    return withRlsContext(this.db, currentUser, async (tx) => {
       await tx.insert(userRoles).values({ userId, role: dto.role })
 
       // Only creates the profile row if this user doesn't already have one
@@ -199,7 +203,7 @@ export class UsersService {
         }
       }
 
-      return this.getRolesForUser(userId)
+      return this.getRolesForUser(userId, tx)
     })
   }
 
@@ -235,8 +239,24 @@ export class UsersService {
     return rows.map((u) => this.toPublic(u))
   }
 
-  async getRolesForUser(userId: number): Promise<string[]> {
-    const rows = await this.db
+  // dbOrTx defaults to this.db (a fresh connection, always seeing the
+  // latest COMMITTED state) — correct for every caller that runs this
+  // after its own writing transaction has already resolved
+  // (findOne/update/softDelete/updateAvatar all call this only once
+  // withRlsContext's promise has settled). grantRole() is the one
+  // exception: it calls this from INSIDE its own still-open transaction,
+  // so it passes `tx` explicitly — without that, this would query via a
+  // SEPARATE connection that can't see the role that same transaction
+  // just inserted but hasn't committed yet, under normal READ COMMITTED
+  // visibility. Caught for real, not by inspection: an e2e test asserting
+  // the actual returned roles array (grantRole had none before this pass)
+  // failed with the newly-granted role silently missing from the response
+  // until this was threaded through.
+  async getRolesForUser(
+    userId: number,
+    dbOrTx: DrizzleDb = this.db,
+  ): Promise<string[]> {
+    const rows = await dbOrTx
       .select({ role: userRoles.role })
       .from(userRoles)
       .where(eq(userRoles.userId, userId))

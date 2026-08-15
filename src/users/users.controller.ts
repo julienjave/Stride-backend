@@ -67,8 +67,12 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post(':id/roles')
-  grantRole(@Param('id', ParseIntPipe) id: number, @Body() dto: GrantRoleDto) {
-    return this.usersService.grantRole(id, dto)
+  grantRole(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: GrantRoleDto,
+    @CurrentUser() currentUser: CurrentUser,
+  ) {
+    return this.usersService.grantRole(id, dto, currentUser)
   }
 
   // @UseInterceptors(FileInterceptor('file', ...)) parses a multipart/form-data
