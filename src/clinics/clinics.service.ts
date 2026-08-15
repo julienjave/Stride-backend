@@ -30,8 +30,12 @@ import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
+import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
+
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class ClinicsService {
@@ -49,8 +53,10 @@ export class ClinicsService {
 
   // --- POST ROUTES ---
 
-  async create(dto: CreateClinicDto) {
-    const [clinic] = await this.db.insert(clinics).values(dto).returning()
+  async create(currentUser: CurrentUser, dto: CreateClinicDto) {
+    const [clinic] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.insert(clinics).values(dto).returning(),
+    )
     return clinic
   }
 
@@ -81,15 +87,17 @@ export class ClinicsService {
     return membership
   }
 
-  async updateLogo(id: number, file: Express.Multer.File) {
+  async updateLogo(id: number, currentUser: CurrentUser, file: Express.Multer.File) {
     await this.findOne(id)
     const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
-    const [updated] = await this.db
-      .update(clinics)
-      .set({ logoPath: objectKey })
-      .where(eq(clinics.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(clinics)
+        .set({ logoPath: objectKey })
+        .where(eq(clinics.id, id))
+        .returning(),
+    )
     return updated
   }
 
@@ -147,25 +155,25 @@ export class ClinicsService {
 
   // --- PATCH ROUTES ---
 
-  async update(id: number, dto: UpdateClinicDto) {
+  async update(id: number, currentUser: CurrentUser, dto: UpdateClinicDto) {
     await this.findOne(id)
-    const [updated] = await this.db
-      .update(clinics)
-      .set(dto)
-      .where(eq(clinics.id, id))
-      .returning()
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.update(clinics).set(dto).where(eq(clinics.id, id)).returning(),
+    )
     return updated
   }
 
   // --- DELETE ROUTES ---
 
-  async deactivate(id: number) {
+  async deactivate(id: number, currentUser: CurrentUser) {
     await this.findOne(id)
-    const [deactivated] = await this.db
-      .update(clinics)
-      .set({ isActive: false })
-      .where(eq(clinics.id, id))
-      .returning()
+    const [deactivated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(clinics)
+        .set({ isActive: false })
+        .where(eq(clinics.id, id))
+        .returning(),
+    )
     return deactivated
   }
 

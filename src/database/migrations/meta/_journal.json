@@ -57,6 +57,13 @@
       "when": 1787046745000,
       "tag": "0007_users_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787133145000,
+      "tag": "0008_clinics_rls",
+      "breakpoints": true
     }
   ]
 }

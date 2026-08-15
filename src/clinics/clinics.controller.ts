@@ -40,6 +40,7 @@ import { AddMemberDto } from './dto/add-member.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
+import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 
@@ -60,8 +61,8 @@ export class ClinicsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post()
-  create(@Body() dto: CreateClinicDto) {
-    return this.clinicsService.create(dto)
+  create(@CurrentUser() user: CurrentUser, @Body() dto: CreateClinicDto) {
+    return this.clinicsService.create(user, dto)
   }
 
   @UseGuards(RolesGuard)
@@ -78,11 +79,12 @@ export class ClinicsController {
   uploadLogo(
     @Param('id', ParseIntPipe) id: number,
     @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: CurrentUser,
   ) {
     if (!file) {
       throw new BadRequestException('No file uploaded')
     }
-    return this.clinicsService.updateLogo(id, file)
+    return this.clinicsService.updateLogo(id, user, file)
   }
 
   // --- GET ROUTES ---
@@ -111,8 +113,12 @@ export class ClinicsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateClinicDto) {
-    return this.clinicsService.update(id, dto)
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: UpdateClinicDto,
+  ) {
+    return this.clinicsService.update(id, user, dto)
   }
 
   // --- DELETE ROUTES ---
@@ -120,8 +126,11 @@ export class ClinicsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Delete(':id')
-  deactivate(@Param('id', ParseIntPipe) id: number) {
-    return this.clinicsService.deactivate(id)
+  deactivate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.clinicsService.deactivate(id, user)
   }
 
   @UseGuards(RolesGuard)

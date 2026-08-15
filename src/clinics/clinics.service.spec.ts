@@ -3,6 +3,9 @@ import { ConflictException, NotFoundException } from '@nestjs/common'
 import { ClinicsService } from './clinics.service'
 import { StorageService } from '../storage/storage.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
+
+const adminUser = { id: 2, activeRole: UserRole.ADMIN }
 
 describe('ClinicsService.addMember', () => {
   let clinicsService: ClinicsService
@@ -118,10 +121,17 @@ describe('ClinicsService.findOne', () => {
 
 describe('ClinicsService.create', () => {
   let clinicsService: ClinicsService
-  let db: { insert: jest.Mock }
+  let db: { insert: jest.Mock; execute: jest.Mock; transaction: jest.Mock }
 
   beforeEach(async () => {
-    db = { insert: jest.fn() }
+    db = {
+      insert: jest.fn(),
+      // withRlsContext() wraps the actual INSERT in db.transaction()/
+      // db.execute() — tx === db here, so the mocked insert() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -142,7 +152,7 @@ describe('ClinicsService.create', () => {
     })
     db.insert.mockReturnValue({ values })
 
-    const result = await clinicsService.create({
+    const result = await clinicsService.create(adminUser, {
       name: 'Acme Clinic',
       email: 'acme@example.com',
     })
@@ -191,12 +201,19 @@ describe('ClinicsService.update', () => {
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
     db = {
       query: { clinics: { findFirst: jest.fn() } },
       update: jest.fn(),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -213,9 +230,9 @@ describe('ClinicsService.update', () => {
   it('throws NotFoundException when the clinic does not exist', async () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.update(999, { name: 'New Name' })).rejects.toThrow(
-      NotFoundException,
-    )
+    await expect(
+      clinicsService.update(999, adminUser, { name: 'New Name' }),
+    ).rejects.toThrow(NotFoundException)
     expect(db.update).not.toHaveBeenCalled()
   })
 
@@ -228,7 +245,7 @@ describe('ClinicsService.update', () => {
     })
     db.update.mockReturnValue({ set })
 
-    const result = await clinicsService.update(1, { name: 'Renamed Clinic' })
+    const result = await clinicsService.update(1, adminUser, { name: 'Renamed Clinic' })
 
     expect(set).toHaveBeenCalledWith({ name: 'Renamed Clinic' })
     expect(result).toEqual({ id: 1, name: 'Renamed Clinic' })
@@ -241,6 +258,8 @@ describe('ClinicsService.updateLogo', () => {
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -248,6 +267,11 @@ describe('ClinicsService.updateLogo', () => {
     db = {
       query: { clinics: { findFirst: jest.fn() } },
       update: jest.fn(),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -265,7 +289,7 @@ describe('ClinicsService.updateLogo', () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
     await expect(
-      clinicsService.updateLogo(999, {
+      clinicsService.updateLogo(999, adminUser, {
         mimetype: 'image/png',
         buffer: Buffer.from('x'),
       } as Express.Multer.File),
@@ -284,7 +308,7 @@ describe('ClinicsService.updateLogo', () => {
     })
     db.update.mockReturnValue({ set })
 
-    const result = await clinicsService.updateLogo(1, {
+    const result = await clinicsService.updateLogo(1, adminUser, {
       mimetype: 'image/png',
       buffer: Buffer.from('fake-logo'),
     } as Express.Multer.File)
@@ -410,12 +434,19 @@ describe('ClinicsService.deactivate', () => {
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
     db = {
       query: { clinics: { findFirst: jest.fn() } },
       update: jest.fn(),
+      // withRlsContext() wraps the actual UPDATE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked update() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -432,7 +463,9 @@ describe('ClinicsService.deactivate', () => {
   it('throws NotFoundException when the clinic does not exist', async () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.deactivate(999)).rejects.toThrow(NotFoundException)
+    await expect(clinicsService.deactivate(999, adminUser)).rejects.toThrow(
+      NotFoundException,
+    )
     expect(db.update).not.toHaveBeenCalled()
   })
 
@@ -445,7 +478,7 @@ describe('ClinicsService.deactivate', () => {
     })
     db.update.mockReturnValue({ set })
 
-    const result = await clinicsService.deactivate(1)
+    const result = await clinicsService.deactivate(1, adminUser)
 
     expect(set).toHaveBeenCalledWith({ isActive: false })
     expect(result).toEqual({ id: 1, isActive: false })

@@ -21,6 +21,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
 } from '@nestjs/common'
 import { eq, sql } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
@@ -61,6 +62,8 @@ interface RegisterClinicResult {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name)
+
   // otplib's current API is class-based, not a singleton — one shared
   // instance is created here, since it holds no per-request state and
   // there's no reason to construct a new one on every call.
@@ -333,7 +336,26 @@ export class AuthService {
 
     // The raw token — never the hash — is the only thing that ever leaves
     // this server.
-    await this.emailService.sendPasswordResetEmail(user.email, rawToken)
+    //
+    // Fire-and-forget, deliberately — same tradeoff as the audit
+    // interceptor's own dispatched write (see docs/journal/10). Awaiting
+    // this here previously meant a live Resend round-trip (hundreds of ms)
+    // ran before the response, while the unknown-email early return above
+    // responds in single-digit ms — a timing side-channel that let a
+    // caller infer account existence without ever reading the (otherwise
+    // identical) response body. EmailService already turns a Resend-level
+    // send failure into a logged, swallowed no-op rather than a throw
+    // (see its own comment); this .catch() only guards the rarer case
+    // where the call itself rejects (e.g. a network-level failure), so
+    // that case can't become an unhandled rejection either.
+    this.emailService
+      .sendPasswordResetEmail(user.email, rawToken)
+      .catch((err) =>
+        this.logger.error(
+          `Failed to send password reset email to ${user.email}`,
+          err,
+        ),
+      )
 
     await this.auditService.log({
       performedBy: user.id,

@@ -10,11 +10,14 @@ import session from 'express-session'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
-import { sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { OTP } from 'otplib'
 import { AppModule } from '../src/app.module'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
+import { auditLogs } from '../src/database/schema'
+import { withRlsContext } from '../src/database/rls-context'
+import { UserRole } from '../src/users/dto/create-user.dto'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -25,6 +28,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 describe('Auth (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
+  let db: DrizzleDb
   const otp = new OTP({ strategy: 'totp' })
 
   // register-clinic only ever succeeds ONCE per (truncated) database — the
@@ -33,6 +37,11 @@ describe('Auth (e2e)', () => {
   // its own.
   const admin = () => request.agent(app.getHttpServer())
   let adminAgent: ReturnType<typeof admin>
+  // audit_logs' own RLS policy (see 0002_audit_logs_rls.sql) only allows
+  // SELECT when app.current_role = 'admin' — the founding admin's id below
+  // is what a direct audit_logs read in a test has to authenticate as,
+  // the same way AuditController's real /audit-logs route does.
+  let adminId: number
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -76,7 +85,7 @@ describe('Auth (e2e)', () => {
     // tests via the wrong npm script (plain `test:e2e` instead of
     // `test:e2e:fresh`) would TRUNCATE the real dev database with no
     // warning, since nothing else in this file would notice the difference.
-    const db = app.get<DrizzleDb>(DRIZZLE)
+    db = app.get<DrizzleDb>(DRIZZLE)
     const { rows } = await db.execute<{ current_database: string }>(
       sql`SELECT current_database()`,
     )
@@ -117,6 +126,7 @@ describe('Auth (e2e)', () => {
         `Failed to bootstrap the founding admin: ${JSON.stringify(clinicRes.body)}`,
       )
     }
+    adminId = clinicRes.body.id
   })
 
   afterAll(async () => {
@@ -238,10 +248,17 @@ describe('Auth (e2e)', () => {
 
   it('walks the full two-step MFA login flow using the same session throughout', async () => {
     const mfa = mfaAgent()
-    const stamp = Date.now()
+    // Resend's unverified-sandbox mode only delivers to the address the
+    // Resend account itself was signed up with, so a random timestamped
+    // address here would only work for whoever's personal Resend account
+    // happens to be configured — non-portable to a teammate, CI, or a
+    // future run. delivered@resend.dev is Resend's own dedicated test
+    // address for exactly this: always succeeds, no account-specific
+    // restriction (documented in Resend's own examples). See docs/journal/17.
+    const mfaEmail = 'delivered@resend.dev'
 
     const registerRes = await mfa.post('/auth/register').send({
-      email: `mfa-${stamp}@example.com`,
+      email: mfaEmail,
       password: 'password123',
       firstName: 'MFA',
       lastName: 'User',
@@ -267,13 +284,13 @@ describe('Auth (e2e)', () => {
     // MFA, passwordResetTokenHash/Expiry from this).
     const forgotRes = await request(app.getHttpServer())
       .post('/auth/forgot-password')
-      .send({ email: `mfa-${stamp}@example.com` })
+      .send({ email: mfaEmail })
     expect(forgotRes.status).toBe(204)
 
     await mfa.post('/auth/logout')
 
     const loginRes = await mfa.post('/auth/login').send({
-      email: `mfa-${stamp}@example.com`,
+      email: mfaEmail,
       password: 'password123',
     })
     expect(loginRes.status).toBe(201)
@@ -307,7 +324,7 @@ describe('Auth (e2e)', () => {
     // authenticated — no separate login round trip was needed.
     const meAfterVerify = await mfa.get('/auth/me')
     expect(meAfterVerify.status).toBe(200)
-    expect(meAfterVerify.body.email).toBe(`mfa-${stamp}@example.com`)
+    expect(meAfterVerify.body.email).toBe(mfaEmail)
     expect(meAfterVerify.body).not.toHaveProperty('passwordHash')
     expect(meAfterVerify.body).not.toHaveProperty('mfaSecret')
     expect(meAfterVerify.body).not.toHaveProperty('passwordResetTokenHash')
@@ -322,7 +339,11 @@ describe('Auth (e2e)', () => {
     expect(switchRes.body).not.toHaveProperty('mfaSecret')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenHash')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')
-  })
+    // 15s, not Jest's 5s default: this test's forgot-password call above is
+    // a real, awaited round trip to the live Resend API (see docs/journal/17)
+    // — normal latency plus margin, independent of the delivered@resend.dev
+    // switch above, since that fixes deliverability, not network variance.
+  }, 15000)
 
   it('forgot-password always responds 204, whether or not the email exists — no account enumeration', async () => {
     const stamp = Date.now()
@@ -337,6 +358,65 @@ describe('Auth (e2e)', () => {
       .post('/auth/forgot-password')
       .send({ email: `definitely-does-not-exist-${stamp}@example.com` })
     expect(unknownRes.status).toBe(204)
+  })
+
+  // Regression coverage for the fire-and-forget change to the email send in
+  // forgotPassword(): the token hash / DB UPDATE / audit log write all stay
+  // awaited exactly as before — only the Resend call itself was made
+  // non-blocking. So this row must be readable the INSTANT the 204 comes
+  // back, with no wait/poll/retry, or the fire-and-forget change would have
+  // silently reordered work that's supposed to happen before the response.
+  it('writes a PASSWORD_RESET_REQUESTED audit entry that is already present by the time the response returns', async () => {
+    const stamp = Date.now()
+    const email = `audit-forgot-${stamp}@example.com`
+
+    const registerRes = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({
+        email,
+        password: 'password123',
+        firstName: 'Audit',
+        lastName: 'Forgot',
+        dateOfBirth: '1990-01-01',
+      })
+    expect(registerRes.status).toBe(201)
+    const userId = registerRes.body.id
+    expect(typeof userId).toBe('number')
+
+    const before = Date.now()
+    const forgotRes = await request(app.getHttpServer())
+      .post('/auth/forgot-password')
+      .send({ email })
+    expect(forgotRes.status).toBe(204)
+    const after = Date.now()
+
+    // audit_logs has its own RLS SELECT policy requiring
+    // app.current_role = 'admin' (0002_audit_logs_rls.sql) — the founding
+    // admin's id/role from beforeAll is what authenticates this read, same
+    // as the real /audit-logs route would for an admin caller.
+    const entry = await withRlsContext(
+      db,
+      { id: adminId, activeRole: UserRole.ADMIN },
+      (tx) =>
+        tx.query.auditLogs.findFirst({
+          where: and(
+            eq(auditLogs.performedBy, userId),
+            eq(auditLogs.action, 'PASSWORD_RESET_REQUESTED'),
+          ),
+        }),
+    )
+
+    expect(entry).toBeDefined()
+    expect(entry?.performedBy).toBe(userId)
+    expect(entry?.entityType).toBe('users')
+    expect(entry?.entityId).toBe(userId)
+    expect(entry?.createdAt).toBeInstanceOf(Date)
+    // A real timestamp, not a placeholder — bounded by the request's own
+    // start/end, with a small margin for clock skew between the test
+    // process and the database.
+    const createdAtMs = entry!.createdAt.getTime()
+    expect(createdAtMs).toBeGreaterThanOrEqual(before - 2000)
+    expect(createdAtMs).toBeLessThanOrEqual(after + 2000)
   })
 
   it('rejects a reset-password attempt with a token that was never issued', async () => {
