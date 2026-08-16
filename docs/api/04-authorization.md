@@ -118,6 +118,16 @@ same clinic-membership check used everywhere else in this API. A
 practitioner cannot look up an arbitrary account by id; only their own
 profile or a patient they actually share a clinic with.
 
+Every one of these responses (plus `create`, `findAll`, and login/register)
+also carries the account's role-specific profile data — `practitionerProfile`,
+`patientProfile`, `adminProfile` — nested under the matching role-named key.
+There is no separate authorization check for this: whoever already passes
+the check above for the account itself sees the same profile fields too, no
+finer-grained than that. See
+[`UsersService.attachProfile()`](../../src/users/users.service.ts) and
+[Authentication](./01-authentication.md#every-field-stripped-before-a-user-object-reaches-a-response)
+for the exact shape.
+
 ### Exercises (`/exercises`) — [`exercises.controller.ts`](../../src/exercises/exercises.controller.ts)
 
 | Action | admin | practitioner | patient |

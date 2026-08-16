@@ -77,7 +77,14 @@ describe('UsersService.create', () => {
             ]),
           }),
         }),
-        query: { clinics: { findFirst: jest.fn() } },
+        query: {
+          clinics: { findFirst: jest.fn() },
+          patientProfiles: {
+            findFirst: jest
+              .fn()
+              .mockResolvedValue({ userId: 10, dateOfBirth: '1990-01-01' }),
+          },
+        },
       }),
     )
 
@@ -95,6 +102,10 @@ describe('UsersService.create', () => {
 
     expect(result.roles).toEqual([UserRole.PATIENT])
     expect((result as any).passwordHash).toBeUndefined()
+    // Regression coverage for the gap this fix closes: patientProfiles was
+    // written inside this same insert, but never attached to create()'s own
+    // response until attachProfile() started reading it back.
+    expect(result.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
   })
 
   it('rejects an email that already belongs to another account', async () => {
@@ -210,6 +221,11 @@ describe('UsersService.create', () => {
         }),
         query: {
           clinics: { findFirst: jest.fn().mockResolvedValue({ id: 6 }) },
+          patientProfiles: {
+            findFirst: jest
+              .fn()
+              .mockResolvedValue({ userId: 12, dateOfBirth: '1990-01-01' }),
+          },
         },
       }),
     )
@@ -254,6 +270,11 @@ describe('UsersService.create', () => {
         }),
         query: {
           clinics: { findFirst: jest.fn().mockResolvedValue({ id: 999 }) },
+          patientProfiles: {
+            findFirst: jest
+              .fn()
+              .mockResolvedValue({ userId: 13, dateOfBirth: '1990-01-01' }),
+          },
         },
       }),
     )
@@ -283,6 +304,7 @@ describe('UsersService.grantRole', () => {
     query: {
       users: { findFirst: jest.Mock }
       userRoles: { findFirst: jest.Mock }
+      practitionerProfiles: { findFirst: jest.Mock }
     }
     select: jest.Mock
     transaction: jest.Mock
@@ -293,6 +315,11 @@ describe('UsersService.grantRole', () => {
       query: {
         users: { findFirst: jest.fn() },
         userRoles: { findFirst: jest.fn() },
+        // findOne() (called first by grantRole, below) now attaches profile
+        // fields via attachProfile() — every test in this block resolves
+        // the requesting user's roles to ['practitioner'], so that's the
+        // only profile table findOne()'s own attachProfile() call reaches.
+        practitionerProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
       },
       select: jest.fn(),
       transaction: jest.fn(),
@@ -408,10 +435,29 @@ describe('UsersService.grantRole', () => {
 
 describe('UsersService.findPatientsForPractitioner', () => {
   let usersService: UsersService
-  let db: { select: jest.Mock; selectDistinct: jest.Mock }
+  let db: {
+    select: jest.Mock
+    selectDistinct: jest.Mock
+    query: {
+      practitionerProfiles: { findMany: jest.Mock }
+      patientProfiles: { findMany: jest.Mock }
+      adminProfiles: { findMany: jest.Mock }
+    }
+  }
 
   beforeEach(async () => {
-    db = { select: jest.fn(), selectDistinct: jest.fn() }
+    db = {
+      select: jest.fn(),
+      selectDistinct: jest.fn(),
+      // attachProfilesToMany() (called once the patient list itself is
+      // built) batches one findMany() per profile table across every
+      // returned user, instead of a query per row.
+      query: {
+        practitionerProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+        patientProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+        adminProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -438,11 +484,21 @@ describe('UsersService.findPatientsForPractitioner', () => {
   })
 
   it("returns patients sharing at least one of the practitioner's clinics", async () => {
-    db.select.mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
-      }),
-    })
+    db.select
+      // getClinicIdsForUser()'s query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
+        }),
+      })
+      // attachProfilesToMany()'s batched userRoles query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest
+            .fn()
+            .mockResolvedValue([{ userId: 20, role: UserRole.PATIENT }]),
+        }),
+      })
     db.selectDistinct.mockReturnValue({
       from: jest.fn().mockReturnValue({
         innerJoin: jest.fn().mockReturnValue({
@@ -460,11 +516,19 @@ describe('UsersService.findPatientsForPractitioner', () => {
         }),
       }),
     })
+    db.query.patientProfiles.findMany.mockResolvedValue([
+      { userId: 20, dateOfBirth: '1990-01-01' },
+    ])
 
     const result = await usersService.findPatientsForPractitioner(1)
 
     expect(result).toHaveLength(1)
     expect((result[0] as any).passwordHash).toBeUndefined()
+    // Regression coverage for the gap this fix closes: this is the
+    // practitioner-facing branch of GET /users, which previously attached
+    // neither roles nor profile data at all.
+    expect(result[0].roles).toEqual([UserRole.PATIENT])
+    expect(result[0].patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
   })
 })
 
@@ -538,10 +602,24 @@ describe('UsersService.isPatientManagedBy', () => {
 
 describe('UsersService.findOne', () => {
   let usersService: UsersService
-  let db: { query: { users: { findFirst: jest.Mock } }; select: jest.Mock }
+  let db: {
+    query: {
+      users: { findFirst: jest.Mock }
+      patientProfiles: { findFirst: jest.Mock }
+    }
+    select: jest.Mock
+  }
 
   beforeEach(async () => {
-    db = { query: { users: { findFirst: jest.fn() } }, select: jest.fn() }
+    db = {
+      query: {
+        users: { findFirst: jest.fn() },
+        // getRolesForUser() below always resolves ['patient'] — attachProfile()
+        // only ever reaches this one profile table in this describe block.
+        patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+      select: jest.fn(),
+    }
     // getRolesForUser() (called at the end of findOne, via this.db) needs a
     // resolvable roles query for the success-path test below.
     db.select.mockReturnValue({
@@ -591,5 +669,27 @@ describe('UsersService.findOne', () => {
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
     expect(result.email).toBe('user@example.com')
+  })
+
+  // Regression coverage for the actual gap this fix closes: patientProfiles
+  // was written at account creation but never read back on GET /users/:id
+  // (or anywhere else) — see attachProfile()'s comment in users.service.ts.
+  it("attaches the held role's nested profile data, and omits profiles for roles the account doesn't hold", async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'patient@example.com',
+      firstName: 'Test',
+      lastName: 'Patient',
+    })
+    db.query.patientProfiles.findFirst.mockResolvedValue({
+      userId: 1,
+      dateOfBirth: '1990-01-01',
+    })
+
+    const result = await usersService.findOne(1)
+
+    expect(result.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+    expect(result).not.toHaveProperty('practitionerProfile')
+    expect(result).not.toHaveProperty('adminProfile')
   })
 })

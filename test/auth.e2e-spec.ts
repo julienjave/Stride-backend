@@ -10,7 +10,7 @@ import session from 'express-session'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import { OTP } from 'otplib'
 import { AppModule } from '../src/app.module'
 import { getDatabaseUrl } from '../src/config/database-url'
@@ -42,6 +42,16 @@ describe('Auth (e2e)', () => {
   // is what a direct audit_logs read in a test has to authenticate as,
   // the same way AuditController's real /audit-logs route does.
   let adminId: number
+  // Resend's unverified-sandbox mode rejects any recipient outside its own
+  // fixed test addresses outright (422, "Please use our testing email
+  // address instead of domains like example.com") — confirmed directly by
+  // running the audit test below before this fix, not assumed. delivered@
+  // resend.dev is the one account this file registers that's actually safe
+  // to send to; the audit-log test reuses it (see mfaAccountId) rather than
+  // registering its own @example.com account, which doc 28 already
+  // diagnosed as the same root cause for a different test.
+  const resendSafeEmail = 'delivered@resend.dev'
+  let mfaAccountId: number
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -120,6 +130,7 @@ describe('Auth (e2e)', () => {
       password: 'password123',
       firstName: 'Auth',
       lastName: 'Admin',
+      position: 'Clinic Director',
     })
     if (clinicRes.status !== 201) {
       throw new Error(
@@ -127,6 +138,16 @@ describe('Auth (e2e)', () => {
       )
     }
     adminId = clinicRes.body.id
+    // Regression coverage for the actual gap this fix closes: adminProfiles
+    // is written inside registerClinic()'s own transaction but was never
+    // read back into its response — registerClinic() bypasses
+    // UsersService.create()/findOne() entirely (see AuthService's own
+    // comment on why), so it needed its own explicit attachProfile() call.
+    expect(clinicRes.body.adminProfile).toEqual({
+      position: 'Clinic Director',
+    })
+    expect(clinicRes.body).not.toHaveProperty('practitionerProfile')
+    expect(clinicRes.body).not.toHaveProperty('patientProfile')
   })
 
   afterAll(async () => {
@@ -176,10 +197,22 @@ describe('Auth (e2e)', () => {
       dateOfBirth: '1990-01-01',
     })
     expect(registerRes.status).toBe(201)
+    // Regression coverage: patient_profiles.dateOfBirth is written by
+    // UsersService.create() (which AuthService.register() calls directly)
+    // but was never attached to the response — not even here, on the
+    // account's own creation.
+    expect(registerRes.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
+    expect(registerRes.body).not.toHaveProperty('practitionerProfile')
+    expect(registerRes.body).not.toHaveProperty('adminProfile')
     // /auth/register already logs the caller in via req.login() — confirm
     // that session is real before logging out and testing login separately.
     const meAfterRegister = await patient.get('/auth/me')
     expect(meAfterRegister.status).toBe(200)
+    expect(meAfterRegister.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
     await patient.post('/auth/logout')
 
     const loginRes = await patient.post('/auth/login').send({
@@ -188,6 +221,10 @@ describe('Auth (e2e)', () => {
     })
     expect(loginRes.status).toBe(201)
     expect(loginRes.body.activeRole).toBe('patient')
+    // Regression coverage: validateUser() (POST /auth/login) builds its own
+    // response by hand rather than through findOne()/create(), so it needed
+    // its own explicit attachProfile() call — same gap, different call site.
+    expect(loginRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
   })
 
   it('requires an explicit role choice for an account with more than one role, and rejects a role it does not hold', async () => {
@@ -212,6 +249,14 @@ describe('Auth (e2e)', () => {
         licenseNumber: `PT-DUAL-${stamp}`,
       })
     expect(grantRes.status).toBe(201)
+    // grantRole()'s response was never a user object in the first place
+    // (just the account's roles, as a bare array) — nothing to attach
+    // profile data to here, unlike every other route below. Documenting
+    // that deliberately, not silently: it's the one route this fix does
+    // NOT touch.
+    expect(grantRes.body).toEqual(
+      expect.arrayContaining(['patient', 'practitioner']),
+    )
 
     const noRoleLogin = await dualRole.post('/auth/login').send({
       email: `dual-role-${stamp}@example.com`,
@@ -233,12 +278,30 @@ describe('Auth (e2e)', () => {
     })
     expect(correctRoleLogin.status).toBe(201)
     expect(correctRoleLogin.body.activeRole).toBe('patient')
+    // This account holds BOTH roles — profile nesting is keyed off which
+    // roles the account actually HOLDS, not which one is currently active,
+    // so both show up here even though activeRole is 'patient'.
+    expect(correctRoleLogin.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
+    expect(correctRoleLogin.body.practitionerProfile).toEqual({
+      licenseNumber: `PT-DUAL-${stamp}`,
+      specialties: [],
+    })
 
     const switchOk = await dualRole
       .post('/auth/switch-role')
       .send({ role: 'practitioner' })
     expect(switchOk.status).toBe(201)
     expect(switchOk.body.activeRole).toBe('practitioner')
+    // Same point from the other side: switching activeRole to practitioner
+    // doesn't make the patientProfile disappear — the account still holds
+    // that role too.
+    expect(switchOk.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+    expect(switchOk.body.practitionerProfile).toEqual({
+      licenseNumber: `PT-DUAL-${stamp}`,
+      specialties: [],
+    })
 
     const switchDenied = await dualRole
       .post('/auth/switch-role')
@@ -255,7 +318,7 @@ describe('Auth (e2e)', () => {
     // future run. delivered@resend.dev is Resend's own dedicated test
     // address for exactly this: always succeeds, no account-specific
     // restriction (documented in Resend's own examples). See docs/journal/17.
-    const mfaEmail = 'delivered@resend.dev'
+    const mfaEmail = resendSafeEmail
 
     const registerRes = await mfa.post('/auth/register').send({
       email: mfaEmail,
@@ -265,6 +328,9 @@ describe('Auth (e2e)', () => {
       dateOfBirth: '1990-01-01',
     })
     expect(registerRes.status).toBe(201)
+    // The audit-log test below reuses this same account rather than
+    // registering its own — see the comment on resendSafeEmail.
+    mfaAccountId = registerRes.body.id
 
     const setupRes = await mfa.post('/auth/mfa/setup')
     expect(setupRes.status).toBe(201)
@@ -319,6 +385,12 @@ describe('Auth (e2e)', () => {
     expect(verifyRes.body).not.toHaveProperty('mfaSecret')
     expect(verifyRes.body).not.toHaveProperty('passwordResetTokenHash')
     expect(verifyRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')
+    // Regression coverage: mfa/verify's response comes straight from
+    // findOne() (via req.login(authenticatedUser)) — this is the funnel
+    // fix, exercised end to end through the full two-step MFA path.
+    expect(verifyRes.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
 
     // The SAME agent/session that was MFA-pending a moment ago is now fully
     // authenticated — no separate login round trip was needed.
@@ -329,6 +401,9 @@ describe('Auth (e2e)', () => {
     expect(meAfterVerify.body).not.toHaveProperty('mfaSecret')
     expect(meAfterVerify.body).not.toHaveProperty('passwordResetTokenHash')
     expect(meAfterVerify.body).not.toHaveProperty('passwordResetTokenExpiresAt')
+    expect(meAfterVerify.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
 
     // switch-role re-runs req.login() with a freshly deserialized user too
     // — same leak shape, same fix, same regression risk.
@@ -339,6 +414,9 @@ describe('Auth (e2e)', () => {
     expect(switchRes.body).not.toHaveProperty('mfaSecret')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenHash')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')
+    expect(switchRes.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
     // 15s, not Jest's 5s default: this test's forgot-password call above is
     // a real, awaited round trip to the live Resend API (see docs/journal/17)
     // — normal latency plus margin, independent of the delivered@resend.dev
@@ -366,27 +444,24 @@ describe('Auth (e2e)', () => {
   // non-blocking. So this row must be readable the INSTANT the 204 comes
   // back, with no wait/poll/retry, or the fire-and-forget change would have
   // silently reordered work that's supposed to happen before the response.
+  //
+  // Reuses the MFA test's already-registered delivered@resend.dev account
+  // (mfaAccountId) instead of registering a fresh @example.com one, which
+  // is what this test originally did — Resend's sandbox rejects any
+  // @example.com recipient outright (422), the same root cause doc 28
+  // diagnosed and fixed for the MFA-flow test specifically, just never
+  // applied here. That account already has ONE PASSWORD_RESET_REQUESTED
+  // entry from the MFA test's own forgot-password call, so this orders by
+  // the newest row (desc(auditLogs.id)) rather than findFirst()'s
+  // unspecified order, to actually grab the entry this request just wrote.
   it('writes a PASSWORD_RESET_REQUESTED audit entry that is already present by the time the response returns', async () => {
-    const stamp = Date.now()
-    const email = `audit-forgot-${stamp}@example.com`
-
-    const registerRes = await request(app.getHttpServer())
-      .post('/auth/register')
-      .send({
-        email,
-        password: 'password123',
-        firstName: 'Audit',
-        lastName: 'Forgot',
-        dateOfBirth: '1990-01-01',
-      })
-    expect(registerRes.status).toBe(201)
-    const userId = registerRes.body.id
+    const userId = mfaAccountId
     expect(typeof userId).toBe('number')
 
     const before = Date.now()
     const forgotRes = await request(app.getHttpServer())
       .post('/auth/forgot-password')
-      .send({ email })
+      .send({ email: resendSafeEmail })
     expect(forgotRes.status).toBe(204)
     const after = Date.now()
 
@@ -403,6 +478,7 @@ describe('Auth (e2e)', () => {
             eq(auditLogs.performedBy, userId),
             eq(auditLogs.action, 'PASSWORD_RESET_REQUESTED'),
           ),
+          orderBy: desc(auditLogs.id),
         }),
     )
 

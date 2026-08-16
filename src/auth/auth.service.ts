@@ -58,6 +58,7 @@ interface RegisterClinicResult {
   roles: UserRole[]
   activeRole: UserRole
   clinicId: number
+  adminProfile?: { position: string | null }
 }
 
 @Injectable()
@@ -166,9 +167,19 @@ export class AuthService {
           passwordResetTokenExpiresAt: _omitResetExpiry,
           ...publicUser
         } = user
+        const roles = [UserRole.ADMIN]
+        // adminProfiles.position was inserted two statements above, inside
+        // this same still-open transaction — attachProfile needs tx, not
+        // this.db, to actually see it (read-committed visibility, same
+        // reasoning as getRolesForUser's tx parameter elsewhere).
+        const withProfile = await this.usersService.attachProfile(
+          publicUser,
+          roles,
+          tx,
+        )
         return {
-          ...publicUser,
-          roles: [UserRole.ADMIN],
+          ...withProfile,
+          roles,
           activeRole: UserRole.ADMIN,
           clinicId: clinic.id,
         }
@@ -277,7 +288,11 @@ export class AuthService {
       passwordResetTokenExpiresAt,
       ...publicUser
     } = user
-    return { ...publicUser, roles, activeRole }
+    const withProfile = await this.usersService.attachProfile(
+      publicUser,
+      roles,
+    )
+    return { ...withProfile, roles, activeRole }
   }
 
   // === PASSWORD RESET =============================================================

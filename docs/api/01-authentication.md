@@ -70,7 +70,8 @@ Two distinct paths exist and are not interchangeable:
   to override. Body: `{ email, password, firstName, lastName, dateOfBirth }`
   (`dateOfBirth` an ISO date string; `password` 8–128 characters). On success
   (`201`), the new account is logged in immediately via `req.login()` — no
-  separate login call is needed — and the full user object is returned.
+  separate login call is needed — and the full user object is returned,
+  including `patientProfile: { dateOfBirth }` (see [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
 - **`POST /auth/register-clinic`** — bootstraps the **very first** clinic and
   its founding admin account together, in one transaction, throttled to 5
   requests/minute per IP. This is a **one-time setup operation**, not an
@@ -84,8 +85,8 @@ Two distinct paths exist and are not interchangeable:
   clinicPhone?, clinicWebsite?, email, password, firstName, lastName,
   position? }`. On success (`201`), the new admin is logged in immediately;
   the response is the admin's public user fields plus `roles: ['admin']`,
-  `activeRole: 'admin'`, and `clinicId` (the id of the clinic just created —
-  you'll need it for later steps).
+  `activeRole: 'admin'`, `adminProfile: { position }`, and `clinicId` (the id
+  of the clinic just created — you'll need it for later steps).
 
 ## Login: single-role vs. multi-role accounts
 
@@ -168,7 +169,11 @@ POST /auth/mfa/verify
     "createdAt": "2026-08-05T14:22:03.101Z",
     "mfaEnabled": true,
     "roles": ["practitioner"],
-    "activeRole": "practitioner"
+    "activeRole": "practitioner",
+    "practitionerProfile": {
+      "licenseNumber": "PT-2024-00931",
+      "specialties": ["sports rehab", "post-surgical"]
+    }
   }
    (session is now authenticated; protected routes are reachable)
 ```
@@ -272,6 +277,25 @@ response bodies specifically (both of these also build their response by
 hand from an `AuthService`/`req.login()` path, not directly through
 `toPublic()`).
 
+`UsersService.attachProfile()` is the equivalent second funnel for role
+profile data — `practitioner_profiles.licenseNumber`/`specialties`,
+`patient_profiles.dateOfBirth`, and `admin_profiles.position` are written at
+account creation (`create()`, `grantRole()`) but live in separate 1:1 tables,
+never joined into the `users` row itself. `attachProfile()` queries whichever
+of those tables the account's roles call for and nests the result under a
+role-named key — `practitionerProfile`, `patientProfile`, `adminProfile` —
+present only for roles the account actually holds, so a multi-role account
+can carry more than one. It's called everywhere `toPublic()` is (`findOne`,
+`findAll`, `update`, `softDelete`, `updateAvatar`, `create`), plus the same
+two hand-built bypasses above (`validateUser()`, `registerClinic()`) — the
+one route it does *not* touch is `POST /users/:id/roles`
+(`UsersService.grantRole`), whose response was never a user object to begin
+with, just the account's roles as a bare array. No new authorization logic
+came with this — profile data rides along on responses that already passed
+`UsersController`'s existing self/admin/managing-practitioner check (see
+[Roles & Authorization](./04-authorization.md)); there's no finer-grained
+visibility rule for a profile field than for the rest of the account.
+
 The resulting shape (also what `GET /auth/me` and every login/register
 response return) is:
 
@@ -287,6 +311,9 @@ response return) is:
   mfaEnabled: boolean
   roles: string[]           // every role the account holds
   activeRole: string         // which one is active for THIS session
+  practitionerProfile?: { licenseNumber: string; specialties: string[] }
+  patientProfile?: { dateOfBirth: string }
+  adminProfile?: { position: string | null }
 }
 ```
 

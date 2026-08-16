@@ -25,6 +25,7 @@ describe('AuthService.validateUser', () => {
   let usersService: {
     findByEmailWithHash: jest.Mock
     getRolesForUser: jest.Mock
+    attachProfile: jest.Mock
   }
   let auditService: { log: jest.Mock }
 
@@ -32,6 +33,11 @@ describe('AuthService.validateUser', () => {
     usersService = {
       findByEmailWithHash: jest.fn(),
       getRolesForUser: jest.fn(),
+      // validateUser() now attaches profile fields the same way
+      // findOne()/create() do — defaults to "no profile" here since most
+      // tests in this block don't care; the dedicated test below overrides
+      // this to assert the real behavior.
+      attachProfile: jest.fn().mockImplementation((user) => user),
     }
     // AuthService now calls auditService.log() from inside validateUser()
     // itself (LOGIN_SUCCESS/LOGIN_FAILURE) — this mock needs a real, callable
@@ -151,6 +157,40 @@ describe('AuthService.validateUser', () => {
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
   })
+
+  // Regression coverage for the actual gap this fix closes: validateUser()
+  // (POST /auth/login) builds its own response by hand rather than going
+  // through UsersService.findOne()/create(), so it needed its own explicit
+  // call to attachProfile() — this proves that call actually happened and
+  // its result made it into the login response, not just that the roles
+  // array is present.
+  it("attaches the account's profile data to the login response", async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: await bcrypt.hash('password123', 10),
+    })
+    usersService.getRolesForUser.mockResolvedValue(['practitioner'])
+    usersService.attachProfile.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      practitionerProfile: { licenseNumber: 'PT-1', specialties: [] },
+    })
+
+    const result = await authService.validateUser(
+      'jane@example.com',
+      'password123',
+    )
+
+    expect(usersService.attachProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1 }),
+      ['practitioner'],
+    )
+    expect(result?.practitionerProfile).toEqual({
+      licenseNumber: 'PT-1',
+      specialties: [],
+    })
+  })
 })
 
 describe('AuthService.registerClinic', () => {
@@ -159,6 +199,7 @@ describe('AuthService.registerClinic', () => {
     query: { userRoles: { findFirst: jest.Mock } }
     transaction: jest.Mock
   }
+  let usersService: { attachProfile: jest.Mock }
   let auditService: { log: jest.Mock }
 
   beforeEach(async () => {
@@ -166,12 +207,20 @@ describe('AuthService.registerClinic', () => {
       query: { userRoles: { findFirst: jest.fn() } },
       transaction: jest.fn(),
     }
+    // registerClinic() attaches adminProfile the same way create()/findOne()
+    // do elsewhere, but reads through the still-open tx it's already inside
+    // (the adminProfiles insert hasn't committed yet) — the default here
+    // just passes the user through unchanged; the dedicated test below
+    // overrides it to assert the real behavior and the tx it's called with.
+    usersService = {
+      attachProfile: jest.fn().mockImplementation((user) => user),
+    }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: UsersService, useValue: {} },
+        { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
         { provide: EmailService, useValue: {} },
         { provide: DRIZZLE, useValue: db },
@@ -263,6 +312,61 @@ describe('AuthService.registerClinic', () => {
     expect(result).not.toHaveProperty('mfaSecret')
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
+  })
+
+  // Regression coverage for the actual gap this fix closes: adminProfiles
+  // is inserted a few lines above inside this same transaction, but the
+  // response was built from the raw `users` row alone — attachProfile() has
+  // to be called with the still-open `tx`, not this.db, or it would be
+  // reading a row that hasn't committed yet.
+  it("attaches the founding admin's profile data, reading through the open transaction", async () => {
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    const insert = jest
+      .fn()
+      .mockReturnValueOnce({
+        values: jest.fn().mockReturnValue({
+          returning: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 501, name: 'Acme Clinic', email: 'clinic@example.com' },
+            ]),
+        }),
+      })
+      .mockReturnValueOnce({
+        values: jest.fn().mockReturnValue({
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 42, email: 'admin@example.com' }]),
+        }),
+      })
+      .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
+      .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
+      .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
+    const tx = { insert }
+    db.transaction.mockImplementation((cb: any) => cb(tx))
+    usersService.attachProfile.mockImplementation((user) =>
+      Promise.resolve({
+        ...user,
+        adminProfile: { position: 'Clinic Director' },
+      }),
+    )
+
+    const result = await authService.registerClinic({
+      clinicName: 'Acme Clinic',
+      clinicEmail: 'clinic@example.com',
+      email: 'admin@example.com',
+      password: 'password123',
+      firstName: 'New',
+      lastName: 'Admin',
+      position: 'Clinic Director',
+    })
+
+    expect(usersService.attachProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      ['admin'],
+      tx,
+    )
+    expect(result.adminProfile).toEqual({ position: 'Clinic Director' })
   })
 })
 

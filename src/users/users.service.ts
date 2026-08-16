@@ -146,7 +146,8 @@ export class UsersService {
         })
       }
 
-      return { ...this.toPublic(user), roles: [dto.role] }
+      const roles = [dto.role]
+      return this.attachProfile({ ...this.toPublic(user), roles }, roles, tx)
     })
   }
 
@@ -227,7 +228,7 @@ export class UsersService {
         .returning(),
     )
     const roles = await this.getRolesForUser(id)
-    return { ...this.toPublic(updated), roles }
+    return this.attachProfile({ ...this.toPublic(updated), roles }, roles)
   }
 
   // --- GET ROUTES ---
@@ -236,7 +237,7 @@ export class UsersService {
     const rows = await this.db.query.users.findMany({
       where: eq(users.isActive, true),
     })
-    return rows.map((u) => this.toPublic(u))
+    return this.attachProfilesToMany(rows.map((u) => this.toPublic(u)))
   }
 
   // dbOrTx defaults to this.db (a fresh connection, always seeing the
@@ -295,7 +296,7 @@ export class UsersService {
         ),
       )
 
-    return rows.map((r) => this.toPublic(r.user))
+    return this.attachProfilesToMany(rows.map((r) => this.toPublic(r.user)))
   }
 
   // The shared building block behind the PATCH/DELETE ownership checks below
@@ -340,7 +341,7 @@ export class UsersService {
       throw new NotFoundException(`User ${id} not found`)
     }
     const roles = await this.getRolesForUser(id)
-    return { ...this.toPublic(user), roles }
+    return this.attachProfile({ ...this.toPublic(user), roles }, roles)
   }
 
   // INTERNAL USE ONLY — the one method in this service that does NOT strip
@@ -362,7 +363,7 @@ export class UsersService {
       tx.update(users).set(dto).where(eq(users.id, id)).returning(),
     )
     const roles = await this.getRolesForUser(id)
-    return { ...this.toPublic(updated), roles }
+    return this.attachProfile({ ...this.toPublic(updated), roles }, roles)
   }
 
   // --- DELETE ROUTES ---
@@ -382,7 +383,7 @@ export class UsersService {
         .returning(),
     )
     const roles = await this.getRolesForUser(id)
-    return { ...this.toPublic(deactivated), roles }
+    return this.attachProfile({ ...this.toPublic(deactivated), roles }, roles)
   }
 
   // === HELPER FUNCTIONS =====================================================
@@ -406,5 +407,144 @@ export class UsersService {
       ...publicUser
     } = user
     return publicUser
+  }
+
+  // licenseNumber/specialties, dateOfBirth, and position are written to
+  // practitioner_profiles/patient_profiles/admin_profiles at account
+  // creation (create(), grantRole()) but were never attached to any
+  // response — a real, separate gap from RLS, predating it entirely. Nested
+  // under role-named keys (rather than flattened) so a multi-role account
+  // can carry more than one without ambiguous top-level fields that only
+  // sometimes exist. Public (not private) since AuthService's own
+  // hand-built responses (registerClinic, login) need it too — see the
+  // comment on toPublic() above for why those two don't go through
+  // findOne()/create() in the first place.
+  //
+  // dbOrTx defaults to this.db for the same reason getRolesForUser's does:
+  // create() is the one caller reading a row it just inserted inside its
+  // own still-open transaction, so it passes tx explicitly; every other
+  // caller reads after its own write has already committed.
+  async attachProfile<T extends { id: number }>(
+    user: T,
+    roles: string[],
+    dbOrTx: DrizzleDb = this.db,
+  ): Promise<
+    T & {
+      practitionerProfile?: { licenseNumber: string; specialties: string[] }
+      patientProfile?: { dateOfBirth: string }
+      adminProfile?: { position: string | null }
+    }
+  > {
+    const [practitionerProfile, patientProfile, adminProfile] =
+      await Promise.all([
+        roles.includes(UserRole.PRACTITIONER)
+          ? dbOrTx.query.practitionerProfiles.findFirst({
+              where: eq(practitionerProfiles.userId, user.id),
+            })
+          : undefined,
+        roles.includes(UserRole.PATIENT)
+          ? dbOrTx.query.patientProfiles.findFirst({
+              where: eq(patientProfiles.userId, user.id),
+            })
+          : undefined,
+        roles.includes(UserRole.ADMIN)
+          ? dbOrTx.query.adminProfiles.findFirst({
+              where: eq(adminProfiles.userId, user.id),
+            })
+          : undefined,
+      ])
+
+    return {
+      ...user,
+      ...(practitionerProfile && {
+        practitionerProfile: {
+          licenseNumber: practitionerProfile.licenseNumber,
+          specialties: practitionerProfile.specialties,
+        },
+      }),
+      ...(patientProfile && {
+        patientProfile: { dateOfBirth: patientProfile.dateOfBirth },
+      }),
+      ...(adminProfile && {
+        adminProfile: { position: adminProfile.position },
+      }),
+    } as T & {
+      practitionerProfile?: { licenseNumber: string; specialties: string[] }
+      patientProfile?: { dateOfBirth: string }
+      adminProfile?: { position: string | null }
+    }
+  }
+
+  // Batched sibling of attachProfile() for findAll()/
+  // findPatientsForPractitioner() — one query per table across every user
+  // in the list (via inArray), instead of N+1 queries per user.
+  private async attachProfilesToMany<T extends { id: number }>(
+    usersList: T[],
+  ) {
+    if (usersList.length === 0) {
+      return [] as Array<
+        T & {
+          roles: string[]
+          practitionerProfile?: { licenseNumber: string; specialties: string[] }
+          patientProfile?: { dateOfBirth: string }
+          adminProfile?: { position: string | null }
+        }
+      >
+    }
+
+    const ids = usersList.map((u) => u.id)
+    const [roleRows, practitionerRows, patientRows, adminRows] =
+      await Promise.all([
+        this.db
+          .select({ userId: userRoles.userId, role: userRoles.role })
+          .from(userRoles)
+          .where(inArray(userRoles.userId, ids)),
+        this.db.query.practitionerProfiles.findMany({
+          where: inArray(practitionerProfiles.userId, ids),
+        }),
+        this.db.query.patientProfiles.findMany({
+          where: inArray(patientProfiles.userId, ids),
+        }),
+        this.db.query.adminProfiles.findMany({
+          where: inArray(adminProfiles.userId, ids),
+        }),
+      ])
+
+    const rolesByUserId = new Map<number, string[]>()
+    for (const row of roleRows) {
+      const existing = rolesByUserId.get(row.userId)
+      if (existing) {
+        existing.push(row.role)
+      } else {
+        rolesByUserId.set(row.userId, [row.role])
+      }
+    }
+    const practitionerByUserId = new Map(
+      practitionerRows.map((p) => [p.userId, p]),
+    )
+    const patientByUserId = new Map(patientRows.map((p) => [p.userId, p]))
+    const adminByUserId = new Map(adminRows.map((p) => [p.userId, p]))
+
+    return usersList.map((user) => {
+      const practitionerProfile = practitionerByUserId.get(user.id)
+      const patientProfile = patientByUserId.get(user.id)
+      const adminProfile = adminByUserId.get(user.id)
+      return {
+        ...user,
+        roles: rolesByUserId.get(user.id) ?? [],
+        ...(practitionerProfile && {
+          practitionerProfile: {
+            licenseNumber: practitionerProfile.licenseNumber,
+            specialties: practitionerProfile.specialties,
+          },
+        }),
+        ...(patientProfile && {
+          patientProfile: { dateOfBirth: patientProfile.dateOfBirth },
+        }),
+        ...(adminProfile && {
+          adminProfile: { position: adminProfile.position },
+        }),
+      }
+    })
   }
 }

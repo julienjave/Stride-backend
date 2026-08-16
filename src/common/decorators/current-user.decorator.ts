@@ -28,7 +28,8 @@ import type { UserRole } from '../../users/dto/create-user.dto'
 // activeRole. Matches UsersService.findOne()'s return shape (every users
 // column except the server-internal ones toPublic() strips — passwordHash,
 // mfaSecret, passwordResetTokenHash, passwordResetTokenExpiresAt — plus
-// roles) with activeRole added on top.
+// roles, plus the role-named profile objects UsersService.attachProfile()
+// conditionally attaches) with activeRole added on top.
 export interface CurrentUser {
   id: number
   email: string
@@ -40,6 +41,9 @@ export interface CurrentUser {
   mfaEnabled: boolean
   roles: string[]
   activeRole: UserRole
+  practitionerProfile?: { licenseNumber: string; specialties: string[] }
+  patientProfile?: { dateOfBirth: string }
+  adminProfile?: { position: string | null }
 }
 
 // For code that reads req.user OUTSIDE this decorator — interceptors and

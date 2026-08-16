@@ -41,6 +41,9 @@ describe('Users (e2e)', () => {
   let patient1Id: number;
   let patient2Id: number;
   let patient2Email: string;
+  let practitionerAId: number;
+  let practitionerAEmail: string;
+  let practitionerAProfile: { licenseNumber: string; specialties: string[] };
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -133,9 +136,20 @@ describe('Users (e2e)', () => {
       firstName: 'Practitioner',
       lastName: 'A',
       licenseNumber: `PT-A-${stamp}`,
+      specialties: ['sports rehab'],
       clinicId: clinicXId,
     });
     expect(practitionerARes.status).toBe(201);
+    // Regression coverage for the gap this fix closes: practitioner_profiles
+    // is written by UsersService.create() but was never attached to its own
+    // response — not even here, on the account's own creation.
+    expect(practitionerARes.body.practitionerProfile).toEqual({
+      licenseNumber: `PT-A-${stamp}`,
+      specialties: ['sports rehab'],
+    });
+    practitionerAId = practitionerARes.body.id;
+    practitionerAEmail = `practitioner-a-${stamp}@example.com`;
+    practitionerAProfile = practitionerARes.body.practitionerProfile;
     await practitionerA.post('/auth/login').send({
       email: `practitioner-a-${stamp}@example.com`,
       password: 'password123',
@@ -167,6 +181,9 @@ describe('Users (e2e)', () => {
     });
     expect(patient1Res.status).toBe(201);
     patient1Id = patient1Res.body.id;
+    expect(patient1Res.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    expect(patient1Res.body).not.toHaveProperty('practitionerProfile');
+    expect(patient1Res.body).not.toHaveProperty('adminProfile');
     await patient1.post('/auth/login').send({
       email: `patient1-${stamp}@example.com`,
       password: 'password123',
@@ -205,6 +222,11 @@ describe('Users (e2e)', () => {
     const updateRes = await patient1.patch(`/users/${patient1Id}`).send({ firstName: 'Updated' });
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.firstName).toBe('Updated');
+    // Regression coverage: PATCH /users/:id goes through the same
+    // toPublic()+roles+attachProfile() pattern as GET — profile data
+    // (unaffected by this edit, which only touches firstName) should still
+    // be present in the response.
+    expect(updateRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
   });
 
   it('lets an admin update anyone', async () => {
@@ -232,17 +254,35 @@ describe('Users (e2e)', () => {
     expect(updateRes.status).toBe(403);
   });
 
-  it('scopes GET /users to only clinic-shared patients for a practitioner, and to everyone for an admin', async () => {
+  it('scopes GET /users to only clinic-shared patients for a practitioner, and to everyone for an admin — and attaches roles + profile data to both branches', async () => {
     const forPractitionerA = await practitionerA.get('/users');
     expect(forPractitionerA.status).toBe(200);
     const idsForA = forPractitionerA.body.map((u: any) => u.id);
     expect(idsForA).toContain(patient1Id);
     expect(idsForA).not.toContain(patient2Id);
+    // Regression coverage: findPatientsForPractitioner() (this branch of
+    // GET /users) previously attached neither roles nor profile data at
+    // all, unlike every single-user fetch.
+    const patient1InList = forPractitionerA.body.find((u: any) => u.id === patient1Id);
+    expect(patient1InList.roles).toEqual(['patient']);
+    expect(patient1InList.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
 
     const forAdmin = await admin.get('/users');
     expect(forAdmin.status).toBe(200);
     const idsForAdmin = forAdmin.body.map((u: any) => u.id);
     expect(idsForAdmin).toEqual(expect.arrayContaining([patient1Id, patient2Id]));
+    // Same regression coverage, findAll() branch — plus a practitioner in
+    // the same list, to prove role-appropriate nesting (not just patients).
+    const patient1InAdminList = forAdmin.body.find((u: any) => u.id === patient1Id);
+    expect(patient1InAdminList.roles).toEqual(['patient']);
+    expect(patient1InAdminList.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const practitionerAInAdminList = forAdmin.body.find(
+      (u: any) => u.email === practitionerAEmail,
+    );
+    expect(practitionerAInAdminList.roles).toEqual(['practitioner']);
+    expect(practitionerAInAdminList.practitionerProfile).toEqual(
+      practitionerAProfile,
+    );
   });
 
   it('rejects a plain patient from listing users at all', async () => {
@@ -270,6 +310,9 @@ describe('Users (e2e)', () => {
     const deleteRes = await selfAgent.delete(`/users/${selfCreate.body.id}`);
     expect(deleteRes.status).toBe(200);
     expect(deleteRes.body.isActive).toBe(false);
+    // Regression coverage: DELETE /users/:id (soft-delete) goes through the
+    // same attachProfile() pattern as GET/PATCH.
+    expect(deleteRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
   });
 
   it('lets a managing practitioner deactivate one of their own patients', async () => {
@@ -362,19 +405,32 @@ describe('Users (e2e)', () => {
     expect(res.status).toBe(201);
   });
 
-  it('scopes GET /users/:id: rejects an unrelated practitioner, allows the managing practitioner, self, and admin', async () => {
+  it('scopes GET /users/:id: rejects an unrelated practitioner, allows the managing practitioner, self, and admin — all three see the same profile data', async () => {
     const unrelated = await practitionerB.get(`/users/${patient1Id}`);
     expect(unrelated.status).toBe(403);
 
+    // Regression coverage for the actual gap this fix closes: whoever
+    // already passes the existing self/admin/managing-practitioner check
+    // gets the same profile fields — no new, finer-grained rule.
     const managing = await practitionerA.get(`/users/${patient1Id}`);
     expect(managing.status).toBe(200);
     expect(managing.body.id).toBe(patient1Id);
+    expect(managing.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
 
     const self = await patient1.get(`/users/${patient1Id}`);
     expect(self.status).toBe(200);
+    expect(self.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
 
     const adminView = await admin.get(`/users/${patient1Id}`);
     expect(adminView.status).toBe(200);
+    expect(adminView.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+
+    // A practitioner viewing themself sees their own practitionerProfile,
+    // never a patientProfile they don't have.
+    const practitionerSelf = await practitionerA.get(`/users/${practitionerAId}`);
+    expect(practitionerSelf.status).toBe(200);
+    expect(practitionerSelf.body.practitionerProfile).toEqual(practitionerAProfile);
+    expect(practitionerSelf.body).not.toHaveProperty('patientProfile');
   });
 
   // No route to POST /users/:id/roles was exercised anywhere in this suite

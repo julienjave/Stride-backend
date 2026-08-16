@@ -75,6 +75,7 @@ const admin = await res.json()
   "mfaEnabled": false,
   "roles": ["admin"],
   "activeRole": "admin",
+  "adminProfile": { "position": "Clinic Director" },
   "clinicId": 1
 }
 ```
@@ -109,7 +110,9 @@ curl -i -b cookies-admin.txt -X POST http://localhost:3000/users \
 ```
 
 `→ 201 Created` — the new practitioner's account, plus `roles: ["practitioner"]`
-(`UsersService.create`'s response shape). This call does **not** log the new
+and `practitionerProfile: { "licenseNumber": "PT-2024-00931", "specialties":
+["sports rehab", "post-surgical"] }` (`UsersService.create`'s response
+shape). This call does **not** log the new
 practitioner in — `POST /users` never touches the calling admin's session,
 unlike the `/auth/*` routes (`register`, `register-clinic`, `login`), which
 establish a session for the account they create or authenticate. The admin
@@ -133,7 +136,8 @@ curl -i -c cookies-practitioner.txt -X POST http://localhost:3000/auth/login \
 ```
 
 `→ 201 Created` with the practitioner's user object (`activeRole:
-"practitioner"`). From here on, every call as the practitioner uses
+"practitioner"`, `practitionerProfile: { licenseNumber, specialties }`).
+From here on, every call as the practitioner uses
 `-b cookies-practitioner.txt`.
 
 ## 4. Create a patient (as the practitioner)
@@ -158,7 +162,8 @@ curl -i -b cookies-practitioner.txt -X POST http://localhost:3000/users \
   }'
 ```
 
-`→ 201 Created`. Note the response `id` — this is the `patientId` used
+`→ 201 Created`, with `patientProfile: { "dateOfBirth": "1990-04-12" }` on
+the response. Note the response `id` — this is the `patientId` used
 below (assume it's `3`: `1` was the admin, `2` the practitioner).
 
 ## 5. Create an exercise (as the practitioner)
