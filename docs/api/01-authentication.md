@@ -296,6 +296,23 @@ came with this — profile data rides along on responses that already passed
 [Roles & Authorization](./04-authorization.md)); there's no finer-grained
 visibility rule for a profile field than for the rest of the account.
 
+**These four fields were readable long before they were writable.**
+`UpdateUserDto` originally carried only `firstName`/`lastName` — the fields
+above could be set at creation or role-grant time but never edited
+afterward, through any route. `PATCH /users/:id` (`UsersService.update()`)
+now accepts them too, flat on the same dto (`licenseNumber`, `specialties`,
+`dateOfBirth`, `position` — no nested `practitionerProfile`/`patientProfile`/
+`adminProfile` sub-object; see [Roles & Authorization](./04-authorization.md)
+for why). Read-side and write-side authorization diverge in one respect
+worth being explicit about: a GET's visibility is governed *only* by
+`UsersController`'s self/admin/managing-practitioner check, as above — but a
+PATCH adds one further constraint on top, checked against the *target's*
+actual held role(s), not the caller's. Sending `licenseNumber` for a target
+with no practitioner role is rejected with `400 Bad Request`, even from an
+admin — an admin can update the field on a practitioner, but can't invent a
+practitioner profile for a patient by writing to it. See
+[Roles & Authorization](./04-authorization.md) for the exact rule.
+
 The resulting shape (also what `GET /auth/me` and every login/register
 response return) is:
 

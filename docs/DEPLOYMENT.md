@@ -124,6 +124,12 @@ POSTGRES_DB=stride_test npx drizzle-kit migrate
 POSTGRES_DB=stride_test npm run db:create-app-role
 ```
 
+On Windows/WSL2, a known cause of intermittent, otherwise-inexplicable
+failures in timing-sensitive e2e tests (e.g. an assertion comparing a
+database timestamp against `Date.now()`) is the Docker Desktop WSL2 VM
+clock drifting several seconds ahead of the host — `wsl --shutdown`
+resyncs it.
+
 ---
 
 ## Part 2 — Production deployment (fresh host, start to finish)

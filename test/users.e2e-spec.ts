@@ -44,6 +44,7 @@ describe('Users (e2e)', () => {
   let practitionerAId: number;
   let practitionerAEmail: string;
   let practitionerAProfile: { licenseNumber: string; specialties: string[] };
+  let practitionerBId: number;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -165,6 +166,7 @@ describe('Users (e2e)', () => {
       clinicId: clinicYId,
     });
     expect(practitionerBRes.status).toBe(201);
+    practitionerBId = practitionerBRes.body.id;
     await practitionerB.post('/auth/login').send({
       email: `practitioner-b-${stamp}@example.com`,
       password: 'password123',
@@ -476,5 +478,89 @@ describe('Users (e2e)', () => {
       .post(`/users/${patient2Id}/roles`)
       .send({ role: 'practitioner', licenseNumber: `PT-GRANT-DUP-${stamp}` });
     expect(duplicate.status).toBe(409);
+  });
+
+  // Real gap this fix closes: licenseNumber/specialties, dateOfBirth, and
+  // position were writable at account creation (create(), grantRole()) but
+  // had no update path at all — UpdateUserDto only ever had firstName/
+  // lastName. Reuses the identical isSelf||isAdmin||isManagingPractitioner
+  // check already covered above; the coverage below is specifically about
+  // the profile-field extension itself, plus the extra constraint that
+  // field applicability is scoped to the TARGET's actual held role(s), not
+  // the caller's. Placed last in the file deliberately: several of these
+  // mutate patient1Id's dateOfBirth and practitionerAId's specialties, both
+  // asserted as their ORIGINAL values by several earlier tests above.
+  describe('profile-field updates (licenseNumber/specialties, dateOfBirth, position)', () => {
+    it('lets a patient self-update their own dateOfBirth', async () => {
+      const res = await patient1.patch(`/users/${patient1Id}`).send({ dateOfBirth: '1991-02-02' });
+      expect(res.status).toBe(200);
+      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1991-02-02' });
+    });
+
+    it("lets an admin update any user's profile field — a practitioner's specialties here", async () => {
+      const res = await admin
+        .patch(`/users/${practitionerAId}`)
+        .send({ specialties: ['sports rehab', 'geriatrics'] });
+      expect(res.status).toBe(200);
+      expect(res.body.practitionerProfile).toEqual({
+        licenseNumber: practitionerAProfile.licenseNumber,
+        specialties: ['sports rehab', 'geriatrics'],
+      });
+    });
+
+    it('lets a practitioner self-update their own practitionerProfile fields, licenseNumber included (self-editable by design — see docs)', async () => {
+      const stamp = Date.now();
+      const newLicense = `PT-A-UPDATED-${stamp}`;
+      const res = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({ licenseNumber: newLicense, specialties: ['sports rehab'] });
+      expect(res.status).toBe(200);
+      expect(res.body.practitionerProfile).toEqual({
+        licenseNumber: newLicense,
+        specialties: ['sports rehab'],
+      });
+    });
+
+    it("lets a managing practitioner update a managed patient's patientProfile field", async () => {
+      const res = await practitionerA.patch(`/users/${patient1Id}`).send({ dateOfBirth: '1992-03-03' });
+      expect(res.status).toBe(200);
+      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1992-03-03' });
+    });
+
+    it('rejects one patient updating a profile field on a user that is not theirs', async () => {
+      const res = await patient2.patch(`/users/${patient1Id}`).send({ dateOfBirth: '2000-01-01' });
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects a non-managing practitioner from updating a profile field on a patient they do not manage', async () => {
+      const res = await practitionerB.patch(`/users/${patient1Id}`).send({ dateOfBirth: '2000-01-01' });
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects a practitioner from updating another practitioner's profile", async () => {
+      const res = await practitionerA.patch(`/users/${practitionerBId}`).send({ specialties: ['hijacked'] });
+      expect(res.status).toBe(403);
+    });
+
+    // The top-level isSelf||isAdmin||isManagingPractitioner check is not the
+    // only gate: which profile fields even apply depends on the TARGET's
+    // actual held role(s). An admin passes the check above unconditionally,
+    // but still can't write a field the target has no profile for.
+    it('rejects a profile field that does not apply to the target — even for an admin caller', async () => {
+      const licenseOnPatient = await admin
+        .patch(`/users/${patient1Id}`)
+        .send({ licenseNumber: 'PT-SHOULD-FAIL' });
+      expect(licenseOnPatient.status).toBe(400);
+
+      const positionOnPractitioner = await admin
+        .patch(`/users/${practitionerAId}`)
+        .send({ position: 'Should Fail' });
+      expect(positionOnPractitioner.status).toBe(400);
+
+      const dateOfBirthOnPractitioner = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({ dateOfBirth: '1990-01-01' });
+      expect(dateOfBirthOnPractitioner.status).toBe(400);
+    });
   });
 });

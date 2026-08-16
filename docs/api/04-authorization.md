@@ -118,6 +118,32 @@ same clinic-membership check used everywhere else in this API. A
 practitioner cannot look up an arbitrary account by id; only their own
 profile or a patient they actually share a clinic with.
 
+**`PATCH /users/:id` also writes the role-profile fields**
+(`practitioner_profiles.licenseNumber`/`specialties`,
+`patient_profiles.dateOfBirth`, `admin_profiles.position`) —
+`UpdateUserDto` carries them flat alongside `firstName`/`lastName`, not
+nested under a `practitionerProfile`/`patientProfile`/`adminProfile`
+sub-object; there's no precedent anywhere in this codebase for validating a
+single nested sub-object (the one `@ValidateNested()` usage, in
+`assigned-programs`, validates an *array* of sub-items, a different shape),
+and `CreateUserDto`/`GrantRoleDto` already established flat, per-role
+conditional fields as this module's own convention. `licenseNumber` is
+self-editable exactly like every other field here — deliberately not
+admin-gated, despite carrying real professional/verification weight (it's
+`UNIQUE` at the database level and nothing in this app verifies it against
+a real licensing body); a practitioner correcting their own license number
+follows the same rule as correcting their own name.
+
+The three-way check above is necessary but not sufficient for these fields:
+`UsersService.update()` adds one further constraint on top, checked against
+the **target's** actual held role(s), not the caller's. An admin (or a
+managing practitioner) editing a patient can still only ever touch
+`dateOfBirth` — sending `licenseNumber` or `position` for that same target
+is a `400 Bad Request`, not silently ignored and not silently rejected as a
+`403`. This is a real, separate gate from the three-way check: an admin
+passes that check unconditionally for any user, but still can't write a
+field the target has no matching profile row for.
+
 Every one of these responses (plus `create`, `findAll`, and login/register)
 also carries the account's role-specific profile data — `practitionerProfile`,
 `patientProfile`, `adminProfile` — nested under the matching role-named key.

@@ -17,6 +17,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -353,17 +354,98 @@ export class UsersService {
 
   // --- PATCH ROUTES ---
 
+  // dto mixes plain `users` columns (firstName/lastName) with fields that
+  // actually belong to one of the three role-profile tables
+  // (licenseNumber/specialties -> practitioner_profiles, dateOfBirth ->
+  // patient_profiles, position -> admin_profiles). Split up-front so each
+  // piece can be routed at the table it actually belongs to.
+  //
+  // Field applicability is checked against the TARGET's real held roles,
+  // not the caller's — deliberately independent of the
+  // isSelf/isAdmin/isManagingPractitioner check in the controller. An
+  // admin (or a managing practitioner) editing a patient can still only
+  // ever touch patientProfile fields; sending licenseNumber for a target
+  // with no practitioner role is a 400, not silently ignored or silently
+  // scoped away, the same way an invalid field value would be.
   async update(
     id: number,
     dto: UpdateUserDto,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    await this.findOne(id)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.update(users).set(dto).where(eq(users.id, id)).returning(),
+    const existing = await this.findOne(id)
+    const { licenseNumber, specialties, dateOfBirth, position, ...rest } = dto
+    // TS class fields (target ES2023, useDefineForClassFields) make every
+    // declared UpdateUserDto property — including ones the caller never
+    // sent — a real own key on the instance, set to `undefined`. Spreading
+    // `rest` above already carries firstName/lastName even when absent from
+    // the request body, so Object.keys(rest).length alone can't tell "sent"
+    // from "not sent"; filtering out undefined values is what actually
+    // distinguishes them (and is what keeps an all-profile-fields request
+    // from reaching `tx.update(users).set({})`, which Drizzle rejects
+    // outright with "No values to set").
+    const userFields = Object.fromEntries(
+      Object.entries(rest).filter(([, value]) => value !== undefined),
     )
-    const roles = await this.getRolesForUser(id)
-    return this.attachProfile({ ...this.toPublic(updated), roles }, roles)
+
+    if (
+      (licenseNumber !== undefined || specialties !== undefined) &&
+      !existing.roles.includes(UserRole.PRACTITIONER)
+    ) {
+      throw new BadRequestException(
+        'This user does not have a practitioner profile',
+      )
+    }
+    if (
+      dateOfBirth !== undefined &&
+      !existing.roles.includes(UserRole.PATIENT)
+    ) {
+      throw new BadRequestException('This user does not have a patient profile')
+    }
+    if (position !== undefined && !existing.roles.includes(UserRole.ADMIN)) {
+      throw new BadRequestException('This user does not have an admin profile')
+    }
+
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const updated =
+        Object.keys(userFields).length > 0
+          ? (
+              await tx
+                .update(users)
+                .set(userFields)
+                .where(eq(users.id, id))
+                .returning()
+            )[0]
+          : await tx.query.users.findFirst({ where: eq(users.id, id) })
+
+      if (licenseNumber !== undefined || specialties !== undefined) {
+        await tx
+          .update(practitionerProfiles)
+          .set({
+            ...(licenseNumber !== undefined && { licenseNumber }),
+            ...(specialties !== undefined && { specialties }),
+          })
+          .where(eq(practitionerProfiles.userId, id))
+      }
+      if (dateOfBirth !== undefined) {
+        await tx
+          .update(patientProfiles)
+          .set({ dateOfBirth })
+          .where(eq(patientProfiles.userId, id))
+      }
+      if (position !== undefined) {
+        await tx
+          .update(adminProfiles)
+          .set({ position })
+          .where(eq(adminProfiles.userId, id))
+      }
+
+      const roles = await this.getRolesForUser(id, tx)
+      return this.attachProfile(
+        { ...this.toPublic(updated!), roles },
+        roles,
+        tx,
+      )
+    })
   }
 
   // --- DELETE ROUTES ---

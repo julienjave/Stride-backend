@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing'
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -319,7 +320,9 @@ describe('UsersService.grantRole', () => {
         // fields via attachProfile() — every test in this block resolves
         // the requesting user's roles to ['practitioner'], so that's the
         // only profile table findOne()'s own attachProfile() call reaches.
-        practitionerProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
       },
       select: jest.fn(),
       transaction: jest.fn(),
@@ -691,5 +694,227 @@ describe('UsersService.findOne', () => {
     expect(result.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
     expect(result).not.toHaveProperty('practitionerProfile')
     expect(result).not.toHaveProperty('adminProfile')
+  })
+})
+
+describe('UsersService.update', () => {
+  let usersService: UsersService
+  let db: {
+    query: {
+      users: { findFirst: jest.Mock }
+      practitionerProfiles: { findFirst: jest.Mock }
+      patientProfiles: { findFirst: jest.Mock }
+      adminProfiles: { findFirst: jest.Mock }
+    }
+    select: jest.Mock
+    transaction: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        users: { findFirst: jest.fn() },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
+        patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        adminProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+      select: jest.fn(),
+      transaction: jest.fn(),
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: {} },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  // Field applicability is checked against the TARGET's real held roles, not
+  // the caller's — an admin (who passes every controller-level auth check)
+  // still can't set a field for a profile the target doesn't have. All three
+  // rejected before ever opening the write transaction.
+  it("rejects profile fields that don't apply to the target's actual held role(s)", async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'patient@example.com',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+      }),
+    })
+
+    await expect(
+      usersService.update(
+        1,
+        { licenseNumber: 'PT-99' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(BadRequestException)
+    await expect(
+      usersService.update(
+        1,
+        { position: 'Office Manager' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(BadRequestException)
+    expect(db.transaction).not.toHaveBeenCalled()
+
+    db.query.users.findFirst.mockResolvedValue({
+      id: 2,
+      email: 'prac@example.com',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+      }),
+    })
+    await expect(
+      usersService.update(
+        2,
+        { dateOfBirth: '1990-01-01' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(BadRequestException)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('updates a plain users column together with practitionerProfiles fields in the same transaction', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'prac@example.com',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+      }),
+    })
+
+    const usersUpdateChain = {
+      set: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              email: 'prac@example.com',
+              firstName: 'Updated',
+              lastName: 'Titioner',
+              avatarPath: null,
+              isActive: true,
+            },
+          ]),
+        }),
+      }),
+    }
+    const profileUpdateChain = {
+      set: jest
+        .fn()
+        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+    }
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest
+        .fn()
+        .mockReturnValueOnce(usersUpdateChain)
+        .mockReturnValueOnce(profileUpdateChain),
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        }),
+      }),
+      query: {
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue({
+            userId: 1,
+            licenseNumber: 'PT-NEW',
+            specialties: ['ortho'],
+          }),
+        },
+      },
+    }
+    db.transaction.mockImplementation((cb: any) => cb(tx))
+
+    const result = await usersService.update(
+      1,
+      { firstName: 'Updated', licenseNumber: 'PT-NEW', specialties: ['ortho'] },
+      { id: 9, activeRole: UserRole.ADMIN },
+    )
+
+    expect(result.firstName).toBe('Updated')
+    expect(result.practitionerProfile).toEqual({
+      licenseNumber: 'PT-NEW',
+      specialties: ['ortho'],
+    })
+    expect(profileUpdateChain.set).toHaveBeenCalledWith({
+      licenseNumber: 'PT-NEW',
+      specialties: ['ortho'],
+    })
+  })
+
+  // No `users`-table field in the dto at all — update() must skip the
+  // `users` UPDATE entirely (an empty .set({}) would error) and read the
+  // current row back through the still-open transaction instead, so the
+  // response still reflects the just-written patientProfiles row.
+  it('updates only patientProfiles when the dto carries no plain users field', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 3,
+      email: 'patient@example.com',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+      }),
+    })
+
+    const profileUpdateChain = {
+      set: jest
+        .fn()
+        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+    }
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnValue(profileUpdateChain),
+      query: {
+        users: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 3,
+            email: 'patient@example.com',
+            firstName: 'Patient',
+            lastName: 'Three',
+            avatarPath: null,
+            isActive: true,
+          }),
+        },
+        patientProfiles: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ userId: 3, dateOfBirth: '1985-05-05' }),
+        },
+      },
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        }),
+      }),
+    }
+    db.transaction.mockImplementation((cb: any) => cb(tx))
+
+    const result = await usersService.update(
+      3,
+      { dateOfBirth: '1985-05-05' },
+      { id: 3, activeRole: UserRole.PATIENT },
+    )
+
+    expect(tx.query.users.findFirst).toHaveBeenCalled()
+    expect(result.patientProfile).toEqual({ dateOfBirth: '1985-05-05' })
+    expect(profileUpdateChain.set).toHaveBeenCalledWith({
+      dateOfBirth: '1985-05-05',
+    })
   })
 })

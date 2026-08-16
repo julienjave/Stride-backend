@@ -490,6 +490,15 @@ describe('Auth (e2e)', () => {
     // A real timestamp, not a placeholder — bounded by the request's own
     // start/end, with a small margin for clock skew between the test
     // process and the database.
+    //
+    // That margin assumes host/container clock parity, which doesn't
+    // always hold: Docker Desktop's WSL2 VM clock can drift several
+    // seconds ahead of the host (observed directly — `SELECT now()`
+    // in-container vs. `Date.now()` on the host — while diagnosing a flake
+    // in this exact test), which would reopen this assertion if the drift
+    // exceeds 2s. `wsl --shutdown` resyncs it; not run as part of this fix
+    // — host-level infrastructure, out of scope here. See DEPLOYMENT.md
+    // Part 1.
     const createdAtMs = entry!.createdAt.getTime()
     expect(createdAtMs).toBeGreaterThanOrEqual(before - 2000)
     expect(createdAtMs).toBeLessThanOrEqual(after + 2000)

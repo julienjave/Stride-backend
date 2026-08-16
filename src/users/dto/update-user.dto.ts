@@ -17,7 +17,14 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsOptional, IsString, MaxLength } from 'class-validator'
+import {
+  IsOptional,
+  IsString,
+  MaxLength,
+  IsArray,
+  ArrayMaxSize,
+  IsDateString,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -35,6 +42,18 @@ import { IsOptional, IsString, MaxLength } from 'class-validator'
 // uploaded, a nonexistent key, or a probe attempting to guess/enumerate
 // real object keys in storage — entirely bypassing the point of having a
 // dedicated, verified upload endpoint at all.
+//
+// licenseNumber/specialties/dateOfBirth/position are the same
+// per-role profile fields CreateUserDto/GrantRoleDto already validate at
+// creation/grant time — flat here too, matching that module-wide
+// convention, rather than nesting them under a practitionerProfile/
+// patientProfile/adminProfile sub-object (no precedent for that shape
+// anywhere in this codebase; the only @ValidateNested() usage validates an
+// ARRAY of sub-items, not a single nested object). Unlike CreateUserDto,
+// none of these carry @ValidateIf(role === ...): PATCH has no `role` field
+// to condition on, since the target's role was fixed at creation. Instead,
+// UsersService.update() checks each field against the TARGET's actual
+// held roles (not the caller's) before writing — see the comment there.
 export class UpdateUserDto {
   @IsOptional()
   @IsString()
@@ -45,4 +64,30 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(100)
   lastName?: string
+
+  // --- Practitioner-profile fields (target must hold the practitioner role) ---
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  licenseNumber?: string
+
+  // A full replacement of the array, not a merge/append — same semantics
+  // CreateUserDto's specialties already has at creation time.
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  specialties?: string[]
+
+  // --- Patient-profile field (target must hold the patient role) ---
+  @IsOptional()
+  @IsDateString()
+  dateOfBirth?: string
+
+  // --- Admin-profile field (target must hold the admin role) ---
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  position?: string
 }
