@@ -71,6 +71,13 @@
       "when": 1787219545000,
       "tag": "0009_user_roles_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787305945000,
+      "tag": "0010_profile_tables_rls",
+      "breakpoints": true
     }
   ]
 }

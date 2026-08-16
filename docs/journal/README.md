@@ -53,6 +53,7 @@ where reality diverged from it.
 | 29 | Row-Level Security, `user_roles`: the pass the roadmap called hardest | RLS Pass 2. The roadmap's own proposed starting policy would have broken login for every non-admin account — caught by live adversarial reproduction, not assumed. Two real bugs found: a scope gap in `grantRole()` (missing RLS context, the same shape as Pass 1's `ClinicsController` gap) and a pre-existing read-after-write bug, unmasked by the first e2e test to ever check this route's response body instead of just its status code. |
 | 30 | The write-only profile fields, found while investigating Pass 3 | Not RLS work — a real application bug the Pass 3 investigation surfaced: `licenseNumber`/`specialties`/`dateOfBirth`/`position` were written on account creation and never read back by any route, ever, confirmed by exhaustive search. Fixed before Pass 3's policy design, deliberately, so it wouldn't encode a bug as if it were permanent — plus a second instance of doc 28's exact Resend flake, and a diagnosed-but-deliberately-unfixed WSL2 clock-drift finding. |
 | 31 | Closing the profile-field update gap, before RLS Pass 3 | A second write-path gap found while scoping Pass 3, alongside doc 30's read-side one: `UpdateUserDto` never carried the profile fields at all, so nobody — not even an admin — could ever correct a practitioner's license number or a patient's date of birth after creation. Fixed reusing the existing `isSelf/isAdmin/isManagingPractitioner` check with one new layer (field applicability gated on the *target's* actual roles), built on `withRlsContext` from the start so Pass 3 inherits one fewer scope gap to audit for. |
+| 32 | Row-Level Security, the three profile tables: Pass 3 | RLS Pass 3. `practitioner_profiles`/`patient_profiles`/`admin_profiles` — nine policies across three command types, not the two originally scoped, since doc 31 had already added a real `UPDATE` path. One real application bug (`admin_profiles_insert`'s bootstrap check defeated by its own transaction's prior statement, caught by the full e2e suite failing 100% of suites, not by inspection) and one real tooling bug (a `drizzle-orm` migration-bookkeeping trap in this project's own hand-maintained, synthetic `_journal.json` timestamps) — both found and fixed in the same pass. Closes `RLS-ROADMAP.md` down to just the Pass 4 `user_clinics` spike. |
 
 ---
 
@@ -64,18 +65,18 @@ where reality diverged from it.
 | Database schema & design patterns | 02, 23, 24 |
 | Authentication (sessions, login, logout) | 03, 06, 12, 16, 21 |
 | Authorization / RBAC / multi-role | 03, 05, 08, 20, 22, 31 |
-| Row-Level Security | 23, 24, 26, 27, 28, 29, 31 |
+| Row-Level Security | 23, 24, 26, 27, 28, 29, 31, 32 |
 | Real-time messaging / WebSockets | 09, 19, 20, 21 |
 | File & object storage | 04, 07 |
 | Audit logging & compliance | 01, 02, 10, 11, 22, 24 |
 | Clinical domain (programs, sessions, medical files) | 08, 11 |
 | Email & MFA | 12, 17, 28, 30 |
-| Testing infrastructure | 06, 13, 17, 20, 21, 22, 28, 29, 30, 31 |
+| Testing infrastructure | 06, 13, 17, 20, 21, 22, 28, 29, 30, 31, 32 |
 | TypeScript / type safety | 06, 08, 13, 21, 26 |
 | Security bug hunts | 20, 21, 22, 28, 29 |
 | Deployment & production infrastructure | 16, 18, 19, 25, 26 |
 | Observability (monitoring, logging) | 19 |
-| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 30, 31 |
+| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32 |
 
 ---
 
@@ -86,9 +87,13 @@ where reality diverged from it.
   equivalent framing is **not** an open item — see the note at the top of
   this README: it's deliberately left as-written, by design, not an
   oversight.)
-- RLS is **not** applied to `user_roles`, the three profile tables, `clinics`,
-  or `user_clinics` — `user_clinics` is a deliberate, permanent exception (see
-  doc 24); the others are open questions for a future pass.
+- RLS is **not** applied to `user_clinics` — a deliberate, permanent
+  exception (see doc 24) unless the Pass 4 `SECURITY DEFINER` spike
+  (`RLS-ROADMAP.md`) changes that assessment. `clinics`, `user_roles`, and
+  the three profile tables (`practitioner_profiles`/`patient_profiles`/
+  `admin_profiles`) are no longer open — Passes 1–3 are done (doc 32 covers
+  Pass 3; Passes 1–2's own writeup is still pending per doc 29's note that
+  it's planned to be combined into one entry).
 - `deferred-improvements.md` (referenced in doc 22) is the terse, changelog-style
   companion to this narrative series, if one exists in the repo.
 - Doc 25's log-rotation fix was confirmed working locally but explicitly
