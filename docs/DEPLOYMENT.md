@@ -159,7 +159,16 @@ independently of the Droplet:
 
 ```bash
 ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
+cat ~/.ssh/id_ed25519.pub
 ```
+
+Copy the full output of that second command — one line, starting with
+`ssh-ed25519 AAAA...`, ending with the comment you gave it. That's what
+gets pasted into DigitalOcean, either under Settings → Security → SSH Keys
+ahead of time, or directly in the "Add SSH Key" step during Droplet
+creation (Phase 1). **Never paste the contents of `id_ed25519`** (no
+`.pub` extension) anywhere — that's the private key, and it should never
+leave your machine.
 
 ### Phase 1 — Provision and harden the Droplet
 
@@ -190,10 +199,13 @@ ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
    **In a new terminal**, confirm `ssh stride@<droplet-ip>` works before
    closing the original root session — losing access here means starting
    over from a fresh Droplet.
-5. Create a DigitalOcean Cloud Firewall. **Leave 80/443 open to everyone
-   for now** — restricting it to Cloudflare's IP ranges happens later, in
-   Phase 8, only after Caddy is confirmed working. Doing it now would risk
-   locking out the very first Let's Encrypt certificate request.
+5. Create a DigitalOcean Cloud Firewall with two inbound rules —
+   DigitalOcean's own named presets, not just raw port numbers: **HTTP**
+   (port `80`) and **HTTPS** (port `443`), both left open to all
+   IPv4/IPv6 **for now** — restricting them to Cloudflare's IP ranges
+   happens later, in Phase 8, only after Caddy is confirmed working. Doing
+   it now would risk locking out the very first Let's Encrypt certificate
+   request.
 6. Add swap — a 1vCPU Droplet benefits from it, and this project has
    already hit single-vCPU resource limits once (Better Stack's eBPF
    collector, doc 19):
@@ -223,7 +235,11 @@ ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
    sudo usermod -aG docker stride
    ```
    **Log out and back in** before continuing — group membership needs a
-   fresh login to take effect.
+   fresh login to take effect:
+   ```bash
+   exit
+   ssh stride@<droplet-ip>
+   ```
 8. Install the AWS CLI — needed for the backup script, and Ubuntu 24.04
    dropped the `awscli` apt package, so use the official installer:
    ```bash
@@ -239,9 +255,14 @@ ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
    git config --global core.fileMode false
    ```
 
-**Verify**: you can SSH in as `stride` with your key, root/password login
-both fail, `docker ps` runs without `sudo`, and `aws --version` prints a
-real version.
+**Verify**, with real commands, not just a description of what should be
+true:
+```bash
+ssh stride@<droplet-ip>          # should succeed
+ssh root@<droplet-ip>            # should be refused
+docker ps                        # should run with no error, no sudo needed
+aws --version                    # should print a real version string
+```
 
 ### Phase 2 — Domain and Cloudflare
 
@@ -279,7 +300,6 @@ denied (publickey)` — worth confirming right after cloning
 (`git pull` should succeed with no error) rather than assuming it carried
 over.
 ```bash
-chmod +x scripts/backup-database.sh
 cp .env.example .env
 nano .env
 ```
@@ -330,18 +350,6 @@ chmod 600 .env
 
 Also copy `Caddyfile` to the Droplet if it isn't already tracked in the
 repo, and confirm it points at your real domain.
-
-**The `backups` bucket used to be a manual gap — it isn't anymore.**
-`scripts/backup-database.sh` now creates it itself (an idempotent
-`head-bucket`-then-`s3 mb` check, run automatically on every backup) —
-nothing to do here for that specifically. Worth knowing the RustFS
-console is still reachable via an SSH tunnel if you ever want to browse
-buckets directly:
-
-```bash
-ssh -L 9101:localhost:9001 stride@<droplet-ip>
-# then browse to http://localhost:9101 locally
-```
 
 ### Phase 4 — Bring up the database and storage layer
 
@@ -540,10 +548,14 @@ DOMAIN=api.stridecare.app
   → `403`. Production RBAC enforcement under real conditions is a
   different claim than the local test suite passing.
 
-- [ ] **Clean up the verification account** once done — either
-  `DELETE`/soft-deactivate it through the API as an admin, or note it as
-  intentional seed/test data rather than leaving an unexplained account
-  with no real owner.
+- [ ] **Don't try to clean up the verification account individually** —
+  there's no real way to. The app has no hard-delete route for `users`,
+  and the schema's own `RESTRICT` foreign keys correctly refuse a direct
+  SQL delete once an audit log entry references the account (confirmed
+  directly — this is the schema working as designed, not a bug to work
+  around). Leave it as known, intentional test data for now; **Phase 11**
+  is where it actually gets removed, as part of a full reset, once you're
+  done verifying everything else.
 
 ### Phase 8 — Lock down the firewall
 
@@ -593,10 +605,19 @@ firewall rule isn't actually applied the way the dashboard claims.
 ### Phase 9 — Backups
 
 The `backups` bucket is created automatically by the script itself on
-first run — nothing to confirm ahead of time. Run it for real, **on the
-Droplet**:
+first run — nothing to confirm ahead of time. Worth knowing the RustFS
+console is also reachable via an SSH tunnel if you ever want to browse
+buckets directly, now that `storage` is actually up:
 
 ```bash
+ssh -L 9101:localhost:9001 stride@<droplet-ip>
+# then browse to http://localhost:9101 locally
+```
+
+Run the backup script for real, **on the Droplet**:
+
+```bash
+chmod +x scripts/backup-database.sh
 ./scripts/backup-database.sh   # run once by hand first — confirm it works
 crontab -e
 # add: 0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
@@ -742,15 +763,26 @@ the firewall restriction (Phase 8), the cron entry (Phase 9 — crontab is
 host state, not a volume), and Vector (a host-level systemd service,
 Phase 10).
 
-**To bring it back**: restart from **Phase 4 through Phase 7** — `db`/
+**To bring it back**: restart from **Phase 4 through Phase 6** — `db`/
 `storage` up, `migrate`, `create-app-role`, `seed` if you need the
-exercise library again, `app`/`caddy`, then re-verify. Also redo Phase
-9's backup + restore check — the `backups` bucket recreates itself
-automatically on that first run, nothing manual needed there anymore —
-since it lives in `rustfs_data`. **Phase 8 and Phase 10 don't need
-repeating**; nothing they configured lived in a wiped volume. Since
-`users` is empty again, Phase 7's verification account can reuse its
-original email — no need for a disambiguating suffix this time.
+exercise library again, `app`/`caddy`. **Deliberately don't re-run Phase
+7's verification steps** — registering a fresh test account would
+immediately recreate the exact kind of artifact this reset just removed,
+defeating the point. A single, non-mutating confirmation is enough to
+know the redeploy actually worked:
+```bash
+curl -I https://<your-domain>/health
+```
+If you genuinely want full Phase 7-style re-verification, do it *before*
+running Phase 11 again, not after — that way the reset still ends on a
+truly clean state, rather than one that's clean for a moment and then
+isn't. Also worth redoing Phase 9's backup + restore check — unlike Phase
+7's account creation, this doesn't leave lasting test data behind (the
+restore target is dropped every time), and confirming backups still work
+against the freshly-reset state is genuinely useful. The `backups` bucket
+recreates itself automatically on that first run, nothing manual needed
+there anymore, since it lives in `rustfs_data`. **Phase 8 and Phase 10
+don't need repeating**; nothing they configured lived in a wiped volume.
 
 ---
 
