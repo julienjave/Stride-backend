@@ -94,21 +94,51 @@ correctly-tested implementation matters more than convenience.
 production. The app's own runtime queries connect as `stride_app`, a
 Postgres role created specifically to have no RLS bypass: not a superuser,
 and owning none of the tables it queries (both are independent, absolute
-Postgres exemptions from RLS otherwise). `FORCE`d RLS policies are live on
-6 of the schema's 18 tables (8 counting child tables) — `medical_files`,
-`audit_logs`, `assigned_programs`+`assigned_program_exercises`,
+Postgres exemptions from RLS otherwise). `FORCE`d RLS policies now cover
+**all 18 tables in the schema** — the original six-group rollout
+(`medical_files`, `audit_logs`,
+`assigned_programs`+`assigned_program_exercises`,
 `sessions`+`session_exercises`, `conversations`+`messages`,
-`exercises`+`program_templates`+`template_exercises`, and `users` — each
-policy mirroring that table's already-correct application-layer rule via a
-shared `withRlsContext(db, currentUser, fn)` transaction helper.
-Deliberately **not** RLS-covered: `user_roles`, the three profile tables,
-`clinics`, and `user_clinics` — the last is a permanent exception, since
-every other table's policies depend on it via `EXISTS` subqueries, and
-restricting it directly would risk narrowing what those policies can see
-through it. This is additive, not a replacement: it closes the gap between
-what the original architecture writeup once described as an active
-guarantee and what was actually true at the time (app-layer checks only) —
-the two layers are independently verified, not redundant with each other.
+`exercises`+`program_templates`+`template_exercises`, and `users`), plus
+four further passes that closed every table originally left open:
+`clinics`, `user_roles`, the three profile tables
+(`practitioner_profiles`/`patient_profiles`/`admin_profiles`), and
+`user_clinics` — the schema's own trust-anchor table, at one point
+expected to remain a permanent exception.
+
+Worth being precise: full coverage doesn't mean every table restricts who
+can read it. Several tables (`users`, `user_roles`, the three profile
+tables, `clinics`, `user_clinics`, `exercises`, `program_templates`)
+carry a deliberately permissive `SELECT USING (true)` policy — either
+because the data is genuinely shared and non-sensitive by design, or
+because the table backs a read that has to succeed *before* any session
+exists (login itself, or a one-time unauthenticated bootstrap), where a
+restrictive policy would silently break authentication rather than add
+protection. Real, per-row restriction is concentrated on the tables where
+it actually matters, and every table's write policies (`INSERT`/
+`UPDATE`/`DELETE`) are genuinely restrictive throughout, `user_clinics`
+included — a practitioner may only insert a membership row into a clinic
+they themselves already belong to, mirroring a real vulnerability closed
+once already at the application layer.
+
+`user_clinics` specifically is worth naming directly, since the original
+plan for it didn't survive investigation: it was expected to need a
+`SECURITY DEFINER` function so other tables' policy-internal SQL
+functions could keep working once it carried its own restriction. That
+turned out not to be the real obstacle — the actual blocker was a
+completely different, TypeScript-side contextless read
+(`getClinicIdsForUser()`, underlying `isPatientManagedBy()`, the
+authorization gate for most of the app) that needed `SELECT USING (true)`
+regardless of any privilege question, the same reason `users` and
+`user_roles` already needed it. Once that was proven with real adversarial
+evidence, `SECURITY DEFINER` had nothing left to solve — a genuine,
+evidenced "not needed," reached by investigating the question rather than
+assuming an answer either way.
+
+This is additive, not a replacement: it closes the gap between what the
+original architecture writeup once described as an active guarantee and
+what was actually true at the time (app-layer checks only) — the two
+layers are independently verified, not redundant with each other.
 
 **Role-based access control**, layered as `SessionAuthGuard` at the
 controller class level (authentication) with `RolesGuard` +
@@ -364,20 +394,22 @@ requested), read correctly as a genuine hardware mismatch rather than
 something to patch around, and resolved by switching to the tool actually
 sized for this deployment's scale.
 
-**Log rotation is now genuinely implemented and verified**, closing a gap
-that had previously existed only as documentation, not configuration (see
-doc 25 in the journal series for the full finding-and-fix). A shared
+**Log rotation is genuinely implemented and verified locally**, closing a
+gap that had previously existed only as documentation, not configuration
+(see doc 25 in the journal series for the full finding-and-fix). A shared
 `x-logging: &default-logging` anchor (`json-file`, `max-size: "10m"`,
 `max-file: "3"`) is referenced by `db`, `storage`, `app`, and `caddy` —
 deliberately excluded from `migrate`/`create-app-role`, which are
 short-lived, on-demand tools rather than permanently-running containers
 that accumulate logs over time. Verified via `docker compose config`
 resolving the anchor into a full `logging:` block on all four target
-services and confirmed absent from both excluded ones — not just checked
-for correct YAML syntax. Not yet live in production: Compose logging
-config applies at container *creation*, so it takes effect only once the
-Droplet's containers are actually recreated (`--force-recreate` or a full
-`down`/`up`), which hasn't happened yet as of this writing.
+services. Almost certainly live in production too, by mechanism —
+doc 26's full redeploy recreated every container from the current compose
+file, and Compose logging config applies at creation — but that's an
+inference from how Compose works, not something separately confirmed via
+direct inspection of the running Droplet container. Worth a real check
+(`docker inspect` on the deployed containers) before treating it as fully
+verified rather than very likely true.
 
 **Graceful shutdown verified directly, not just configured**:
 `app.enableShutdownHooks()` confirmed via a timed `docker stop` completing

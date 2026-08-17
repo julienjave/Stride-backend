@@ -31,9 +31,19 @@ docker compose -f docker-compose.prod.yml exec -T db \
 # Extracting only the specific lines actually needed, as plain text via
 # grep+cut, avoids this entire class of problem — nothing else in .env is
 # ever interpreted as code, regardless of what it contains.
-RUSTFS_ACCESS_KEY=$(grep -E "^RUSTFS_ACCESS_KEY=" .env | cut -d= -f2-)
-RUSTFS_SECRET_KEY=$(grep -E "^RUSTFS_SECRET_KEY=" .env | cut -d= -f2-)
-STORAGE_PORT=$(grep -E "^STORAGE_PORT=" .env | cut -d= -f2-)
+#
+# .env.example documents these keys with a trailing inline comment
+# ("KEY=value # Generate: ..."), so a plain `cut -d= -f2-` captures that
+# comment as part of the value. Stripping from the first whitespace+"#"
+# onward (then trailing whitespace) handles both that style and a bare
+# "KEY=value" line the same way.
+env_var() {
+  grep -E "^$1=" .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//'
+}
+
+RUSTFS_ACCESS_KEY=$(env_var RUSTFS_ACCESS_KEY)
+RUSTFS_SECRET_KEY=$(env_var RUSTFS_SECRET_KEY)
+STORAGE_PORT=$(env_var STORAGE_PORT)
 
 # The AWS CLI only ever reads ITS OWN standard variable names — it has no
 # concept of "RUSTFS_ACCESS_KEY" at all. Without this export, every `aws`
@@ -41,6 +51,14 @@ STORAGE_PORT=$(grep -E "^STORAGE_PORT=" .env | cut -d= -f2-)
 # credential values being correct.
 export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY"
+
+# Nothing else auto-creates the `backups` bucket (unlike `stride`, which
+# StorageService creates on app boot) — this used to be a manual, one-off
+# `aws s3 mb` step in DEPLOYMENT.md. head-bucket exits non-zero if it
+# doesn't exist yet, only then do we create it.
+aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3api head-bucket \
+  --bucket backups 2>/dev/null || \
+aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 mb s3://backups
 
 aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 cp \
   "/tmp/${BACKUP_FILE}" "s3://backups/${BACKUP_FILE}"

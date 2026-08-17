@@ -53,7 +53,10 @@ where reality diverged from it.
 | 29 | Row-Level Security, `user_roles`: the pass the roadmap called hardest | RLS Pass 2. The roadmap's own proposed starting policy would have broken login for every non-admin account — caught by live adversarial reproduction, not assumed. Two real bugs found: a scope gap in `grantRole()` (missing RLS context, the same shape as Pass 1's `ClinicsController` gap) and a pre-existing read-after-write bug, unmasked by the first e2e test to ever check this route's response body instead of just its status code. |
 | 30 | The write-only profile fields, found while investigating Pass 3 | Not RLS work — a real application bug the Pass 3 investigation surfaced: `licenseNumber`/`specialties`/`dateOfBirth`/`position` were written on account creation and never read back by any route, ever, confirmed by exhaustive search. Fixed before Pass 3's policy design, deliberately, so it wouldn't encode a bug as if it were permanent — plus a second instance of doc 28's exact Resend flake, and a diagnosed-but-deliberately-unfixed WSL2 clock-drift finding. |
 | 31 | Closing the profile-field update gap, before RLS Pass 3 | A second write-path gap found while scoping Pass 3, alongside doc 30's read-side one: `UpdateUserDto` never carried the profile fields at all, so nobody — not even an admin — could ever correct a practitioner's license number or a patient's date of birth after creation. Fixed reusing the existing `isSelf/isAdmin/isManagingPractitioner` check with one new layer (field applicability gated on the *target's* actual roles), built on `withRlsContext` from the start so Pass 3 inherits one fewer scope gap to audit for. |
-| 32 | Row-Level Security, the three profile tables: Pass 3 | RLS Pass 3. `practitioner_profiles`/`patient_profiles`/`admin_profiles` — nine policies across three command types, not the two originally scoped, since doc 31 had already added a real `UPDATE` path. One real application bug (`admin_profiles_insert`'s bootstrap check defeated by its own transaction's prior statement, caught by the full e2e suite failing 100% of suites, not by inspection) and one real tooling bug (a `drizzle-orm` migration-bookkeeping trap in this project's own hand-maintained, synthetic `_journal.json` timestamps) — both found and fixed in the same pass. Closes `RLS-ROADMAP.md` down to just the Pass 4 `user_clinics` spike. |
+| 32 | Row-Level Security, the three profile tables: Pass 3 | `SELECT USING(true)` adversarially proven required (the login path itself reads this data with no context, the same load-bearing reason `users`/`user_roles` needed it), asymmetric `INSERT` policies matched exactly to each table's real call sites, and `UPDATE` reusing `users_update`'s exact existing condition rather than a new one. Two real bugs: a self-defeating bootstrap check tripped by its own transaction's prior statement, and a migration-bookkeeping trap (a real timestamp silently sorting before an earlier synthetic one) that led directly to a new, permanent rule — every future migration goes through `drizzle-kit generate --custom`, never a hand-written journal entry. |
+| 33 | Row-Level Security, `user_clinics`: Pass 4 — the trust-anchor table | The roadmap's most consequential pass, closed with a genuine, evidenced "not needed" on `SECURITY DEFINER` rather than shipping it by default. Live proof that `getClinicIdsForUser()`'s contextless read — the mechanism behind `isPatientManagedBy()`, the authorization gate for most of the app — forces `SELECT USING(true)` regardless; once that was confirmed, the `SECURITY DEFINER` question resolved itself, since the actual failure was "no context exists," not "insufficient privilege." Also confirmed the `INSERT` policy mirrors, not widens, a real vulnerability doc 20 had already closed at the app layer. |
+| 34 | Row-Level Security, `clinics`: Pass 1, written up out of order | Pass 1 of the roadmap, documented last — deliberately numbered 34 rather than inserted earlier and renumbering four already-verified documents for the sake of chronological tidiness (see doc 01's own precedent for the same reasoning). Covers the first real RLS pass: the missing-`@CurrentUser()` gap that recurred twice more later in the same file, and the bootstrap `INSERT` policy that turned out to need a narrower, self-closing condition than the broader precedent it was first copied from. |
+| 35 | A small documentation gap, a real credential-parsing bug, and a duplicate of it in the docs | A two-line fix (auto-create the backup script's S3 bucket) surfaced a genuine, previously-invisible authentication bug — `.env.example`'s own documented format broke a naive credential parser, silently exposing the actual backup upload, not just the new code. Includes a real "is this actually a local/prod mismatch?" question answered precisely (it wasn't, but asking it caught a different, legitimate connectivity check worth doing) — and the identical parsing bug found duplicated in `DEPLOYMENT.md`'s own hand-followed restore instructions. |
 
 ---
 
@@ -64,45 +67,51 @@ where reality diverged from it.
 | Stack & technology rationale | 01, 04, 16 |
 | Database schema & design patterns | 02, 23, 24 |
 | Authentication (sessions, login, logout) | 03, 06, 12, 16, 21 |
-| Authorization / RBAC / multi-role | 03, 05, 08, 20, 22, 31 |
-| Row-Level Security | 23, 24, 26, 27, 28, 29, 31, 32 |
+| Authorization / RBAC / multi-role | 03, 05, 08, 20, 22, 31, 33 |
+| Row-Level Security | 23, 24, 26, 27, 28, 29, 31, 32, 33, 34 |
 | Real-time messaging / WebSockets | 09, 19, 20, 21 |
 | File & object storage | 04, 07 |
 | Audit logging & compliance | 01, 02, 10, 11, 22, 24 |
 | Clinical domain (programs, sessions, medical files) | 08, 11 |
 | Email & MFA | 12, 17, 28, 30 |
-| Testing infrastructure | 06, 13, 17, 20, 21, 22, 28, 29, 30, 31, 32 |
+| Testing infrastructure | 06, 13, 17, 20, 21, 22, 28, 29, 30, 31, 32, 34 |
 | TypeScript / type safety | 06, 08, 13, 21, 26 |
 | Security bug hunts | 20, 21, 22, 28, 29 |
-| Deployment & production infrastructure | 16, 18, 19, 25, 26 |
+| Deployment & production infrastructure | 16, 18, 19, 25, 26, 35 |
 | Observability (monitoring, logging) | 19 |
-| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32 |
+| Process & discipline (verification, sync-checks) | 06, 09, 13, 14, 16, 17, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35 |
 
 ---
 
 ## Known open items
 
 - Doc 02's "(planned)" phrasing for Row-Level Security likely still needs
-  updating to reflect 23–24 — unconfirmed against the live file. (Doc 01's
-  equivalent framing is **not** an open item — see the note at the top of
-  this README: it's deliberately left as-written, by design, not an
-  oversight.)
-- RLS is **not** applied to `user_clinics` — a deliberate, permanent
-  exception (see doc 24) unless the Pass 4 `SECURITY DEFINER` spike
-  (`RLS-ROADMAP.md`) changes that assessment. `clinics`, `user_roles`, and
-  the three profile tables (`practitioner_profiles`/`patient_profiles`/
-  `admin_profiles`) are no longer open — Passes 1–3 are done (doc 32 covers
-  Pass 3; Passes 1–2's own writeup is still pending per doc 29's note that
-  it's planned to be combined into one entry).
+  updating to reflect 23–24 — unconfirmed against the live file, and now
+  more stale than when this was first flagged, given RLS coverage has
+  since gone from "planned" to complete. (Doc 01's equivalent framing is
+  **not** an open item — see the note at the top of this README: it's
+  deliberately left as-written, by design, not an oversight.)
+- ~~RLS is not applied to `user_roles`, the three profile tables,
+  `clinics`, or `user_clinics`~~ — **resolved.** All four tables now carry
+  real, adversarially-verified RLS (docs 29, 31, 32, 33, 34), closing every
+  gap the original rollout (23–24) left open. `ARCHITECTURE.md` and
+  `PROJECT.md` have both been updated to reflect full, 18-of-18-table
+  coverage — with the honest caveat that "covered" and "restrictive" are
+  different claims; several tables carry a deliberate `USING (true)` read
+  policy for real, documented reasons (see either doc for the full
+  breakdown).
 - `deferred-improvements.md` (referenced in doc 22) is the terse, changelog-style
   companion to this narrative series, if one exists in the repo.
 - Doc 25's log-rotation fix was confirmed working locally but explicitly
   left as "not yet live" pending a real container recreation on the
   Droplet. Doc 26's full redeploy almost certainly picked it up (fresh
   containers get `logging:` config at creation, no extra step needed) —
-  but that's an inference, not something either confirmed directly (e.g.
-  via `docker inspect` on the running container). Worth a real check
-  before treating it as closed.
+  but that's still an inference, not something ever confirmed directly
+  (e.g. via `docker inspect` on the running container). Worth a real check
+  before treating it as closed — `PROJECT.md` was briefly, incorrectly
+  updated to claim this was confirmed, then corrected back to the honest
+  "very likely, not verified" framing once the missing evidence was
+  noticed.
 - Two real, verified pieces of work from this exercise are now written up
   as doc 27: normalizing error `message` to always be an array (both
   exception filters, a real commit, a full passing test-suite re-run), and

@@ -325,22 +325,16 @@ chmod 600 .env
 Also copy `Caddyfile` to the Droplet if it isn't already tracked in the
 repo, and confirm it points at your real domain.
 
-**A gap not covered by any existing script, worth doing now**: the backup
-script (Phase 9) uploads to an S3 bucket named `backups` — this is a
-*different* bucket from `stride` (which `StorageService` creates
-automatically on first app boot). Nothing currently auto-creates `backups`.
-Create it once, after `storage` is up in Phase 4, either via an SSH tunnel
-to the RustFS console:
+**The `backups` bucket used to be a manual gap — it isn't anymore.**
+`scripts/backup-database.sh` now creates it itself (an idempotent
+`head-bucket`-then-`s3 mb` check, run automatically on every backup) —
+nothing to do here for that specifically. Worth knowing the RustFS
+console is still reachable via an SSH tunnel if you ever want to browse
+buckets directly:
 
 ```bash
 ssh -L 9101:localhost:9001 stride@<droplet-ip>
 # then browse to http://localhost:9101 locally
-```
-
-or non-interactively:
-
-```bash
-aws --endpoint-url http://localhost:9000 s3 mb s3://backups
 ```
 
 ### Phase 4 — Bring up the database and storage layer
@@ -373,6 +367,21 @@ since you're about to have a clean opportunity to.)*
 
 **Verify**: no errors from either command; `create-app-role`'s output
 confirms the role was created or its password synced.
+
+**If this is the first real deployment since the RLS rollout (Passes
+1–4, migrations `0008`–`0011`)**, treat this deploy as that rollout's
+real end-to-end validation, not just a formality — `AuthService
+.registerClinic()`, exercised the moment Phase 7 registers the founding
+admin, writes to five tables (`clinics` → `users` → `user_roles` →
+`admin_profiles` → `user_clinics`) in one transaction, four of which now
+carry bootstrap-aware RLS `INSERT` policies. Each was individually
+adversarially verified, and the full transaction passed the local e2e
+suite after every pass — but production has never actually run it before,
+since the last real redeploy (doc 26) predates all four passes. Well-
+tested, not a reason to expect trouble — but worth knowing this is a
+genuine first real-world exercise of that transaction, not a formality,
+the same "verify by actually running it" standard applied everywhere else
+in this project.
 
 ### Phase 6 — Bring up the app and Caddy
 
@@ -434,8 +443,6 @@ Set your real domain once:
 DOMAIN=api.stridecare.app
 ```
 
-```
-
 - [ ] **Health check**
   ```bash
   curl -I https://$DOMAIN/health
@@ -460,13 +467,32 @@ DOMAIN=api.stridecare.app
   Check the `Set-Cookie` line in the output directly: it must include
   `Secure` and `SameSite=None` — if either is missing, `NODE_ENV` isn't
   actually resolving to `production` in the running container (§ Phase 3).
+  Also check the response body includes a nested `"patientProfile":
+  { "dateOfBirth": "1990-01-01" }` — this data used to be write-only
+  (never read back by any route); confirms that fix is genuinely live in
+  this deployment, not just correct locally.
 
 - [ ] **Confirm the session is real**, using the saved cookie:
   ```bash
   curl -i -b cookies.txt https://$DOMAIN/auth/me
   ```
   → `200` with your account's data, `passwordHash`/`mfaSecret`/reset-token
-  fields genuinely absent from the body (doc 22).
+  fields genuinely absent from the body (doc 22), `patientProfile` present
+  the same as the register response.
+
+- [ ] **`404`, not `403`, for an out-of-scope RLS-protected resource** —
+  confirms the RLS rollout's actual current behavior is live, not the
+  pre-rollout assumption: `medical_files`, `assigned_programs`, `sessions`,
+  and `conversations` all return `404` for a resource this account has no
+  relationship to, since RLS filters the row out before the ownership
+  check ever runs (doc 27). A genuinely nonexistent id is the simplest
+  live check (a real, existing-but-not-yours id would need a second test
+  account, already covered by the local e2e suite — this is a lighter
+  smoke check, not a full re-verification):
+  ```bash
+  curl -i -b cookies.txt https://$DOMAIN/medical-files/999999
+  ```
+  → `404`, `"Medical file entry 999999 not found"` — not a `403`.
 
 - [ ] **WebSocket, over the full real chain** (Cloudflare + Caddy +
   session auth) — extract the raw cookie value first, then run the
@@ -560,8 +586,9 @@ firewall rule isn't actually applied the way the dashboard claims.
 
 ### Phase 9 — Backups
 
-The `backups` bucket should already exist from Phase 3. Confirm it does,
-then, **on the Droplet**:
+The `backups` bucket is created automatically by the script itself on
+first run — nothing to confirm ahead of time. Run it for real, **on the
+Droplet**:
 
 ```bash
 ./scripts/backup-database.sh   # run once by hand first — confirm it works
@@ -575,11 +602,18 @@ backup that's never been restored is an assumption, not a tested fact.
 *(rationale: doc 18)* Still on the Droplet:
 
 ```bash
-# Same credential-extraction the backup script itself uses — see its own
-# comments for why `source .env` is deliberately avoided:
-RUSTFS_ACCESS_KEY=$(grep -E "^RUSTFS_ACCESS_KEY=" .env | cut -d= -f2-)
-RUSTFS_SECRET_KEY=$(grep -E "^RUSTFS_SECRET_KEY=" .env | cut -d= -f2-)
-STORAGE_PORT=$(grep -E "^STORAGE_PORT=" .env | cut -d= -f2-)
+# Same credential-extraction the backup script itself uses (a shared
+# env_var() helper stripping trailing inline comments — .env.example's
+# own documented "KEY=value # Generate: ..." format broke a naive
+# grep|cut extraction here and in the script both; see its own comments
+# for why `source .env` is deliberately avoided instead of just fixing
+# that a different way):
+env_var() {
+  grep -E "^$1=" .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//'
+}
+RUSTFS_ACCESS_KEY=$(env_var RUSTFS_ACCESS_KEY)
+RUSTFS_SECRET_KEY=$(env_var RUSTFS_SECRET_KEY)
+STORAGE_PORT=$(env_var STORAGE_PORT)
 export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY"
 
@@ -693,7 +727,7 @@ touch before running it:
 - `pgdata` — the entire database, **including the `stride_app` role
   itself** (Postgres roles live inside the data directory, not outside it)
 - `rustfs_data` — every bucket, including `stride` (exercise images) and
-  the manually-created `backups` bucket
+  the `backups` bucket (self-created by the backup script on next run)
 - `caddy_data`/`caddy_config` — the TLS certificate
 
 **Untouched** — everything outside those volumes: the Droplet itself
@@ -704,13 +738,13 @@ Phase 10).
 
 **To bring it back**: restart from **Phase 4 through Phase 7** — `db`/
 `storage` up, `migrate`, `create-app-role`, `seed` if you need the
-exercise library again, `app`/`caddy`, then re-verify. Also redo the two
-Phase 9 steps tied to volume data specifically — re-create the `backups`
-bucket, and re-run the manual backup + restore check — since both live in
-`rustfs_data`. **Phase 8 and Phase 10 don't need repeating**; nothing they
-configured lived in a wiped volume. Since `users` is empty again, Phase
-7's verification account can reuse its original email — no need for a
-disambiguating suffix this time.
+exercise library again, `app`/`caddy`, then re-verify. Also redo Phase
+9's backup + restore check — the `backups` bucket recreates itself
+automatically on that first run, nothing manual needed there anymore —
+since it lives in `rustfs_data`. **Phase 8 and Phase 10 don't need
+repeating**; nothing they configured lived in a wiped volume. Since
+`users` is empty again, Phase 7's verification account can reuse its
+original email — no need for a disambiguating suffix this time.
 
 ---
 

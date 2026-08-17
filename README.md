@@ -23,9 +23,13 @@ rather than assuming they hold.
   membership with you.
 - **Two independent layers of access control** — NestJS guards and
   service-level ownership checks in the application layer, *plus*
-  database-enforced Row-Level Security on the six highest-stakes clinical
-  tables, running as a genuinely restricted, non-superuser Postgres role.
-  Neither layer is a substitute for the other.
+  database-enforced Row-Level Security across **every table in the
+  schema**, running as a genuinely restricted, non-superuser Postgres
+  role. Neither layer is a substitute for the other — and "every table
+  covered" isn't the same claim as "every table restricts reads": several
+  tables carry a deliberate, documented `USING (true)` policy where a
+  restrictive one would break login itself or add nothing over already-
+  shared data.
 - **The full prescribe → perform loop** — practitioners build exercise
   programs (from a shared library or their own custom entries), assign
   them to patients as an independent, permanent copy (editing the source
@@ -58,7 +62,7 @@ rather than assuming they hold.
 | Object storage | RustFS (S3-compatible, self-hosted) via `@aws-sdk/client-s3` |
 | Email | Resend |
 | Infra | Docker Compose, Caddy (auto-HTTPS), Cloudflare |
-| Testing | Jest — unit + a real, running-stack e2e suite (165 unit / 97 e2e tests as of this writing) |
+| Testing | Jest — unit + a real, running-stack e2e suite (173 unit / 107 e2e as of the last confirmed run — worth a fresh count before publishing, this number moves often) |
 
 Every one of these was a deliberate choice, not a default — including one
 mid-project reversal (the object storage backend was originally MinIO,
@@ -83,7 +87,7 @@ code is.
 | [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | The system **as it currently stands** — components, data model, auth/authz model, deployment topology, security posture. Living, not historical. |
 | [`DEPLOYMENT.md`](./docs/DEPLOYMENT.md) | The full local-dev and production-deployment runbook, phase by phase, including the real failure modes hit while building it. |
 | [`FRONTEND.md`](./docs/FRONTEND.md) | A planning brief for whoever builds the client — the hard constraints this backend imposes, not generic frontend advice. |
-| [`docs/journal/00-README.md`](./docs/journal/README.md) | An index into a 26-entry chronological log of every real decision, tradeoff, and bug across this project's development — read start to finish for the full narrative, or by topic via the index. |
+| [`docs/journal/README.md`](./docs/journal/README.md) | An index into a 34-entry chronological log of every real decision, tradeoff, and bug across this project's development — read start to finish for the full narrative, or by topic via the index. |
 | [`docs/api/README.md`](./docs/api/README.md) | The integration reference for frontend/API consumers — session mechanics, the WebSocket API, response conventions, the full authorization model, and a real copy-pasteable walkthrough. Complements, never duplicates, the auto-generated OpenAPI docs at `/api-docs`. |
 | [`PROJECT.md`](./docs/PROJECT.md) | A condensed, single-file summary of the same decisions the journal covers at length — the "just tell me the highlights" version. |
 
@@ -137,14 +141,20 @@ module boundaries closely — see [`FRONTEND.md`](./docs/FRONTEND.md).
 
 A few decisions worth calling out specifically, for anyone skimming:
 
-- **RLS as genuine defense-in-depth, not a demo of the feature.** The
-  database connection the app itself uses (`stride_app`) was deliberately
-  built to have *zero* RLS bypass — not a superuser, and owning none of
-  the tables it queries — specifically so a bug in the application layer
-  can't silently become a real data leak. Rolled out table-by-table, each
-  one adversarially verified (a legitimate query still succeeds, an
+- **RLS as genuine defense-in-depth, not a demo of the feature — now
+  covering every table in the schema.** The database connection the app
+  itself uses (`stride_app`) was deliberately built to have *zero* RLS
+  bypass — not a superuser, and owning none of the tables it queries —
+  specifically so a bug in the application layer can't silently become a
+  real data leak. Rolled out table-by-table across four passes, each one
+  adversarially verified (a legitimate query still succeeds, an
   illegitimate one genuinely fails) rather than assumed correct from the
-  policy's SQL alone.
+  policy's SQL alone. The hardest pass — `user_clinics`, the schema's own
+  trust-anchor table — was originally expected to need a `SECURITY
+  DEFINER` function; live investigation found a different, more load-
+  bearing reason `SELECT` had to stay permissive, making that added
+  complexity genuinely unnecessary. A considered "not needed," reached by
+  investigating rather than assumed either way.
 - **Copy-not-reference for anything a patient was actually told to do.**
   An assigned program is an independent copy of its source template at
   the moment of assignment — editing or deleting the template afterward
@@ -196,12 +206,6 @@ a few of the more instructive moments:
 
 ## Future Improvements
 
-- Row-Level Security currently covers six of the schema's tables
-  (`medical_files`, `audit_logs`, `assigned_programs`, `sessions`,
-  `conversations`+`messages`, and `users`) — `user_roles`, the profile
-  tables, and `clinics`/`user_clinics` remain open questions for a future
-  pass, not oversights (`user_clinics` in particular is a deliberate,
-  permanent exception, since every other policy depends on it).
 - Redis-backed rate limiting, if this ever runs as more than one instance
   — correct as in-memory today specifically because it doesn't.
 - The frontend itself — see [`FRONTEND.md`](./docs/FRONTEND.md) for the full

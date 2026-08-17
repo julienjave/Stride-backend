@@ -60,7 +60,7 @@ export class ClinicsService {
     return clinic
   }
 
-  async addMember(clinicId: number, userId: number) {
+  async addMember(clinicId: number, userId: number, currentUser: CurrentUser) {
     await this.findOne(clinicId)
 
     const userExists = await this.db.query.users.findFirst({
@@ -80,14 +80,17 @@ export class ClinicsService {
       throw new ConflictException('This user already belongs to this clinic')
     }
 
-    const [membership] = await this.db
-      .insert(userClinics)
-      .values({ clinicId, userId })
-      .returning()
+    const [membership] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.insert(userClinics).values({ clinicId, userId }).returning(),
+    )
     return membership
   }
 
-  async updateLogo(id: number, currentUser: CurrentUser, file: Express.Multer.File) {
+  async updateLogo(
+    id: number,
+    currentUser: CurrentUser,
+    file: Express.Multer.File,
+  ) {
     await this.findOne(id)
     const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
@@ -177,12 +180,21 @@ export class ClinicsService {
     return deactivated
   }
 
-  async removeMember(clinicId: number, userId: number) {
+  async removeMember(
+    clinicId: number,
+    userId: number,
+    currentUser: CurrentUser,
+  ) {
     await this.findOne(clinicId)
-    await this.db
-      .delete(userClinics)
-      .where(
-        and(eq(userClinics.clinicId, clinicId), eq(userClinics.userId, userId)),
-      )
+    await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .delete(userClinics)
+        .where(
+          and(
+            eq(userClinics.clinicId, clinicId),
+            eq(userClinics.userId, userId),
+          ),
+        ),
+    )
   }
 }

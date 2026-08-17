@@ -7,6 +7,23 @@ import { UserRole } from '../users/dto/create-user.dto'
 
 const adminUser = { id: 2, activeRole: UserRole.ADMIN }
 
+// sql`` template results don't stringify meaningfully via String() — the
+// literal text lives in queryChunks as StringChunk({ value: [...] })
+// entries, interspersed with the interpolated params. Flattening those
+// chunks is the only way to assert on which GUC a given tx.execute() call
+// actually targeted.
+function flattenSqlChunks(query: unknown): string {
+  const chunks = (query as { queryChunks?: unknown[] }).queryChunks ?? []
+  return chunks
+    .map((chunk) => {
+      if (chunk && typeof chunk === 'object' && 'value' in chunk) {
+        return (chunk as { value: unknown[] }).value.join('')
+      }
+      return String(chunk)
+    })
+    .join('')
+}
+
 describe('ClinicsService.addMember', () => {
   let clinicsService: ClinicsService
   let db: {
@@ -16,6 +33,8 @@ describe('ClinicsService.addMember', () => {
       userClinics: { findFirst: jest.Mock }
     }
     insert: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
   }
 
   beforeEach(async () => {
@@ -26,6 +45,11 @@ describe('ClinicsService.addMember', () => {
         userClinics: { findFirst: jest.fn() },
       },
       insert: jest.fn(),
+      // withRlsContext() wraps the actual INSERT in db.transaction()/
+      // db.execute() — tx === db here, so the mocked insert() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
 
     const moduleRef = await Test.createTestingModule({
@@ -42,7 +66,7 @@ describe('ClinicsService.addMember', () => {
   it('throws NotFoundException when the clinic does not exist', async () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.addMember(999, 1)).rejects.toThrow(
+    await expect(clinicsService.addMember(999, 1, adminUser)).rejects.toThrow(
       NotFoundException,
     )
   })
@@ -51,7 +75,7 @@ describe('ClinicsService.addMember', () => {
     db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic' })
     db.query.users.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.addMember(1, 999)).rejects.toThrow(
+    await expect(clinicsService.addMember(1, 999, adminUser)).rejects.toThrow(
       NotFoundException,
     )
   })
@@ -68,7 +92,7 @@ describe('ClinicsService.addMember', () => {
       userId: 10,
     })
 
-    await expect(clinicsService.addMember(1, 10)).rejects.toThrow(
+    await expect(clinicsService.addMember(1, 10, adminUser)).rejects.toThrow(
       ConflictException,
     )
   })
@@ -88,9 +112,38 @@ describe('ClinicsService.addMember', () => {
       }),
     })
 
-    const result = await clinicsService.addMember(1, 10)
+    const result = await clinicsService.addMember(1, 10, adminUser)
 
     expect(result).toEqual({ id: 50, clinicId: 1, userId: 10 })
+  })
+
+  // Pinning down that currentUser is actually threaded into the RLS
+  // context, not just accepted and ignored — set_config() is what makes
+  // this insert visible to a future userClinics RLS policy at all.
+  it('sets the RLS session context from the given currentUser before inserting', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic' })
+    db.query.users.findFirst.mockResolvedValue({
+      id: 10,
+      email: 'member@example.com',
+    })
+    db.query.userClinics.findFirst.mockResolvedValue(undefined)
+    db.insert.mockReturnValue({
+      values: jest.fn().mockReturnValue({
+        returning: jest
+          .fn()
+          .mockResolvedValue([{ id: 50, clinicId: 1, userId: 10 }]),
+      }),
+    })
+
+    await clinicsService.addMember(1, 10, adminUser)
+
+    const executeCalls = db.execute.mock.calls as unknown[][]
+    expect(db.transaction).toHaveBeenCalled()
+    expect(executeCalls).toHaveLength(2)
+    expect(flattenSqlChunks(executeCalls[0][0])).toContain(
+      'app.current_user_id',
+    )
+    expect(flattenSqlChunks(executeCalls[1][0])).toContain('app.current_role')
   })
 })
 
@@ -487,10 +540,23 @@ describe('ClinicsService.deactivate', () => {
 
 describe('ClinicsService.removeMember', () => {
   let clinicsService: ClinicsService
-  let db: { query: { clinics: { findFirst: jest.Mock } }; delete: jest.Mock }
+  let db: {
+    query: { clinics: { findFirst: jest.Mock } }
+    delete: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
-    db = { query: { clinics: { findFirst: jest.fn() } }, delete: jest.fn() }
+    db = {
+      query: { clinics: { findFirst: jest.fn() } },
+      delete: jest.fn(),
+      // withRlsContext() wraps the actual DELETE in db.transaction()/
+      // db.execute() — tx === db here, so the mocked delete() above still
+      // resolves against this same object.
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -506,7 +572,9 @@ describe('ClinicsService.removeMember', () => {
   it('throws NotFoundException when the clinic does not exist, without touching the delete', async () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.removeMember(1, 10)).rejects.toThrow(NotFoundException)
+    await expect(clinicsService.removeMember(1, 10, adminUser)).rejects.toThrow(
+      NotFoundException,
+    )
     expect(db.delete).not.toHaveBeenCalled()
   })
 
@@ -515,9 +583,28 @@ describe('ClinicsService.removeMember', () => {
     const where = jest.fn().mockResolvedValue(undefined)
     db.delete.mockReturnValue({ where })
 
-    await clinicsService.removeMember(1, 10)
+    await clinicsService.removeMember(1, 10, adminUser)
 
     expect(db.delete).toHaveBeenCalled()
     expect(where).toHaveBeenCalled()
+  })
+
+  // Same "currentUser is genuinely threaded through" check as addMember —
+  // without this, a future userClinics RLS policy would silently see no
+  // session context and block or misjudge the delete.
+  it('sets the RLS session context from the given currentUser before deleting', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    const where = jest.fn().mockResolvedValue(undefined)
+    db.delete.mockReturnValue({ where })
+
+    await clinicsService.removeMember(1, 10, adminUser)
+
+    const executeCalls = db.execute.mock.calls as unknown[][]
+    expect(db.transaction).toHaveBeenCalled()
+    expect(executeCalls).toHaveLength(2)
+    expect(flattenSqlChunks(executeCalls[0][0])).toContain(
+      'app.current_user_id',
+    )
+    expect(flattenSqlChunks(executeCalls[1][0])).toContain('app.current_role')
   })
 })

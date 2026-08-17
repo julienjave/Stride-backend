@@ -68,8 +68,12 @@ export class ClinicsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post(':id/members')
-  addMember(@Param('id', ParseIntPipe) id: number, @Body() dto: AddMemberDto) {
-    return this.clinicsService.addMember(id, dto.userId)
+  addMember(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddMemberDto,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.clinicsService.addMember(id, dto.userId, user)
   }
 
   @UseGuards(RolesGuard)
@@ -139,7 +143,8 @@ export class ClinicsController {
   removeMember(
     @Param('id', ParseIntPipe) id: number,
     @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() user: CurrentUser,
   ) {
-    return this.clinicsService.removeMember(id, userId)
+    return this.clinicsService.removeMember(id, userId, user)
   }
 }

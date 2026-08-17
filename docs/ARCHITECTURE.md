@@ -4,7 +4,7 @@ This document describes the system **as it currently stands**: what exists,
 how the pieces fit together, and what the current guarantees actually are.
 It intentionally does not explain *why* each decision was made, or what was
 tried and rejected along the way — that reasoning lives in the numbered
-writeup series ([`README.md`](../docs/journal/README.md) is the index) and in [`PROJECT.md`](PROJECT.md)'s condensed
+writeup series (`00-README.md` is the index) and in `PROJECT.md`'s condensed
 summary. Every major section below links back to the doc(s) where the
 decision was actually made.
 
@@ -166,14 +166,19 @@ actually belongs to that parent. *(doc 05, 08, 09)*
 
 ### Layer 3 — Row-Level Security (database-enforced)
 
-RLS is enabled and `FORCE`d on **6 of the schema's 18 tables (8 counting
-child tables)**: `medical_files`, `audit_logs`,
+RLS is enabled and `FORCE`d on **all 18 tables in the schema** — the
+original six-group rollout (`medical_files`, `audit_logs`,
 `assigned_programs`+`assigned_program_exercises`,
 `sessions`+`session_exercises`, `conversations`+`messages`,
-`exercises`+`program_templates`+`template_exercises`, and `users`.
+`exercises`+`program_templates`+`template_exercises`, and `users`), plus
+four further passes that closed every table the original rollout had
+left open: `clinics`, `user_roles`, the three profile tables
+(`practitioner_profiles`/`patient_profiles`/`admin_profiles`), and —
+notably — `user_clinics`, the schema's own trust-anchor table, which the
+original rollout had flagged as a likely-permanent exception.
 
-This is a genuine, database-enforced second boundary — not a restatement of
-Layer 2. The app's own queries run as `stride_app`, a role created
+This is a genuine, database-enforced second boundary — not a restatement
+of Layer 2. The app's own queries run as `stride_app`, a role created
 specifically to have zero exemptions from RLS: not a superuser, and no
 ownership of the tables it queries (both are separate, absolute Postgres
 bypass conditions). Every RLS-scoped query runs inside
@@ -181,20 +186,48 @@ bypass conditions). Every RLS-scoped query runs inside
 `app.current_user_id`/`app.current_role` as transaction-local Postgres
 settings that each table's policies read. *(doc 23, 24)*
 
-**Explicitly not RLS-covered**: `user_roles`, the three profile tables,
-`clinics`, `user_clinics`. `user_clinics` in particular is a deliberate,
-permanent exception — every other table's policies depend on it via `EXISTS`
-subqueries, so restricting it directly would risk narrowing what those
-policies can see through it. The rest are open questions for a future pass,
-not oversights. *(doc 24)*
+**"Every table has RLS" is not the same claim as "every table restricts
+who can read it"** — worth being precise about, since the two are easy to
+conflate. Several tables carry a deliberately permissive `SELECT USING
+(true)` policy — `users`, `user_roles`, the three profile tables,
+`clinics`, `user_clinics`, `exercises`, and `program_templates` — for one
+of two real reasons, confirmed case by case rather than defaulted to:
+either the data is genuinely non-sensitive and shared by design
+(`exercises`/`program_templates`, a shared library), or the table backs a
+read that has to succeed *before* any session exists — login itself, or a
+one-time unauthenticated bootstrap flow — where a restrictive policy
+would silently break authentication rather than add protection. Real,
+per-row `SELECT` restriction is concentrated on the tables where it
+actually matters: `medical_files`, `assigned_programs` (+child),
+`sessions` (+child), `conversations`/`messages`, and `audit_logs`
+(admin-only reads). Every table's `INSERT`/`UPDATE`/`DELETE` policies, by
+contrast, are genuinely restrictive throughout — including `user_clinics`,
+where a practitioner may only insert a membership row into a clinic they
+themselves already belong to, mirroring a real vulnerability closed once
+already at the application layer (doc 20).
+
+`user_clinics` specifically is worth a note, since the original plan for
+it didn't survive contact with the real investigation: it was expected to
+need a `SECURITY DEFINER` function to avoid breaking the SQL helper
+functions other tables' policies depend on. That problem turned out not
+to be the real one — the actual blocker was `UsersService
+.getClinicIdsForUser()`'s own contextless read (the mechanism behind
+`isPatientManagedBy()`, the authorization gate for most of the app),
+which needed `SELECT USING (true)` regardless of any privilege question,
+for the same reason `users` and `user_roles` already needed it. Once that
+was proven, `SECURITY DEFINER` had nothing left to solve — a real,
+evidenced "not needed," not a shortcut. *(doc 33)*
 
 > **A note on doc 01**: the original architecture writeup describes RLS as
 > already active. It wasn't, at the time — the app-layer checks above were
 > the only enforcement until this rollout. Doc 01 is deliberately left as
 > originally written (it was accurate to the plan at the time); doc 23 is
 > where that gap is named and closed. This document reflects the current,
-> actual state: partial, table-by-table RLS coverage layered on top of
-> guards and service-level checks, not a replacement for either.
+> actual state: full-schema RLS coverage, layered on top of guards and
+> service-level checks — restrictive where the data's sensitivity
+> warrants it, deliberately permissive where a pre-session read or
+> genuinely shared data made that the correct choice, and never a
+> replacement for the layers underneath it.
 
 ---
 
@@ -260,7 +293,7 @@ setting a cover are the same operation with nothing to keep in sync.
 | Concern | Mechanism |
 |---|---|
 | Input validation | One global `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`); every list route uses a single combined query DTO extending `PaginationQueryDto` (splitting query params across multiple `@Query()` decorators breaks whitelisting). |
-| Error handling | Global `HttpExceptionFilter` (`APP_FILTER`) ensures no internal detail (stack traces, raw Postgres errors) reaches a client; `WsHttpExceptionFilter` mirrors it for WebSocket. |
+| Error handling | Global `HttpExceptionFilter` (`APP_FILTER`) ensures no internal detail (stack traces, raw Postgres errors) reaches a client; `WsHttpExceptionFilter` mirrors it for WebSocket. `message` is always an array of strings (one entry per issue) on both transports — normalized at the filter, not left to vary by error type. |
 | Audit logging | Hybrid: `AuditLogInterceptor` (`APP_INTERCEPTOR`) auto-logs every mutating REST request by deriving `entityType`/`entityId` from the URL and response body; `/auth/*` and `/medical-files` are excluded and call `AuditService.log()` explicitly instead, since those need context (why a login failed, that a read itself is the sensitive event) the generic interceptor can't infer. Writes are fire-and-forget — never awaited as part of the request/response cycle. |
 | Rate limiting | `@nestjs/throttler`, global default (60 req/min/IP via `APP_GUARD`), tighter override on `/auth/login` and MFA enable/disable. In-memory counters — correct specifically because exactly one API instance runs today; would need Redis-backed storage if horizontally scaled. |
 | Logging | `nestjs-pino`, structured JSON in production. Redaction is explicit: session cookies, `Authorization` headers, and plaintext passwords are stripped from every logged line. |
@@ -384,7 +417,7 @@ both. *(doc 19)*
 | Network | IP-range firewall, DB/storage bound to loopback | Direct-IP bypass, public DB/storage access | Compromise of the Droplet itself |
 | Authentication | bcrypt password hashing, `httpOnly` session cookies, optional TOTP MFA | Credential theft via DB leak (bcrypt), session theft via XSS (httpOnly) | Full server compromise |
 | Authorization (app layer) | Guards + `isPatientManagedBy`/`assertCanModify`/`assertParticipant` | Every route in the API | Bugs in the checks themselves (see doc 20/22 for real examples found and fixed) |
-| Authorization (DB layer) | RLS on 6/8 of 18 tables, via non-superuser `stride_app` | A second, independent boundary on the highest-stakes clinical tables | The 4 tables explicitly out of scope (§4) |
+| Authorization (DB layer) | RLS on all 18/18 tables, via non-superuser `stride_app` | A second, independent boundary — genuinely restrictive on the highest-stakes clinical tables and every table's writes | Several tables' `SELECT` is deliberately permissive (`USING (true)`) — pre-session reads and genuinely shared data, not an oversight (§4) |
 | Data at rest | AES-256-GCM for `mfaSecret`; bcrypt (one-way) for passwords | DB-read-only compromise of MFA secrets | Compromise of the app server (holds the decryption key) |
 | Audit trail | Insert-only `audit_logs`, interceptor + explicit calls, includes clinical-record *reads* | Who did/viewed what, when | Failed logins against nonexistent accounts (schema's `performedBy NOT NULL` constraint) |
 | Input handling | Global `ValidationPipe`, DTO length caps, `@MaxJsonSize` | Overlong/malformed payloads | — |
@@ -402,7 +435,9 @@ formal risk assessment, and no real patient data.
   `clinic_id` forever. *(doc 05)*
 - **In-memory rate-limit storage** — correct for exactly one running API
   instance; would need Redis if horizontally scaled. *(doc 03)*
-- **RLS coverage is partial by design** — see §4.
+- **RLS covers all 18 tables, but several are deliberately permissive on
+  `SELECT`** — not partial coverage, a deliberate restrictive-vs-permissive
+  split per table. See §4.
 - **MFA/backup encryption keys live in app-server environment variables**,
   not a KMS — acceptable given no real patient data exists. *(doc 12, 17)*
 - **Log persistence, not full aggregation** — log rotation prevents disk
@@ -419,8 +454,9 @@ formal risk assessment, and no real patient data.
 | Schema patterns | 02, 23, 24 |
 | Auth flow | 03, 05, 06, 12, 17 |
 | Authorization layers | 03, 05, 08, 20, 22 |
-| RLS | 23, 24 |
+| RLS | 23, 24, 29, 30, 31, 32, 33, 34 |
 | Messaging | 09, 20, 22 |
 | Storage | 04, 07, 15 |
-| Deployment | 16, 18, 19, 25 |
+| Deployment | 16, 18, 19, 25, 26 |
 | Security posture | 14, 15, 20, 21, 22 |
+| Cross-cutting concerns (§7) | 03, 10, 11, 14, 15, 20, 22, 27 |
