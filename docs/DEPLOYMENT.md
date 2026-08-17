@@ -44,12 +44,16 @@ credentials suitable for local dev only.
 
 ```bash
 cp .env.example .env
+nano .env
 ```
 
-Then edit `.env`. Everything with a `# Generate: openssl rand -hex N`
-comment needs a real generated value — `validateEnv()` refuses to boot on a
-missing or placeholder value for `SESSION_SECRET`, `MFA_ENCRYPTION_KEY`, and
-`POSTGRES_APP_PASSWORD` specifically:
+(Any editor works — `code .env` if you have VS Code's CLI set up, or
+whatever you're used to. `nano` is just the one guaranteed to exist with
+no setup, the same reason it's used throughout this guide.) Everything
+with a `# Generate: openssl rand -hex N` comment needs a real generated
+value — `validateEnv()` refuses to boot on a missing or placeholder value
+for `SESSION_SECRET`, `MFA_ENCRYPTION_KEY`, and `POSTGRES_APP_PASSWORD`
+specifically:
 
 ```bash
 openssl rand -hex 32   # SESSION_SECRET
@@ -277,9 +281,11 @@ over.
 ```bash
 chmod +x scripts/backup-database.sh
 cp .env.example .env
+nano .env
 ```
 
-Edit `.env` for production values:
+Edit for production values (`nano` since you're already in an SSH
+session — no GUI editor is going to be available here):
 
 - **`POSTGRES_HOST=db` and `STORAGE_ENDPOINT=storage`, not `localhost`** —
   the single easiest mistake to make here. Local dev uses `localhost`
