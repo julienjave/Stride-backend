@@ -210,9 +210,16 @@ a few of the more instructive moments:
   — correct as in-memory today specifically because it doesn't.
 - The frontend itself — see [`FRONTEND.md`](./docs/FRONTEND.md) for the full
   plan.
-- A `deferred-improvements.md` running ledger (referenced in the journal)
-  tracks smaller open items in changelog form, for anyone who wants that
-  version instead of the narrative one.
+- Support other deployment paths in the `DEPLOYMENT.md` documentation:
+  This deployment path (a self-managed Droplet, Docker Compose, and Caddy) 
+  was chosen deliberately, as a learning exercise in owning the full stack 
+  — provisioning, TLS, process management, backups, all of it, rather than 
+  abstracting them away. A PaaS-based alternative (Railway, Fly.io, Render) 
+  would trade that hands-on control for meaningfully less operational burden, 
+  and would be a reasonable, worthwhile pipeline to document for anyone who 
+  wants the convenience over the learning experience. Not written up here 
+  because it wasn't the point of this particular exercise, not because it 
+  wouldn't work.
 
 ## Production Readiness — what would change for real patients
 
@@ -259,6 +266,10 @@ None of this is a hidden gap — it's the explicit, stated line this project
 draws between "built with the right instincts" and "certified for the
 real thing," and it's drawn the same way throughout: state the tradeoff
 plainly, don't imply a guarantee that isn't actually true.
+
+## A note on multi-tenancy
+
+This system is deliberately single-tenant — `clinics` is branding/display data, not a security isolation boundary, and that was a considered decision, not a default (see the journal's entry on the clinic-bootstrap redesign for the full reasoning). Going multi-tenant — supporting multiple independent clinic organizations with real data isolation from each other — would not be a configuration change. It would mean revisiting nearly every access-control decision in this project: every query scoped by `clinic_id`, forever, correctly, with no exceptions, which is a categorically stricter security bar than the one this system was actually built to meet. Worth stating plainly as a real architectural boundary, the same way Production Readiness states the HIPAA-compliance boundary above — not a gap, a deliberate line.
 
 ## License
 

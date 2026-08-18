@@ -1,18 +1,5 @@
 # Stride — Installation & Deployment Guide
 
-Two audiences, two paths through this document: **Part 1** gets a developer
-running the app locally. **Part 2** is a full, ordered runbook for deploying
-to a fresh production host. Both are built directly from the real
-`docker-compose.yml`/`docker-compose.prod.yml`, `.env.example`,
-`package.json`, and `scripts/backup-database.sh` — not reconstructed from
-memory — plus the reasoning behind each step, which lives in the numbered
-journal series ([`README.md`](./journal/README.md)) and is linked inline rather than repeated.
-
-Like [`ARCHITECTURE.md`](ARCHITECTURE.md), this is a **living document** — update it in place
-whenever the real process changes, rather than leaving it to drift.
-
----
-
 ## Part 1 — Local development setup
 
 **Prerequisites**: Node.js 24.x, Docker + Docker Compose, `npm`.
@@ -288,6 +275,9 @@ ssh-keygen -t ed25519 -C "stride-droplet-deploy-key" -f ~/.ssh/stride_deploy_key
 chmod 600 ~/.ssh/stride_deploy_key
 cat ~/.ssh/stride_deploy_key.pub
 # add this as a read-only Deploy key on the repo: Settings → Deploy keys
+```
+Then:
+```bash
 git -c core.sshCommand="ssh -i ~/.ssh/stride_deploy_key" clone git@github.com:<you>/Stride-backend.git
 cd Stride-backend
 git config core.sshCommand "ssh -i ~/.ssh/stride_deploy_key"
@@ -348,8 +338,8 @@ session — no GUI editor is going to be available here):
 chmod 600 .env
 ```
 
-Also copy `Caddyfile` to the Droplet if it isn't already tracked in the
-repo, and confirm it points at your real domain.
+`Caddyfile` came along with the clone — confirm it points at your real
+domain.
 
 ### Phase 4 — Bring up the database and storage layer
 
@@ -374,28 +364,10 @@ the moment it runs*, and an `ALTER DEFAULT PRIVILEGES` rule so any table a
 *future* migration creates is automatically granted too. Running migrations
 first means the explicit sweep immediately covers every real table, rather
 than relying solely on the default-privilege mechanism for tables that
-already existed. *(This ordering is this document's own inference from how
-the mechanism is described in doc 23, not something the journal states
-outright as a rule — worth confirming directly during your test deploy,
-since you're about to have a clean opportunity to.)*
+already existed.
 
 **Verify**: no errors from either command; `create-app-role`'s output
 confirms the role was created or its password synced.
-
-**If this is the first real deployment since the RLS rollout (Passes
-1–4, migrations `0008`–`0011`)**, treat this deploy as that rollout's
-real end-to-end validation, not just a formality — `AuthService
-.registerClinic()`, exercised the moment Phase 7 registers the founding
-admin, writes to five tables (`clinics` → `users` → `user_roles` →
-`admin_profiles` → `user_clinics`) in one transaction, four of which now
-carry bootstrap-aware RLS `INSERT` policies. Each was individually
-adversarially verified, and the full transaction passed the local e2e
-suite after every pass — but production has never actually run it before,
-since the last real redeploy (doc 26) predates all four passes. Well-
-tested, not a reason to expect trouble — but worth knowing this is a
-genuine first real-world exercise of that transaction, not a formality,
-the same "verify by actually running it" standard applied everywhere else
-in this project.
 
 ### Phase 6 — Bring up the app and Caddy
 
@@ -421,8 +393,7 @@ Idempotent — safe to re-run; skips any exercise whose `external_id`
 already exists. Always `build` before `run --rm` for any `profiles: ["tools"]`
 service after a `git pull` — Compose only auto-builds an image the first
 time it doesn't exist, and silently reuses a stale one otherwise (see
-Part 3's redeploy note for the general version of this rule — it's cost
-real debugging time twice already in this project's own redeploy).
+Part 3's redeploy note for the general version of this rule).
 
 **Verify**:
 ```bash
@@ -454,7 +425,7 @@ logs only exist there — that one's called out explicitly below.
 Set your real domain once:
 
 ```bash
-DOMAIN=api.stridecare.app
+DOMAIN=<api.yourdomain.com>
 ```
 
 - [ ] **Health check**
@@ -482,9 +453,7 @@ DOMAIN=api.stridecare.app
   `Secure` and `SameSite=None` — if either is missing, `NODE_ENV` isn't
   actually resolving to `production` in the running container (§ Phase 3).
   Also check the response body includes a nested `"patientProfile":
-  { "dateOfBirth": "1990-01-01" }` — this data used to be write-only
-  (never read back by any route); confirms that fix is genuinely live in
-  this deployment, not just correct locally.
+  { "dateOfBirth": "1990-01-01" }`.
 
 - [ ] **Confirm the session is real**, using the saved cookie:
   ```bash
@@ -573,7 +542,7 @@ question about the network path *into* the Droplet, not something the
 Droplet can meaningfully test against itself:
 
 ```bash
-DROPLET_IP=<your-droplet's-real-IP>
+DROPLET_IP=<your-droplet-s-real-IP>
 curl -m 5 -I http://$DROPLET_IP/health
 curl -m 5 -I -k https://$DROPLET_IP/health
 ```
@@ -619,8 +588,19 @@ Run the backup script for real, **on the Droplet**:
 ```bash
 chmod +x scripts/backup-database.sh
 ./scripts/backup-database.sh   # run once by hand first — confirm it works
+```
+
+Then schedule it. Run:
+
+```bash
 crontab -e
-# add: 0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
+```
+
+That opens an editor — add this line inside it (don't paste it into your
+shell directly; it only means anything inside the crontab file):
+
+```
+0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
 ```
 
 **Don't stop at "the script exited cleanly"** — actually pull the backup
@@ -773,16 +753,18 @@ know the redeploy actually worked:
 ```bash
 curl -I https://<your-domain>/health
 ```
-If you genuinely want full Phase 7-style re-verification, do it *before*
-running Phase 11 again, not after — that way the reset still ends on a
-truly clean state, rather than one that's clean for a moment and then
-isn't. Also worth redoing Phase 9's backup + restore check — unlike Phase
-7's account creation, this doesn't leave lasting test data behind (the
-restore target is dropped every time), and confirming backups still work
-against the freshly-reset state is genuinely useful. The `backups` bucket
-recreates itself automatically on that first run, nothing manual needed
-there anymore, since it lives in `rustfs_data`. **Phase 8 and Phase 10
-don't need repeating**; nothing they configured lived in a wiped volume.
+**Backups are worth re-verifying too, but only partially.** The cron entry
+itself survived the reset — it's host state, already listed as untouched
+above — so there's no need to touch `crontab -e` again. What's actually
+worth redoing is a single manual run plus the restore-and-row-count check,
+since that data really did live in the wiped volume:
+```bash
+./scripts/backup-database.sh
+```
+then the restore verification from earlier in Phase 9. The `backups`
+bucket recreates itself automatically on that run — nothing manual needed
+there either. **Phase 8 and Phase 10 don't need repeating**; nothing they
+configured lived in a wiped volume.
 
 ---
 
