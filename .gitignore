@@ -59,6 +59,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Other Doc
 docs/extra/
 docs/guides/
-codebase-snapshot.md
+backend-codebase-snapshot.md
+backend-documentation-snapshot.md
 removed/
 *.tsbuildinfo
