@@ -55,13 +55,23 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // naming actual columns/tables) — always replace it with a generic
     // message, and log the real one only server-side.
     let message: string | object = 'Internal server error'
+    let extra: Record<string, unknown> | undefined
     if (isHttpException) {
       const exceptionResponse = exception.getResponse()
-      message =
-        typeof exceptionResponse === 'string'
-          ? exceptionResponse
-          : ((exceptionResponse as { message?: string | object }).message ??
-            exception.message)
+      if (typeof exceptionResponse === 'string') {
+        message = exceptionResponse
+      } else {
+        const {
+          message: rawMessage,
+          statusCode: _statusCode,
+          error: _error,
+          ...rest
+        } = exceptionResponse as Record<string, unknown>
+        message = (rawMessage as string | object) ?? exception.message
+        if (Object.keys(rest).length > 0) {
+          extra = rest
+        }
+      }
     } else {
       this.logger.error(
         `Unhandled exception on ${request.method} ${request.url}`,
@@ -76,6 +86,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message: messages,
       error: isHttpException ? exception.name : 'InternalServerError',
       timestamp: new Date().toISOString(),
+      ...extra,
       path: request.url,
     })
   }

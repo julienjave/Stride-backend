@@ -260,9 +260,12 @@ export class AuthService {
       // from a genuine UserRole.
       activeRole = roles[0] as UserRole
     } else {
-      throw new BadRequestException(
-        'This account has multiple roles. Specify which one to log in as.',
-      )
+      throw new BadRequestException({
+        message: [
+          'This account has multiple roles. Specify which one to log in as.',
+        ],
+        roles,
+      })
     }
 
     await this.auditService.log({

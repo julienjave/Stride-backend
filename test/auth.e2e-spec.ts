@@ -263,6 +263,13 @@ describe('Auth (e2e)', () => {
       password: 'password123',
     })
     expect(noRoleLogin.status).toBe(400)
+    // Regression coverage for the actual gap this fix closes: the 400 body
+    // now carries the account's actual roles, so the frontend can build a
+    // role picker instead of just knowing "pick one" with no idea which.
+    expect(noRoleLogin.body.roles).toEqual(
+      expect.arrayContaining(['patient', 'practitioner']),
+    )
+    expect(noRoleLogin.body.roles).toHaveLength(2)
 
     const wrongRoleLogin = await dualRole.post('/auth/login').send({
       email: `dual-role-${stamp}@example.com`,
