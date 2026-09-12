@@ -1,5 +1,9 @@
 import { Test } from '@nestjs/testing'
-import { BadRequestException, ForbiddenException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common'
 import * as bcrypt from 'bcrypt'
 import { AuthService } from './auth.service'
 import { UsersService } from '../users/users.service'
@@ -196,7 +200,10 @@ describe('AuthService.validateUser', () => {
 describe('AuthService.registerClinic', () => {
   let authService: AuthService
   let db: {
-    query: { userRoles: { findFirst: jest.Mock } }
+    query: {
+      userRoles: { findFirst: jest.Mock }
+      users: { findFirst: jest.Mock }
+    }
     transaction: jest.Mock
   }
   let usersService: { attachProfile: jest.Mock }
@@ -204,7 +211,14 @@ describe('AuthService.registerClinic', () => {
 
   beforeEach(async () => {
     db = {
-      query: { userRoles: { findFirst: jest.fn() } },
+      query: {
+        userRoles: { findFirst: jest.fn() },
+        // Defaults to "no colliding email" so every existing happy-path
+        // test below (which never cared about this check) keeps passing
+        // unchanged. The dedicated test further down overrides this to
+        // assert the new rejection behavior instead.
+        users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
       transaction: jest.fn(),
     }
     // registerClinic() attaches adminProfile the same way create()/findOne()
@@ -248,6 +262,35 @@ describe('AuthService.registerClinic', () => {
       }),
     ).rejects.toThrow(ForbiddenException)
 
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // Regression coverage for a real bug: registerClinic() inserts directly
+  // into `users` inside its own transaction, bypassing UsersService.create()
+  // entirely — which is where every other signup path gets its duplicate-
+  // email check for free. Before this fix, a colliding email here hit the
+  // raw Postgres unique constraint, unhandled, and surfaced as a bare 500
+  // via the catch-all exception filter instead of a proper 409.
+  it('refuses to run when the email is already in use by any existing account', async () => {
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    db.query.users.findFirst.mockResolvedValue({
+      id: 99,
+      email: 'admin@example.com',
+    })
+
+    await expect(
+      authService.registerClinic({
+        clinicName: 'Acme Clinic',
+        clinicEmail: 'clinic@example.com',
+        email: 'admin@example.com',
+        password: 'password123',
+        firstName: 'New',
+        lastName: 'Admin',
+      }),
+    ).rejects.toThrow(ConflictException)
+
+    // Same reasoning as the admin-already-exists case just above: a
+    // rejected request should never open a transaction at all.
     expect(db.transaction).not.toHaveBeenCalled()
   })
 

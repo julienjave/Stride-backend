@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -113,6 +114,25 @@ export class AuthService {
       throw new ForbiddenException(
         'An administrator account already exists. Ask an existing admin to create additional accounts.',
       )
+    }
+
+    // registerClinic() inserts directly into `users` inside its own
+    // transaction below, rather than going through UsersService.create() —
+    // which is where every OTHER account-creation path gets this same check
+    // for free. Without it, a colliding email (e.g. an account that
+    // self-registered as a patient before any admin existed) hit the raw
+    // Postgres unique constraint on users.email, unhandled, and surfaced to
+    // the caller as a bare 500 Internal Server Error via the catch-all
+    // exception filter — the real reason was only ever visible server-side
+    // in the logs. Checked here, explicitly, BEFORE the transaction opens,
+    // for the same reason UsersService.create() checks before hashing the
+    // password: no sense doing a bcrypt hash (deliberately slow) for a
+    // request that's going to be rejected anyway.
+    const existingEmail = await this.db.query.users.findFirst({
+      where: eq(users.email, dto.email),
+    })
+    if (existingEmail) {
+      throw new ConflictException('A user with this email already exists')
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10)
