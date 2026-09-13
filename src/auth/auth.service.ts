@@ -88,6 +88,8 @@ export class AuthService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       dateOfBirth: dto.dateOfBirth,
+      phone: dto.phone,
+      address: dto.address,
     })
 
     await this.auditService.log({
@@ -156,6 +158,8 @@ export class AuthService {
             passwordHash,
             firstName: dto.firstName,
             lastName: dto.lastName,
+            phone: dto.phone,
+            address: dto.address,
           })
           .returning()
 

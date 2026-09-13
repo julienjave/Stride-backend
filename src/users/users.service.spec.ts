@@ -764,6 +764,16 @@ describe('UsersService.update', () => {
         { id: 9, activeRole: UserRole.ADMIN },
       ),
     ).rejects.toThrow(BadRequestException)
+    // bio is gated the same way as licenseNumber/specialties — a
+    // practitioner-profile field, rejected for a target with no
+    // practitioner role at all.
+    await expect(
+      usersService.update(
+        1,
+        { bio: 'Should fail' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(BadRequestException)
     expect(db.transaction).not.toHaveBeenCalled()
 
     db.query.users.findFirst.mockResolvedValue({
@@ -834,6 +844,7 @@ describe('UsersService.update', () => {
             userId: 1,
             licenseNumber: 'PT-NEW',
             specialties: ['ortho'],
+            bio: 'Updated bio.',
           }),
         },
       },
@@ -842,7 +853,12 @@ describe('UsersService.update', () => {
 
     const result = await usersService.update(
       1,
-      { firstName: 'Updated', licenseNumber: 'PT-NEW', specialties: ['ortho'] },
+      {
+        firstName: 'Updated',
+        licenseNumber: 'PT-NEW',
+        specialties: ['ortho'],
+        bio: 'Updated bio.',
+      },
       { id: 9, activeRole: UserRole.ADMIN },
     )
 
@@ -850,10 +866,12 @@ describe('UsersService.update', () => {
     expect(result.practitionerProfile).toEqual({
       licenseNumber: 'PT-NEW',
       specialties: ['ortho'],
+      bio: 'Updated bio.',
     })
     expect(profileUpdateChain.set).toHaveBeenCalledWith({
       licenseNumber: 'PT-NEW',
       specialties: ['ortho'],
+      bio: 'Updated bio.',
     })
   })
 

@@ -52,6 +52,12 @@ export class GrantRoleDto {
   @MaxLength(100, { each: true })
   specialties?: string[]
 
+  @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.PRACTITIONER)
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  bio?: string
+
   @ValidateIf((dto: GrantRoleDto) => dto.role === UserRole.PATIENT)
   @IsDateString()
   dateOfBirth?: string

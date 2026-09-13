@@ -130,6 +130,8 @@ describe('Auth (e2e)', () => {
       password: 'password123',
       firstName: 'Auth',
       lastName: 'Admin',
+      phone: '555-0100',
+      address: '1 Founding Admin Way',
       position: 'Clinic Director',
     })
     if (clinicRes.status !== 201) {
@@ -148,6 +150,12 @@ describe('Auth (e2e)', () => {
     })
     expect(clinicRes.body).not.toHaveProperty('practitionerProfile')
     expect(clinicRes.body).not.toHaveProperty('patientProfile')
+    // phone/address moved from patient_profiles onto users itself —
+    // registerClinic()'s own raw `users` insert (bypassing
+    // UsersService.create()) needs the same fields threaded through
+    // separately, since it never goes through create() at all.
+    expect(clinicRes.body.phone).toBe('555-0100')
+    expect(clinicRes.body.address).toBe('1 Founding Admin Way')
   })
 
   afterAll(async () => {
@@ -195,6 +203,8 @@ describe('Auth (e2e)', () => {
       firstName: 'Single',
       lastName: 'Role',
       dateOfBirth: '1990-01-01',
+      phone: '555-0101',
+      address: '1 Patient Lane',
     })
     expect(registerRes.status).toBe(201)
     // Regression coverage: patient_profiles.dateOfBirth is written by
@@ -206,6 +216,11 @@ describe('Auth (e2e)', () => {
     })
     expect(registerRes.body).not.toHaveProperty('practitionerProfile')
     expect(registerRes.body).not.toHaveProperty('adminProfile')
+    // phone/address now live on `users` itself (moved off patient_profiles),
+    // so they're common to every role — round-tripped here through the
+    // public registration path.
+    expect(registerRes.body.phone).toBe('555-0101')
+    expect(registerRes.body.address).toBe('1 Patient Lane')
     // /auth/register already logs the caller in via req.login() — confirm
     // that session is real before logging out and testing login separately.
     const meAfterRegister = await patient.get('/auth/me')
@@ -213,6 +228,8 @@ describe('Auth (e2e)', () => {
     expect(meAfterRegister.body.patientProfile).toEqual({
       dateOfBirth: '1990-01-01',
     })
+    expect(meAfterRegister.body.phone).toBe('555-0101')
+    expect(meAfterRegister.body.address).toBe('1 Patient Lane')
     await patient.post('/auth/logout')
 
     const loginRes = await patient.post('/auth/login').send({
@@ -225,6 +242,8 @@ describe('Auth (e2e)', () => {
     // response by hand rather than through findOne()/create(), so it needed
     // its own explicit attachProfile() call — same gap, different call site.
     expect(loginRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+    expect(loginRes.body.phone).toBe('555-0101')
+    expect(loginRes.body.address).toBe('1 Patient Lane')
   })
 
   it('requires an explicit role choice for an account with more than one role, and rejects a role it does not hold', async () => {
@@ -294,6 +313,7 @@ describe('Auth (e2e)', () => {
     expect(correctRoleLogin.body.practitionerProfile).toEqual({
       licenseNumber: `PT-DUAL-${stamp}`,
       specialties: [],
+      bio: null,
     })
 
     const switchOk = await dualRole
@@ -308,6 +328,7 @@ describe('Auth (e2e)', () => {
     expect(switchOk.body.practitionerProfile).toEqual({
       licenseNumber: `PT-DUAL-${stamp}`,
       specialties: [],
+      bio: null,
     })
 
     const switchDenied = await dualRole

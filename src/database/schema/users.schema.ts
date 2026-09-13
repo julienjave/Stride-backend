@@ -46,6 +46,8 @@ export const users = pgTable('users', {
   firstName: varchar('first_name', { length: 100 }).notNull(),
   lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarPath: varchar('avatar_path', { length: 500 }),
+  phone: varchar('phone', { length: 50 }),
+  address: varchar('address', { length: 500 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
@@ -129,8 +131,6 @@ export const patientProfiles = pgTable('patient_profiles', {
   userId: integer('user_id')
     .primaryKey()
     .references(() => users.id, { onDelete: 'cascade' }),
-  phone: varchar('phone', { length: 50 }),
-  address: varchar('address', { length: 500 }),
   dateOfBirth: date('date_of_birth').notNull(),
 })
 

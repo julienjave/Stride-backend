@@ -62,6 +62,17 @@ export class CreateUserDto {
   @MaxLength(100)
   lastName!: string
 
+  // --- Common fields (every role) ---
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  phone?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  address?: string
+
   // --- Practitioner-only fields ---
   // @ValidateIf runs its callback against the whole DTO; the field below it is
   // only validated (and only required) when that callback returns true. For
@@ -78,6 +89,12 @@ export class CreateUserDto {
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   specialties?: string[]
+
+  @ValidateIf((dto: CreateUserDto) => dto.role === UserRole.PRACTITIONER)
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  bio?: string
 
   // --- Patient-only field ---
   @ValidateIf((dto: CreateUserDto) => dto.role === UserRole.PATIENT)

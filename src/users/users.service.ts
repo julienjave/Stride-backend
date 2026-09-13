@@ -106,6 +106,8 @@ export class UsersService {
           passwordHash,
           firstName: dto.firstName,
           lastName: dto.lastName,
+          phone: dto.phone,
+          address: dto.address,
         })
         .returning()
 
@@ -116,6 +118,7 @@ export class UsersService {
           userId: user.id,
           licenseNumber: dto.licenseNumber!,
           specialties: dto.specialties ?? [],
+          bio: dto.bio,
         })
       } else if (dto.role === UserRole.PATIENT) {
         await tx.insert(patientProfiles).values({
@@ -183,6 +186,7 @@ export class UsersService {
             userId,
             licenseNumber: dto.licenseNumber!,
             specialties: dto.specialties ?? [],
+            bio: dto.bio,
           })
         }
       } else if (dto.role === UserRole.PATIENT) {
@@ -373,7 +377,8 @@ export class UsersService {
     currentUser: { id: number; activeRole: UserRole },
   ) {
     const existing = await this.findOne(id)
-    const { licenseNumber, specialties, dateOfBirth, position, ...rest } = dto
+    const { licenseNumber, specialties, bio, dateOfBirth, position, ...rest } =
+      dto
     // TS class fields (target ES2023, useDefineForClassFields) make every
     // declared UpdateUserDto property — including ones the caller never
     // sent — a real own key on the instance, set to `undefined`. Spreading
@@ -388,7 +393,9 @@ export class UsersService {
     )
 
     if (
-      (licenseNumber !== undefined || specialties !== undefined) &&
+      (licenseNumber !== undefined ||
+        specialties !== undefined ||
+        bio !== undefined) &&
       !existing.roles.includes(UserRole.PRACTITIONER)
     ) {
       throw new BadRequestException(
@@ -417,12 +424,17 @@ export class UsersService {
             )[0]
           : await tx.query.users.findFirst({ where: eq(users.id, id) })
 
-      if (licenseNumber !== undefined || specialties !== undefined) {
+      if (
+        licenseNumber !== undefined ||
+        specialties !== undefined ||
+        bio !== undefined
+      ) {
         await tx
           .update(practitionerProfiles)
           .set({
             ...(licenseNumber !== undefined && { licenseNumber }),
             ...(specialties !== undefined && { specialties }),
+            ...(bio !== undefined && { bio }),
           })
           .where(eq(practitionerProfiles.userId, id))
       }
@@ -512,7 +524,11 @@ export class UsersService {
     dbOrTx: DrizzleDb = this.db,
   ): Promise<
     T & {
-      practitionerProfile?: { licenseNumber: string; specialties: string[] }
+      practitionerProfile?: {
+        licenseNumber: string
+        specialties: string[]
+        bio: string | null
+      }
       patientProfile?: { dateOfBirth: string }
       adminProfile?: { position: string | null }
     }
@@ -542,6 +558,7 @@ export class UsersService {
         practitionerProfile: {
           licenseNumber: practitionerProfile.licenseNumber,
           specialties: practitionerProfile.specialties,
+          bio: practitionerProfile.bio,
         },
       }),
       ...(patientProfile && {
@@ -550,24 +567,22 @@ export class UsersService {
       ...(adminProfile && {
         adminProfile: { position: adminProfile.position },
       }),
-    } as T & {
-      practitionerProfile?: { licenseNumber: string; specialties: string[] }
-      patientProfile?: { dateOfBirth: string }
-      adminProfile?: { position: string | null }
     }
   }
 
   // Batched sibling of attachProfile() for findAll()/
   // findPatientsForPractitioner() — one query per table across every user
   // in the list (via inArray), instead of N+1 queries per user.
-  private async attachProfilesToMany<T extends { id: number }>(
-    usersList: T[],
-  ) {
+  private async attachProfilesToMany<T extends { id: number }>(usersList: T[]) {
     if (usersList.length === 0) {
       return [] as Array<
         T & {
           roles: string[]
-          practitionerProfile?: { licenseNumber: string; specialties: string[] }
+          practitionerProfile?: {
+            licenseNumber: string
+            specialties: string[]
+            bio: string | null
+          }
           patientProfile?: { dateOfBirth: string }
           adminProfile?: { position: string | null }
         }
@@ -618,6 +633,7 @@ export class UsersService {
           practitionerProfile: {
             licenseNumber: practitionerProfile.licenseNumber,
             specialties: practitionerProfile.specialties,
+            bio: practitionerProfile.bio,
           },
         }),
         ...(patientProfile && {

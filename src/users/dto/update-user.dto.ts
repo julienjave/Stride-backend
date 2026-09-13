@@ -65,6 +65,17 @@ export class UpdateUserDto {
   @MaxLength(100)
   lastName?: string
 
+  // --- Common fields (every role) ---
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  phone?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  address?: string
+
   // --- Practitioner-profile fields (target must hold the practitioner role) ---
   @IsOptional()
   @IsString()
@@ -79,6 +90,11 @@ export class UpdateUserDto {
   @IsString({ each: true })
   @MaxLength(100, { each: true })
   specialties?: string[]
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  bio?: string
 
   // --- Patient-profile field (target must hold the patient role) ---
   @IsOptional()

@@ -43,7 +43,11 @@ describe('Users (e2e)', () => {
   let patient2Email: string;
   let practitionerAId: number;
   let practitionerAEmail: string;
-  let practitionerAProfile: { licenseNumber: string; specialties: string[] };
+  let practitionerAProfile: {
+    licenseNumber: string;
+    specialties: string[];
+    bio: string | null;
+  };
   let practitionerBId: number;
 
   beforeAll(async () => {
@@ -138,16 +142,25 @@ describe('Users (e2e)', () => {
       lastName: 'A',
       licenseNumber: `PT-A-${stamp}`,
       specialties: ['sports rehab'],
+      bio: 'Specializes in post-op rehab.',
+      phone: '555-0200',
+      address: '1 Practitioner Ave',
       clinicId: clinicXId,
     });
     expect(practitionerARes.status).toBe(201);
     // Regression coverage for the gap this fix closes: practitioner_profiles
     // is written by UsersService.create() but was never attached to its own
-    // response — not even here, on the account's own creation.
+    // response — not even here, on the account's own creation. bio was a
+    // completely dead column (no DTO field, never read back) until now.
     expect(practitionerARes.body.practitionerProfile).toEqual({
       licenseNumber: `PT-A-${stamp}`,
       specialties: ['sports rehab'],
+      bio: 'Specializes in post-op rehab.',
     });
+    // phone/address moved from patient_profiles onto users itself — now
+    // common to every role, including a practitioner.
+    expect(practitionerARes.body.phone).toBe('555-0200');
+    expect(practitionerARes.body.address).toBe('1 Practitioner Ave');
     practitionerAId = practitionerARes.body.id;
     practitionerAEmail = `practitioner-a-${stamp}@example.com`;
     practitionerAProfile = practitionerARes.body.practitionerProfile;
@@ -179,6 +192,8 @@ describe('Users (e2e)', () => {
       firstName: 'Patient',
       lastName: 'One',
       dateOfBirth: '1990-01-01',
+      phone: '555-0300',
+      address: '1 Patient One Street',
       clinicId: clinicXId,
     });
     expect(patient1Res.status).toBe(201);
@@ -186,6 +201,10 @@ describe('Users (e2e)', () => {
     expect(patient1Res.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
     expect(patient1Res.body).not.toHaveProperty('practitionerProfile');
     expect(patient1Res.body).not.toHaveProperty('adminProfile');
+    // phone/address are common to every role now — a patient gets them too,
+    // read straight off `users` rather than the old patient_profiles columns.
+    expect(patient1Res.body.phone).toBe('555-0300');
+    expect(patient1Res.body.address).toBe('1 Patient One Street');
     await patient1.post('/auth/login').send({
       email: `patient1-${stamp}@example.com`,
       password: 'password123',
@@ -229,6 +248,17 @@ describe('Users (e2e)', () => {
     // (unaffected by this edit, which only touches firstName) should still
     // be present in the response.
     expect(updateRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+
+    // phone/address are plain `users` columns now (moved off
+    // patient_profiles), so they fall through UpdateUserDto's own
+    // `rest`/`userFields` destructuring with no role-gating at all — every
+    // role can update them the same way.
+    const contactUpdateRes = await patient1
+      .patch(`/users/${patient1Id}`)
+      .send({ phone: '555-9999', address: '99 Updated Ave' });
+    expect(contactUpdateRes.status).toBe(200);
+    expect(contactUpdateRes.body.phone).toBe('555-9999');
+    expect(contactUpdateRes.body.address).toBe('99 Updated Ave');
   });
 
   it('lets an admin update anyone', async () => {
@@ -491,6 +521,12 @@ describe('Users (e2e)', () => {
   // mutate patient1Id's dateOfBirth and practitionerAId's specialties, both
   // asserted as their ORIGINAL values by several earlier tests above.
   describe('profile-field updates (licenseNumber/specialties, dateOfBirth, position)', () => {
+    // Set by the licenseNumber self-update test below, then read by the bio
+    // self-update test right after it — both mutate practitionerAId's row in
+    // sequence, so the bio test needs the license value as it stands AFTER
+    // that update, not practitionerAProfile's original creation-time value.
+    let practitionerACurrentLicense: string;
+
     it('lets a patient self-update their own dateOfBirth', async () => {
       const res = await patient1.patch(`/users/${patient1Id}`).send({ dateOfBirth: '1991-02-02' });
       expect(res.status).toBe(200);
@@ -505,6 +541,7 @@ describe('Users (e2e)', () => {
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: practitionerAProfile.licenseNumber,
         specialties: ['sports rehab', 'geriatrics'],
+        bio: practitionerAProfile.bio,
       });
     });
 
@@ -518,6 +555,24 @@ describe('Users (e2e)', () => {
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: newLicense,
         specialties: ['sports rehab'],
+        bio: practitionerAProfile.bio,
+      });
+      practitionerACurrentLicense = newLicense;
+    });
+
+    // bio was a completely dead column before this fix: a real column on
+    // practitioner_profiles with no DTO field anywhere and never attached to
+    // any response. This proves it now round-trips through PATCH the same
+    // way licenseNumber/specialties already did.
+    it("lets a practitioner self-update their own bio, and reads it back", async () => {
+      const res = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({ bio: 'Updated bio after a PATCH.' });
+      expect(res.status).toBe(200);
+      expect(res.body.practitionerProfile).toEqual({
+        licenseNumber: practitionerACurrentLicense,
+        specialties: ['sports rehab'],
+        bio: 'Updated bio after a PATCH.',
       });
     });
 
@@ -551,6 +606,14 @@ describe('Users (e2e)', () => {
         .patch(`/users/${patient1Id}`)
         .send({ licenseNumber: 'PT-SHOULD-FAIL' });
       expect(licenseOnPatient.status).toBe(400);
+
+      // bio is gated the same way as licenseNumber/specialties — a
+      // practitioner-profile field, rejected for a target with no
+      // practitioner role at all, even for an admin caller.
+      const bioOnPatient = await admin
+        .patch(`/users/${patient1Id}`)
+        .send({ bio: 'Should Fail' });
+      expect(bioOnPatient.status).toBe(400);
 
       const positionOnPractitioner = await admin
         .patch(`/users/${practitionerAId}`)
