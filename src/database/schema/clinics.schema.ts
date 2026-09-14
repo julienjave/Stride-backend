@@ -22,6 +22,7 @@ export const clinics = pgTable('clinics', {
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }).notNull(),
   phone: varchar('phone', { length: 50 }),
+  address: varchar('address', { length: 500 }),
   website: varchar('website', { length: 255 }),
   logoPath: varchar('logo_path', { length: 500 }),
   isActive: boolean('is_active').notNull().default(true),

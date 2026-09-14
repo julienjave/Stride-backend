@@ -42,6 +42,7 @@ describe('Auth (e2e)', () => {
   // is what a direct audit_logs read in a test has to authenticate as,
   // the same way AuditController's real /audit-logs route does.
   let adminId: number
+  let clinicId: number
   // Resend's unverified-sandbox mode rejects any recipient outside its own
   // fixed test addresses outright (422, "Please use our testing email
   // address instead of domains like example.com") — confirmed directly by
@@ -126,6 +127,7 @@ describe('Auth (e2e)', () => {
     const clinicRes = await adminAgent.post('/auth/register-clinic').send({
       clinicName: 'Auth E2E Clinic',
       clinicEmail: `clinic-${stamp}@example.com`,
+      clinicAddress: '10 Founding Clinic Ave',
       email: `admin-${stamp}@example.com`,
       password: 'password123',
       firstName: 'Auth',
@@ -140,6 +142,7 @@ describe('Auth (e2e)', () => {
       )
     }
     adminId = clinicRes.body.id
+    clinicId = clinicRes.body.clinicId
     // Regression coverage for the actual gap this fix closes: adminProfiles
     // is written inside registerClinic()'s own transaction but was never
     // read back into its response — registerClinic() bypasses
@@ -186,6 +189,18 @@ describe('Auth (e2e)', () => {
         lastName: 'Admin',
       })
     expect(res.status).toBe(403)
+  })
+
+  // registerClinic()'s clinicAddress is a field on the CLINIC row, distinct
+  // from the founding admin's own `address` (asserted separately in
+  // beforeAll) — they land on two different tables via two different
+  // inserts inside the same transaction, so this confirms clinicAddress
+  // actually reached `clinics.address`, not silently dropped or conflated
+  // with the admin's own address field of the same request body.
+  it("persists clinicAddress onto the clinic's own address, separately from the founding admin's address", async () => {
+    const res = await adminAgent.get(`/clinics/${clinicId}`)
+    expect(res.status).toBe(200)
+    expect(res.body.address).toBe('10 Founding Clinic Ave')
   })
 
   it('rejects /auth/me without a session', async () => {

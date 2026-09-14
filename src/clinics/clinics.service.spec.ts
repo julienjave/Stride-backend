@@ -213,6 +213,38 @@ describe('ClinicsService.create', () => {
     expect(values).toHaveBeenCalledWith({ name: 'Acme Clinic', email: 'acme@example.com' })
     expect(result).toEqual({ id: 1, name: 'Acme Clinic', email: 'acme@example.com' })
   })
+
+  it('passes address through to the insert when given', async () => {
+    const values = jest.fn().mockReturnValue({
+      returning: jest.fn().mockResolvedValue([
+        {
+          id: 1,
+          name: 'Acme Clinic',
+          email: 'acme@example.com',
+          address: '1 Acme Way',
+        },
+      ]),
+    })
+    db.insert.mockReturnValue({ values })
+
+    const result = await clinicsService.create(adminUser, {
+      name: 'Acme Clinic',
+      email: 'acme@example.com',
+      address: '1 Acme Way',
+    })
+
+    expect(values).toHaveBeenCalledWith({
+      name: 'Acme Clinic',
+      email: 'acme@example.com',
+      address: '1 Acme Way',
+    })
+    expect(result).toEqual({
+      id: 1,
+      name: 'Acme Clinic',
+      email: 'acme@example.com',
+      address: '1 Acme Way',
+    })
+  })
 })
 
 describe('ClinicsService.findAll', () => {

@@ -85,7 +85,7 @@ Two distinct paths exist and are not interchangeable:
   exists, this route is permanently closed for the lifetime of that database
   — every later clinic is created by an existing admin via `POST /clinics`,
   and every later user via `POST /users`. Body: `{ clinicName, clinicEmail,
-  clinicPhone?, clinicWebsite?, email, password, firstName, lastName, phone?,
+  clinicPhone?, clinicAddress?, clinicWebsite?, email, password, firstName, lastName, phone?,
   address?, position? }`. **`phone`/`address` here belong to the founding
   admin's own account, not the clinic** — they're unrelated to `clinicPhone`
   (the clinic's own contact number); the two land in the same request body

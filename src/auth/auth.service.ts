@@ -147,6 +147,7 @@ export class AuthService {
             name: dto.clinicName,
             email: dto.clinicEmail,
             phone: dto.clinicPhone,
+            address: dto.clinicAddress,
             website: dto.clinicWebsite,
           })
           .returning()

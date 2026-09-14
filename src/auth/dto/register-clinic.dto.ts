@@ -44,6 +44,11 @@ export class RegisterClinicDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
+  clinicAddress?: string
+
+  @IsOptional()
+  @IsString()
   @MaxLength(255)
   clinicWebsite?: string
 

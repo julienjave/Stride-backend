@@ -224,6 +224,12 @@ describe('Clinics (e2e)', () => {
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.name).toBe('Renamed Clinic');
 
+    const updateAddressRes = await admin
+      .patch(`/clinics/${clinicId}`)
+      .send({ address: '99 Renamed Clinic Rd' });
+    expect(updateAddressRes.status).toBe(200);
+    expect(updateAddressRes.body.address).toBe('99 Renamed Clinic Rd');
+
     const forbiddenDeactivate = await practitioner.delete(`/clinics/${clinicId}`);
     expect(forbiddenDeactivate.status).toBe(403);
 
