@@ -1,7 +1,6 @@
 # Roles & Authorization Model
 
-Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. Every
-claim below was read directly from the `@Roles(...)` decorators on each
+Every claim below was read directly from the `@Roles(...)` decorators on each
 controller and the `assertCan*`/inline authorization checks inside each
 service — never inferred from what a "reasonable" physiotherapy API might
 do. Several rows are genuinely non-obvious; don't assume a permission model
@@ -118,31 +117,39 @@ same clinic-membership check used everywhere else in this API. A
 practitioner cannot look up an arbitrary account by id; only their own
 profile or a patient they actually share a clinic with.
 
-**`PATCH /users/:id` also writes the role-profile fields**
-(`practitioner_profiles.licenseNumber`/`specialties`,
-`patient_profiles.dateOfBirth`, `admin_profiles.position`) —
-`UpdateUserDto` carries them flat alongside `firstName`/`lastName`, not
-nested under a `practitionerProfile`/`patientProfile`/`adminProfile`
-sub-object; there's no precedent anywhere in this codebase for validating a
-single nested sub-object (the one `@ValidateNested()` usage, in
-`assigned-programs`, validates an *array* of sub-items, a different shape),
-and `CreateUserDto`/`GrantRoleDto` already established flat, per-role
-conditional fields as this module's own convention. `licenseNumber` is
-self-editable exactly like every other field here — deliberately not
-admin-gated, despite carrying real professional/verification weight (it's
-`UNIQUE` at the database level and nothing in this app verifies it against
-a real licensing body); a practitioner correcting their own license number
-follows the same rule as correcting their own name.
+**`PATCH /users/:id` writes two different kinds of extra field, checked
+differently.** `phone`/`address` are common to every role — plain columns
+on `users` itself, exactly like `firstName`/`lastName` — and carry **no
+target-role check at all**: anyone who already passes the three-way check
+above can set them on any target, regardless of which role(s) that target
+holds. The role-profile fields
+(`practitioner_profiles.licenseNumber`/`specialties`/`bio`,
+`patient_profiles.dateOfBirth`, `admin_profiles.position`) are different —
+`UpdateUserDto` carries them flat alongside `firstName`/`lastName`/`phone`/
+`address`, not nested under a `practitionerProfile`/`patientProfile`/
+`adminProfile` sub-object; there's no precedent anywhere in this codebase
+for validating a single nested sub-object (the one `@ValidateNested()`
+usage, in `assigned-programs`, validates an *array* of sub-items, a
+different shape), and `CreateUserDto`/`GrantRoleDto` already established
+flat, per-role conditional fields as this module's own convention.
+`licenseNumber` is self-editable exactly like every other field here —
+deliberately not admin-gated, despite carrying real professional/
+verification weight (it's `UNIQUE` at the database level and nothing in
+this app verifies it against a real licensing body); a practitioner
+correcting their own license number follows the same rule as correcting
+their own name.
 
-The three-way check above is necessary but not sufficient for these fields:
-`UsersService.update()` adds one further constraint on top, checked against
-the **target's** actual held role(s), not the caller's. An admin (or a
-managing practitioner) editing a patient can still only ever touch
-`dateOfBirth` — sending `licenseNumber` or `position` for that same target
-is a `400 Bad Request`, not silently ignored and not silently rejected as a
-`403`. This is a real, separate gate from the three-way check: an admin
-passes that check unconditionally for any user, but still can't write a
-field the target has no matching profile row for.
+The three-way check above is necessary but not sufficient for the
+role-profile fields — `phone`/`address` are unaffected by what follows.
+`UsersService.update()` adds one further constraint on top for
+`licenseNumber`/`specialties`/`bio`/`dateOfBirth`/`position`, checked
+against the **target's** actual held role(s), not the caller's. An admin
+(or a managing practitioner) editing a patient can still only ever touch
+`dateOfBirth` — sending `licenseNumber`, `bio`, or `position` for that same
+target is a `400 Bad Request`, not silently ignored and not silently
+rejected as a `403`. This is a real, separate gate from the three-way check:
+an admin passes that check unconditionally for any user, but still can't
+write a field the target has no matching profile row for.
 
 Every one of these responses (plus `create`, `findAll`, and login/register)
 also carries the account's role-specific profile data — `practitionerProfile`,

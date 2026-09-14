@@ -15,18 +15,6 @@ everything Swagger has no mechanism to show: *how authentication actually
 works*, *what happens over the WebSocket connection*, *what every error
 response looks like*, and *who is allowed to do what*.
 
-## Verified against
-
-**Commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`.** Every concrete claim
-in this document set — status codes, payload shapes, event names, stripped
-fields, throttled routes — was re-derived directly from the source files it
-cites (or from an `*.e2e-spec.ts`/`*.spec.ts` test's own assertions, where
-one exists) at that commit, not carried over from an earlier version of this
-documentation. If the backend has moved on since, run `git log --oneline
-a3531f1c2a66c113e2fbcdd74365797e9670b949..HEAD -- src/` to see what's
-changed underneath this document, and treat anything it touches as
-unverified until re-checked.
-
 ## Contents
 
 1. **[Authentication & Sessions](./01-authentication.md)** — session-cookie
@@ -64,7 +52,7 @@ frontend's real origin must be in that list, exactly.
 ## A note on scope
 
 Every claim in this document set is either read directly from the
-implementation at the commit above, or confirmed against a passing
+implementation, or confirmed against a passing
 `*.e2e-spec.ts`/`*.spec.ts` assertion where one exists for that behavior —
 never carried over from an earlier draft of this documentation and never
 inferred from what a "typical" API in this domain might do. Nothing here

@@ -1,7 +1,7 @@
 # Authentication & Sessions
 
-Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. Source of
-truth: [`src/auth/auth.controller.ts`](../../src/auth/auth.controller.ts),
+Source of truth:
+[`src/auth/auth.controller.ts`](../../src/auth/auth.controller.ts),
 [`src/auth/auth.service.ts`](../../src/auth/auth.service.ts),
 [`src/common/guards/session-auth.guard.ts`](../../src/common/guards/session-auth.guard.ts),
 [`src/common/guards/roles.guard.ts`](../../src/common/guards/roles.guard.ts),
@@ -67,11 +67,14 @@ Two distinct paths exist and are not interchangeable:
 - **`POST /auth/register`** — public self-signup, throttled to 10
   requests/minute per IP. Always creates a **patient** account —
   `RegisterDto` has no `role` field at all, so there is nothing for a caller
-  to override. Body: `{ email, password, firstName, lastName, dateOfBirth }`
-  (`dateOfBirth` an ISO date string; `password` 8–128 characters). On success
-  (`201`), the new account is logged in immediately via `req.login()` — no
-  separate login call is needed — and the full user object is returned,
-  including `patientProfile: { dateOfBirth }` (see [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
+  to override. Body: `{ email, password, firstName, lastName, dateOfBirth,
+  phone?, address? }` (`dateOfBirth` an ISO date string; `password` 8–128
+  characters; `phone`/`address` are optional and common to every role — see
+  [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
+  On success (`201`), the new account is logged in immediately via
+  `req.login()` — no separate login call is needed — and the full user
+  object is returned, including top-level `phone`/`address` and
+  `patientProfile: { dateOfBirth }` (see [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
 - **`POST /auth/register-clinic`** — bootstraps the **very first** clinic and
   its founding admin account together, in one transaction, throttled to 5
   requests/minute per IP. This is a **one-time setup operation**, not an
@@ -82,11 +85,15 @@ Two distinct paths exist and are not interchangeable:
   exists, this route is permanently closed for the lifetime of that database
   — every later clinic is created by an existing admin via `POST /clinics`,
   and every later user via `POST /users`. Body: `{ clinicName, clinicEmail,
-  clinicPhone?, clinicWebsite?, email, password, firstName, lastName,
-  position? }`. On success (`201`), the new admin is logged in immediately;
-  the response is the admin's public user fields plus `roles: ['admin']`,
-  `activeRole: 'admin'`, `adminProfile: { position }`, and `clinicId` (the id
-  of the clinic just created — you'll need it for later steps).
+  clinicPhone?, clinicWebsite?, email, password, firstName, lastName, phone?,
+  address?, position? }`. **`phone`/`address` here belong to the founding
+  admin's own account, not the clinic** — they're unrelated to `clinicPhone`
+  (the clinic's own contact number); the two land in the same request body
+  but never mean the same thing. On success (`201`), the new admin is logged
+  in immediately; the response is the admin's public user fields (including
+  top-level `phone`/`address`) plus `roles: ['admin']`, `activeRole:
+  'admin'`, `adminProfile: { position }`, and `clinicId` (the id of the
+  clinic just created — you'll need it for later steps).
 
 ## Login: single-role vs. multi-role accounts
 
@@ -165,6 +172,8 @@ POST /auth/mfa/verify
     "email": "dr.smith@clinic.com",
     "firstName": "...", "lastName": "...",
     "avatarPath": null,
+    "phone": null,
+    "address": null,
     "isActive": true,
     "createdAt": "2026-08-05T14:22:03.101Z",
     "mfaEnabled": true,
@@ -172,7 +181,8 @@ POST /auth/mfa/verify
     "activeRole": "practitioner",
     "practitionerProfile": {
       "licenseNumber": "PT-2024-00931",
-      "specialties": ["sports rehab", "post-surgical"]
+      "specialties": ["sports rehab", "post-surgical"],
+      "bio": null
     }
   }
    (session is now authenticated; protected routes are reachable)
@@ -278,7 +288,7 @@ hand from an `AuthService`/`req.login()` path, not directly through
 `toPublic()`).
 
 `UsersService.attachProfile()` is the equivalent second funnel for role
-profile data — `practitioner_profiles.licenseNumber`/`specialties`,
+profile data — `practitioner_profiles.licenseNumber`/`specialties`/`bio`,
 `patient_profiles.dateOfBirth`, and `admin_profiles.position` are written at
 account creation (`create()`, `grantRole()`) but live in separate 1:1 tables,
 never joined into the `users` row itself. `attachProfile()` queries whichever
@@ -296,22 +306,37 @@ came with this — profile data rides along on responses that already passed
 [Roles & Authorization](./04-authorization.md)); there's no finer-grained
 visibility rule for a profile field than for the rest of the account.
 
-**These four fields were readable long before they were writable.**
+**`phone`/`address` are a different, simpler case: plain `users` columns,
+not profile data at all.** They flow through `toPublic()` exactly like
+`firstName`/`lastName` — top-level on the response, common to every role —
+never through `attachProfile()`, and never nested under `patientProfile` (or
+any other profile key), even though they used to live on
+`patient_profiles` specifically before this account-wide move.
+
+**These role-profile fields were readable long before they were writable.**
 `UpdateUserDto` originally carried only `firstName`/`lastName` — the fields
 above could be set at creation or role-grant time but never edited
 afterward, through any route. `PATCH /users/:id` (`UsersService.update()`)
-now accepts them too, flat on the same dto (`licenseNumber`, `specialties`,
-`dateOfBirth`, `position` — no nested `practitionerProfile`/`patientProfile`/
-`adminProfile` sub-object; see [Roles & Authorization](./04-authorization.md)
-for why). Read-side and write-side authorization diverge in one respect
-worth being explicit about: a GET's visibility is governed *only* by
-`UsersController`'s self/admin/managing-practitioner check, as above — but a
-PATCH adds one further constraint on top, checked against the *target's*
-actual held role(s), not the caller's. Sending `licenseNumber` for a target
-with no practitioner role is rejected with `400 Bad Request`, even from an
-admin — an admin can update the field on a practitioner, but can't invent a
-practitioner profile for a patient by writing to it. See
-[Roles & Authorization](./04-authorization.md) for the exact rule.
+now accepts two different kinds of extra field, checked differently:
+
+- **`phone`/`address`** — common to every role, exactly like
+  `firstName`/`lastName`: **no target-role check at all**. Anyone who
+  already passes the self/admin/managing-practitioner check can set them on
+  any target, regardless of which role(s) that target holds.
+- **`licenseNumber`/`specialties`/`bio`** (practitioner), **`dateOfBirth`**
+  (patient), and **`position`** (admin) — flat on the same dto, not nested
+  under a `practitionerProfile`/`patientProfile`/`adminProfile` sub-object
+  (see [Roles & Authorization](./04-authorization.md) for why). Read-side
+  and write-side authorization diverge in one respect worth being explicit
+  about for these fields specifically: a GET's visibility is governed
+  *only* by `UsersController`'s self/admin/managing-practitioner check, as
+  above — but a PATCH adds one further constraint on top, checked against
+  the *target's* actual held role(s), not the caller's. Sending
+  `licenseNumber` (or `specialties`/`bio`) for a target with no
+  practitioner role is rejected with `400 Bad Request`, even from an admin
+  — an admin can update the field on a practitioner, but can't invent a
+  practitioner profile for a patient by writing to it. See
+  [Roles & Authorization](./04-authorization.md) for the exact rule.
 
 The resulting shape (also what `GET /auth/me` and every login/register
 response return) is:
@@ -323,12 +348,14 @@ response return) is:
   firstName: string
   lastName: string
   avatarPath: string | null
+  phone: string | null
+  address: string | null
   isActive: boolean
   createdAt: string        // ISO timestamp
   mfaEnabled: boolean
   roles: string[]           // every role the account holds
   activeRole: string         // which one is active for THIS session
-  practitionerProfile?: { licenseNumber: string; specialties: string[] }
+  practitionerProfile?: { licenseNumber: string; specialties: string[]; bio: string | null }
   patientProfile?: { dateOfBirth: string }
   adminProfile?: { position: string | null }
 }

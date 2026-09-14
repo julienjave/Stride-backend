@@ -1,7 +1,6 @@
 # Getting Started — A Real Walkthrough
 
-Verified against commit `a3531f1c2a66c113e2fbcdd74365797e9670b949`. A
-complete, working sequence: bootstrap a clinic, create a practitioner and a
+A complete, working sequence: bootstrap a clinic, create a practitioner and a
 patient, create an exercise, and assign a program to that patient. Every
 request body below was checked against the actual DTO validation rules in
 `src/**/dto/*.dto.ts` — field names, required-vs-optional, and enum values
@@ -36,6 +35,8 @@ curl -i -c cookies-admin.txt -X POST http://localhost:3000/auth/register-clinic 
     "password": "correct-horse-battery-staple",
     "firstName": "Alex",
     "lastName": "Chen",
+    "phone": "555-0142",
+    "address": "123 Main St, Springfield",
     "position": "Clinic Director"
   }'
 ```
@@ -55,6 +56,8 @@ const res = await fetch('http://localhost:3000/auth/register-clinic', {
     password: 'correct-horse-battery-staple',
     firstName: 'Alex',
     lastName: 'Chen',
+    phone: '555-0142',
+    address: '123 Main St, Springfield',
     position: 'Clinic Director',
   }),
 })
@@ -69,6 +72,8 @@ const admin = await res.json()
   "email": "admin@riverside-physio.example",
   "firstName": "Alex",
   "lastName": "Chen",
+  "phone": "555-0142",
+  "address": "123 Main St, Springfield",
   "avatarPath": null,
   "isActive": true,
   "createdAt": "2026-08-05T14:00:00.000Z",
@@ -103,16 +108,22 @@ curl -i -b cookies-admin.txt -X POST http://localhost:3000/users \
     "role": "practitioner",
     "firstName": "Jordan",
     "lastName": "Smith",
+    "phone": "555-0157",
+    "address": "48 Elm St, Springfield",
     "licenseNumber": "PT-2024-00931",
     "specialties": ["sports rehab", "post-surgical"],
+    "bio": "Sports physiotherapist focused on return-to-play rehab.",
     "clinicId": 1
   }'
 ```
 
-`→ 201 Created` — the new practitioner's account, plus `roles: ["practitioner"]`
-and `practitionerProfile: { "licenseNumber": "PT-2024-00931", "specialties":
-["sports rehab", "post-surgical"] }` (`UsersService.create`'s response
-shape). This call does **not** log the new
+`→ 201 Created` — the new practitioner's account, with `phone: "555-0157"`
+and `address: "48 Elm St, Springfield"` alongside the usual top-level fields,
+plus `roles: ["practitioner"]` and `practitionerProfile: { "licenseNumber":
+"PT-2024-00931", "specialties": ["sports rehab", "post-surgical"], "bio":
+"Sports physiotherapist focused on return-to-play rehab." }`
+(`UsersService.create`'s response shape, with `bio` attached by
+`UsersService.attachProfile()`). This call does **not** log the new
 practitioner in — `POST /users` never touches the calling admin's session,
 unlike the `/auth/*` routes (`register`, `register-clinic`, `login`), which
 establish a session for the account they create or authenticate. The admin
@@ -136,7 +147,8 @@ curl -i -c cookies-practitioner.txt -X POST http://localhost:3000/auth/login \
 ```
 
 `→ 201 Created` with the practitioner's user object (`activeRole:
-"practitioner"`, `practitionerProfile: { licenseNumber, specialties }`).
+"practitioner"`, `phone: "555-0157"`, `address: "48 Elm St, Springfield"`,
+`practitionerProfile: { licenseNumber, specialties, bio }`).
 From here on, every call as the practitioner uses
 `-b cookies-practitioner.txt`.
 
@@ -157,14 +169,18 @@ curl -i -b cookies-practitioner.txt -X POST http://localhost:3000/users \
     "role": "patient",
     "firstName": "Sam",
     "lastName": "Rivera",
+    "phone": "555-0163",
+    "address": "77 Oak Ave, Springfield",
     "dateOfBirth": "1990-04-12",
     "clinicId": 1
   }'
 ```
 
-`→ 201 Created`, with `patientProfile: { "dateOfBirth": "1990-04-12" }` on
-the response. Note the response `id` — this is the `patientId` used
-below (assume it's `3`: `1` was the admin, `2` the practitioner).
+`→ 201 Created`, with `phone: "555-0163"` and `address: "77 Oak Ave,
+Springfield"` alongside the usual top-level fields, and `patientProfile: {
+"dateOfBirth": "1990-04-12" }` on the response. Note the response `id` —
+this is the `patientId` used below (assume it's `3`: `1` was the admin,
+`2` the practitioner).
 
 ## 5. Create an exercise (as the practitioner)
 
