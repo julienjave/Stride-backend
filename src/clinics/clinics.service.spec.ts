@@ -56,7 +56,10 @@ describe('ClinicsService.addMember', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -158,7 +161,10 @@ describe('ClinicsService.findOne', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -190,7 +196,10 @@ describe('ClinicsService.create', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -211,7 +220,12 @@ describe('ClinicsService.create', () => {
     })
 
     expect(values).toHaveBeenCalledWith({ name: 'Acme Clinic', email: 'acme@example.com' })
-    expect(result).toEqual({ id: 1, name: 'Acme Clinic', email: 'acme@example.com' })
+    expect(result).toEqual({
+      id: 1,
+      name: 'Acme Clinic',
+      email: 'acme@example.com',
+      logoUrl: null,
+    })
   })
 
   it('passes address through to the insert when given', async () => {
@@ -243,6 +257,7 @@ describe('ClinicsService.create', () => {
       name: 'Acme Clinic',
       email: 'acme@example.com',
       address: '1 Acme Way',
+      logoUrl: null,
     })
   })
 })
@@ -258,7 +273,10 @@ describe('ClinicsService.findAll', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -277,7 +295,7 @@ describe('ClinicsService.findAll', () => {
     const result = await clinicsService.findAll()
 
     expect(db.query.clinics.findMany).toHaveBeenCalled()
-    expect(result).toEqual(activeClinics)
+    expect(result).toEqual([{ ...activeClinics[0], logoUrl: null }])
   })
 })
 
@@ -305,7 +323,10 @@ describe('ClinicsService.update', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -333,13 +354,13 @@ describe('ClinicsService.update', () => {
     const result = await clinicsService.update(1, adminUser, { name: 'Renamed Clinic' })
 
     expect(set).toHaveBeenCalledWith({ name: 'Renamed Clinic' })
-    expect(result).toEqual({ id: 1, name: 'Renamed Clinic' })
+    expect(result).toEqual({ id: 1, name: 'Renamed Clinic', logoUrl: null })
   })
 })
 
 describe('ClinicsService.updateLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { upload: jest.Mock }
+  let storageService: { upload: jest.Mock; getPresignedUrlOrNull: jest.Mock }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -348,7 +369,12 @@ describe('ClinicsService.updateLogo', () => {
   }
 
   beforeEach(async () => {
-    storageService = { upload: jest.fn().mockResolvedValue(undefined) }
+    storageService = {
+      upload: jest.fn().mockResolvedValue(undefined),
+      getPresignedUrlOrNull: jest
+        .fn()
+        .mockResolvedValue('https://storage.example.com/signed/clinics/1/logo-123.png'),
+    }
     db = {
       query: { clinics: { findFirst: jest.fn() } },
       update: jest.fn(),
@@ -406,7 +432,18 @@ describe('ClinicsService.updateLogo', () => {
     expect(set).toHaveBeenCalledWith({
       logoPath: expect.stringMatching(/^clinics\/1\/logo-\d+\.png$/),
     })
-    expect(result).toEqual({ id: 1, logoPath: 'clinics/1/logo-123.png' })
+    // The raw object key (logoPath) is never handed back to the caller —
+    // only a ready-to-use logoUrl, generated with a 24-hour expiry
+    // (60 * 60 * 24 seconds) rather than getPresignedUrl's own much
+    // shorter 900-second default.
+    expect(storageService.getPresignedUrlOrNull).toHaveBeenCalledWith(
+      'clinics/1/logo-123.png',
+      60 * 60 * 24,
+    )
+    expect(result).toEqual({
+      id: 1,
+      logoUrl: 'https://storage.example.com/signed/clinics/1/logo-123.png',
+    })
   })
 })
 
@@ -421,7 +458,10 @@ describe('ClinicsService.exists', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -461,7 +501,10 @@ describe('ClinicsService.listMembers', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -538,7 +581,10 @@ describe('ClinicsService.deactivate', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 
@@ -566,7 +612,7 @@ describe('ClinicsService.deactivate', () => {
     const result = await clinicsService.deactivate(1, adminUser)
 
     expect(set).toHaveBeenCalledWith({ isActive: false })
-    expect(result).toEqual({ id: 1, isActive: false })
+    expect(result).toEqual({ id: 1, isActive: false, logoUrl: null })
   })
 })
 
@@ -594,7 +640,10 @@ describe('ClinicsService.removeMember', () => {
       providers: [
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile()
 

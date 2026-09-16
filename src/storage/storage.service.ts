@@ -124,6 +124,22 @@ export class StorageService implements OnModuleInit {
     return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
   }
 
+  // Same as getPresignedUrl above, but safe to call with a possibly-absent
+  // key. Every image-bearing resource (clinic logos, user avatars, exercise
+  // photos) stores its object key as `string | null` — "no file uploaded
+  // yet" is a completely normal state, not an error. Without this helper,
+  // every single caller would need to repeat the same
+  // `key ? await getPresignedUrl(key) : null` ternary; centralizing it here
+  // means that null-handling logic (and anything it might need later, like
+  // error handling around a bad key) only has one place to change.
+  async getPresignedUrlOrNull(
+    objectKey: string | null,
+    expirySeconds = 900,
+  ): Promise<string | null> {
+    if (!objectKey) return null
+    return this.getPresignedUrl(objectKey, expirySeconds)
+  }
+
   // --- DELETE ROUTES ---
 
   // Actually frees the bytes in storage — deleting a row's reference to an
