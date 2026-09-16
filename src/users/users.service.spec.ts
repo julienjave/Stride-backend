@@ -10,6 +10,24 @@ import { StorageService } from '../storage/storage.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from './dto/create-user.dto'
 
+// attachProfile() now unconditionally looks up clinic membership for
+// every user it returns (a select().from(userClinics).innerJoin(clinics)
+// .where(...) chain) — most tests in this file aren't ABOUT clinic
+// membership at all, they just need this new query to resolve to
+// something rather than throw "select/innerJoin is not a function" on a
+// mock db/tx object that predates this feature. This is that shared,
+// generic "resolves to no clinics" chain; tests specifically about
+// clinic membership build their own explicit version instead.
+function emptyClinicsSelect() {
+  return jest.fn().mockReturnValue({
+    from: jest.fn().mockReturnValue({
+      innerJoin: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([]),
+      }),
+    }),
+  })
+}
+
 describe('UsersService.create', () => {
   let usersService: UsersService
   let db: {
@@ -63,6 +81,7 @@ describe('UsersService.create', () => {
         // withRlsContext() sets two session GUCs via tx.execute() before
         // invoking the callback, since requestingUser is defined here.
         execute: jest.fn().mockResolvedValue(undefined),
+        select: emptyClinicsSelect(),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -205,6 +224,7 @@ describe('UsersService.create', () => {
         // withRlsContext() sets two session GUCs via tx.execute() before
         // invoking the callback, since requestingUser is defined here.
         execute: jest.fn().mockResolvedValue(undefined),
+        select: emptyClinicsSelect(),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -254,6 +274,7 @@ describe('UsersService.create', () => {
         // withRlsContext() sets two session GUCs via tx.execute() before
         // invoking the callback, since requestingUser is defined here.
         execute: jest.fn().mockResolvedValue(undefined),
+        select: emptyClinicsSelect(),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -330,6 +351,10 @@ describe('UsersService.grantRole', () => {
     // findOne() (called first by grantRole) needs a real user, and
     // getRolesForUser() (called at the end, via this.db not tx) needs a
     // resolvable roles query — both are exercised on every test below.
+    // attachProfile(), reached through findOne(), also now runs a clinic-
+    // membership join through this same this.db.select — .from() needs
+    // to support both .where() directly (roles) and .innerJoin().where()
+    // (clinics, resolving to none — no test here is about clinics).
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       email: 'user@example.com',
@@ -337,6 +362,9 @@ describe('UsersService.grantRole', () => {
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
 
@@ -502,6 +530,15 @@ describe('UsersService.findPatientsForPractitioner', () => {
             .mockResolvedValue([{ userId: 20, role: UserRole.PATIENT }]),
         }),
       })
+      // attachProfilesToMany()'s batched clinic-membership query — not
+      // what this test is about, so it resolves to no memberships.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
+        }),
+      })
     db.selectDistinct.mockReturnValue({
       from: jest.fn().mockReturnValue({
         innerJoin: jest.fn().mockReturnValue({
@@ -532,6 +569,68 @@ describe('UsersService.findPatientsForPractitioner', () => {
     // neither roles nor profile data at all.
     expect(result[0].roles).toEqual([UserRole.PATIENT])
     expect(result[0].patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+  })
+
+  // Dedicated coverage for attachProfilesToMany's clinic-grouping logic
+  // specifically — the test above only ever has ONE user in the result,
+  // so it can't catch a bug where two different users' clinic rows get
+  // mixed together instead of grouped correctly by userId.
+  it("groups each returned patient's OWN clinics separately, not mixed across patients", async () => {
+    db.select
+      // getClinicIdsForUser()'s query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
+        }),
+      })
+      // attachProfilesToMany()'s batched userRoles query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([
+            { userId: 20, role: UserRole.PATIENT },
+            { userId: 21, role: UserRole.PATIENT },
+          ]),
+        }),
+      })
+      // attachProfilesToMany()'s batched clinic-membership query — patient
+      // 20 belongs to two clinics, patient 21 to only the shared one.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([
+              { userId: 20, id: 7, name: 'Shared Clinic' },
+              { userId: 20, id: 1, name: 'Patient 20 Only Clinic' },
+              { userId: 21, id: 7, name: 'Shared Clinic' },
+            ]),
+          }),
+        }),
+      })
+    db.selectDistinct.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        innerJoin: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([
+              { user: { id: 20, email: 'p20@example.com', passwordHash: 'x' } },
+              { user: { id: 21, email: 'p21@example.com', passwordHash: 'x' } },
+            ]),
+          }),
+        }),
+      }),
+    })
+    db.query.patientProfiles.findMany.mockResolvedValue([
+      { userId: 20, dateOfBirth: '1990-01-01' },
+      { userId: 21, dateOfBirth: '1991-02-02' },
+    ])
+
+    const result = await usersService.findPatientsForPractitioner(1)
+
+    const patient20 = result.find((p) => p.id === 20)!
+    const patient21 = result.find((p) => p.id === 21)!
+    expect(patient20.clinics).toEqual([
+      { id: 7, name: 'Shared Clinic' },
+      { id: 1, name: 'Patient 20 Only Clinic' },
+    ])
+    expect(patient21.clinics).toEqual([{ id: 7, name: 'Shared Clinic' }])
   })
 })
 
@@ -624,10 +723,17 @@ describe('UsersService.findOne', () => {
       select: jest.fn(),
     }
     // getRolesForUser() (called at the end of findOne, via this.db) needs a
-    // resolvable roles query for the success-path test below.
+    // resolvable roles query for the success-path test below. attachProfile()
+    // ALSO now runs a clinic-membership join through this same this.db.select
+    // — .from() needs to support both: .where() directly (roles) and
+    // .innerJoin().where() (clinics, resolving to none — no test here is
+    // about clinic membership).
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
 
@@ -695,6 +801,37 @@ describe('UsersService.findOne', () => {
     expect(result).not.toHaveProperty('practitionerProfile')
     expect(result).not.toHaveProperty('adminProfile')
   })
+
+  // The real behavior this feature is FOR — every other test in this file
+  // only confirms the new query doesn't crash on empty data. This one
+  // confirms a user belonging to more than one clinic actually gets both
+  // back, with just id/name (not full clinic rows), through the real join.
+  it('attaches every clinic the user belongs to, as {id, name} pairs', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'multi-clinic@example.com',
+      firstName: 'Multi',
+      lastName: 'Clinic',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([
+            { id: 1, name: 'Acme Clinic' },
+            { id: 2, name: 'Second Clinic' },
+          ]),
+        }),
+      }),
+    })
+
+    const result = await usersService.findOne(1)
+
+    expect(result.clinics).toEqual([
+      { id: 1, name: 'Acme Clinic' },
+      { id: 2, name: 'Second Clinic' },
+    ])
+  })
 })
 
 describe('UsersService.update', () => {
@@ -747,6 +884,9 @@ describe('UsersService.update', () => {
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
 
@@ -783,6 +923,9 @@ describe('UsersService.update', () => {
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
     await expect(
@@ -803,6 +946,9 @@ describe('UsersService.update', () => {
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
 
@@ -836,6 +982,9 @@ describe('UsersService.update', () => {
       select: jest.fn().mockReturnValue({
         from: jest.fn().mockReturnValue({
           where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
         }),
       }),
       query: {
@@ -887,6 +1036,9 @@ describe('UsersService.update', () => {
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
       }),
     })
 
@@ -918,6 +1070,9 @@ describe('UsersService.update', () => {
       select: jest.fn().mockReturnValue({
         from: jest.fn().mockReturnValue({
           where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
         }),
       }),
     }

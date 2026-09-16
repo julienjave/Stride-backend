@@ -531,9 +531,10 @@ export class UsersService {
       }
       patientProfile?: { dateOfBirth: string }
       adminProfile?: { position: string | null }
+      clinics: { id: number; name: string }[]
     }
   > {
-    const [practitionerProfile, patientProfile, adminProfile] =
+    const [practitionerProfile, patientProfile, adminProfile, clinicRows] =
       await Promise.all([
         roles.includes(UserRole.PRACTITIONER)
           ? dbOrTx.query.practitionerProfiles.findFirst({
@@ -550,6 +551,14 @@ export class UsersService {
               where: eq(adminProfiles.userId, user.id),
             })
           : undefined,
+        // Not gated by role, unlike the three above — any role can belong
+        // to clinics (an admin might, even though nothing else in the app
+        // is clinic-scoped for admins), so this always runs.
+        dbOrTx
+          .select({ id: clinics.id, name: clinics.name })
+          .from(userClinics)
+          .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
+          .where(eq(userClinics.userId, user.id)),
       ])
 
     return {
@@ -567,6 +576,7 @@ export class UsersService {
       ...(adminProfile && {
         adminProfile: { position: adminProfile.position },
       }),
+      clinics: clinicRows,
     }
   }
 
@@ -585,12 +595,13 @@ export class UsersService {
           }
           patientProfile?: { dateOfBirth: string }
           adminProfile?: { position: string | null }
+          clinics: { id: number; name: string }[]
         }
       >
     }
 
     const ids = usersList.map((u) => u.id)
-    const [roleRows, practitionerRows, patientRows, adminRows] =
+    const [roleRows, practitionerRows, patientRows, adminRows, clinicRows] =
       await Promise.all([
         this.db
           .select({ userId: userRoles.userId, role: userRoles.role })
@@ -605,6 +616,15 @@ export class UsersService {
         this.db.query.adminProfiles.findMany({
           where: inArray(adminProfiles.userId, ids),
         }),
+        this.db
+          .select({
+            userId: userClinics.userId,
+            id: clinics.id,
+            name: clinics.name,
+          })
+          .from(userClinics)
+          .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
+          .where(inArray(userClinics.userId, ids)),
       ])
 
     const rolesByUserId = new Map<number, string[]>()
@@ -621,6 +641,19 @@ export class UsersService {
     )
     const patientByUserId = new Map(patientRows.map((p) => [p.userId, p]))
     const adminByUserId = new Map(adminRows.map((p) => [p.userId, p]))
+    // Same accumulate-into-an-array pattern as rolesByUserId just above —
+    // a user can belong to several clinics, so this can't be a simple
+    // one-row-per-user Map the way practitioner/patient/admin are.
+    const clinicsByUserId = new Map<number, { id: number; name: string }[]>()
+    for (const row of clinicRows) {
+      const entry = { id: row.id, name: row.name }
+      const existing = clinicsByUserId.get(row.userId)
+      if (existing) {
+        existing.push(entry)
+      } else {
+        clinicsByUserId.set(row.userId, [entry])
+      }
+    }
 
     return usersList.map((user) => {
       const practitionerProfile = practitionerByUserId.get(user.id)
@@ -642,6 +675,7 @@ export class UsersService {
         ...(adminProfile && {
           adminProfile: { position: adminProfile.position },
         }),
+        clinics: clinicsByUserId.get(user.id) ?? [],
       }
     })
   }
