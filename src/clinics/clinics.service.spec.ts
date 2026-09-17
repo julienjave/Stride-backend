@@ -383,7 +383,7 @@ describe('ClinicsService.update', () => {
 
 describe('ClinicsService.updateLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { upload: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: { upload: jest.Mock; delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -394,6 +394,7 @@ describe('ClinicsService.updateLogo', () => {
   beforeEach(async () => {
     storageService = {
       upload: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest
         .fn()
         .mockResolvedValue('https://storage.example.com/signed/clinics/1/logo-123.png'),
@@ -468,6 +469,149 @@ describe('ClinicsService.updateLogo', () => {
       id: 1,
       logoUrl: 'https://storage.example.com/signed/clinics/1/logo-123.png',
     })
+    // This clinic had no prior logo (the mocked findFirst above returns
+    // no logoPath at all) — nothing should be deleted.
+    expect(storageService.delete).not.toHaveBeenCalled()
+  })
+
+  it('deletes the OLD logo file from storage after a successful replace', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      logoPath: 'clinics/1/logo-OLD.png',
+    })
+    const set = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest
+          .fn()
+          .mockResolvedValue([{ id: 1, logoPath: 'clinics/1/logo-NEW.png' }]),
+      }),
+    })
+    db.update.mockReturnValue({ set })
+
+    await clinicsService.updateLogo(1, adminUser, {
+      mimetype: 'image/png',
+      buffer: Buffer.from('fake-logo'),
+    } as Express.Multer.File)
+
+    expect(storageService.delete).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    // Deleted AFTER the new file was uploaded and the DB pointed at it —
+    // never before, so a failure partway through this method can't leave
+    // the clinic pointing at an already-deleted file. invocationCallOrder
+    // is plain Jest (no extra matcher library installed here) — lower
+    // numbers mean earlier calls.
+    expect(storageService.upload.mock.invocationCallOrder[0]).toBeLessThan(
+      storageService.delete.mock.invocationCallOrder[0],
+    )
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
+      storageService.delete.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('does not touch storage.delete when the clinic had no prior logo', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', logoPath: null })
+    db.update.mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: jest.fn().mockResolvedValue([{ id: 1, logoPath: 'clinics/1/logo-NEW.png' }]),
+        }),
+      }),
+    })
+
+    await clinicsService.updateLogo(1, adminUser, {
+      mimetype: 'image/png',
+      buffer: Buffer.from('fake-logo'),
+    } as Express.Multer.File)
+
+    expect(storageService.delete).not.toHaveBeenCalled()
+  })
+})
+
+describe('ClinicsService.removeLogo', () => {
+  let clinicsService: ClinicsService
+  let storageService: { delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let db: {
+    query: { clinics: { findFirst: jest.Mock } }
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
+
+  beforeEach(async () => {
+    storageService = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+    }
+    db = {
+      query: { clinics: { findFirst: jest.fn() } },
+      update: jest.fn(),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ClinicsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: storageService },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    }).compile()
+
+    clinicsService = moduleRef.get(ClinicsService)
+  })
+
+  it('throws NotFoundException when the clinic does not exist, without touching storage or the DB', async () => {
+    db.query.clinics.findFirst.mockResolvedValue(undefined)
+
+    await expect(clinicsService.removeLogo(999, adminUser)).rejects.toThrow(
+      NotFoundException,
+    )
+    expect(db.update).not.toHaveBeenCalled()
+    expect(storageService.delete).not.toHaveBeenCalled()
+  })
+
+  it('clears logoPath and deletes the file from storage when a logo exists', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      logoPath: 'clinics/1/logo-OLD.png',
+    })
+    const set = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue([{ id: 1, logoPath: null }]),
+      }),
+    })
+    db.update.mockReturnValue({ set })
+
+    const result = await clinicsService.removeLogo(1, adminUser)
+
+    expect(set).toHaveBeenCalledWith({ logoPath: null })
+    expect(storageService.delete).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    // The DB update happens before the storage delete — same ordering
+    // rule as updateLogo(), for the same reason: a failed storage delete
+    // should leave an orphaned file, never a clinic still pointing at
+    // one that's already gone.
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
+      storageService.delete.mock.invocationCallOrder[0],
+    )
+    expect(result).toEqual({ id: 1, logoUrl: null })
+  })
+
+  it('is idempotent — succeeds without touching storage.delete when there was no logo to begin with', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', logoPath: null })
+    db.update.mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: jest.fn().mockResolvedValue([{ id: 1, logoPath: null }]),
+        }),
+      }),
+    })
+
+    const result = await clinicsService.removeLogo(1, adminUser)
+
+    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(result).toEqual({ id: 1, logoUrl: null })
   })
 })
 

@@ -126,12 +126,28 @@ export class ClinicsService {
     return membership
   }
 
+  // Fetches just enough of a clinic's raw row to know its current
+  // logoPath — used by updateLogo() and removeLogo() below, both of
+  // which need to know what file (if any) was there BEFORE they change
+  // it, so the old object can be cleaned up from storage rather than
+  // left orphaned in RustFS forever. findOne() can't be reused for this:
+  // it returns the transformed shape (logoUrl, no logoPath at all).
+  private async findRawForLogoOp(id: number) {
+    const clinic = await this.db.query.clinics.findFirst({
+      where: eq(clinics.id, id),
+    })
+    if (!clinic) {
+      throw new NotFoundException(`Clinic ${id} not found`)
+    }
+    return clinic
+  }
+
   async updateLogo(
     id: number,
     currentUser: CurrentUser,
     file: Express.Multer.File,
   ) {
-    await this.findOne(id)
+    const existing = await this.findRawForLogoOp(id)
     const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
@@ -141,6 +157,39 @@ export class ClinicsService {
         .where(eq(clinics.id, id))
         .returning(),
     )
+    // Only AFTER the new file is safely uploaded and the DB successfully
+    // points at it — deleting the OLD file at this point, not before,
+    // means a failure earlier in this method never leaves the clinic
+    // pointing at a file that's already been deleted.
+    if (existing.logoPath) {
+      await this.storageService.delete(existing.logoPath)
+    }
+    return this.withLogoUrl(updated)
+  }
+
+  // Admin-only (enforced at the controller, same as updateLogo). Clears
+  // logoPath back to null and deletes the underlying file from storage —
+  // idempotent if the clinic has no logo to begin with (existing.logoPath
+  // is null, so the delete call is simply skipped; the DB update is a
+  // harmless no-op UPDATE either way).
+  async removeLogo(id: number, currentUser: CurrentUser) {
+    const existing = await this.findRawForLogoOp(id)
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(clinics)
+        .set({ logoPath: null })
+        .where(eq(clinics.id, id))
+        .returning(),
+    )
+    // Same ordering rule as updateLogo() above: the DB is updated FIRST,
+    // so if the storage delete below fails, the worst case is an
+    // orphaned file sitting in RustFS (recoverable with a cleanup pass
+    // later) rather than a clinic record pointing at a file that's
+    // already gone (which would 404 the next time anyone tried to load
+    // the logo image).
+    if (existing.logoPath) {
+      await this.storageService.delete(existing.logoPath)
+    }
     return this.withLogoUrl(updated)
   }
 

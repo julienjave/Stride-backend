@@ -92,6 +92,18 @@ export class ClinicsController {
     return this.clinicsService.updateLogo(id, user, file)
   }
 
+  // Same guard as uploadLogo above. Idempotent — calling this on a
+  // clinic with no logo just returns the clinic unchanged.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Delete(':id/logo')
+  removeLogo(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.clinicsService.removeLogo(id, user)
+  }
+
   // --- GET ROUTES ---
 
   // Open to any authenticated user — clinic info is branding/display, not
