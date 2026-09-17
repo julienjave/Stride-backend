@@ -32,6 +32,7 @@ import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
+import { AuditService } from '../audit/audit.service'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -59,6 +60,7 @@ export class ClinicsService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
+    private readonly auditService: AuditService,
   ) {}
 
   // Converts a raw clinic row (which carries logoPath, the internal RustFS
@@ -144,9 +146,13 @@ export class ClinicsService {
 
   // --- GET ROUTES ---
 
-  async findAll() {
+  // includeInactive defaults to false — every existing caller keeps
+  // seeing only active clinics, unchanged. Admin-only enforcement of WHO
+  // can pass true happens at the controller; this method just does what
+  // it's told, mirroring UsersService.findAll()'s identical addition.
+  async findAll(includeInactive = false) {
     const rows = await this.db.query.clinics.findMany({
-      where: eq(clinics.isActive, true),
+      where: includeInactive ? undefined : eq(clinics.isActive, true),
     })
     return Promise.all(rows.map((clinic) => this.withLogoUrl(clinic)))
   }
@@ -219,6 +225,34 @@ export class ClinicsService {
         .returning(),
     )
     return this.withLogoUrl(deactivated)
+  }
+
+  // Admin-only — enforced by @Roles(UserRole.ADMIN) on the controller
+  // route, not re-checked here, same division of responsibility as every
+  // other role-gated route in this service. Mirrors UsersService.
+  // reactivate() exactly: flips isActive back to true on the SAME row
+  // (a clinic's members, programs, and history all stay attached to the
+  // same id), and is audit-logged for the same reason — restoring access
+  // is exactly the kind of event this app's audit trail exists to
+  // capture. The existing clinics_update RLS policy already covers a
+  // plain UPDATE re-flipping is_active, so no new RLS policy was needed
+  // for this — only the route and this method.
+  async reactivate(id: number, currentUser: CurrentUser) {
+    await this.findOne(id)
+    const [reactivated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(clinics)
+        .set({ isActive: true })
+        .where(eq(clinics.id, id))
+        .returning(),
+    )
+    await this.auditService.log({
+      performedBy: currentUser.id,
+      action: 'CLINIC_REACTIVATED',
+      entityType: 'clinics',
+      entityId: id,
+    })
+    return this.withLogoUrl(reactivated)
   }
 
   async removeMember(

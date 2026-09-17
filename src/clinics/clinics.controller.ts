@@ -27,6 +27,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -96,8 +97,14 @@ export class ClinicsController {
   // Open to any authenticated user — clinic info is branding/display, not
   // clinically sensitive, matching how it was framed in the schema design.
   @Get()
-  findAll() {
-    return this.clinicsService.findAll()
+  findAll(
+    @CurrentUser() currentUser: CurrentUser,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    // Raw string comparison, deliberately — see UsersController's
+    // identical findAll for why (Boolean('false') is true in JS).
+    return this.clinicsService.findAll(isAdmin && includeInactive === 'true')
   }
 
   @Get(':id')
@@ -135,6 +142,17 @@ export class ClinicsController {
     @CurrentUser() user: CurrentUser,
   ) {
     return this.clinicsService.deactivate(id, user)
+  }
+
+  // Admin-only, mirroring UsersController's reactivate exactly.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Post(':id/reactivate')
+  reactivate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.clinicsService.reactivate(id, user)
   }
 
   @UseGuards(RolesGuard)

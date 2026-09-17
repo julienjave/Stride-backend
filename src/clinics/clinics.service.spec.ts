@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing'
 import { ConflictException, NotFoundException } from '@nestjs/common'
 import { ClinicsService } from './clinics.service'
 import { StorageService } from '../storage/storage.service'
+import { AuditService } from '../audit/audit.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
 
@@ -60,6 +61,7 @@ describe('ClinicsService.addMember', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -165,6 +167,7 @@ describe('ClinicsService.findOne', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -200,6 +203,7 @@ describe('ClinicsService.create', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -277,6 +281,7 @@ describe('ClinicsService.findAll', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -296,6 +301,23 @@ describe('ClinicsService.findAll', () => {
 
     expect(db.query.clinics.findMany).toHaveBeenCalled()
     expect(result).toEqual([{ ...activeClinics[0], logoUrl: null }])
+  })
+
+  it('filters to active clinics only when includeInactive is omitted', async () => {
+    db.query.clinics.findMany.mockResolvedValue([])
+
+    await clinicsService.findAll()
+
+    const { where } = db.query.clinics.findMany.mock.calls[0][0]
+    expect(where).not.toBeUndefined()
+  })
+
+  it('passes no filter at all when includeInactive is true', async () => {
+    db.query.clinics.findMany.mockResolvedValue([])
+
+    await clinicsService.findAll(true)
+
+    expect(db.query.clinics.findMany).toHaveBeenCalledWith({ where: undefined })
   })
 })
 
@@ -327,6 +349,7 @@ describe('ClinicsService.update', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -390,6 +413,7 @@ describe('ClinicsService.updateLogo', () => {
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -462,6 +486,7 @@ describe('ClinicsService.exists', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -505,6 +530,7 @@ describe('ClinicsService.listMembers', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -585,6 +611,7 @@ describe('ClinicsService.deactivate', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -616,6 +643,85 @@ describe('ClinicsService.deactivate', () => {
   })
 })
 
+describe('ClinicsService.reactivate', () => {
+  let clinicsService: ClinicsService
+  let db: {
+    query: { clinics: { findFirst: jest.Mock } }
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
+  let auditService: { log: jest.Mock }
+
+  beforeEach(async () => {
+    db = {
+      query: { clinics: { findFirst: jest.fn() } },
+      update: jest.fn(),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
+    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ClinicsService,
+        { provide: DRIZZLE, useValue: db },
+        {
+          provide: StorageService,
+          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+        },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile()
+
+    clinicsService = moduleRef.get(ClinicsService)
+  })
+
+  it('throws NotFoundException when the clinic does not exist, without opening a transaction', async () => {
+    db.query.clinics.findFirst.mockResolvedValue(undefined)
+
+    await expect(clinicsService.reactivate(999, adminUser)).rejects.toThrow(
+      NotFoundException,
+    )
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('sets isActive back to true on the SAME row and returns the reactivated clinic', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: false })
+    const set = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue([{ id: 1, name: 'Acme Clinic', isActive: true }]),
+      }),
+    })
+    db.update.mockReturnValue({ set })
+
+    const result = await clinicsService.reactivate(1, adminUser)
+
+    expect(set).toHaveBeenCalledWith({ isActive: true })
+    expect(result).toEqual({ id: 1, name: 'Acme Clinic', isActive: true, logoUrl: null })
+  })
+
+  it('audit-logs the reactivation, naming who performed it and which clinic was affected', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, isActive: false })
+    db.update.mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: jest.fn().mockResolvedValue([{ id: 1, isActive: true }]),
+        }),
+      }),
+    })
+
+    await clinicsService.reactivate(1, { ...adminUser, id: 42 })
+
+    expect(auditService.log).toHaveBeenCalledWith({
+      performedBy: 42,
+      action: 'CLINIC_REACTIVATED',
+      entityType: 'clinics',
+      entityId: 1,
+    })
+  })
+})
+
 describe('ClinicsService.removeMember', () => {
   let clinicsService: ClinicsService
   let db: {
@@ -644,6 +750,7 @@ describe('ClinicsService.removeMember', () => {
           provide: StorageService,
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
