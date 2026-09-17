@@ -93,6 +93,7 @@ describe('AuthService.validateUser', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
     })
     usersService.getRolesForUser.mockResolvedValue(['practitioner'])
 
@@ -108,6 +109,7 @@ describe('AuthService.validateUser', () => {
       id: 1,
       email: 'ada@example.com',
       passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
     })
     usersService.getRolesForUser.mockResolvedValue(['admin', 'practitioner'])
 
@@ -121,6 +123,7 @@ describe('AuthService.validateUser', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
     })
     usersService.getRolesForUser.mockResolvedValue(['practitioner'])
 
@@ -145,6 +148,7 @@ describe('AuthService.validateUser', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
       mfaSecret: 'iv:authTag:ciphertext',
       passwordResetTokenHash: 'reset-hash',
       passwordResetTokenExpiresAt: new Date(),
@@ -173,6 +177,7 @@ describe('AuthService.validateUser', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
     })
     usersService.getRolesForUser.mockResolvedValue(['practitioner'])
     usersService.attachProfile.mockResolvedValue({
@@ -194,6 +199,22 @@ describe('AuthService.validateUser', () => {
       licenseNumber: 'PT-1',
       specialties: [],
     })
+  })
+
+  it('rejects login for a deactivated account, even with the correct password', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: await bcrypt.hash('password123', 10),
+      isActive: false,
+    })
+
+    await expect(
+      authService.validateUser('jane@example.com', 'password123'),
+    ).rejects.toThrow('This account has been deactivated')
+    // getRolesForUser should never even be reached — the account is
+    // rejected before any role resolution happens.
+    expect(usersService.getRolesForUser).not.toHaveBeenCalled()
   })
 })
 

@@ -23,6 +23,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  UnauthorizedException,
 } from '@nestjs/common'
 import { eq, sql } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
@@ -258,6 +259,23 @@ export class AuthService {
         entityId: user.id,
       })
       return null
+    }
+
+    // A deactivated account is rejected here, AFTER the password check —
+    // deliberately not before, so a wrong password against a deactivated
+    // account still reads as a generic credentials failure (the account's
+    // active/deactivated status isn't confirmed to a caller who hasn't
+    // proven they know the password). Once they've proven that, though,
+    // there's no enumeration risk left in telling them specifically why
+    // they can't log in.
+    if (!user.isActive) {
+      await this.auditService.log({
+        performedBy: user.id,
+        action: 'LOGIN_BLOCKED_DEACTIVATED',
+        entityType: 'users',
+        entityId: user.id,
+      })
+      throw new UnauthorizedException('This account has been deactivated')
     }
 
     const roles = await this.usersService.getRolesForUser(user.id)

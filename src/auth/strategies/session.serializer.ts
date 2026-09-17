@@ -48,17 +48,24 @@ export class SessionSerializer extends PassportSerializer {
 
   // Runs on EVERY subsequent request carrying a valid session cookie.
   // Reloads the full user (with their current roles) fresh on every request.
-  // If the stored activeRole is no longer among their actual roles — it was
-  // revoked by an admin sometime after this session's login — done(null,
-  // false) tells Passport deserialization failed: req.user stays unset,
+  // Two independent reasons this can fail, both using the same mechanism:
+  // an account deactivated (isActive: false) since login, or the stored
+  // activeRole no longer among their actual roles (revoked by an admin
+  // sometime after this session's login). Either way, done(null, false)
+  // tells Passport deserialization failed: req.user stays unset,
   // isAuthenticated() returns false, exactly as if they'd been logged out.
-  // This is what makes a mid-session role revocation take effect immediately.
+  // This is what makes deactivation AND mid-session role revocation both
+  // take effect immediately, without needing to separately delete the
+  // session record itself — the very next request just fails here instead.
   async deserializeUser(
     sessionData: SessionData,
     done: (err: Error | null, user?: unknown) => void,
   ) {
     try {
       const user = await this.usersService.findOne(sessionData.id)
+      if (!user.isActive) {
+        return done(null, false)
+      }
       if (!user.roles.includes(sessionData.activeRole)) {
         return done(null, false)
       }

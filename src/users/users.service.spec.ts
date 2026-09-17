@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common'
 import { UsersService } from './users.service'
 import { StorageService } from '../storage/storage.service'
+import { AuditService } from '../audit/audit.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from './dto/create-user.dto'
 
@@ -48,6 +49,7 @@ describe('UsersService.create', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -373,6 +375,7 @@ describe('UsersService.grantRole', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -495,6 +498,7 @@ describe('UsersService.findPatientsForPractitioner', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -646,6 +650,7 @@ describe('UsersService.isPatientManagedBy', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -742,6 +747,7 @@ describe('UsersService.findOne', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -866,6 +872,7 @@ describe('UsersService.update', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
 
@@ -1089,5 +1096,183 @@ describe('UsersService.update', () => {
     expect(profileUpdateChain.set).toHaveBeenCalledWith({
       dateOfBirth: '1985-05-05',
     })
+  })
+})
+
+describe('UsersService.reactivate', () => {
+  let usersService: UsersService
+  let db: {
+    query: {
+      users: { findFirst: jest.Mock }
+      practitionerProfiles: { findFirst: jest.Mock }
+      patientProfiles: { findFirst: jest.Mock }
+      adminProfiles: { findFirst: jest.Mock }
+    }
+    select: jest.Mock
+    transaction: jest.Mock
+  }
+  let auditService: { log: jest.Mock }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        users: { findFirst: jest.fn() },
+        practitionerProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        adminProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+      select: jest.fn(),
+      transaction: jest.fn(),
+    }
+    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
+      }),
+    })
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('throws NotFoundException for a nonexistent id, without opening a transaction', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+
+    await expect(
+      usersService.reactivate(999, { id: 1, activeRole: UserRole.ADMIN }),
+    ).rejects.toThrow(NotFoundException)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('sets isActive back to true on the SAME row and returns the reactivated user', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
+
+    const set = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue([
+          {
+            id: 5,
+            email: 'returning-patient@example.com',
+            isActive: true,
+          },
+        ]),
+      }),
+    })
+    db.transaction.mockImplementation((cb) =>
+      cb({ execute: jest.fn().mockResolvedValue(undefined), update: () => ({ set }) }),
+    )
+
+    const result = await usersService.reactivate(5, {
+      id: 1,
+      activeRole: UserRole.ADMIN,
+    })
+
+    expect(set).toHaveBeenCalledWith({ isActive: true })
+    expect(result).toEqual({
+      id: 5,
+      email: 'returning-patient@example.com',
+      isActive: true,
+      roles: [UserRole.PATIENT],
+      clinics: [],
+    })
+  })
+
+  it('audit-logs the reactivation, naming who performed it and which account was affected', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
+    db.transaction.mockImplementation((cb) =>
+      cb({
+        execute: jest.fn().mockResolvedValue(undefined),
+        update: () => ({
+          set: () => ({
+            where: () => ({
+              returning: jest.fn().mockResolvedValue([{ id: 5, isActive: true }]),
+            }),
+          }),
+        }),
+      }),
+    )
+
+    await usersService.reactivate(5, { id: 42, activeRole: UserRole.ADMIN })
+
+    expect(auditService.log).toHaveBeenCalledWith({
+      performedBy: 42,
+      action: 'USER_REACTIVATED',
+      entityType: 'users',
+      entityId: 5,
+    })
+  })
+})
+
+describe('UsersService.findAll', () => {
+  let usersService: UsersService
+  let db: {
+    query: {
+      users: { findMany: jest.Mock }
+      practitionerProfiles: { findMany: jest.Mock }
+      patientProfiles: { findMany: jest.Mock }
+      adminProfiles: { findMany: jest.Mock }
+    }
+    select: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = {
+      query: {
+        users: { findMany: jest.fn() },
+        practitionerProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+        patientProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+        adminProfiles: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      select: jest.fn(),
+    }
+    db.select
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+      })
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+        }),
+      })
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: {} },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('filters to active users only when includeInactive is omitted', async () => {
+    db.query.users.findMany.mockResolvedValue([])
+
+    await usersService.findAll()
+
+    const { where } = db.query.users.findMany.mock.calls[0][0]
+    expect(where).not.toBeUndefined()
+  })
+
+  it('passes no filter at all when includeInactive is true', async () => {
+    db.query.users.findMany.mockResolvedValue([])
+
+    await usersService.findAll(true)
+
+    expect(db.query.users.findMany).toHaveBeenCalledWith({ where: undefined })
   })
 })

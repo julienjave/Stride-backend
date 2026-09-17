@@ -28,6 +28,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -104,9 +105,18 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Get()
-  findAll(@CurrentUser() currentUser: CurrentUser) {
+  findAll(
+    @CurrentUser() currentUser: CurrentUser,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
     if (currentUser.activeRole === UserRole.ADMIN) {
-      return this.usersService.findAll()
+      // Raw string comparison, deliberately — NOT class-transformer's
+      // @Type(() => Boolean), which has a real gotcha here: Boolean(
+      // 'false') is true in JavaScript (any non-empty string is truthy),
+      // so that decorator would silently treat ?includeInactive=false the
+      // same as ?includeInactive=true. Comparing the raw string against
+      // the one value that should enable it sidesteps that entirely.
+      return this.usersService.findAll(includeInactive === 'true')
     }
     return this.usersService.findPatientsForPractitioner(currentUser.id)
   }
@@ -168,5 +178,19 @@ export class UsersController {
       )
     }
     return this.usersService.softDelete(id, currentUser)
+  }
+
+  // Admin-only, deliberately — no self-service or managing-practitioner
+  // path, unlike deactivate above. See UsersService.reactivate()'s own
+  // comment for why: restoring access to a potentially PHI-adjacent
+  // account is treated more conservatively than removing it.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Post(':id/reactivate')
+  reactivate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() currentUser: CurrentUser,
+  ) {
+    return this.usersService.reactivate(id, currentUser)
   }
 }

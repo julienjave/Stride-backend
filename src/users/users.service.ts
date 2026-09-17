@@ -42,6 +42,7 @@ import { GrantRoleDto } from './dto/grant-role.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { withRlsContext } from '../database/rls-context'
+import { AuditService } from '../audit/audit.service'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
@@ -49,6 +50,7 @@ export class UsersService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
+    private readonly auditService: AuditService,
   ) {}
 
   // === ROUTES =============================================================
@@ -238,9 +240,17 @@ export class UsersService {
 
   // --- GET ROUTES ---
 
-  async findAll() {
+  // includeInactive defaults to false — every existing caller (and the
+  // controller's own default) keeps seeing only active users, unchanged.
+  // Admin-only enforcement of WHO can pass true happens at the controller
+  // (see findAll's @Query handling there); this method just does what
+  // it's told, the same division of responsibility as reactivate() above.
+  // Without this option, a deactivated user could never be found again
+  // through this list to be reactivated at all — the list is the only
+  // way an admin browses users today.
+  async findAll(includeInactive = false) {
     const rows = await this.db.query.users.findMany({
-      where: eq(users.isActive, true),
+      where: includeInactive ? undefined : eq(users.isActive, true),
     })
     return this.attachProfilesToMany(rows.map((u) => this.toPublic(u)))
   }
@@ -478,6 +488,51 @@ export class UsersService {
     )
     const roles = await this.getRolesForUser(id)
     return this.attachProfile({ ...this.toPublic(deactivated), roles }, roles)
+  }
+
+  // Admin-only — enforced by @Roles(UserRole.ADMIN) on the controller
+  // route, not re-checked here (same division of responsibility as every
+  // other role-gated route in this service). Deliberately NOT a new
+  // user: this flips isActive back to true on the SAME row, so a
+  // returning patient's or practitioner's entire history (medical files,
+  // assigned programs, past messages) stays correctly attached to the
+  // account they already had, rather than starting over under a second,
+  // disconnected id. This is exactly why softDelete() above only ever
+  // sets isActive: false instead of issuing a real DELETE — reactivation
+  // like this is the payoff of that choice.
+  //
+  // Deliberately admin-only rather than a self-service flow (e.g. an
+  // emailed reactivation link, mirroring forgotPassword/resetPassword) —
+  // an account may have been deactivated for a reason a returning person
+  // shouldn't be able to silently undo just by proving they still control
+  // the original email address. A human admin verifying identity through
+  // the clinic's own real-world process before restoring access to a
+  // potentially PHI-adjacent account is the more conservative default.
+  async reactivate(
+    id: number,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
+    await this.findOne(id)
+    const [reactivated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ isActive: true })
+        .where(eq(users.id, id))
+        .returning(),
+    )
+    // Audit logging is not optional here — this app treats "who restored
+    // access to which account, and when" as exactly the kind of event
+    // HIPAA's audit-controls technical safeguard exists to capture,
+    // matching the precedent already set by LOGIN_SUCCESS/LOGIN_FAILURE/
+    // PASSWORD_RESET_REQUESTED elsewhere in this codebase.
+    await this.auditService.log({
+      performedBy: currentUser.id,
+      action: 'USER_REACTIVATED',
+      entityType: 'users',
+      entityId: id,
+    })
+    const roles = await this.getRolesForUser(id)
+    return this.attachProfile({ ...this.toPublic(reactivated), roles }, roles)
   }
 
   // === HELPER FUNCTIONS =====================================================
