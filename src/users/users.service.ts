@@ -109,7 +109,12 @@ export class UsersService {
           firstName: dto.firstName,
           lastName: dto.lastName,
           phone: dto.phone,
-          address: dto.address,
+          addressLine1: dto.addressLine1,
+          addressLine2: dto.addressLine2,
+          addressCity: dto.addressCity,
+          addressState: dto.addressState,
+          addressPostalCode: dto.addressPostalCode,
+          addressCountry: dto.addressCountry,
         })
         .returning()
 

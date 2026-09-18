@@ -232,14 +232,22 @@ describe('ClinicsService.create', () => {
     })
   })
 
-  it('passes address through to the insert when given', async () => {
+  it('passes a full address through to the insert when given', async () => {
+    const address = {
+      addressLine1: '1 Acme Way',
+      addressLine2: 'Suite 200',
+      addressCity: 'Springfield',
+      addressState: 'IL',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
+    }
     const values = jest.fn().mockReturnValue({
       returning: jest.fn().mockResolvedValue([
         {
           id: 1,
           name: 'Acme Clinic',
           email: 'acme@example.com',
-          address: '1 Acme Way',
+          ...address,
         },
       ]),
     })
@@ -248,19 +256,19 @@ describe('ClinicsService.create', () => {
     const result = await clinicsService.create(adminUser, {
       name: 'Acme Clinic',
       email: 'acme@example.com',
-      address: '1 Acme Way',
+      ...address,
     })
 
     expect(values).toHaveBeenCalledWith({
       name: 'Acme Clinic',
       email: 'acme@example.com',
-      address: '1 Acme Way',
+      ...address,
     })
     expect(result).toEqual({
       id: 1,
       name: 'Acme Clinic',
       email: 'acme@example.com',
-      address: '1 Acme Way',
+      ...address,
       logoUrl: null,
     })
   })

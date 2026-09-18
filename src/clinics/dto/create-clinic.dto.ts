@@ -17,7 +17,8 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MaxLength, IsOptional } from 'class-validator'
+import { IsEmail, IsString, MaxLength, Length, IsOptional, ValidateIf } from 'class-validator'
+import { hasStartedAddress } from '../../common/validators/has-started-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -38,10 +39,43 @@ export class CreateClinicDto {
   @MaxLength(50)
   phone?: string
 
+  // See has-started-address.ts for the full "optional as a unit, but
+  // core fields required together once started" reasoning shared by
+  // every address-bearing DTO.
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(255)
+  addressLine1?: string
+
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  address?: string
+  @MaxLength(255)
+  addressLine2?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(100)
+  addressCity?: string
+
+  // Not core — not every country has a state/province concept, so this
+  // stays independently optional even once the rest of the address is
+  // required.
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  addressState?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(20)
+  addressPostalCode?: string
+
+  // ISO 3166-1 alpha-2 — exactly 2 characters, the country dropdown's
+  // value, not a display name.
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @Length(2, 2)
+  addressCountry?: string
 
   @IsOptional()
   @IsString()

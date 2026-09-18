@@ -22,6 +22,7 @@ import {
   IsString,
   MinLength,
   MaxLength,
+  Length,
   IsEnum,
   IsOptional,
   IsArray,
@@ -30,6 +31,7 @@ import {
   IsInt,
   ValidateIf,
 } from 'class-validator'
+import { hasStartedAddress } from '../../common/validators/has-started-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -68,10 +70,38 @@ export class CreateUserDto {
   @MaxLength(50)
   phone?: string
 
+  // See has-started-address.ts for the full "optional as a unit, but
+  // core fields required together once started" reasoning shared by
+  // every address-bearing DTO.
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(255)
+  addressLine1?: string
+
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  address?: string
+  @MaxLength(255)
+  addressLine2?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(100)
+  addressCity?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  addressState?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(20)
+  addressPostalCode?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @Length(2, 2)
+  addressCountry?: string
 
   // --- Practitioner-only fields ---
   // @ValidateIf runs its callback against the whole DTO; the field below it is

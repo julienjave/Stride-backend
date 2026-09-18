@@ -47,7 +47,16 @@ export const users = pgTable('users', {
   lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarPath: varchar('avatar_path', { length: 500 }),
   phone: varchar('phone', { length: 50 }),
-  address: varchar('address', { length: 500 }),
+  // Same address model as clinics.schema.ts — see that file's comments
+  // for the full reasoning (optional as a unit, core-fields-required-
+  // together enforced at the DTO layer, country as ISO 3166-1 alpha-2,
+  // state as free text since not every country has a fixed list).
+  addressLine1: varchar('address_line1', { length: 255 }),
+  addressLine2: varchar('address_line2', { length: 255 }),
+  addressCity: varchar('address_city', { length: 100 }),
+  addressState: varchar('address_state', { length: 100 }),
+  addressPostalCode: varchar('address_postal_code', { length: 20 }),
+  addressCountry: varchar('address_country', { length: 2 }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()

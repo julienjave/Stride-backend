@@ -144,7 +144,10 @@ describe('Users (e2e)', () => {
       specialties: ['sports rehab'],
       bio: 'Specializes in post-op rehab.',
       phone: '555-0200',
-      address: '1 Practitioner Ave',
+      addressLine1: '1 Practitioner Ave',
+      addressCity: 'Springfield',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
       clinicId: clinicXId,
     });
     expect(practitionerARes.status).toBe(201);
@@ -160,7 +163,7 @@ describe('Users (e2e)', () => {
     // phone/address moved from patient_profiles onto users itself — now
     // common to every role, including a practitioner.
     expect(practitionerARes.body.phone).toBe('555-0200');
-    expect(practitionerARes.body.address).toBe('1 Practitioner Ave');
+    expect(practitionerARes.body.addressLine1).toBe('1 Practitioner Ave');
     practitionerAId = practitionerARes.body.id;
     practitionerAEmail = `practitioner-a-${stamp}@example.com`;
     practitionerAProfile = practitionerARes.body.practitionerProfile;
@@ -193,7 +196,10 @@ describe('Users (e2e)', () => {
       lastName: 'One',
       dateOfBirth: '1990-01-01',
       phone: '555-0300',
-      address: '1 Patient One Street',
+      addressLine1: '1 Patient One Street',
+      addressCity: 'Springfield',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
       clinicId: clinicXId,
     });
     expect(patient1Res.status).toBe(201);
@@ -204,7 +210,7 @@ describe('Users (e2e)', () => {
     // phone/address are common to every role now — a patient gets them too,
     // read straight off `users` rather than the old patient_profiles columns.
     expect(patient1Res.body.phone).toBe('555-0300');
-    expect(patient1Res.body.address).toBe('1 Patient One Street');
+    expect(patient1Res.body.addressLine1).toBe('1 Patient One Street');
     await patient1.post('/auth/login').send({
       email: `patient1-${stamp}@example.com`,
       password: 'password123',
@@ -255,10 +261,10 @@ describe('Users (e2e)', () => {
     // role can update them the same way.
     const contactUpdateRes = await patient1
       .patch(`/users/${patient1Id}`)
-      .send({ phone: '555-9999', address: '99 Updated Ave' });
+      .send({ phone: '555-9999', addressLine1: '99 Updated Ave' });
     expect(contactUpdateRes.status).toBe(200);
     expect(contactUpdateRes.body.phone).toBe('555-9999');
-    expect(contactUpdateRes.body.address).toBe('99 Updated Ave');
+    expect(contactUpdateRes.body.addressLine1).toBe('99 Updated Ave');
   });
 
   it('lets an admin update anyone', async () => {

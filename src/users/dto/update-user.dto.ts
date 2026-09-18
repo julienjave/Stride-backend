@@ -21,10 +21,13 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  Length,
   IsArray,
   ArrayMaxSize,
   IsDateString,
+  ValidateIf,
 } from 'class-validator'
+import { hasStartedAddress } from '../../common/validators/has-started-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -71,10 +74,51 @@ export class UpdateUserDto {
   @MaxLength(50)
   phone?: string
 
+  // Address core-fields-required-together (see has-started-address.ts)
+  // needs BOTH @ValidateIf and @IsOptional here, unlike CreateUserDto's
+  // equivalent fields — this DTO is hand-written, not PartialType-
+  // derived, so it doesn't get PartialType's automatic @IsOptional on
+  // every field for free. Without it explicitly here, a legitimate
+  // single-field patch (e.g. just updating addressCity) would
+  // incorrectly demand the other three core fields too: @ValidateIf
+  // alone would gate them IN once addressCity is seen, and @IsString()
+  // rejects undefined just as readily as it rejects a genuinely missing
+  // value. @IsOptional() is what lets an OMITTED field pass through
+  // untouched while a malformed EXPLICIT one (e.g. addressCountry: '')
+  // still correctly fails length/type checks.
+  @ValidateIf(hasStartedAddress)
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  address?: string
+  @MaxLength(255)
+  addressLine1?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  addressLine2?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  addressCity?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  addressState?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  addressPostalCode?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  addressCountry?: string
 
   // --- Practitioner-profile fields (target must hold the practitioner role) ---
   @IsOptional()

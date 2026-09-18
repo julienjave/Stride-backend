@@ -22,10 +22,28 @@ import {
   IsString,
   MinLength,
   MaxLength,
+  Length,
   IsOptional,
+  ValidateIf,
 } from 'class-validator'
+import { hasStartedAddress } from '../../common/validators/has-started-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
+
+// This DTO carries TWO separate addresses — the clinic's and the
+// founding admin's own — so hasStartedAddress (which expects
+// addressLine1/addressCity/addressPostalCode/addressCountry keys) needs
+// a small adapter for the clinic's differently-prefixed fields. The
+// admin's own address fields match the shared helper's expected names
+// exactly, so those use it directly, same as CreateUserDto.
+function hasStartedClinicAddress(dto: RegisterClinicDto): boolean {
+  return hasStartedAddress({
+    addressLine1: dto.clinicAddressLine1,
+    addressCity: dto.clinicAddressCity,
+    addressPostalCode: dto.clinicAddressPostalCode,
+    addressCountry: dto.clinicAddressCountry,
+  })
+}
 
 export class RegisterClinicDto {
   // Clinic fields
@@ -42,10 +60,35 @@ export class RegisterClinicDto {
   @MaxLength(50)
   clinicPhone?: string
 
+  @ValidateIf(hasStartedClinicAddress)
+  @IsString()
+  @MaxLength(255)
+  clinicAddressLine1?: string
+
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  clinicAddress?: string
+  @MaxLength(255)
+  clinicAddressLine2?: string
+
+  @ValidateIf(hasStartedClinicAddress)
+  @IsString()
+  @MaxLength(100)
+  clinicAddressCity?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  clinicAddressState?: string
+
+  @ValidateIf(hasStartedClinicAddress)
+  @IsString()
+  @MaxLength(20)
+  clinicAddressPostalCode?: string
+
+  @ValidateIf(hasStartedClinicAddress)
+  @IsString()
+  @Length(2, 2)
+  clinicAddressCountry?: string
 
   @IsOptional()
   @IsString()
@@ -75,10 +118,35 @@ export class RegisterClinicDto {
   @MaxLength(50)
   phone?: string
 
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(255)
+  addressLine1?: string
+
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  address?: string
+  @MaxLength(255)
+  addressLine2?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(100)
+  addressCity?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  addressState?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @MaxLength(20)
+  addressPostalCode?: string
+
+  @ValidateIf(hasStartedAddress)
+  @IsString()
+  @Length(2, 2)
+  addressCountry?: string
 
   @IsOptional()
   @IsString()

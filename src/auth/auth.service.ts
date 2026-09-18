@@ -90,7 +90,12 @@ export class AuthService {
       lastName: dto.lastName,
       dateOfBirth: dto.dateOfBirth,
       phone: dto.phone,
-      address: dto.address,
+      addressLine1: dto.addressLine1,
+      addressLine2: dto.addressLine2,
+      addressCity: dto.addressCity,
+      addressState: dto.addressState,
+      addressPostalCode: dto.addressPostalCode,
+      addressCountry: dto.addressCountry,
     })
 
     await this.auditService.log({
@@ -148,7 +153,12 @@ export class AuthService {
             name: dto.clinicName,
             email: dto.clinicEmail,
             phone: dto.clinicPhone,
-            address: dto.clinicAddress,
+            addressLine1: dto.clinicAddressLine1,
+            addressLine2: dto.clinicAddressLine2,
+            addressCity: dto.clinicAddressCity,
+            addressState: dto.clinicAddressState,
+            addressPostalCode: dto.clinicAddressPostalCode,
+            addressCountry: dto.clinicAddressCountry,
             website: dto.clinicWebsite,
           })
           .returning()
@@ -161,7 +171,12 @@ export class AuthService {
             firstName: dto.firstName,
             lastName: dto.lastName,
             phone: dto.phone,
-            address: dto.address,
+            addressLine1: dto.addressLine1,
+            addressLine2: dto.addressLine2,
+            addressCity: dto.addressCity,
+            addressState: dto.addressState,
+            addressPostalCode: dto.addressPostalCode,
+            addressCountry: dto.addressCountry,
           })
           .returning()
 

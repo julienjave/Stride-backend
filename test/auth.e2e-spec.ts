@@ -127,13 +127,19 @@ describe('Auth (e2e)', () => {
     const clinicRes = await adminAgent.post('/auth/register-clinic').send({
       clinicName: 'Auth E2E Clinic',
       clinicEmail: `clinic-${stamp}@example.com`,
-      clinicAddress: '10 Founding Clinic Ave',
+      clinicAddressLine1: '10 Founding Clinic Ave',
+      clinicAddressCity: 'Springfield',
+      clinicAddressPostalCode: '62704',
+      clinicAddressCountry: 'US',
       email: `admin-${stamp}@example.com`,
       password: 'password123',
       firstName: 'Auth',
       lastName: 'Admin',
       phone: '555-0100',
-      address: '1 Founding Admin Way',
+      addressLine1: '1 Founding Admin Way',
+      addressCity: 'Springfield',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
       position: 'Clinic Director',
     })
     if (clinicRes.status !== 201) {
@@ -158,7 +164,7 @@ describe('Auth (e2e)', () => {
     // UsersService.create()) needs the same fields threaded through
     // separately, since it never goes through create() at all.
     expect(clinicRes.body.phone).toBe('555-0100')
-    expect(clinicRes.body.address).toBe('1 Founding Admin Way')
+    expect(clinicRes.body.addressLine1).toBe('1 Founding Admin Way')
   })
 
   afterAll(async () => {
@@ -191,16 +197,17 @@ describe('Auth (e2e)', () => {
     expect(res.status).toBe(403)
   })
 
-  // registerClinic()'s clinicAddress is a field on the CLINIC row, distinct
-  // from the founding admin's own `address` (asserted separately in
-  // beforeAll) — they land on two different tables via two different
-  // inserts inside the same transaction, so this confirms clinicAddress
-  // actually reached `clinics.address`, not silently dropped or conflated
-  // with the admin's own address field of the same request body.
-  it("persists clinicAddress onto the clinic's own address, separately from the founding admin's address", async () => {
+  // registerClinic()'s clinicAddressLine1 (and friends) are fields on the
+  // CLINIC row, distinct from the founding admin's own addressLine1
+  // (asserted separately in beforeAll) — they land on two different
+  // tables via two different inserts inside the same transaction, so
+  // this confirms clinicAddressLine1 actually reached
+  // `clinics.address_line1`, not silently dropped or conflated with the
+  // admin's own address fields of the same request body.
+  it("persists the clinic's own address, separately from the founding admin's address", async () => {
     const res = await adminAgent.get(`/clinics/${clinicId}`)
     expect(res.status).toBe(200)
-    expect(res.body.address).toBe('10 Founding Clinic Ave')
+    expect(res.body.addressLine1).toBe('10 Founding Clinic Ave')
   })
 
   it('rejects /auth/me without a session', async () => {
@@ -219,7 +226,10 @@ describe('Auth (e2e)', () => {
       lastName: 'Role',
       dateOfBirth: '1990-01-01',
       phone: '555-0101',
-      address: '1 Patient Lane',
+      addressLine1: '1 Patient Lane',
+      addressCity: 'Springfield',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
     })
     expect(registerRes.status).toBe(201)
     // Regression coverage: patient_profiles.dateOfBirth is written by
@@ -235,7 +245,7 @@ describe('Auth (e2e)', () => {
     // so they're common to every role — round-tripped here through the
     // public registration path.
     expect(registerRes.body.phone).toBe('555-0101')
-    expect(registerRes.body.address).toBe('1 Patient Lane')
+    expect(registerRes.body.addressLine1).toBe('1 Patient Lane')
     // /auth/register already logs the caller in via req.login() — confirm
     // that session is real before logging out and testing login separately.
     const meAfterRegister = await patient.get('/auth/me')
@@ -244,7 +254,7 @@ describe('Auth (e2e)', () => {
       dateOfBirth: '1990-01-01',
     })
     expect(meAfterRegister.body.phone).toBe('555-0101')
-    expect(meAfterRegister.body.address).toBe('1 Patient Lane')
+    expect(meAfterRegister.body.addressLine1).toBe('1 Patient Lane')
     await patient.post('/auth/logout')
 
     const loginRes = await patient.post('/auth/login').send({
@@ -258,7 +268,7 @@ describe('Auth (e2e)', () => {
     // its own explicit attachProfile() call — same gap, different call site.
     expect(loginRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
     expect(loginRes.body.phone).toBe('555-0101')
-    expect(loginRes.body.address).toBe('1 Patient Lane')
+    expect(loginRes.body.addressLine1).toBe('1 Patient Lane')
   })
 
   it('requires an explicit role choice for an account with more than one role, and rejects a role it does not hold', async () => {
