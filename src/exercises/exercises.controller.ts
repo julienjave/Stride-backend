@@ -31,27 +31,27 @@ import {
   UploadedFiles,
   UseGuards,
   UseInterceptors,
-} from '@nestjs/common'
-import { ApiTags } from '@nestjs/swagger'
-import { FilesInterceptor } from '@nestjs/platform-express'
-import { ExercisesService } from './exercises.service'
-import { CreateExerciseDto } from './dto/create-exercise.dto'
-import { UpdateExerciseDto } from './dto/update-exercise.dto'
-import { RemoveImageDto } from './dto/remove-image.dto'
-import { ReorderImagesDto } from './dto/reorder-images.dto'
-import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
-import { SessionAuthGuard } from '../common/guards/session-auth.guard'
-import { RolesGuard } from '../common/guards/roles.guard'
-import { Roles } from '../common/decorators/roles.decorator'
-import { CurrentUser } from '../common/decorators/current-user.decorator'
-import { imageUploadOptions } from '../common/config/image-upload.config'
-import { UserRole } from '../users/dto/create-user.dto'
+} from "@nestjs/common";
+import { ApiTags } from "@nestjs/swagger";
+import { FilesInterceptor } from "@nestjs/platform-express";
+import { ExercisesService } from "./exercises.service";
+import { CreateExerciseDto } from "./dto/create-exercise.dto";
+import { UpdateExerciseDto } from "./dto/update-exercise.dto";
+import { RemoveImageDto } from "./dto/remove-image.dto";
+import { ReorderImagesDto } from "./dto/reorder-images.dto";
+import { FindExercisesQueryDto } from "./dto/find-exercises-query.dto";
+import { SessionAuthGuard } from "../common/guards/session-auth.guard";
+import { RolesGuard } from "../common/guards/roles.guard";
+import { Roles } from "../common/decorators/roles.decorator";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { imageUploadOptions } from "../common/config/image-upload.config";
+import { UserRole } from "../users/dto/create-user.dto";
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
 @UseGuards(SessionAuthGuard)
-@ApiTags('Exercises')
-@Controller('exercises')
+@ApiTags("Exercises")
+@Controller("exercises")
 export class ExercisesController {
   constructor(private readonly exercisesService: ExercisesService) {}
 
@@ -63,7 +63,7 @@ export class ExercisesController {
   @Roles(UserRole.PRACTITIONER)
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateExerciseDto) {
-    return this.exercisesService.create(user, dto)
+    return this.exercisesService.create(user, dto);
   }
 
   // FilesInterceptor (plural) — the only real difference from the single-file
@@ -71,17 +71,17 @@ export class ExercisesController {
   // request, delivered as an array via @UploadedFiles().
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
-  @Post(':id/images')
-  @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
+  @Post(":id/images")
+  @UseInterceptors(FilesInterceptor("files", 5, imageUploadOptions))
   uploadImages(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @UploadedFiles() files: Express.Multer.File[],
     @CurrentUser() user: CurrentUser,
   ) {
     if (!files || files.length === 0) {
-      throw new BadRequestException('No files uploaded')
+      throw new BadRequestException("No files uploaded");
     }
-    return this.exercisesService.addImages(id, user, files)
+    return this.exercisesService.addImages(id, user, files);
   }
 
   // --- GET ROUTES ---
@@ -92,59 +92,62 @@ export class ExercisesController {
   // across two decorators would make the DTO see "search" as an
   // undeclared property and reject the request outright.
   @Get()
-  findAll(@Query() query: FindExercisesQueryDto) {
-    return this.exercisesService.findAll(query)
+  findAll(
+    @Query() query: FindExercisesQueryDto,
+    @CurrentUser() currentUser: CurrentUser,
+  ) {
+    return this.exercisesService.findAll(query, currentUser.id);
   }
 
-  @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.exercisesService.findOne(id)
+  @Get(":id")
+  findOne(@Param("id", ParseIntPipe) id: number) {
+    return this.exercisesService.findOne(id);
   }
 
   // --- PATCH ROUTES ---
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
-  @Patch(':id')
+  @Patch(":id")
   update(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: CurrentUser,
     @Body() dto: UpdateExerciseDto,
   ) {
-    return this.exercisesService.update(id, user, dto)
+    return this.exercisesService.update(id, user, dto);
   }
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
-  @Patch(':id/images')
+  @Patch(":id/images")
   reorderImages(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @Body() dto: ReorderImagesDto,
     @CurrentUser() user: CurrentUser,
   ) {
-    return this.exercisesService.reorderImages(id, user, dto.order)
+    return this.exercisesService.reorderImages(id, user, dto.order);
   }
 
   // --- DELETE ROUTES ---
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
-  @Delete(':id')
+  @Delete(":id")
   archive(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: CurrentUser,
   ) {
-    return this.exercisesService.archive(id, user)
+    return this.exercisesService.archive(id, user);
   }
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
-  @Delete(':id/images')
+  @Delete(":id/images")
   removeImage(
-    @Param('id', ParseIntPipe) id: number,
+    @Param("id", ParseIntPipe) id: number,
     @Body() dto: RemoveImageDto,
     @CurrentUser() user: CurrentUser,
   ) {
-    return this.exercisesService.removeImage(id, user, dto.objectKey)
+    return this.exercisesService.removeImage(id, user, dto.objectKey);
   }
 }
