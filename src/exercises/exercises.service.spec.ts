@@ -26,7 +26,7 @@ describe("ExercisesService.assertCanModify (via update)", () => {
           where: jest.fn().mockReturnValue({
             returning: jest
               .fn()
-              .mockResolvedValue([{ id: 1, name: "Updated" }]),
+              .mockResolvedValue([{ id: 1, name: "Updated", mediaUrls: [] }]),
           }),
         }),
       }),
@@ -62,7 +62,10 @@ describe("ExercisesService.assertCanModify (via update)", () => {
         { id: 7, activeRole: UserRole.PRACTITIONER },
         { name: "Updated" },
       ),
-    ).resolves.toEqual({ id: 1, name: "Updated" });
+      // withImages replaces mediaUrls with images on every returned
+      // value now — an empty mediaUrls array means an empty images
+      // array, not the field disappearing entirely.
+    ).resolves.toEqual({ id: 1, name: "Updated", images: [] });
   });
 
   it("allows an admin to modify any exercise, including one they did not create", async () => {
@@ -79,7 +82,7 @@ describe("ExercisesService.assertCanModify (via update)", () => {
         { id: 999, activeRole: UserRole.ADMIN },
         { name: "Updated" },
       ),
-    ).resolves.toEqual({ id: 1, name: "Updated" });
+    ).resolves.toEqual({ id: 1, name: "Updated", images: [] });
   });
 
   it("rejects a different practitioner modifying a custom exercise they did not create", async () => {
@@ -160,7 +163,21 @@ describe("ExercisesService.reorderImages", () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        {
+          provide: StorageService,
+          // Every returned exercise now goes through withImages, which
+          // calls this for every key in mediaUrls — a real signed URL
+          // isn't the point of THESE tests (permutation-validation
+          // logic is), so this just echoes back something deterministic
+          // and traceable to its input key.
+          useValue: {
+            getPresignedUrl: jest
+              .fn()
+              .mockImplementation((key: string) =>
+                Promise.resolve(`https://signed.example/${key}`),
+              ),
+          },
+        },
       ],
     }).compile();
 
@@ -174,7 +191,19 @@ describe("ExercisesService.reorderImages", () => {
       ["c.jpg", "a.jpg", "b.jpg"],
     );
 
-    expect(result).toEqual({ id: 1, mediaUrls: ["c.jpg", "a.jpg", "b.jpg"] });
+    // images preserves the NEW order (c, a, b) — proving reorderImages'
+    // own permutation logic actually took effect — and each entry pairs
+    // the raw objectKey (needed for a LATER reorder/delete request) with
+    // its signed url (needed to actually display it), per withImages'
+    // own contract.
+    expect(result).toEqual({
+      id: 1,
+      images: [
+        { objectKey: "c.jpg", url: "https://signed.example/c.jpg" },
+        { objectKey: "a.jpg", url: "https://signed.example/a.jpg" },
+        { objectKey: "b.jpg", url: "https://signed.example/b.jpg" },
+      ],
+    });
   });
 
   it("rejects a reordering that drops an existing image", async () => {
@@ -222,7 +251,7 @@ describe("ExercisesService.reorderImages", () => {
 
 describe("ExercisesService.removeImage", () => {
   let exercisesService: ExercisesService;
-  let storageService: { delete: jest.Mock };
+  let storageService: { delete: jest.Mock; getPresignedUrl: jest.Mock };
   let db: {
     query: { exercises: { findFirst: jest.Mock } };
     update: jest.Mock;
@@ -231,7 +260,14 @@ describe("ExercisesService.removeImage", () => {
   };
 
   beforeEach(async () => {
-    storageService = { delete: jest.fn().mockResolvedValue(undefined) };
+    storageService = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      getPresignedUrl: jest
+        .fn()
+        .mockImplementation((key: string) =>
+          Promise.resolve(`https://signed.example/${key}`),
+        ),
+    };
     db = {
       query: {
         exercises: {
@@ -277,7 +313,10 @@ describe("ExercisesService.removeImage", () => {
       "a.jpg",
     );
 
-    expect(result).toEqual({ id: 1, mediaUrls: ["b.jpg"] });
+    expect(result).toEqual({
+      id: 1,
+      images: [{ objectKey: "b.jpg", url: "https://signed.example/b.jpg" }],
+    });
     expect(storageService.delete).toHaveBeenCalledWith("a.jpg");
   });
 
@@ -315,6 +354,76 @@ describe("ExercisesService.findOne", () => {
     db.query.exercises.findFirst.mockResolvedValue(undefined);
 
     await expect(exercisesService.findOne(999)).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+});
+
+describe("ExercisesService.findOneForDisplay", () => {
+  let exercisesService: ExercisesService;
+  let db: { query: { exercises: { findFirst: jest.Mock } } };
+
+  beforeEach(async () => {
+    db = { query: { exercises: { findFirst: jest.fn() } } };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ExercisesService,
+        { provide: DRIZZLE, useValue: db },
+        {
+          provide: StorageService,
+          useValue: {
+            getPresignedUrl: jest
+              .fn()
+              .mockImplementation((key: string) =>
+                Promise.resolve(`https://signed.example/${key}`),
+              ),
+          },
+        },
+      ],
+    }).compile();
+
+    exercisesService = moduleRef.get(ExercisesService);
+  });
+
+  it("replaces mediaUrls with images, pairing each raw key with its signed url", async () => {
+    db.query.exercises.findFirst.mockResolvedValue({
+      id: 1,
+      name: "Wall Slide",
+      mediaUrls: ["a.jpg", "b.jpg"],
+    });
+
+    const result = await exercisesService.findOneForDisplay(1);
+
+    expect(result).toEqual({
+      id: 1,
+      name: "Wall Slide",
+      images: [
+        { objectKey: "a.jpg", url: "https://signed.example/a.jpg" },
+        { objectKey: "b.jpg", url: "https://signed.example/b.jpg" },
+      ],
+    });
+    // The REAL point of this test: raw object keys never reach a
+    // client-facing response, only paired {objectKey, url} entries.
+    expect(result).not.toHaveProperty("mediaUrls");
+  });
+
+  it("returns an empty images array, not an error, for an exercise with no photos yet", async () => {
+    db.query.exercises.findFirst.mockResolvedValue({
+      id: 1,
+      name: "Wall Slide",
+      mediaUrls: [],
+    });
+
+    const result = await exercisesService.findOneForDisplay(1);
+
+    expect(result).toEqual({ id: 1, name: "Wall Slide", images: [] });
+  });
+
+  it("propagates NotFoundException from the underlying findOne, unchanged", async () => {
+    db.query.exercises.findFirst.mockResolvedValue(undefined);
+
+    await expect(exercisesService.findOneForDisplay(999)).rejects.toThrow(
       NotFoundException,
     );
   });

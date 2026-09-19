@@ -240,10 +240,16 @@ describe("Exercises (e2e)", () => {
         contentType: "image/png",
       });
     expect(firstUpload.status).toBe(201);
-    expect(firstUpload.body.mediaUrls).toHaveLength(2);
+    expect(firstUpload.body.images).toHaveLength(2);
     expect(
-      firstUpload.body.mediaUrls.every((key: string) =>
-        key.startsWith(`exercises/${id}/upload-`),
+      firstUpload.body.images.every(
+        (image: { objectKey: string; url: string }) =>
+          image.objectKey.startsWith(`exercises/${id}/upload-`) &&
+          // A real signed URL, not just "some truthy value" — confirms
+          // the withImages conversion actually ran against real storage,
+          // not just that the objectKey survived the round trip.
+          typeof image.url === "string" &&
+          image.url.length > 0,
       ),
     ).toBe(true);
 
@@ -257,9 +263,15 @@ describe("Exercises (e2e)", () => {
         contentType: "image/png",
       });
     expect(secondUpload.status).toBe(201);
-    expect(secondUpload.body.mediaUrls).toHaveLength(3);
-    expect(secondUpload.body.mediaUrls.slice(0, 2)).toEqual(
-      firstUpload.body.mediaUrls,
+    expect(secondUpload.body.images).toHaveLength(3);
+    expect(
+      secondUpload.body.images
+        .slice(0, 2)
+        .map((image: { objectKey: string }) => image.objectKey),
+    ).toEqual(
+      firstUpload.body.images.map(
+        (image: { objectKey: string }) => image.objectKey,
+      ),
     );
   });
 
@@ -326,13 +338,19 @@ describe("Exercises (e2e)", () => {
         filename: "r3.png",
         contentType: "image/png",
       });
-    const [k1, k2, k3] = uploaded.body.mediaUrls;
+    const [k1, k2, k3] = uploaded.body.images.map(
+      (image: { objectKey: string }) => image.objectKey,
+    );
 
     const reordered = await practitionerA
       .patch(`/exercises/${id}/images`)
       .send({ order: [k3, k1, k2] });
     expect(reordered.status).toBe(200);
-    expect(reordered.body.mediaUrls).toEqual([k3, k1, k2]);
+    expect(
+      reordered.body.images.map(
+        (image: { objectKey: string }) => image.objectKey,
+      ),
+    ).toEqual([k3, k1, k2]);
   });
 
   // Regression coverage for the bug fixed in "Fix: reorder endpoints accept
@@ -371,7 +389,9 @@ describe("Exercises (e2e)", () => {
         filename: "d3.png",
         contentType: "image/png",
       });
-    const [k1, k2, k3] = uploaded.body.mediaUrls;
+    const [k1, k2, k3] = uploaded.body.images.map(
+      (image: { objectKey: string }) => image.objectKey,
+    );
 
     const res = await practitionerA
       .patch(`/exercises/${id}/images`)
@@ -384,7 +404,11 @@ describe("Exercises (e2e)", () => {
     // The gallery must be untouched by the rejected request — still all
     // three original keys, in their original order.
     const fetched = await practitionerA.get(`/exercises/${id}`);
-    expect(fetched.body.mediaUrls).toEqual([k1, k2, k3]);
+    expect(
+      fetched.body.images.map(
+        (image: { objectKey: string }) => image.objectKey,
+      ),
+    ).toEqual([k1, k2, k3]);
   });
 
   it("rejects a reorder request from a practitioner who does not own the exercise", async () => {
@@ -404,7 +428,9 @@ describe("Exercises (e2e)", () => {
         filename: "o2.png",
         contentType: "image/png",
       });
-    const [k1, k2] = uploaded.body.mediaUrls;
+    const [k1, k2] = uploaded.body.images.map(
+      (image: { objectKey: string }) => image.objectKey,
+    );
 
     const res = await practitionerB
       .patch(`/exercises/${id}/images`)

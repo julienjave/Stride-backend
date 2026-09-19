@@ -66,7 +66,7 @@ export class ExercisesService {
         })
         .returning(),
     );
-    return exercise;
+    return this.withImages(exercise);
   }
 
   // Appends to the existing mediaUrls array rather than replacing it.
@@ -97,7 +97,7 @@ export class ExercisesService {
         .where(eq(exercises.id, id))
         .returning(),
     );
-    return updated;
+    return this.withImages(updated);
   }
 
   // --- GET ROUTES ---
@@ -224,6 +224,20 @@ export class ExercisesService {
     return exercise;
   }
 
+  // The controller's GET /:id route calls THIS, not findOne directly —
+  // findOne itself stays raw on purpose, since every mutation above
+  // (addImages, reorderImages, removeImage) calls it internally to read
+  // the CURRENT real object keys before acting on them. reorderImages in
+  // particular compares the client's submitted keys directly against
+  // exercise.mediaUrls — if findOne returned signed URLs instead of raw
+  // keys, that comparison would never match anything, since the client
+  // sends back raw keys, never URLs. So the conversion has to happen at
+  // a layer ABOVE findOne, applied only to what actually goes back to a
+  // client, never to what other methods use for their own internal logic.
+  async findOneForDisplay(id: number) {
+    return this.withImages(await this.findOne(id));
+  }
+
   // --- PATCH ROUTES ---
 
   async update(id: number, currentUser: CurrentUser, dto: UpdateExerciseDto) {
@@ -232,7 +246,7 @@ export class ExercisesService {
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx.update(exercises).set(dto).where(eq(exercises.id, id)).returning(),
     );
-    return updated;
+    return this.withImages(updated);
   }
 
   // "Cover image" is deliberately not its own column — it's simply
@@ -280,7 +294,7 @@ export class ExercisesService {
         .where(eq(exercises.id, id))
         .returning(),
     );
-    return updated;
+    return this.withImages(updated);
   }
 
   // --- DELETE ROUTES ---
@@ -295,7 +309,7 @@ export class ExercisesService {
         .where(eq(exercises.id, id))
         .returning(),
     );
-    return archived;
+    return this.withImages(archived);
   }
 
   // Validates the key actually belongs to THIS exercise before deleting anything
@@ -320,7 +334,7 @@ export class ExercisesService {
         .where(eq(exercises.id, id))
         .returning(),
     );
-    return updated;
+    return this.withImages(updated);
   }
 
   // === HELPER FUNCTIONS =====================================================
@@ -339,5 +353,27 @@ export class ExercisesService {
         "You can only modify custom exercises you created, unless you are an administrator",
       );
     }
+  }
+
+  // Replaces the raw mediaUrls: string[] column with images:
+  // {objectKey, url}[] on any value handed back to a client — mirrors
+  // ClinicsService's withLogoUrl, but pairing rather than replacing,
+  // because unlike a clinic's single logoUrl, a client here needs BOTH
+  // pieces per image: the url to actually display it, and the objectKey
+  // to send back on a later reorder or delete request (those endpoints
+  // take objectKey values, not URLs — a client that only ever saw signed
+  // URLs would have no way to identify which image is which when asking
+  // to remove or reorder one). Renamed from mediaUrls to images, not
+  // just changed in place, so any code still expecting the old
+  // string[] shape fails to compile instead of silently misbehaving.
+  private async withImages(exercise: typeof exercises.$inferSelect) {
+    const { mediaUrls, ...rest } = exercise;
+    const images = await Promise.all(
+      mediaUrls.map(async (objectKey) => ({
+        objectKey,
+        url: await this.storageService.getPresignedUrl(objectKey),
+      })),
+    );
+    return { ...rest, images };
   }
 }

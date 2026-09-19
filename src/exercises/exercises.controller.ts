@@ -101,7 +101,7 @@ export class ExercisesController {
 
   @Get(":id")
   findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.exercisesService.findOne(id);
+    return this.exercisesService.findOneForDisplay(id);
   }
 
   // --- PATCH ROUTES ---
