@@ -2,18 +2,18 @@
 // like ts-node, never auto-loads .env. AppModule's DrizzleModule needs
 // POSTGRES_* in process.env the moment Test.createTestingModule() below
 // tries to construct it, so this has to be the very first thing that runs.
-import 'dotenv/config';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import request from 'supertest';
-import session from 'express-session';
-import passport from 'passport';
-import connectPgSimple from 'connect-pg-simple';
-import { Pool } from 'pg';
-import { sql } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { getDatabaseUrl } from '../src/config/database-url';
-import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
+import "dotenv/config";
+import { Test, TestingModule } from "@nestjs/testing";
+import { INestApplication, ValidationPipe } from "@nestjs/common";
+import request from "supertest";
+import session from "express-session";
+import passport from "passport";
+import connectPgSimple from "connect-pg-simple";
+import { Pool } from "pg";
+import { sql } from "drizzle-orm";
+import { AppModule } from "../src/app.module";
+import { getDatabaseUrl } from "../src/config/database-url";
+import { DRIZZLE, DrizzleDb } from "../src/database/drizzle.provider";
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -21,7 +21,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 // `docker compose up -d db storage` running, and must be pointed at the
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
-describe('Programs (e2e)', () => {
+describe("Programs (e2e)", () => {
   let app: INestApplication;
   let sessionPool: Pool;
 
@@ -41,15 +41,22 @@ describe('Programs (e2e)', () => {
 
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
 
     sessionPool = new Pool({ connectionString: getDatabaseUrl() });
     const PgSessionStore = connectPgSimple(session);
     app.use(
       session({
-        store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
-        secret: 'e2e-test-secret',
+        store: new PgSessionStore({
+          pool: sessionPool,
+          createTableIfMissing: true,
+        }),
+        secret: "e2e-test-secret",
         resave: false,
         saveUninitialized: false,
         cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 },
@@ -71,10 +78,10 @@ describe('Programs (e2e)', () => {
       sql`SELECT current_database()`,
     );
     const currentDatabase = rows[0].current_database;
-    if (currentDatabase !== 'stride_test') {
+    if (currentDatabase !== "stride_test") {
       throw new Error(
         `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test". ` +
-          'Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?',
+          "Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?",
       );
     }
 
@@ -82,7 +89,9 @@ describe('Programs (e2e)', () => {
     // stride_app connection) — TRUNCATE needs a privilege this app role is
     // deliberately never granted, since real app traffic never truncates
     // tables. This is test cleanup infrastructure only.
-    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
+    await sessionPool.query(
+      "TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE",
+    );
 
     admin = adminAgent();
     practitionerA = practitionerAAgent();
@@ -90,48 +99,50 @@ describe('Programs (e2e)', () => {
 
     const stamp = Date.now();
 
-    const clinicRes = await admin.post('/auth/register-clinic').send({
-      clinicName: 'Programs E2E Clinic',
+    const clinicRes = await admin.post("/auth/register-clinic").send({
+      clinicName: "Programs E2E Clinic",
       clinicEmail: `clinic-${stamp}@example.com`,
       email: `admin-${stamp}@example.com`,
-      password: 'password123',
-      firstName: 'Programs',
-      lastName: 'Admin',
+      password: "password123",
+      firstName: "Programs",
+      lastName: "Admin",
     });
     if (clinicRes.status !== 201) {
-      throw new Error(`Failed to bootstrap the founding admin: ${JSON.stringify(clinicRes.body)}`);
+      throw new Error(
+        `Failed to bootstrap the founding admin: ${JSON.stringify(clinicRes.body)}`,
+      );
     }
 
-    await admin.post('/users').send({
+    await admin.post("/users").send({
       email: `practitioner-a-${stamp}@example.com`,
-      password: 'password123',
-      role: 'practitioner',
-      firstName: 'Practitioner',
-      lastName: 'A',
+      password: "password123",
+      role: "practitioner",
+      firstName: "Practitioner",
+      lastName: "A",
       licenseNumber: `PT-A-${stamp}`,
     });
-    await practitionerA.post('/auth/login').send({
+    await practitionerA.post("/auth/login").send({
       email: `practitioner-a-${stamp}@example.com`,
-      password: 'password123',
+      password: "password123",
     });
 
-    await admin.post('/users').send({
+    await admin.post("/users").send({
       email: `practitioner-b-${stamp}@example.com`,
-      password: 'password123',
-      role: 'practitioner',
-      firstName: 'Practitioner',
-      lastName: 'B',
+      password: "password123",
+      role: "practitioner",
+      firstName: "Practitioner",
+      lastName: "B",
       licenseNumber: `PT-B-${stamp}`,
     });
-    await practitionerB.post('/auth/login').send({
+    await practitionerB.post("/auth/login").send({
       email: `practitioner-b-${stamp}@example.com`,
-      password: 'password123',
+      password: "password123",
     });
 
-    const exerciseRes = await practitionerA.post('/exercises').send({
-      name: 'Programs E2E Squat',
-      primaryMuscles: ['legs'],
-      instructions: ['Step one'],
+    const exerciseRes = await practitionerA.post("/exercises").send({
+      name: "Programs E2E Squat",
+      primaryMuscles: ["legs"],
+      instructions: ["Step one"],
     });
     expect(exerciseRes.status).toBe(201);
     exerciseId = exerciseRes.body.id;
@@ -142,8 +153,10 @@ describe('Programs (e2e)', () => {
     await sessionPool.end();
   });
 
-  it('lets the owning practitioner build a template and add exercises to it', async () => {
-    const createRes = await practitionerA.post('/programs').send({ title: 'E2E Rehab Template' });
+  it("lets the owning practitioner build a template and add exercises to it", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "E2E Rehab Template" });
     expect(createRes.status).toBe(201);
     const templateId = createRes.body.id;
 
@@ -155,10 +168,20 @@ describe('Programs (e2e)', () => {
     const found = await practitionerA.get(`/programs/${templateId}`);
     expect(found.status).toBe(200);
     expect(found.body.exercises).toHaveLength(1);
+    // The actual point of this enrichment: a bare exerciseId is useless
+    // for rendering a card, so each row should carry the real exercise's
+    // name and muscles alongside its own sets/reps/sortOrder/etc.
+    expect(found.body.exercises[0].exercise).toEqual({
+      id: exerciseId,
+      name: "Programs E2E Squat",
+      primaryMuscles: ["legs"],
+    });
   });
 
-  it('rejects a different practitioner from adding an exercise to a template they do not own', async () => {
-    const createRes = await practitionerA.post('/programs').send({ title: 'Owner Only Template' });
+  it("rejects a different practitioner from adding an exercise to a template they do not own", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Owner Only Template" });
     const templateId = createRes.body.id;
 
     const res = await practitionerB
@@ -167,28 +190,34 @@ describe('Programs (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('lets an admin edit a template they did not create, but rejects a non-owning practitioner', async () => {
-    const createRes = await practitionerA.post('/programs').send({ title: 'Admin Editable Template' });
+  it("lets an admin edit a template they did not create, but rejects a non-owning practitioner", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Admin Editable Template" });
     const templateId = createRes.body.id;
 
     const practitionerBEdit = await practitionerB
       .patch(`/programs/${templateId}`)
-      .send({ title: 'Should Not Work' });
+      .send({ title: "Should Not Work" });
     expect(practitionerBEdit.status).toBe(403);
 
-    const adminEdit = await admin.patch(`/programs/${templateId}`).send({ title: 'Edited By Admin' });
+    const adminEdit = await admin
+      .patch(`/programs/${templateId}`)
+      .send({ title: "Edited By Admin" });
     expect(adminEdit.status).toBe(200);
-    expect(adminEdit.body.title).toBe('Edited By Admin');
+    expect(adminEdit.body.title).toBe("Edited By Admin");
   });
 
-  it('validates reorder as an exact permutation of the current template exercises', async () => {
-    const createRes = await practitionerA.post('/programs').send({ title: 'Reorder Template' });
+  it("validates reorder as an exact permutation of the current template exercises", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Reorder Template" });
     const templateId = createRes.body.id;
 
-    const secondExerciseRes = await practitionerA.post('/exercises').send({
-      name: 'Programs E2E Lunge',
-      primaryMuscles: ['legs'],
-      instructions: ['Step one'],
+    const secondExerciseRes = await practitionerA.post("/exercises").send({
+      name: "Programs E2E Lunge",
+      primaryMuscles: ["legs"],
+      instructions: ["Step one"],
     });
     const secondExerciseId = secondExerciseRes.body.id;
 
@@ -199,8 +228,17 @@ describe('Programs (e2e)', () => {
       .post(`/programs/${templateId}/exercises`)
       .send({ exerciseId: secondExerciseId, sortOrder: 1 });
 
-    const firstRowId = firstAdd.body.id;
-    const secondRowId = secondAdd.body.id;
+    // addExercise now returns the FULL enriched template (matching
+    // reorderExercises' own existing convention), not the bare inserted
+    // row — so the new row's own id has to be found inside the
+    // returned exercises array, by matching the exerciseId this request
+    // actually sent, rather than read directly off the top-level body.
+    const firstRowId = firstAdd.body.exercises.find(
+      (e: any) => e.exerciseId === exerciseId,
+    ).id;
+    const secondRowId = secondAdd.body.exercises.find(
+      (e: any) => e.exerciseId === secondExerciseId,
+    ).id;
 
     const badReorder = await practitionerA
       .patch(`/programs/${templateId}/exercises`)
@@ -211,7 +249,10 @@ describe('Programs (e2e)', () => {
       .patch(`/programs/${templateId}/exercises`)
       .send({ order: [secondRowId, firstRowId] });
     expect(goodReorder.status).toBe(200);
-    expect(goodReorder.body.exercises.map((e: any) => e.id)).toEqual([secondRowId, firstRowId]);
+    expect(goodReorder.body.exercises.map((e: any) => e.id)).toEqual([
+      secondRowId,
+      firstRowId,
+    ]);
 
     const foreignReorder = await practitionerB
       .patch(`/programs/${templateId}/exercises`)
@@ -219,16 +260,24 @@ describe('Programs (e2e)', () => {
     expect(foreignReorder.status).toBe(403);
   });
 
-  it('rejects updating or removing a template-exercise row through the wrong template (IDOR check)', async () => {
-    const templateARes = await practitionerA.post('/programs').send({ title: 'IDOR Template A' });
+  it("rejects updating or removing a template-exercise row through the wrong template (IDOR check)", async () => {
+    const templateARes = await practitionerA
+      .post("/programs")
+      .send({ title: "IDOR Template A" });
     const templateAId = templateARes.body.id;
-    const templateBRes = await practitionerA.post('/programs').send({ title: 'IDOR Template B' });
+    const templateBRes = await practitionerA
+      .post("/programs")
+      .send({ title: "IDOR Template B" });
     const templateBId = templateBRes.body.id;
 
     const rowInB = await practitionerA
       .post(`/programs/${templateBId}/exercises`)
       .send({ exerciseId, sortOrder: 0 });
-    const foreignRowId = rowInB.body.id;
+    // Same reasoning as the reorder test above — addExercise's response
+    // is now the full template, not the bare inserted row.
+    const foreignRowId = rowInB.body.exercises.find(
+      (e: any) => e.exerciseId === exerciseId,
+    ).id;
 
     const updateThroughWrongTemplate = await practitionerA
       .patch(`/programs/${templateAId}/exercises/${foreignRowId}`)
@@ -241,15 +290,17 @@ describe('Programs (e2e)', () => {
     expect(removeThroughWrongTemplate.status).toBe(404);
   });
 
-  it('archives a template (soft delete) and drops it out of the public listing', async () => {
-    const createRes = await practitionerA.post('/programs').send({ title: 'Archive Me Template' });
+  it("archives a template (soft delete) and drops it out of the public listing", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Archive Me Template" });
     const templateId = createRes.body.id;
 
     const archiveRes = await practitionerA.delete(`/programs/${templateId}`);
     expect(archiveRes.status).toBe(200);
     expect(archiveRes.body.isArchived).toBe(true);
 
-    const listRes = await practitionerA.get('/programs');
+    const listRes = await practitionerA.get("/programs");
     expect(listRes.body.map((t: any) => t.id)).not.toContain(templateId);
   });
 });

@@ -23,24 +23,24 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-} from '@nestjs/common'
-import { and, eq } from 'drizzle-orm'
-import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
+} from "@nestjs/common";
+import { and, eq, inArray } from "drizzle-orm";
+import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   programTemplates,
   templateExercises,
   exercises,
-} from '../database/schema'
-import { CreateTemplateDto } from './dto/create-template.dto'
-import { UpdateTemplateDto } from './dto/update-template.dto'
-import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
-import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
-import { UserRole } from '../users/dto/create-user.dto'
-import { withRlsContext } from '../database/rls-context'
+} from "../database/schema";
+import { CreateTemplateDto } from "./dto/create-template.dto";
+import { UpdateTemplateDto } from "./dto/update-template.dto";
+import { AddTemplateExerciseDto } from "./dto/add-template-exercise.dto";
+import { UpdateTemplateExerciseDto } from "./dto/update-template-exercise.dto";
+import { UserRole } from "../users/dto/create-user.dto";
+import { withRlsContext } from "../database/rls-context";
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: UserRole }
+type CurrentUser = { id: number; activeRole: UserRole };
 
 @Injectable()
 export class ProgramsService {
@@ -64,8 +64,8 @@ export class ProgramsService {
           description: dto.description,
         })
         .returning(),
-    )
-    return template
+    );
+    return template;
   }
 
   async addExercise(
@@ -73,20 +73,20 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: AddTemplateExerciseDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId)
-    this.assertCanModify(template, currentUser)
+    const template = await this.findTemplateOrThrow(templateId);
+    this.assertCanModify(template, currentUser);
 
     // exercises' SELECT policy is USING (true) — unconditional, no
     // session setting involved — so this existence check stays on the
     // plain connection, same as findTemplateOrThrow below.
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, dto.exerciseId),
-    })
+    });
     if (!exercise) {
-      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`)
+      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`);
     }
 
-    const [row] = await withRlsContext(this.db, currentUser, (tx) =>
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .insert(templateExercises)
         .values({
@@ -99,8 +99,13 @@ export class ProgramsService {
           notes: dto.notes,
         })
         .returning(),
-    )
-    return row
+    );
+    // Returns the FULL enriched template, not just the one inserted row
+    // — matches reorderExercises' own existing convention (see its
+    // final line), and gives the frontend everything it needs to
+    // re-render the whole card list after adding one, not just the new
+    // card in isolation.
+    return this.findOne(templateId);
   }
 
   async reorderExercises(
@@ -108,8 +113,8 @@ export class ProgramsService {
     currentUser: CurrentUser,
     newOrder: number[],
   ) {
-    const template = await this.findTemplateOrThrow(templateId)
-    this.assertCanModify(template, currentUser)
+    const template = await this.findTemplateOrThrow(templateId);
+    this.assertCanModify(template, currentUser);
 
     // Read, permutation-check, and write all happen inside ONE transaction
     // (tx.query instead of this.db.query) — this used to read currentRows
@@ -140,8 +145,8 @@ export class ProgramsService {
     await withRlsContext(this.db, currentUser, async (tx) => {
       const currentRows = await tx.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, templateId),
-      })
-      const currentIds = new Set(currentRows.map((r) => r.id))
+      });
+      const currentIds = new Set(currentRows.map((r) => r.id));
       // A genuine permutation check needs THREE conditions together — the
       // previous version only compared deduplicated Set sizes, which a
       // client could satisfy by submitting a newOrder array containing a
@@ -155,23 +160,23 @@ export class ProgramsService {
       const isSamePermutation =
         newOrder.length === currentRows.length &&
         new Set(newOrder).size === newOrder.length &&
-        newOrder.every((id) => currentIds.has(id))
+        newOrder.every((id) => currentIds.has(id));
 
       if (!isSamePermutation) {
         throw new BadRequestException(
-          'The new order must contain exactly the exercises currently in this template, just reordered',
-        )
+          "The new order must contain exactly the exercises currently in this template, just reordered",
+        );
       }
 
       for (const [index, templateExerciseId] of newOrder.entries()) {
         await tx
           .update(templateExercises)
           .set({ sortOrder: index })
-          .where(eq(templateExercises.id, templateExerciseId))
+          .where(eq(templateExercises.id, templateExerciseId));
       }
-    })
+    });
 
-    return this.findOne(templateId)
+    return this.findOne(templateId);
   }
 
   // --- GET ROUTES ---
@@ -183,31 +188,34 @@ export class ProgramsService {
   async findAll() {
     return this.db.query.programTemplates.findMany({
       where: eq(programTemplates.isArchived, false),
-    })
+    });
   }
 
   async findOne(id: number) {
-    const template = await this.findTemplateOrThrow(id)
+    const template = await this.findTemplateOrThrow(id);
     const exerciseRows = await this.db.query.templateExercises.findMany({
       where: eq(templateExercises.templateId, id),
       orderBy: (te, { asc: ascend }) => [ascend(te.sortOrder)],
-    })
-    return { ...template, exercises: exerciseRows }
+    });
+    return {
+      ...template,
+      exercises: await this.withExerciseDetails(exerciseRows),
+    };
   }
 
   // --- PATCH ROUTES ---
 
   async update(id: number, currentUser: CurrentUser, dto: UpdateTemplateDto) {
-    const template = await this.findTemplateOrThrow(id)
-    this.assertCanModify(template, currentUser)
+    const template = await this.findTemplateOrThrow(id);
+    this.assertCanModify(template, currentUser);
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set(dto)
         .where(eq(programTemplates.id, id))
         .returning(),
-    )
-    return updated
+    );
+    return updated;
   }
 
   async updateExercise(
@@ -216,9 +224,9 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: UpdateTemplateExerciseDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId)
-    this.assertCanModify(template, currentUser)
-    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
+    const template = await this.findTemplateOrThrow(templateId);
+    this.assertCanModify(template, currentUser);
+    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId);
 
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
@@ -226,23 +234,23 @@ export class ProgramsService {
         .set(dto)
         .where(eq(templateExercises.id, templateExerciseId))
         .returning(),
-    )
-    return updated
+    );
+    return updated;
   }
 
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: CurrentUser) {
-    const template = await this.findTemplateOrThrow(id)
-    this.assertCanModify(template, currentUser)
+    const template = await this.findTemplateOrThrow(id);
+    this.assertCanModify(template, currentUser);
     const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set({ isArchived: true })
         .where(eq(programTemplates.id, id))
         .returning(),
-    )
-    return archived
+    );
+    return archived;
   }
 
   async removeExercise(
@@ -250,15 +258,19 @@ export class ProgramsService {
     templateExerciseId: number,
     currentUser: CurrentUser,
   ) {
-    const template = await this.findTemplateOrThrow(templateId)
-    this.assertCanModify(template, currentUser)
-    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
+    const template = await this.findTemplateOrThrow(templateId);
+    this.assertCanModify(template, currentUser);
+    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId);
 
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .delete(templateExercises)
         .where(eq(templateExercises.id, templateExerciseId)),
-    )
+    );
+    // Same reasoning as addExercise's own change — the frontend needs
+    // the post-removal state to re-render the list, not just a bare
+    // success signal.
+    return this.findOne(templateId);
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -266,11 +278,11 @@ export class ProgramsService {
   private async findTemplateOrThrow(id: number) {
     const template = await this.db.query.programTemplates.findFirst({
       where: eq(programTemplates.id, id),
-    })
+    });
     if (!template) {
-      throw new NotFoundException(`Program template ${id} not found`)
+      throw new NotFoundException(`Program template ${id} not found`);
     }
-    return template
+    return template;
   }
 
   // Confirms a template_exercises row genuinely belongs to the template in
@@ -288,25 +300,68 @@ export class ProgramsService {
         eq(templateExercises.id, templateExerciseId),
         eq(templateExercises.templateId, templateId),
       ),
-    })
+    });
     if (!row) {
       throw new NotFoundException(
         `Exercise ${templateExerciseId} not found in this template`,
-      )
+      );
     }
-    return row
+    return row;
   }
 
   private assertCanModify(
     template: typeof programTemplates.$inferSelect,
     currentUser: CurrentUser,
   ) {
-    const isAdmin = currentUser.activeRole === UserRole.ADMIN
-    const isOwner = template.practitionerId === currentUser.id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN;
+    const isOwner = template.practitionerId === currentUser.id;
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException(
-        'You can only modify program templates you created, unless you are an administrator',
-      )
+        "You can only modify program templates you created, unless you are an administrator",
+      );
     }
+  }
+
+  // Enriches each templateExercises row with the exercise it actually
+  // references — name and primaryMuscles, the same information
+  // ExerciseCard already needs to render a card, so a template's own
+  // exercise cards can look consistent with the Library's. A batched,
+  // SEPARATE lookup rather than a join on the main query — same
+  // reasoning as ExercisesService.findAll's own author-attachment: fetch
+  // base rows, then batch-fetch related data and merge in JS, rather
+  // than introducing Drizzle's relational query API, which isn't used
+  // anywhere else in this schema.
+  //
+  // Deliberately does NOT filter the exercise lookup by isArchived — an
+  // exercise referenced by an existing template can be archived LATER
+  // (archiving only flips a flag; the foreign key's onDelete: "restrict"
+  // prevents a real delete, not an archive), and the template should
+  // still show what it actually contains rather than silently dropping
+  // a row because the underlying exercise was archived since it was
+  // added.
+  private async withExerciseDetails(
+    rows: (typeof templateExercises.$inferSelect)[],
+  ) {
+    const exerciseIds = [...new Set(rows.map((row) => row.exerciseId))];
+    const exerciseRows =
+      exerciseIds.length > 0
+        ? await this.db.query.exercises.findMany({
+            where: inArray(exercises.id, exerciseIds),
+          })
+        : [];
+    const exercisesById = new Map(
+      exerciseRows.map((exercise) => [
+        exercise.id,
+        {
+          id: exercise.id,
+          name: exercise.name,
+          primaryMuscles: exercise.primaryMuscles,
+        },
+      ]),
+    );
+    return rows.map((row) => ({
+      ...row,
+      exercise: exercisesById.get(row.exerciseId) ?? null,
+    }));
   }
 }
