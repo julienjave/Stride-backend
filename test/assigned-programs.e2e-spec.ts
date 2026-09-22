@@ -218,7 +218,14 @@ describe("AssignedPrograms (e2e)", () => {
 
     const addExerciseRes = await practitionerA
       .post(`/programs/${templateId}/exercises`)
-      .send({ exerciseId, sets: 3, reps: 10, sortOrder: 0 });
+      .send({
+        exerciseId,
+        sets: 3,
+        reps: 10,
+        weight: 62.5,
+        weightUnit: "kg",
+        sortOrder: 0,
+      });
     expect(addExerciseRes.status).toBe(201);
     // addExercise returns the FULL enriched template (see
     // programs.e2e-spec.ts's identical fix), not the bare inserted row —
@@ -237,8 +244,24 @@ describe("AssignedPrograms (e2e)", () => {
     expect(assignRes.status).toBe(201);
     const assignedProgramId = assignRes.body.id;
     expect(assignRes.body.exercises).toHaveLength(1);
+    // weight/weightUnit included here specifically because they were
+    // once silently dropped by the copy logic — objectContaining alone
+    // wouldn't have caught that (it only checks properties you remember
+    // to list), which is exactly how this slipped through the first
+    // time. Listing them explicitly here is the real regression guard.
+    // name/primaryMuscles/instructions are the newer, bigger piece of
+    // this same guarantee: the exercise's own descriptive fields, not
+    // just its prescription.
     expect(assignRes.body.exercises[0]).toEqual(
-      expect.objectContaining({ sets: 3, reps: 10 }),
+      expect.objectContaining({
+        sets: 3,
+        reps: 10,
+        weight: 62.5,
+        weightUnit: "kg",
+        name: "AP E2E Squat",
+        primaryMuscles: ["legs"],
+        instructions: ["Step one"],
+      }),
     );
 
     // Mutate the SOURCE template after the fact: change its prescription,
@@ -256,16 +279,53 @@ describe("AssignedPrograms (e2e)", () => {
     );
     expect(templateExerciseDelete.status).toBe(200);
 
+    // THE actual scenario that motivated this entire piece of work: edit
+    // the underlying EXERCISE itself (not just the template) — its
+    // name and instructions, the same fields a patient would actually
+    // read while following the program. Before this session's snapshot
+    // work, this WOULD have silently changed what an already-assigned
+    // patient sees, live, with no notice to anyone relying on it.
+    const exerciseEdit = await practitionerA
+      .patch(`/exercises/${exerciseId}`)
+      .send({
+        name: "Renamed After Assignment",
+        instructions: ["Completely different instructions"],
+      });
+    expect(exerciseEdit.status).toBe(200);
+
     const assignedAfterTemplateChanged = await practitionerA.get(
       `/assigned-programs/${assignedProgramId}`,
     );
     expect(assignedAfterTemplateChanged.status).toBe(200);
     expect(assignedAfterTemplateChanged.body.exercises).toHaveLength(1);
-    // Still the ORIGINAL copied values — completely unaffected by both the
-    // edit and the deletion performed on the template above.
+    // Still the ORIGINAL copied values — completely unaffected by the
+    // template edit/deletion above, AND by editing the underlying
+    // exercise itself just now. This second part is the actual point of
+    // this whole piece of work: a patient already following this
+    // program still sees exactly what was there when it was assigned,
+    // not a live reflection of the exercise's current (renamed) state.
     expect(assignedAfterTemplateChanged.body.exercises[0]).toEqual(
-      expect.objectContaining({ sets: 3, reps: 10 }),
+      expect.objectContaining({
+        sets: 3,
+        reps: 10,
+        weight: 62.5,
+        weightUnit: "kg",
+        name: "AP E2E Squat",
+        primaryMuscles: ["legs"],
+        instructions: ["Step one"],
+      }),
     );
+
+    // Restored afterward — exerciseId is a FILE-WIDE shared fixture
+    // (set up once in beforeAll, reused by many other tests below this
+    // one via its id), so leaving it permanently renamed would be a
+    // real cross-test pollution risk for anything added later that
+    // reasonably assumes its name stays constant, even though nothing
+    // CURRENTLY in this file checks it beyond this one test.
+    const exerciseRestore = await practitionerA
+      .patch(`/exercises/${exerciseId}`)
+      .send({ name: "AP E2E Squat", instructions: ["Step one"] });
+    expect(exerciseRestore.status).toBe(200);
   });
 
   it("rejects assigning without either basedOnTemplateId or an inline exercises array", async () => {

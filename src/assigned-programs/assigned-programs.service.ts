@@ -44,6 +44,29 @@ import { withRlsContext } from "../database/rls-context";
 
 type CurrentUser = { id: number; activeRole: UserRole };
 
+// What resolveSourceExercises produces for create() to insert — the
+// exercise's own snapshotted fields (name/muscles/equipment/
+// instructions) alongside the per-patient prescription fields
+// (sets/reps/weight/etc). Deliberately NOT AssignedExerciseInputDto
+// (what a caller sends in) — that type has no name/muscles fields at
+// all, since a client never supplies those directly; they're always
+// server-derived from the referenced exercise at snapshot time.
+interface ResolvedSourceExercise {
+  exerciseId: number;
+  name: string;
+  primaryMuscles: string[];
+  secondaryMuscles: string[];
+  equipment: string[];
+  instructions: string[];
+  sets?: number;
+  reps?: number;
+  durationInSeconds?: number;
+  weight?: number;
+  weightUnit?: "kg" | "lbs";
+  sortOrder: number;
+  notes?: string;
+}
+
 @Injectable()
 export class AssignedProgramsService {
   // UsersService IS injected here, deliberately, unlike the Clinics/Users
@@ -59,6 +82,37 @@ export class AssignedProgramsService {
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
+
+  // --- EXERCISE SNAPSHOTTING ------------------------------------------------
+
+  // Batches ONE lookup for however many distinct exercises are being
+  // snapshotted at once, rather than fetching one at a time in a loop —
+  // same "fetch base rows, then batch-fetch related data" shape used
+  // elsewhere in this codebase (ExercisesService.findAll's author
+  // attachment, ProgramsService.withExerciseDetails). Also doubles as
+  // existence validation: a referenced exercise that doesn't actually
+  // exist throws here, rather than silently producing an incomplete
+  // snapshot. In practice this can only ever fire for the INLINE
+  // exercises array path (a template row's exerciseId is guaranteed
+  // valid by its own foreign key, so that path can never hit a missing
+  // id) — but the check lives here, once, rather than being duplicated
+  // per caller, so both paths get it for free.
+  private async fetchExerciseSnapshots(exerciseIds: number[]) {
+    const uniqueIds = [...new Set(exerciseIds)];
+    const rows =
+      uniqueIds.length > 0
+        ? await this.db.query.exercises.findMany({
+            where: inArray(exercises.id, uniqueIds),
+          })
+        : [];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    for (const id of uniqueIds) {
+      if (!byId.has(id)) {
+        throw new NotFoundException(`Exercise ${id} not found`);
+      }
+    }
+    return byId;
+  }
 
   async create(currentUser: CurrentUser, dto: CreateAssignedProgramDto) {
     const managed = await this.usersService.isPatientManagedBy(
@@ -87,16 +141,24 @@ export class AssignedProgramsService {
         .returning();
 
       // The actual "copy, not reference" moment. From here on these rows
-      // are entirely independent of template_exercises — editing or
-      // deleting the source template later never touches this patient's
-      // assigned program.
+      // are entirely independent of template_exercises AND of the
+      // exercise's own current data — editing or deleting the source
+      // template later, or editing/archiving the exercise itself, never
+      // touches this patient's already-assigned program.
       for (const ex of sourceExercises) {
         await tx.insert(assignedProgramExercises).values({
           assignedProgramId: program.id,
           exerciseId: ex.exerciseId,
+          name: ex.name,
+          primaryMuscles: ex.primaryMuscles,
+          secondaryMuscles: ex.secondaryMuscles,
+          equipment: ex.equipment,
+          instructions: ex.instructions,
           sets: ex.sets,
           reps: ex.reps,
           durationInSeconds: ex.durationInSeconds,
+          weight: ex.weight,
+          weightUnit: ex.weightUnit,
           sortOrder: ex.sortOrder,
           notes: ex.notes,
         });
@@ -138,6 +200,17 @@ export class AssignedProgramsService {
         .values({
           assignedProgramId,
           exerciseId: dto.exerciseId,
+          // Snapshotted from the SAME already-fetched `exercise` above —
+          // no extra query needed, since the existence check already
+          // has everything this needs in scope. Same "copy, not
+          // reference" reasoning as create()'s own snapshot, just for
+          // adding to an already-assigned program later rather than at
+          // creation time.
+          name: exercise.name,
+          primaryMuscles: exercise.primaryMuscles,
+          secondaryMuscles: exercise.secondaryMuscles,
+          equipment: exercise.equipment,
+          instructions: exercise.instructions,
           sets: dto.sets,
           reps: dto.reps,
           durationInSeconds: dto.durationInSeconds,
@@ -343,7 +416,7 @@ export class AssignedProgramsService {
 
   private async resolveSourceExercises(
     dto: CreateAssignedProgramDto,
-  ): Promise<AssignedExerciseInputDto[]> {
+  ): Promise<ResolvedSourceExercise[]> {
     if (dto.basedOnTemplateId) {
       const rows = await this.db.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, dto.basedOnTemplateId),
@@ -354,14 +427,31 @@ export class AssignedProgramsService {
           `Template ${dto.basedOnTemplateId} not found, or has no exercises to copy`,
         );
       }
-      return rows.map((row) => ({
-        exerciseId: row.exerciseId,
-        sets: row.sets ?? undefined,
-        reps: row.reps ?? undefined,
-        durationInSeconds: row.durationInSeconds ?? undefined,
-        sortOrder: row.sortOrder,
-        notes: row.notes ?? undefined,
-      }));
+      const snapshots = await this.fetchExerciseSnapshots(
+        rows.map((row) => row.exerciseId),
+      );
+      return rows.map((row) => {
+        // Guaranteed present — a templateExercises row's exerciseId is
+        // enforced valid by its own foreign key (onDelete: "restrict"),
+        // so fetchExerciseSnapshots can never actually throw for this
+        // branch; the ! reflects that real guarantee, not an assumption.
+        const snapshot = snapshots.get(row.exerciseId)!;
+        return {
+          exerciseId: row.exerciseId,
+          name: snapshot.name,
+          primaryMuscles: snapshot.primaryMuscles,
+          secondaryMuscles: snapshot.secondaryMuscles,
+          equipment: snapshot.equipment,
+          instructions: snapshot.instructions,
+          sets: row.sets ?? undefined,
+          reps: row.reps ?? undefined,
+          durationInSeconds: row.durationInSeconds ?? undefined,
+          weight: row.weight ?? undefined,
+          weightUnit: row.weightUnit ?? undefined,
+          sortOrder: row.sortOrder,
+          notes: row.notes ?? undefined,
+        };
+      });
     }
 
     if (!dto.exercises || dto.exercises.length === 0) {
@@ -369,7 +459,32 @@ export class AssignedProgramsService {
         "Provide either basedOnTemplateId or an inline exercises array",
       );
     }
-    return dto.exercises;
+    // Unlike the template branch, a client-supplied exerciseId here has
+    // no foreign key backing it yet — fetchExerciseSnapshots' own
+    // existence check is what catches a bad id, a real validation gap
+    // this path didn't have before snapshotting made fetching each
+    // exercise unavoidable anyway.
+    const snapshots = await this.fetchExerciseSnapshots(
+      dto.exercises.map((ex) => ex.exerciseId),
+    );
+    return dto.exercises.map((ex) => {
+      const snapshot = snapshots.get(ex.exerciseId)!;
+      return {
+        exerciseId: ex.exerciseId,
+        name: snapshot.name,
+        primaryMuscles: snapshot.primaryMuscles,
+        secondaryMuscles: snapshot.secondaryMuscles,
+        equipment: snapshot.equipment,
+        instructions: snapshot.instructions,
+        sets: ex.sets,
+        reps: ex.reps,
+        durationInSeconds: ex.durationInSeconds,
+        weight: ex.weight,
+        weightUnit: ex.weightUnit,
+        sortOrder: ex.sortOrder,
+        notes: ex.notes,
+      };
+    });
   }
 
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {

@@ -20,6 +20,7 @@ describe("AssignedProgramsService.create", () => {
       templateExercises: { findMany: jest.Mock };
       assignedPrograms: { findFirst: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
     };
     insert: jest.Mock;
     execute: jest.Mock;
@@ -40,6 +41,13 @@ describe("AssignedProgramsService.create", () => {
             .mockResolvedValue({ id: 900, patientId: 20, isArchived: false }),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        // Used by fetchExerciseSnapshots, now called by BOTH branches of
+        // resolveSourceExercises (copying from a template, and an inline
+        // exercises array) — every test in this block that reaches
+        // either branch needs this populated with whatever exercises it
+        // references, or the snapshot lookup finds nothing and throws
+        // NotFoundException.
+        exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
       insert: jest.fn(),
       // withRlsContext() runs every query through db.transaction(), setting
@@ -115,8 +123,22 @@ describe("AssignedProgramsService.create", () => {
         sets: 3,
         reps: 10,
         durationInSeconds: null,
+        weight: 62.5,
+        weightUnit: "kg",
         sortOrder: 0,
         notes: null,
+      },
+    ]);
+    // The exercise's CURRENT data at the moment of copy — this is what
+    // fetchExerciseSnapshots reads to build the snapshot.
+    db.query.exercises.findMany.mockResolvedValue([
+      {
+        id: 1,
+        name: "Squat",
+        primaryMuscles: ["legs"],
+        secondaryMuscles: ["core"],
+        equipment: ["barbell"],
+        instructions: ["Step one"],
       },
     ]);
 
@@ -143,18 +165,49 @@ describe("AssignedProgramsService.create", () => {
     // One insert for the program itself, one for the copied exercise row —
     // this row is a brand-new record, never an FK back to templateExercises.
     expect(inserted).toHaveLength(2);
-    expect(inserted[1]).toEqual(
-      expect.objectContaining({
-        assignedProgramId: 900,
-        exerciseId: 1,
-        sets: 3,
-        reps: 10,
-      }),
-    );
+    // Full equality, not objectContaining — a partial match is exactly
+    // what let weight/weightUnit go silently missing from this copy the
+    // first time (objectContaining only checks the properties you
+    // remember to list, so a field the copy logic drops just never gets
+    // caught). Every field the source row and the referenced exercise
+    // carried must survive the copy.
+    expect(inserted[1]).toEqual({
+      assignedProgramId: 900,
+      exerciseId: 1,
+      name: "Squat",
+      primaryMuscles: ["legs"],
+      secondaryMuscles: ["core"],
+      equipment: ["barbell"],
+      instructions: ["Step one"],
+      sets: 3,
+      reps: 10,
+      // undefined, not null — resolveSourceExercises converts a
+      // template row's null optional fields to undefined (`?? undefined`)
+      // before they reach this insert; Drizzle treats an undefined
+      // column the same as "not provided" (the column's own default,
+      // effectively NULL for a nullable column with none set), so this
+      // is the real value this insert actually receives, not a mistake
+      // in this test's fixture.
+      durationInSeconds: undefined,
+      weight: 62.5,
+      weightUnit: "kg",
+      sortOrder: 0,
+      notes: undefined,
+    });
   });
 
-  it("uses the inline exercises array directly when no template is referenced", async () => {
+  it("uses the inline exercises array directly when no template is referenced, snapshotting each exercise's current details", async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true);
+    db.query.exercises.findMany.mockResolvedValue([
+      {
+        id: 3,
+        name: "Lunge",
+        primaryMuscles: ["legs"],
+        secondaryMuscles: [],
+        equipment: [],
+        instructions: ["Step one"],
+      },
+    ]);
 
     const inserted: any[] = [];
     db.insert.mockImplementation(() => ({
@@ -177,7 +230,29 @@ describe("AssignedProgramsService.create", () => {
     );
 
     expect(db.query.templateExercises.findMany).not.toHaveBeenCalled();
-    expect(inserted[1]).toEqual(expect.objectContaining({ exerciseId: 3 }));
+    expect(inserted[1]).toEqual(
+      expect.objectContaining({ exerciseId: 3, name: "Lunge" }),
+    );
+  });
+
+  it("rejects an inline exercises array referencing an exercise that does not exist — a real validation gap closed by snapshotting", async () => {
+    // Before snapshotting made fetching each exercise unavoidable, this
+    // path never checked existence at all — an inline exerciseId that
+    // didn't exist would have been silently inserted anyway.
+    usersService.isPatientManagedBy.mockResolvedValue(true);
+    db.query.exercises.findMany.mockResolvedValue([]); // nothing found
+
+    await expect(
+      service.create(
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        {
+          patientId: 20,
+          title: "Ad-hoc Plan",
+          startDate: "2026-01-01",
+          exercises: [{ exerciseId: 999, sortOrder: 0 }],
+        },
+      ),
+    ).rejects.toThrow(NotFoundException);
   });
 });
 
@@ -487,7 +562,15 @@ describe("AssignedProgramsService.addExercise", () => {
     expect(db.query.exercises.findFirst).not.toHaveBeenCalled();
   });
 
-  it("inserts every provided field, including weight/weightUnit", async () => {
+  it("inserts every provided field, including weight/weightUnit and the exercise's snapshotted details", async () => {
+    db.query.exercises.findFirst.mockResolvedValue({
+      id: 5,
+      name: "Squat",
+      primaryMuscles: ["legs"],
+      secondaryMuscles: ["core"],
+      equipment: ["barbell"],
+      instructions: ["Step one"],
+    });
     // Captured so the test can assert on exactly what reached the
     // database — the same real bug (weight/weightUnit silently missing
     // from this object) shipped once on the programs side already,
@@ -517,6 +600,11 @@ describe("AssignedProgramsService.addExercise", () => {
     expect(valuesMock).toHaveBeenCalledWith({
       assignedProgramId: 900,
       exerciseId: 5,
+      name: "Squat",
+      primaryMuscles: ["legs"],
+      secondaryMuscles: ["core"],
+      equipment: ["barbell"],
+      instructions: ["Step one"],
       sets: 3,
       reps: 10,
       durationInSeconds: undefined,

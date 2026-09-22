@@ -120,7 +120,25 @@ export const assignedPrograms = pgTable(
   }),
 );
 
-// A COPY of template_exercises, not a reference to it — same shape, independent rows.
+// A COPY of template_exercises, not a reference to it — same shape,
+// independent rows. Originally this only meant the PRESCRIPTION fields
+// (sets/reps/weight/duration/notes); exerciseId itself, and therefore
+// the exercise's own name/muscles/equipment/instructions, stayed a live
+// reference. That turned out to be a real gap: if a shared exercise's
+// instructions changed after a program was already assigned, a patient
+// could silently see something different from what was actually
+// prescribed — a live reference is fine for a template still being
+// iterated on, but not for a program a real patient is actively
+// following. name/primaryMuscles/secondaryMuscles/equipment/
+// instructions below are that same "copy, not reference" treatment
+// extended to the exercise's own descriptive fields, snapshotted at the
+// moment an exercise is added (whether via copying a template or adding
+// one directly) and independently editable afterward per patient — same
+// as sets/reps always have been. Deliberately NOT extended to
+// mediaUrls/photos yet — see deferred-improvements.md for why that's a
+// materially bigger, deferred piece of work (no copy-object capability
+// in StorageService today, plus an ongoing per-assignment storage cost
+// the text fields don't have).
 export const assignedProgramExercises = pgTable(
   "assigned_program_exercises",
   {
@@ -131,6 +149,16 @@ export const assignedProgramExercises = pgTable(
     exerciseId: integer("exercise_id")
       .notNull()
       .references(() => exercises.id, { onDelete: "restrict" }),
+    // Snapshotted from the exercise at add-time — see this table's own
+    // comment above. Same column shapes as exercises' own
+    // name/primaryMuscles/secondaryMuscles/equipment/instructions
+    // (exercises.schema.ts), since this is literally the same kind of
+    // data, just copied rather than referenced from here on.
+    name: varchar("name", { length: 255 }).notNull(),
+    primaryMuscles: text("primary_muscles").array().notNull().default([]),
+    secondaryMuscles: text("secondary_muscles").array().notNull().default([]),
+    equipment: text("equipment").array().notNull().default([]),
+    instructions: text("instructions").array().notNull(),
     sets: integer("sets"),
     reps: integer("reps"),
     durationInSeconds: integer("duration_in_seconds"),
