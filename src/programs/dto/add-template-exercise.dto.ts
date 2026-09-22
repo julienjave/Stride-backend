@@ -17,37 +17,61 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator'
+import {
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from "class-validator";
+import { hasStartedWeight } from "../../common/validators/has-started-weight";
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class AddTemplateExerciseDto {
   @IsInt()
-  exerciseId!: number
+  exerciseId!: number;
 
   // Deliberately all nullable — a timed hold has no reps; a rep-based
   // exercise has no duration. Same reasoning as the schema's own columns.
   @IsOptional()
   @IsInt()
   @Min(1)
-  sets?: number
+  sets?: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  reps?: number
+  reps?: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  durationInSeconds?: number
+  durationInSeconds?: number;
+
+  // weight and weightUnit are each optional independently, but the
+  // moment EITHER is provided, both become required together — see
+  // hasStartedWeight's own comment for why. maxDecimalPlaces: 2 allows
+  // real-world plate increments (62.5, even 61.25) without permitting
+  // meaningless false precision (62.5555555).
+  @ValidateIf(hasStartedWeight)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  weight?: number;
+
+  @ValidateIf(hasStartedWeight)
+  @IsIn(["kg", "lbs"])
+  weightUnit?: "kg" | "lbs";
 
   @IsInt()
   @Min(0)
-  sortOrder!: number
+  sortOrder!: number;
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
-  notes?: string
+  notes?: string;
 }

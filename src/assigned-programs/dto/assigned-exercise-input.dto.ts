@@ -17,7 +17,17 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator'
+import {
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from "class-validator";
+import { hasStartedWeight } from "../../common/validators/has-started-weight";
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -25,31 +35,46 @@ import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator'
 // own small class rather than importing across module boundaries — DTOs
 // stay local to the module that owns them, the same reasoning behind
 // keeping ClinicsService and UsersService independent of each other.
+// hasStartedWeight itself is an exception to that, same as
+// hasStartedAddress already is elsewhere — a shared VALIDATION RULE
+// living in common/, not a cross-module DTO import.
 export class AssignedExerciseInputDto {
   @IsInt()
-  exerciseId!: number
+  exerciseId!: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  sets?: number
+  sets?: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  reps?: number
+  reps?: number;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  durationInSeconds?: number
+  durationInSeconds?: number;
+
+  // See AddTemplateExerciseDto's identical fields for the full
+  // reasoning (both-or-neither via hasStartedWeight, 2 decimal places
+  // for real-world plate increments without false precision).
+  @ValidateIf(hasStartedWeight)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  weight?: number;
+
+  @ValidateIf(hasStartedWeight)
+  @IsIn(["kg", "lbs"])
+  weightUnit?: "kg" | "lbs";
 
   @IsInt()
   @Min(0)
-  sortOrder!: number
+  sortOrder!: number;
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
-  notes?: string
+  notes?: string;
 }

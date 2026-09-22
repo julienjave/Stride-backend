@@ -25,100 +25,129 @@ import {
   date,
   pgEnum,
   index,
-} from 'drizzle-orm/pg-core'
-import { users } from './users.schema'
-import { exercises } from './exercises.schema'
+  real,
+} from "drizzle-orm/pg-core";
+import { users } from "./users.schema";
+import { exercises } from "./exercises.schema";
 
-export const programStatusEnum = pgEnum('program_status', [
-  'active',
-  'completed',
-  'on_hold',
-  'cancelled',
-])
+export const programStatusEnum = pgEnum("program_status", [
+  "active",
+  "completed",
+  "on_hold",
+  "cancelled",
+]);
 
-export const programTemplates = pgTable('program_templates', {
-  id: serial('id').primaryKey(),
-  practitionerId: integer('practitioner_id')
+// A weight value with no unit is genuinely ambiguous in a clinical
+// context — "50" could mean 50kg or 50lbs, and mixing those up is a
+// real safety concern, not just a display nitpick. Storing the unit
+// explicitly alongside every weight value (rather than assuming one
+// fixed unit app-wide, or a per-clinic/per-user setting looked up
+// elsewhere) removes that ambiguity at the row level, where it's read.
+export const weightUnitEnum = pgEnum("weight_unit", ["kg", "lbs"]);
+
+export const programTemplates = pgTable("program_templates", {
+  id: serial("id").primaryKey(),
+  practitionerId: integer("practitioner_id")
     .notNull()
-    .references(() => users.id, { onDelete: 'restrict' }),
-  title: varchar('title', { length: 255 }).notNull(),
-  description: text('description'),
-  isArchived: boolean('is_archived').notNull().default(false),
-})
+    .references(() => users.id, { onDelete: "restrict" }),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description"),
+  isArchived: boolean("is_archived").notNull().default(false),
+});
 
 export const templateExercises = pgTable(
-  'template_exercises',
+  "template_exercises",
   {
-    id: serial('id').primaryKey(),
-    templateId: integer('template_id')
+    id: serial("id").primaryKey(),
+    templateId: integer("template_id")
       .notNull()
-      .references(() => programTemplates.id, { onDelete: 'cascade' }),
-    exerciseId: integer('exercise_id')
+      .references(() => programTemplates.id, { onDelete: "cascade" }),
+    exerciseId: integer("exercise_id")
       .notNull()
-      .references(() => exercises.id, { onDelete: 'restrict' }),
+      .references(() => exercises.id, { onDelete: "restrict" }),
     // sets / reps / durationInSeconds are deliberately all nullable — a timed hold has
     // a duration but no reps; a rep-based exercise has reps but no duration.
-    sets: integer('sets'),
-    reps: integer('reps'),
-    durationInSeconds: integer('duration_in_seconds'),
-    sortOrder: integer('sort_order').notNull(),
-    notes: text('notes'),
+    sets: integer("sets"),
+    reps: integer("reps"),
+    durationInSeconds: integer("duration_in_seconds"),
+    // real (a 4-byte float), not numeric/decimal — weight here is a
+    // simple, human-entered value (62.5, say), never used in
+    // accumulating arithmetic the way money would be, so real's
+    // negligible floating-point imprecision doesn't matter in practice,
+    // and it maps directly to a JS number rather than numeric's string
+    // representation (which would otherwise need parsing at every
+    // boundary just to avoid Postgres's own precision-preserving
+    // string return). Nullable and independent of weightUnit at the
+    // COLUMN level — the DTOs enforce "both or neither together" (see
+    // hasStartedWeight), not the schema itself.
+    weight: real("weight"),
+    weightUnit: weightUnitEnum("weight_unit"),
+    sortOrder: integer("sort_order").notNull(),
+    notes: text("notes"),
   },
   (table) => ({
-    templateIdIdx: index('template_exercises_template_id_idx').on(
+    templateIdIdx: index("template_exercises_template_id_idx").on(
       table.templateId,
     ),
   }),
-)
+);
 
 export const assignedPrograms = pgTable(
-  'assigned_programs',
+  "assigned_programs",
   {
-    id: serial('id').primaryKey(),
-    patientId: integer('patient_id')
+    id: serial("id").primaryKey(),
+    patientId: integer("patient_id")
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
-    assignedBy: integer('assigned_by')
+      .references(() => users.id, { onDelete: "restrict" }),
+    assignedBy: integer("assigned_by")
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
-    basedOnTemplateId: integer('based_on_template_id').references(
+      .references(() => users.id, { onDelete: "restrict" }),
+    basedOnTemplateId: integer("based_on_template_id").references(
       () => programTemplates.id,
-      { onDelete: 'set null' },
+      { onDelete: "set null" },
     ),
-    title: varchar('title', { length: 255 }).notNull(),
-    startDate: date('start_date').notNull(),
-    endDate: date('end_date'),
-    status: programStatusEnum('status').notNull().default('active'),
-    isArchived: boolean('is_archived').notNull().default(false),
+    title: varchar("title", { length: 255 }).notNull(),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date"),
+    status: programStatusEnum("status").notNull().default("active"),
+    isArchived: boolean("is_archived").notNull().default(false),
   },
   (table) => ({
     // findAllForCurrentUser() filters on this directly (patient) or via
     // inArray (practitioner's managed patients) — the single most-queried
     // column in this table.
-    patientIdIdx: index('assigned_programs_patient_id_idx').on(table.patientId),
+    patientIdIdx: index("assigned_programs_patient_id_idx").on(table.patientId),
   }),
-)
+);
 
 // A COPY of template_exercises, not a reference to it — same shape, independent rows.
 export const assignedProgramExercises = pgTable(
-  'assigned_program_exercises',
+  "assigned_program_exercises",
   {
-    id: serial('id').primaryKey(),
-    assignedProgramId: integer('assigned_program_id')
+    id: serial("id").primaryKey(),
+    assignedProgramId: integer("assigned_program_id")
       .notNull()
-      .references(() => assignedPrograms.id, { onDelete: 'cascade' }),
-    exerciseId: integer('exercise_id')
+      .references(() => assignedPrograms.id, { onDelete: "cascade" }),
+    exerciseId: integer("exercise_id")
       .notNull()
-      .references(() => exercises.id, { onDelete: 'restrict' }),
-    sets: integer('sets'),
-    reps: integer('reps'),
-    durationInSeconds: integer('duration_in_seconds'),
-    sortOrder: integer('sort_order').notNull(),
-    notes: text('notes'),
+      .references(() => exercises.id, { onDelete: "restrict" }),
+    sets: integer("sets"),
+    reps: integer("reps"),
+    durationInSeconds: integer("duration_in_seconds"),
+    // Same reasoning as templateExercises' own weight/weightUnit
+    // columns — see that table's comment. This is genuinely the MORE
+    // important of the two tables for weight specifically, since a
+    // patient's actual prescribed weight (as opposed to a template's
+    // default) is exactly the per-patient value that motivated adding
+    // this field at all.
+    weight: real("weight"),
+    weightUnit: weightUnitEnum("weight_unit"),
+    sortOrder: integer("sort_order").notNull(),
+    notes: text("notes"),
   },
   (table) => ({
     assignedProgramIdIdx: index(
-      'assigned_program_exercises_assigned_program_id_idx',
+      "assigned_program_exercises_assigned_program_id_idx",
     ).on(table.assignedProgramId),
   }),
-)
+);

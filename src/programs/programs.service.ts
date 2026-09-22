@@ -95,6 +95,8 @@ export class ProgramsService {
           sets: dto.sets,
           reps: dto.reps,
           durationInSeconds: dto.durationInSeconds,
+          weight: dto.weight,
+          weightUnit: dto.weightUnit,
           sortOrder: dto.sortOrder,
           notes: dto.notes,
         })

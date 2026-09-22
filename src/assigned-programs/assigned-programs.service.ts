@@ -23,26 +23,26 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-} from '@nestjs/common'
-import { and, eq, inArray } from 'drizzle-orm'
-import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
+} from "@nestjs/common";
+import { and, eq, inArray } from "drizzle-orm";
+import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   assignedPrograms,
   assignedProgramExercises,
   templateExercises,
   exercises,
-} from '../database/schema'
-import { UsersService } from '../users/users.service'
-import { CreateAssignedProgramDto } from './dto/create-assigned-program.dto'
-import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
-import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
-import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
-import { UserRole } from '../users/dto/create-user.dto'
-import { withRlsContext } from '../database/rls-context'
+} from "../database/schema";
+import { UsersService } from "../users/users.service";
+import { CreateAssignedProgramDto } from "./dto/create-assigned-program.dto";
+import { UpdateAssignedProgramDto } from "./dto/update-assigned-program.dto";
+import { AssignedExerciseInputDto } from "./dto/assigned-exercise-input.dto";
+import { UpdateAssignedProgramExerciseDto } from "./dto/update-assigned-program-exercise.dto";
+import { UserRole } from "../users/dto/create-user.dto";
+import { withRlsContext } from "../database/rls-context";
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: UserRole }
+type CurrentUser = { id: number; activeRole: UserRole };
 
 @Injectable()
 export class AssignedProgramsService {
@@ -64,14 +64,14 @@ export class AssignedProgramsService {
     const managed = await this.usersService.isPatientManagedBy(
       dto.patientId,
       currentUser.id,
-    )
+    );
     if (!managed) {
       throw new ForbiddenException(
-        'You can only assign programs to patients you manage',
-      )
+        "You can only assign programs to patients you manage",
+      );
     }
 
-    const sourceExercises = await this.resolveSourceExercises(dto)
+    const sourceExercises = await this.resolveSourceExercises(dto);
 
     const programId = await withRlsContext(this.db, currentUser, async (tx) => {
       const [program] = await tx
@@ -84,7 +84,7 @@ export class AssignedProgramsService {
           startDate: dto.startDate,
           endDate: dto.endDate,
         })
-        .returning()
+        .returning();
 
       // The actual "copy, not reference" moment. From here on these rows
       // are entirely independent of template_exercises — editing or
@@ -99,16 +99,16 @@ export class AssignedProgramsService {
           durationInSeconds: ex.durationInSeconds,
           sortOrder: ex.sortOrder,
           notes: ex.notes,
-        })
+        });
       }
 
-      return program.id
-    })
+      return program.id;
+    });
 
     // Deliberately its own, separate RLS-scoped transaction — by the time
     // this runs, the transaction above has committed, so the newly
     // inserted rows are safely visible.
-    return this.findProgramWithExercises(programId, currentUser)
+    return this.findProgramWithExercises(programId, currentUser);
   }
 
   async addExercise(
@@ -116,17 +116,20 @@ export class AssignedProgramsService {
     currentUser: CurrentUser,
     dto: AssignedExerciseInputDto,
   ) {
-    const program = await this.findProgramOrThrow(assignedProgramId, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    );
+    await this.assertCanManage(program.patientId, currentUser);
 
     // exercises' SELECT policy is unconditional (USING (true)), so this
     // needs no RLS context — reading it on the normal connection is
     // correct, not a gap.
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, dto.exerciseId),
-    })
+    });
     if (!exercise) {
-      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`)
+      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`);
     }
 
     const [row] = await withRlsContext(this.db, currentUser, (tx) =>
@@ -138,12 +141,14 @@ export class AssignedProgramsService {
           sets: dto.sets,
           reps: dto.reps,
           durationInSeconds: dto.durationInSeconds,
+          weight: dto.weight,
+          weightUnit: dto.weightUnit,
           sortOrder: dto.sortOrder,
           notes: dto.notes,
         })
         .returning(),
-    )
-    return row
+    );
+    return row;
   }
 
   // --- GET ROUTES ---
@@ -157,7 +162,7 @@ export class AssignedProgramsService {
         tx.query.assignedPrograms.findMany({
           where: eq(assignedPrograms.isArchived, false),
         }),
-      )
+      );
     }
     if (currentUser.activeRole === UserRole.PATIENT) {
       return withRlsContext(this.db, currentUser, (tx) =>
@@ -167,14 +172,14 @@ export class AssignedProgramsService {
             eq(assignedPrograms.isArchived, false),
           ),
         }),
-      )
+      );
     }
     const managedPatients = await this.usersService.findPatientsForPractitioner(
       currentUser.id,
-    )
-    const patientIds = managedPatients.map((p) => p.id)
+    );
+    const patientIds = managedPatients.map((p) => p.id);
     if (patientIds.length === 0) {
-      return []
+      return [];
     }
     return withRlsContext(this.db, currentUser, (tx) =>
       tx.query.assignedPrograms.findMany({
@@ -183,13 +188,13 @@ export class AssignedProgramsService {
           eq(assignedPrograms.isArchived, false),
         ),
       }),
-    )
+    );
   }
 
   async findOne(id: number, currentUser: CurrentUser) {
-    const program = await this.findProgramOrThrow(id, currentUser)
-    await this.assertCanView(program.patientId, currentUser)
-    return this.findProgramWithExercises(id, currentUser)
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanView(program.patientId, currentUser);
+    return this.findProgramWithExercises(id, currentUser);
   }
 
   // --- PATCH ROUTES ---
@@ -199,16 +204,16 @@ export class AssignedProgramsService {
     currentUser: CurrentUser,
     dto: UpdateAssignedProgramDto,
   ) {
-    const program = await this.findProgramOrThrow(id, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(assignedPrograms)
         .set(dto)
         .where(eq(assignedPrograms.id, id))
         .returning(),
-    )
-    return updated
+    );
+    return updated;
   }
 
   async updateExercise(
@@ -217,9 +222,16 @@ export class AssignedProgramsService {
     currentUser: CurrentUser,
     dto: UpdateAssignedProgramExerciseDto,
   ) {
-    const program = await this.findProgramOrThrow(assignedProgramId, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
-    await this.findProgramExerciseOrThrow(assignedProgramId, rowId, currentUser)
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    );
+    await this.assertCanManage(program.patientId, currentUser);
+    await this.findProgramExerciseOrThrow(
+      assignedProgramId,
+      rowId,
+      currentUser,
+    );
 
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
@@ -227,8 +239,8 @@ export class AssignedProgramsService {
         .set(dto)
         .where(eq(assignedProgramExercises.id, rowId))
         .returning(),
-    )
-    return updated
+    );
+    return updated;
   }
 
   async reorderExercises(
@@ -236,8 +248,11 @@ export class AssignedProgramsService {
     currentUser: CurrentUser,
     newOrder: number[],
   ) {
-    const program = await this.findProgramOrThrow(assignedProgramId, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    );
+    await this.assertCanManage(program.patientId, currentUser);
 
     // Read, permutation-check, and write all happen inside ONE transaction
     // (tx.query instead of this.db.query) — same fix as
@@ -254,9 +269,12 @@ export class AssignedProgramsService {
     // this.db.transaction(...).
     await withRlsContext(this.db, currentUser, async (tx) => {
       const currentRows = await tx.query.assignedProgramExercises.findMany({
-        where: eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
-      })
-      const currentIds = new Set(currentRows.map((r) => r.id))
+        where: eq(
+          assignedProgramExercises.assignedProgramId,
+          assignedProgramId,
+        ),
+      });
+      const currentIds = new Set(currentRows.map((r) => r.id));
       // Same fix as ProgramsService.reorderExercises — a genuine permutation
       // check needs length + no-internal-duplicates + valid-membership
       // together, not just a comparison of deduplicated Set sizes. See that
@@ -264,38 +282,38 @@ export class AssignedProgramsService {
       const isSamePermutation =
         newOrder.length === currentRows.length &&
         new Set(newOrder).size === newOrder.length &&
-        newOrder.every((id) => currentIds.has(id))
+        newOrder.every((id) => currentIds.has(id));
 
       if (!isSamePermutation) {
         throw new BadRequestException(
-          'The new order must contain exactly the exercises currently in this program, just reordered',
-        )
+          "The new order must contain exactly the exercises currently in this program, just reordered",
+        );
       }
 
       for (const [index, rowId] of newOrder.entries()) {
         await tx
           .update(assignedProgramExercises)
           .set({ sortOrder: index })
-          .where(eq(assignedProgramExercises.id, rowId))
+          .where(eq(assignedProgramExercises.id, rowId));
       }
-    })
+    });
 
-    return this.findProgramWithExercises(assignedProgramId, currentUser)
+    return this.findProgramWithExercises(assignedProgramId, currentUser);
   }
 
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: CurrentUser) {
-    const program = await this.findProgramOrThrow(id, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
     const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(assignedPrograms)
         .set({ isArchived: true })
         .where(eq(assignedPrograms.id, id))
         .returning(),
-    )
-    return archived
+    );
+    return archived;
   }
 
   async removeExercise(
@@ -303,15 +321,22 @@ export class AssignedProgramsService {
     rowId: number,
     currentUser: CurrentUser,
   ) {
-    const program = await this.findProgramOrThrow(assignedProgramId, currentUser)
-    await this.assertCanManage(program.patientId, currentUser)
-    await this.findProgramExerciseOrThrow(assignedProgramId, rowId, currentUser)
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    );
+    await this.assertCanManage(program.patientId, currentUser);
+    await this.findProgramExerciseOrThrow(
+      assignedProgramId,
+      rowId,
+      currentUser,
+    );
 
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .delete(assignedProgramExercises)
         .where(eq(assignedProgramExercises.id, rowId)),
-    )
+    );
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -323,11 +348,11 @@ export class AssignedProgramsService {
       const rows = await this.db.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, dto.basedOnTemplateId),
         orderBy: (te, { asc }) => [asc(te.sortOrder)],
-      })
+      });
       if (rows.length === 0) {
         throw new NotFoundException(
           `Template ${dto.basedOnTemplateId} not found, or has no exercises to copy`,
-        )
+        );
       }
       return rows.map((row) => ({
         exerciseId: row.exerciseId,
@@ -336,26 +361,26 @@ export class AssignedProgramsService {
         durationInSeconds: row.durationInSeconds ?? undefined,
         sortOrder: row.sortOrder,
         notes: row.notes ?? undefined,
-      }))
+      }));
     }
 
     if (!dto.exercises || dto.exercises.length === 0) {
       throw new BadRequestException(
-        'Provide either basedOnTemplateId or an inline exercises array',
-      )
+        "Provide either basedOnTemplateId or an inline exercises array",
+      );
     }
-    return dto.exercises
+    return dto.exercises;
   }
 
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
-    const program = await this.findProgramOrThrow(id, currentUser)
+    const program = await this.findProgramOrThrow(id, currentUser);
     const exerciseRows = await withRlsContext(this.db, currentUser, (tx) =>
       tx.query.assignedProgramExercises.findMany({
         where: eq(assignedProgramExercises.assignedProgramId, id),
         orderBy: (row, { asc }) => [asc(row.sortOrder)],
       }),
-    )
-    return { ...program, exercises: exerciseRows }
+    );
+    return { ...program, exercises: exerciseRows };
   }
 
   private async findProgramOrThrow(id: number, currentUser: CurrentUser) {
@@ -363,7 +388,7 @@ export class AssignedProgramsService {
       tx.query.assignedPrograms.findFirst({
         where: eq(assignedPrograms.id, id),
       }),
-    )
+    );
     // Covers both "genuinely does not exist" and "exists, but RLS made it
     // invisible to this session" — assertCanView/assertCanManage never run
     // on a program this query didn't return, so an out-of-scope row reads
@@ -371,9 +396,9 @@ export class AssignedProgramsService {
     // deliberate exception (the owning patient IS visible via RLS, so the
     // 403 there is a real app-layer decision, not RLS filtering).
     if (!program) {
-      throw new NotFoundException(`Assigned program ${id} not found`)
+      throw new NotFoundException(`Assigned program ${id} not found`);
     }
-    return program
+    return program;
   }
 
   private async findProgramExerciseOrThrow(
@@ -388,49 +413,49 @@ export class AssignedProgramsService {
           eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
         ),
       }),
-    )
+    );
     if (!row) {
       throw new NotFoundException(
         `Exercise ${rowId} not found in this assigned program`,
-      )
+      );
     }
-    return row
+    return row;
   }
 
   // Viewing allows a third case beyond manage: the patient viewing their
   // own program.
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) return
+    if (currentUser.activeRole === UserRole.ADMIN) return;
     if (
       currentUser.activeRole === UserRole.PATIENT &&
       patientId === currentUser.id
     )
-      return
+      return;
     if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,
         currentUser.id,
-      )
-      if (managed) return
+      );
+      if (managed) return;
     }
     throw new ForbiddenException(
-      'You do not have permission to view this assigned program',
-    )
+      "You do not have permission to view this assigned program",
+    );
   }
 
   // Managing (create/update/archive/exercise CRUD) never allows the patient
   // themselves — a patient can see their program, not edit its prescription.
   private async assertCanManage(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) return
+    if (currentUser.activeRole === UserRole.ADMIN) return;
     if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,
         currentUser.id,
-      )
-      if (managed) return
+      );
+      if (managed) return;
     }
     throw new ForbiddenException(
-      'You do not have permission to manage this assigned program',
-    )
+      "You do not have permission to manage this assigned program",
+    );
   }
 }

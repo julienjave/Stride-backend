@@ -178,6 +178,33 @@ describe("Programs (e2e)", () => {
     });
   });
 
+  it("accepts a weight and weightUnit together, and rejects either one given alone", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Weighted Template" });
+    const templateId = createRes.body.id;
+
+    const withWeight = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, weight: 62.5, weightUnit: "kg", sortOrder: 0 });
+    expect(withWeight.status).toBe(201);
+    const addedRow = withWeight.body.exercises.find(
+      (e: any) => e.exerciseId === exerciseId,
+    );
+    expect(addedRow.weight).toBe(62.5);
+    expect(addedRow.weightUnit).toBe("kg");
+
+    const weightWithoutUnit = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, weight: 50, sortOrder: 1 });
+    expect(weightWithoutUnit.status).toBe(400);
+
+    const unitWithoutWeight = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, weightUnit: "lbs", sortOrder: 1 });
+    expect(unitWithoutWeight.status).toBe(400);
+  });
+
   it("rejects a different practitioner from adding an exercise to a template they do not own", async () => {
     const createRes = await practitionerA
       .post("/programs")

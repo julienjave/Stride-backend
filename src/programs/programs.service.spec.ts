@@ -168,13 +168,17 @@ describe("ProgramsService.addExercise", () => {
 
   it("adds the exercise, then returns the full enriched template via findOne", async () => {
     db.query.exercises.findFirst.mockResolvedValue({ id: 5, name: "Squat" });
-    db.insert.mockReturnValue({
-      values: jest.fn().mockReturnValue({
-        returning: jest
-          .fn()
-          .mockResolvedValue([{ id: 10, templateId: 1, exerciseId: 5 }]),
-      }),
+    // Captured so the test can assert on exactly what reached the
+    // database, not just what the (separately mocked) findOne() call
+    // afterward happens to resolve to — a real bug (weight/weightUnit
+    // silently missing from this object) shipped once already precisely
+    // because no test checked this before.
+    const valuesMock = jest.fn().mockReturnValue({
+      returning: jest
+        .fn()
+        .mockResolvedValue([{ id: 10, templateId: 1, exerciseId: 5 }]),
     });
+    db.insert.mockReturnValue({ values: valuesMock });
     // findOne()'s own reads, AFTER the insert above — a fresh row list
     // (as the real DB would return post-insert) and the matching
     // exercise details for withExerciseDetails to attach.
@@ -190,9 +194,29 @@ describe("ProgramsService.addExercise", () => {
       { id: 7, activeRole: UserRole.PRACTITIONER },
       {
         exerciseId: 5,
+        sets: 3,
+        reps: 10,
+        weight: 62.5,
+        weightUnit: "kg",
+        notes: "Go slow",
         sortOrder: 0,
       },
     );
+
+    // The actual regression guard: every DTO field the caller provided
+    // must reach the INSERT, not just the ones that happened to already
+    // be there before weight/weightUnit were added.
+    expect(valuesMock).toHaveBeenCalledWith({
+      templateId: 1,
+      exerciseId: 5,
+      sets: 3,
+      reps: 10,
+      durationInSeconds: undefined,
+      weight: 62.5,
+      weightUnit: "kg",
+      sortOrder: 0,
+      notes: "Go slow",
+    });
 
     expect(result).toEqual({
       id: 1,
