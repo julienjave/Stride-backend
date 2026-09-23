@@ -7,28 +7,38 @@ import {
 import { ProgramsService } from "./programs.service";
 import { DRIZZLE } from "../database/drizzle.provider";
 import { UserRole } from "../users/dto/create-user.dto";
+import { programTemplates, templateExercises } from "../database/schema";
 
-describe("ProgramsService.assertCanModify (via update)", () => {
+describe("ProgramsService.update (and assertCanModify through it)", () => {
   let programsService: ProgramsService;
   let db: {
-    query: { programTemplates: { findFirst: jest.Mock } };
+    query: {
+      programTemplates: { findFirst: jest.Mock };
+      templateExercises: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
+    };
     update: jest.Mock;
     execute: jest.Mock;
     transaction: jest.Mock;
   };
+  // Captured so tests can assert on exactly what reached the UPDATE, not
+  // just on what the (separately mocked) findOne() afterward returns.
+  let setMock: jest.Mock;
 
   beforeEach(async () => {
-    db = {
-      query: { programTemplates: { findFirst: jest.fn() } },
-      update: jest.fn().mockReturnValue({
-        set: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            returning: jest
-              .fn()
-              .mockResolvedValue([{ id: 1, title: "Updated" }]),
-          }),
-        }),
+    setMock = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue([{ id: 1, title: "Updated" }]),
       }),
+    });
+    db = {
+      query: {
+        programTemplates: { findFirst: jest.fn() },
+        // findOne()'s own reads, called at the END of update() now.
+        templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        exercises: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      update: jest.fn().mockReturnValue({ set: setMock }),
       // withRlsContext() wraps the actual UPDATE in db.transaction()/
       // db.execute() — tx === db here, so the mocked update() above still
       // resolves against this same object.
@@ -49,13 +59,52 @@ describe("ProgramsService.assertCanModify (via update)", () => {
       practitionerId: 7,
     });
 
-    await expect(
-      programsService.update(
-        1,
-        { id: 7, activeRole: UserRole.PRACTITIONER },
-        { title: "Updated" },
-      ),
-    ).resolves.toEqual({ id: 1, title: "Updated" });
+    await programsService.update(
+      1,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      { title: "Updated" },
+    );
+
+    expect(setMock).toHaveBeenCalledWith({ title: "Updated" });
+  });
+
+  it("returns the full enriched template via findOne — not the bare updated row", async () => {
+    // First call: the ownership check's lookup. Second call: findOne()'s
+    // own lookup AFTER the write, which (like the real DB) sees the new
+    // title.
+    db.query.programTemplates.findFirst
+      .mockResolvedValueOnce({ id: 1, practitionerId: 7, title: "Old" })
+      .mockResolvedValueOnce({ id: 1, practitionerId: 7, title: "Updated" });
+    db.query.templateExercises.findMany.mockResolvedValue([
+      { id: 50, templateId: 1, exerciseId: 6, sortOrder: 0 },
+    ]);
+    db.query.exercises.findMany.mockResolvedValue([
+      { id: 6, name: "Lunge", primaryMuscles: ["legs"] },
+    ]);
+
+    const result = await programsService.update(
+      1,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      { title: "Updated" },
+    );
+
+    // The regression guard: a bare-row return has no `exercises` array
+    // at all — which, written straight into the frontend's cache, would
+    // wipe the exercise list off the page the moment the title changed.
+    expect(result).toEqual({
+      id: 1,
+      practitionerId: 7,
+      title: "Updated",
+      exercises: [
+        {
+          id: 50,
+          templateId: 1,
+          exerciseId: 6,
+          sortOrder: 0,
+          exercise: { id: 6, name: "Lunge", primaryMuscles: ["legs"] },
+        },
+      ],
+    });
   });
 
   it("allows an admin to modify a template they do not own", async () => {
@@ -64,13 +113,13 @@ describe("ProgramsService.assertCanModify (via update)", () => {
       practitionerId: 7,
     });
 
-    await expect(
-      programsService.update(
-        1,
-        { id: 999, activeRole: UserRole.ADMIN },
-        { title: "Updated" },
-      ),
-    ).resolves.toEqual({ id: 1, title: "Updated" });
+    await programsService.update(
+      1,
+      { id: 999, activeRole: UserRole.ADMIN },
+      { title: "Updated" },
+    );
+
+    expect(setMock).toHaveBeenCalledWith({ title: "Updated" });
   });
 
   it("rejects a different practitioner modifying a template they do not own", async () => {
@@ -86,6 +135,343 @@ describe("ProgramsService.assertCanModify (via update)", () => {
         { title: "Updated" },
       ),
     ).rejects.toThrow(ForbiddenException);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProgramsService.archive", () => {
+  let programsService: ProgramsService;
+  let db: {
+    query: {
+      programTemplates: { findFirst: jest.Mock };
+      templateExercises: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
+    };
+    update: jest.Mock;
+    execute: jest.Mock;
+    transaction: jest.Mock;
+  };
+  let setMock: jest.Mock;
+
+  beforeEach(async () => {
+    setMock = jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue([{ id: 1, isArchived: true }]),
+      }),
+    });
+    db = {
+      query: {
+        programTemplates: { findFirst: jest.fn() },
+        templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        exercises: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      update: jest.fn().mockReturnValue({ set: setMock }),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+    }).compile();
+
+    programsService = moduleRef.get(ProgramsService);
+  });
+
+  it("sets isArchived, then returns the full enriched template via findOne", async () => {
+    db.query.programTemplates.findFirst
+      .mockResolvedValueOnce({ id: 1, practitionerId: 7, isArchived: false })
+      .mockResolvedValueOnce({ id: 1, practitionerId: 7, isArchived: true });
+
+    const result = await programsService.archive(1, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    });
+
+    expect(setMock).toHaveBeenCalledWith({ isArchived: true });
+    expect(result).toEqual({
+      id: 1,
+      practitionerId: 7,
+      isArchived: true,
+      exercises: [],
+    });
+  });
+
+  it("rejects a non-owning practitioner without writing anything", async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      isArchived: false,
+    });
+
+    await expect(
+      programsService.archive(1, {
+        id: 999,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProgramsService.duplicate", () => {
+  let programsService: ProgramsService;
+  let db: {
+    query: {
+      programTemplates: { findFirst: jest.Mock };
+      templateExercises: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
+    };
+    transaction: jest.Mock;
+  };
+  // Everything that happens INSIDE the transaction goes through this
+  // separate tx object, not the top-level db — same split as
+  // reorderExercises' tests. That separation is what lets these tests
+  // prove the source rows are read inside the transaction, and that
+  // both inserts go through it.
+  let tx: {
+    insert: jest.Mock;
+    query: { templateExercises: { findMany: jest.Mock } };
+    execute: jest.Mock;
+  };
+  let templateValues: jest.Mock;
+  let rowValues: jest.Mock;
+
+  // A full row, every column populated — so a toEqual on what reaches
+  // the INSERT genuinely proves nothing was dropped along the way.
+  const sourceRows = [
+    {
+      id: 100,
+      templateId: 1,
+      exerciseId: 5,
+      sets: 3,
+      reps: 10,
+      durationInSeconds: null,
+      weight: 62.5,
+      weightUnit: "kg",
+      sortOrder: 0,
+      notes: "Go slow",
+    },
+    {
+      id: 101,
+      templateId: 1,
+      exerciseId: 6,
+      sets: null,
+      reps: null,
+      durationInSeconds: 30,
+      weight: null,
+      weightUnit: null,
+      sortOrder: 1,
+      notes: null,
+    },
+  ];
+
+  beforeEach(async () => {
+    templateValues = jest.fn().mockReturnValue({
+      returning: jest.fn().mockResolvedValue([{ id: 42 }]),
+    });
+    rowValues = jest.fn().mockResolvedValue(undefined);
+    tx = {
+      // Routes by WHICH table is passed in, so the tests also prove each
+      // insert targets the right table, not just that "an insert happened."
+      insert: jest.fn((table: unknown) => {
+        if (table === programTemplates) return { values: templateValues };
+        if (table === templateExercises) return { values: rowValues };
+        throw new Error("Unexpected table passed to insert()");
+      }),
+      query: {
+        templateExercises: {
+          findMany: jest.fn().mockResolvedValue(sourceRows),
+        },
+      },
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+
+    db = {
+      query: {
+        programTemplates: { findFirst: jest.fn() },
+        // findOne()'s reads, AFTER the transaction — deliberately return
+        // nothing useful by default; the main test overrides them.
+        templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        exercises: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+    }).compile();
+
+    programsService = moduleRef.get(ProgramsService);
+  });
+
+  it("copies the template and every exercise row, owned by the duplicating practitioner — even one who does not own the source", async () => {
+    db.query.programTemplates.findFirst
+      // The source — owned by practitioner 7, not the caller (9).
+      .mockResolvedValueOnce({
+        id: 1,
+        practitionerId: 7,
+        title: "Knee Rehab",
+        description: "Phase 1",
+        isArchived: false,
+      })
+      // findOne(42)'s lookup of the NEW template, after the transaction.
+      .mockResolvedValueOnce({
+        id: 42,
+        practitionerId: 9,
+        title: "Copy of Knee Rehab",
+        description: "Phase 1",
+        isArchived: false,
+      });
+
+    const result = await programsService.duplicate(1, {
+      id: 9,
+      activeRole: UserRole.PRACTITIONER,
+    });
+
+    expect(templateValues).toHaveBeenCalledWith({
+      practitionerId: 9,
+      title: "Copy of Knee Rehab",
+      description: "Phase 1",
+    });
+    // Full toEqual on the real INSERT argument — the regression guard
+    // for the "copy silently drops a column" bug class this codebase has
+    // hit three times. Every column comes across except id (the DB
+    // assigns a new one) and templateId (re-pointed at the copy, 42).
+    expect(rowValues).toHaveBeenCalledWith([
+      {
+        templateId: 42,
+        exerciseId: 5,
+        sets: 3,
+        reps: 10,
+        durationInSeconds: null,
+        weight: 62.5,
+        weightUnit: "kg",
+        sortOrder: 0,
+        notes: "Go slow",
+      },
+      {
+        templateId: 42,
+        exerciseId: 6,
+        sets: null,
+        reps: null,
+        durationInSeconds: 30,
+        weight: null,
+        weightUnit: null,
+        sortOrder: 1,
+        notes: null,
+      },
+    ]);
+    // Read inside the transaction, from the SOURCE template.
+    expect(tx.query.templateExercises.findMany).toHaveBeenCalledTimes(1);
+    // And the response is findOne() of the NEW template, not the source.
+    expect(db.query.programTemplates.findFirst).toHaveBeenCalledTimes(2);
+    expect(result).toEqual(expect.objectContaining({ id: 42 }));
+  });
+
+  it("skips the exercise-row insert entirely for a template with no exercises", async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      title: "Empty",
+      description: null,
+      isArchived: false,
+    });
+    tx.query.templateExercises.findMany.mockResolvedValue([]);
+
+    await programsService.duplicate(1, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    });
+
+    expect(templateValues).toHaveBeenCalledTimes(1);
+    // Drizzle throws on .values([]) — reaching this with an empty array
+    // would crash the real request.
+    expect(rowValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects an archived source without opening a transaction", async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      title: "Deleted",
+      description: null,
+      isArchived: true,
+    });
+
+    await expect(
+      programsService.duplicate(1, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("throws NotFoundException when the source does not exist", async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue(undefined);
+
+    await expect(
+      programsService.duplicate(999, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toThrow(NotFoundException);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("trims a long generated title to exactly the DTO's 200-character limit", async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      title: "a".repeat(200),
+      description: null,
+      isArchived: false,
+    });
+
+    await programsService.duplicate(1, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    });
+
+    // Asserted against the full INSERT argument (not by digging into
+    // templateValues.mock.calls, whose untyped `any` the strict lint
+    // config flags). The expected title's own length is checked first, so
+    // the test states the 200 limit explicitly instead of leaving it
+    // implied by the 192.
+    const expectedTitle = "Copy of " + "a".repeat(192);
+    expect(expectedTitle).toHaveLength(200);
+    expect(templateValues).toHaveBeenCalledWith({
+      practitionerId: 7,
+      title: expectedTitle,
+      description: null,
+    });
+  });
+
+  it("never cuts a multi-code-unit character (like an emoji) in half when trimming", async () => {
+    // Each "💪" is ONE character but TWO UTF-16 code units — a naive
+    // string.slice() by length could split the last one down the middle.
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      title: "💪".repeat(200),
+      description: null,
+      isArchived: false,
+    });
+
+    await programsService.duplicate(1, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    });
+
+    // 200 CHARACTERS (code points) — even though it's 392 UTF-16 code
+    // units, which is what a plain .length would report.
+    const expectedTitle = "Copy of " + "💪".repeat(192);
+    expect(Array.from(expectedTitle)).toHaveLength(200);
+    expect(templateValues).toHaveBeenCalledWith({
+      practitionerId: 7,
+      title: expectedTitle,
+      description: null,
+    });
   });
 });
 

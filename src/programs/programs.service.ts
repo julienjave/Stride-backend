@@ -31,7 +31,10 @@ import {
   templateExercises,
   exercises,
 } from "../database/schema";
-import { CreateTemplateDto } from "./dto/create-template.dto";
+import {
+  CreateTemplateDto,
+  TEMPLATE_TITLE_MAX_LENGTH,
+} from "./dto/create-template.dto";
 import { UpdateTemplateDto } from "./dto/update-template.dto";
 import { AddTemplateExerciseDto } from "./dto/add-template-exercise.dto";
 import { UpdateTemplateExerciseDto } from "./dto/update-template-exercise.dto";
@@ -41,6 +44,9 @@ import { withRlsContext } from "../database/rls-context";
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 type CurrentUser = { id: number; activeRole: UserRole };
+
+// Prepended to a duplicated template's title — see buildDuplicateTitle.
+const DUPLICATE_TITLE_PREFIX = "Copy of ";
 
 @Injectable()
 export class ProgramsService {
@@ -181,6 +187,94 @@ export class ProgramsService {
     return this.findOne(templateId);
   }
 
+  // Copies a template AND all of its exercise rows into a brand-new
+  // template owned by the CURRENT user — deliberately not restricted to
+  // the source's owner, since duplicating is the only way a practitioner
+  // can build on a colleague's template (templates are readable by
+  // everyone, but only editable by their owner). Reading the source
+  // needs no permission check for the same reason: program_templates_select
+  // and template_exercises_select are both USING (true).
+  async duplicate(sourceId: number, currentUser: CurrentUser) {
+    const source = await this.findTemplateOrThrow(sourceId);
+    // An archived template is "deleted" as far as the app is concerned —
+    // still viewable by direct URL, but never something to build new
+    // content from. Without this, a bookmark to a deleted template would
+    // be a back door to bring its content back into circulation.
+    if (source.isArchived) {
+      throw new BadRequestException(
+        "Archived program templates cannot be duplicated",
+      );
+    }
+
+    // ONE transaction for both inserts, for two separate reasons:
+    //
+    // 1. All-or-nothing. If copying the exercise rows failed after the
+    //    template row was already committed, the practitioner would be
+    //    left with a half-made, empty "Copy of ..." they never asked for.
+    //    Inside one transaction, any failure rolls BOTH inserts back.
+    //
+    // 2. RLS. template_exercises_insert checks, via an EXISTS subquery,
+    //    that the parent template belongs to the current user. The new
+    //    parent row isn't committed yet when that check runs — but a
+    //    transaction always sees its OWN uncommitted writes, so the
+    //    subquery finds it. (Separate transactions would also pass this
+    //    check, since the first would be committed by then — it's point
+    //    1 that really requires sharing one.)
+    const newTemplateId = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        const [copy] = await tx
+          .insert(programTemplates)
+          .values({
+            practitionerId: currentUser.id,
+            title: this.buildDuplicateTitle(source.title),
+            description: source.description,
+          })
+          .returning();
+
+        const sourceRows = await tx.query.templateExercises.findMany({
+          where: eq(templateExercises.templateId, sourceId),
+          orderBy: (te, { asc: ascend }) => [ascend(te.sortOrder)],
+        });
+
+        // Drizzle throws on .values([]) — an INSERT with zero rows isn't
+        // valid SQL — so a template with no exercises yet has to skip
+        // this step rather than crash. Duplicating an empty template is
+        // still a perfectly reasonable thing to do (it copies the title
+        // and description).
+        if (sourceRows.length > 0) {
+          await tx.insert(templateExercises).values(
+            // Rest-destructuring copies EVERY column except the two that
+            // must change: `id` (the database assigns a fresh one) and
+            // `templateId` (re-pointed at the copy). This is deliberately
+            // different from addExercise's hand-listed .values({...}):
+            // there, the input is a DTO with a different shape than the
+            // row, so listing fields is unavoidable. Here, the input IS a
+            // row of this exact table — and a hand-written list is
+            // exactly the shape that has silently dropped newly-added
+            // columns three times in this codebase. With `...copyable`, a
+            // column added to template_exercises in the future is copied
+            // automatically. (ignoreRestSiblings in eslint.config.mjs is
+            // what keeps the unused `id`/`templateId` names lint-clean.)
+            sourceRows.map(({ id, templateId, ...copyable }) => ({
+              ...copyable,
+              templateId: copy.id,
+            })),
+          );
+        }
+
+        return copy.id;
+      },
+    );
+
+    // Same "always return the full enriched template" convention as
+    // every other write on this controller — here it also happens to be
+    // exactly what the frontend needs to render the new copy's page
+    // immediately, without a second request.
+    return this.findOne(newTemplateId);
+  }
+
   // --- GET ROUTES ---
 
   // Visible to any authenticated user, same as exercises — a preset library
@@ -210,14 +304,19 @@ export class ProgramsService {
   async update(id: number, currentUser: CurrentUser, dto: UpdateTemplateDto) {
     const template = await this.findTemplateOrThrow(id);
     this.assertCanModify(template, currentUser);
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set(dto)
         .where(eq(programTemplates.id, id))
         .returning(),
     );
-    return updated;
+    // Returns the FULL enriched template, not the bare updated row — the
+    // same consistency fix updateExercise needed. The frontend writes
+    // this response straight into the template's cache entry; a bare
+    // row has no `exercises` array, so the exercise list rendered on the
+    // same page as the title would vanish right after renaming it.
+    return this.findOne(id);
   }
 
   async updateExercise(
@@ -253,14 +352,17 @@ export class ProgramsService {
   async archive(id: number, currentUser: CurrentUser) {
     const template = await this.findTemplateOrThrow(id);
     this.assertCanModify(template, currentUser);
-    const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set({ isArchived: true })
         .where(eq(programTemplates.id, id))
         .returning(),
     );
-    return archived;
+    // Same convention as update() above. findOne() doesn't filter on
+    // isArchived, so this still finds the row it just archived — and the
+    // response now carries isArchived: true alongside the exercises.
+    return this.findOne(id);
   }
 
   async removeExercise(
@@ -284,6 +386,20 @@ export class ProgramsService {
   }
 
   // === HELPER FUNCTIONS =================================================================
+
+  // "Copy of " + the original title, trimmed so the result never exceeds
+  // TEMPLATE_TITLE_MAX_LENGTH. The column itself (varchar 255) would
+  // accept a longer one — but the frontend's edit form validates against
+  // the DTO's 200, so an over-long generated title would open as
+  // "invalid" before the practitioner had typed anything.
+  //
+  // Array.from(title) splits by Unicode code point, not UTF-16 code
+  // unit: a plain .slice() on the string could cut an emoji (two code
+  // units) in half, leaving a broken, unpaired half-character at the end.
+  private buildDuplicateTitle(title: string) {
+    const room = TEMPLATE_TITLE_MAX_LENGTH - DUPLICATE_TITLE_PREFIX.length;
+    return DUPLICATE_TITLE_PREFIX + Array.from(title).slice(0, room).join("");
+  }
 
   private async findTemplateOrThrow(id: number) {
     const template = await this.db.query.programTemplates.findFirst({

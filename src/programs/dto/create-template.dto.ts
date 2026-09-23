@@ -19,11 +19,20 @@
 
 import { IsString, MaxLength, IsOptional } from 'class-validator'
 
+// --- CONSTANTS ---------------------------------------------------------------------------------------------
+
+// Exported so ProgramsService.duplicate() can trim a copy's generated
+// title ("Copy of ...") to exactly the same limit this DTO enforces on
+// every title a person types — one number, one place. If it were
+// hard-coded separately in both files, raising it here someday would
+// quietly leave duplicates trimming to the OLD limit.
+export const TEMPLATE_TITLE_MAX_LENGTH = 200
+
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class CreateTemplateDto {
   @IsString()
-  @MaxLength(200)
+  @MaxLength(TEMPLATE_TITLE_MAX_LENGTH)
   title!: string
 
   @IsOptional()

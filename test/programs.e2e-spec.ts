@@ -273,6 +273,40 @@ describe("Programs (e2e)", () => {
     expect(adminEdit.body.title).toBe("Edited By Admin");
   });
 
+  it("returns the full enriched template from a title/description update, and clears the description with null", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Rename Me", description: "Temporary description" });
+    const templateId = createRes.body.id;
+    await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, sets: 3, sortOrder: 0 });
+
+    const renameRes = await practitionerA
+      .patch(`/programs/${templateId}`)
+      .send({ title: "Renamed" });
+    expect(renameRes.status).toBe(200);
+    expect(renameRes.body.title).toBe("Renamed");
+    // The regression guard: this used to be the bare row, with no
+    // exercises array — the frontend writes this response straight into
+    // its cache, so the list would have vanished right after a rename.
+    expect(renameRes.body.exercises).toHaveLength(1);
+    expect(renameRes.body.exercises[0].exercise.name).toBe(
+      "Programs E2E Squat",
+    );
+
+    // The frontend clears a description by sending an explicit null.
+    // @IsOptional() skips validation for null (not just undefined), and
+    // .set(dto) then writes a real SQL NULL — confirmed here against the
+    // real pipeline rather than assumed from reading the decorators.
+    const clearRes = await practitionerA
+      .patch(`/programs/${templateId}`)
+      .send({ description: null });
+    expect(clearRes.status).toBe(200);
+    expect(clearRes.body.description).toBeNull();
+    expect(clearRes.body.title).toBe("Renamed");
+  });
+
   it("validates reorder as an exact permutation of the current template exercises", async () => {
     const createRes = await practitionerA
       .post("/programs")
@@ -364,8 +398,144 @@ describe("Programs (e2e)", () => {
     const archiveRes = await practitionerA.delete(`/programs/${templateId}`);
     expect(archiveRes.status).toBe(200);
     expect(archiveRes.body.isArchived).toBe(true);
+    // Same enriched shape as every other write on this controller now.
+    expect(archiveRes.body.exercises).toEqual([]);
 
     const listRes = await practitionerA.get("/programs");
     expect(listRes.body.map((t: any) => t.id)).not.toContain(templateId);
+
+    // Still reachable by direct id, deliberately — the frontend relies on
+    // this to show a read-only "this template has been deleted" view for
+    // an old bookmark, rather than a bare error.
+    const directRes = await practitionerA.get(`/programs/${templateId}`);
+    expect(directRes.status).toBe(200);
+    expect(directRes.body.isArchived).toBe(true);
+  });
+
+  describe("duplicate", () => {
+    // Builds a source template owned by practitioner A with two very
+    // different rows — one weighted with notes, one timed — so a copy
+    // that dropped ANY column would show up as a mismatch below.
+    async function createSourceTemplate(title: string) {
+      const createRes = await practitionerA
+        .post("/programs")
+        .send({ title, description: "Source description" });
+      const templateId: number = createRes.body.id;
+      await practitionerA.post(`/programs/${templateId}/exercises`).send({
+        exerciseId,
+        sets: 3,
+        reps: 10,
+        weight: 62.5,
+        weightUnit: "kg",
+        notes: "Go slow",
+        sortOrder: 0,
+      });
+      await practitionerA
+        .post(`/programs/${templateId}/exercises`)
+        .send({ exerciseId, durationInSeconds: 30, sortOrder: 1 });
+      return templateId;
+    }
+
+    // Strips exactly the two columns a copy is SUPPOSED to change, so the
+    // rest can be compared field-for-field with toEqual.
+    const withoutIdentity = (rows: any[]) =>
+      rows.map(({ id, templateId, ...rest }) => rest);
+
+    it("lets a practitioner duplicate a colleague's template into their own copy, with every exercise field intact", async () => {
+      const sourceId = await createSourceTemplate("Colleague Template");
+      const sourceBefore = await practitionerA.get(`/programs/${sourceId}`);
+
+      const dupRes = await practitionerB.post(
+        `/programs/${sourceId}/duplicate`,
+      );
+      expect(dupRes.status).toBe(201);
+      const copyId: number = dupRes.body.id;
+      expect(copyId).not.toBe(sourceId);
+      expect(dupRes.body.title).toBe("Copy of Colleague Template");
+      expect(dupRes.body.description).toBe("Source description");
+      expect(dupRes.body.isArchived).toBe(false);
+
+      // Every column except id/templateId matches the source, in order.
+      expect(withoutIdentity(dupRes.body.exercises)).toEqual(
+        withoutIdentity(sourceBefore.body.exercises),
+      );
+      // Genuinely NEW rows, pointing at the copy — not the source's rows.
+      for (const row of dupRes.body.exercises) {
+        expect(row.templateId).toBe(copyId);
+      }
+      const sourceRowIds = sourceBefore.body.exercises.map((e: any) => e.id);
+      for (const row of dupRes.body.exercises) {
+        expect(sourceRowIds).not.toContain(row.id);
+      }
+
+      // Ownership, proved by behavior: B (who duplicated it) can edit the
+      // copy; A (who owns the SOURCE) cannot.
+      const bEdit = await practitionerB
+        .patch(`/programs/${copyId}`)
+        .send({ title: "B's Version" });
+      expect(bEdit.status).toBe(200);
+      const aEdit = await practitionerA
+        .patch(`/programs/${copyId}`)
+        .send({ title: "Should Not Work" });
+      expect(aEdit.status).toBe(403);
+
+      // The copy is independent: editing one of its rows leaves the
+      // source's matching row untouched.
+      const copyRowId = dupRes.body.exercises[0].id;
+      await practitionerB
+        .patch(`/programs/${copyId}/exercises/${copyRowId}`)
+        .send({ sets: 5, notes: "Changed on the copy" });
+      const sourceAfter = await practitionerA.get(`/programs/${sourceId}`);
+      expect(sourceAfter.body.exercises).toEqual(sourceBefore.body.exercises);
+      expect(sourceAfter.body.title).toBe("Colleague Template");
+    });
+
+    it("duplicates a template with no exercises", async () => {
+      const createRes = await practitionerA
+        .post("/programs")
+        .send({ title: "Empty Source" });
+
+      const dupRes = await practitionerA.post(
+        `/programs/${createRes.body.id}/duplicate`,
+      );
+      expect(dupRes.status).toBe(201);
+      expect(dupRes.body.title).toBe("Copy of Empty Source");
+      expect(dupRes.body.exercises).toEqual([]);
+    });
+
+    it("trims the generated title to the 200-character limit", async () => {
+      const createRes = await practitionerA
+        .post("/programs")
+        .send({ title: "x".repeat(200) });
+
+      const dupRes = await practitionerA.post(
+        `/programs/${createRes.body.id}/duplicate`,
+      );
+      expect(dupRes.status).toBe(201);
+      expect(dupRes.body.title).toHaveLength(200);
+      expect(dupRes.body.title.startsWith("Copy of ")).toBe(true);
+    });
+
+    it("refuses to duplicate an archived template", async () => {
+      const sourceId = await createSourceTemplate("Archived Source");
+      await practitionerA.delete(`/programs/${sourceId}`);
+
+      const dupRes = await practitionerB.post(
+        `/programs/${sourceId}/duplicate`,
+      );
+      expect(dupRes.status).toBe(400);
+    });
+
+    it("rejects an admin (practitioner-only, like creating a template)", async () => {
+      const sourceId = await createSourceTemplate("Admin Cannot Copy");
+
+      const dupRes = await admin.post(`/programs/${sourceId}/duplicate`);
+      expect(dupRes.status).toBe(403);
+    });
+
+    it("returns 404 for a template that does not exist", async () => {
+      const dupRes = await practitionerA.post("/programs/999999/duplicate");
+      expect(dupRes.status).toBe(404);
+    });
   });
 });

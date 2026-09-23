@@ -74,6 +74,26 @@ export class ProgramsController {
     return this.programsService.addExercise(id, user, dto)
   }
 
+  // Practitioner-only, same as create() above — a duplicate IS a new
+  // template, owned by whoever made it, and program_templates_insert's
+  // RLS policy would refuse an admin-owned row anyway. Not owner-only,
+  // though: any practitioner can duplicate any template they can see
+  // (see ProgramsService.duplicate for why).
+  //
+  // A sub-resource "action" path (POST :id/duplicate) rather than, say,
+  // POST / with a sourceId in the body — it reads as "do this to
+  // template :id," keeps create()'s own contract untouched, and lets
+  // ParseIntPipe validate the source id like every other :id here.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER)
+  @Post(':id/duplicate')
+  duplicate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.programsService.duplicate(id, user)
+  }
+
   // --- GET ROUTES ---
 
   @Get()
