@@ -534,6 +534,67 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
     ).rejects.toThrow(NotFoundException);
   });
 
+  it("updateExercise: throws NotFoundException when the exercise row does not belong to this template", async () => {
+    db.query.templateExercises.findFirst.mockResolvedValue(undefined);
+
+    await expect(
+      programsService.updateExercise(
+        1,
+        999,
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        { sets: 5 },
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it("updateExercise: updates the row, then returns the full enriched template via findOne — not the bare updated row", async () => {
+    db.query.templateExercises.findFirst.mockResolvedValue({
+      id: 50,
+      templateId: 1,
+    });
+    db.update.mockReturnValue({
+      set: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 50, templateId: 1, sets: 5 }]),
+        }),
+      }),
+    });
+    // findOne()'s own read AFTER the update — this is the actual
+    // regression guard: a bare-row return (what this method used to do)
+    // would have no `exercise` field at all, since only findOne's own
+    // withExerciseDetails enrichment attaches it.
+    db.query.templateExercises.findMany.mockResolvedValue([
+      { id: 50, templateId: 1, exerciseId: 6, sets: 5, sortOrder: 0 },
+    ]);
+    db.query.exercises.findMany.mockResolvedValue([
+      { id: 6, name: "Lunge", primaryMuscles: ["legs"] },
+    ]);
+
+    const result = await programsService.updateExercise(
+      1,
+      50,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      { sets: 5 },
+    );
+
+    expect(result).toEqual({
+      id: 1,
+      practitionerId: 7,
+      exercises: [
+        {
+          id: 50,
+          templateId: 1,
+          exerciseId: 6,
+          sets: 5,
+          sortOrder: 0,
+          exercise: { id: 6, name: "Lunge", primaryMuscles: ["legs"] },
+        },
+      ],
+    });
+  });
+
   it("removes the exercise row, then returns the full enriched template via findOne", async () => {
     db.query.templateExercises.findFirst.mockResolvedValue({
       id: 50,

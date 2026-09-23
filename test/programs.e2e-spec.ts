@@ -178,6 +178,44 @@ describe("Programs (e2e)", () => {
     });
   });
 
+  it("lets the owning practitioner update a single exercise row, returning the full enriched template", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Update Exercise Template" });
+    const templateId = createRes.body.id;
+
+    const addRes = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, sets: 3, reps: 10, sortOrder: 0 });
+    const templateExerciseId = addRes.body.exercises.find(
+      (e: any) => e.exerciseId === exerciseId,
+    ).id;
+
+    const updateRes = await practitionerA
+      .patch(`/programs/${templateId}/exercises/${templateExerciseId}`)
+      .send({ sets: 5, reps: 8 });
+    expect(updateRes.status).toBe(200);
+    // The actual regression guard: before this fix, this endpoint
+    // returned the bare updated row with no `exercise` field at all —
+    // a real gap only noticed once the frontend actually needed the
+    // exercise's name/muscles back after a save, not just its own
+    // prescription fields.
+    const updatedRow = updateRes.body.exercises.find(
+      (e: any) => e.id === templateExerciseId,
+    );
+    expect(updatedRow).toEqual(
+      expect.objectContaining({
+        sets: 5,
+        reps: 8,
+        exercise: {
+          id: exerciseId,
+          name: "Programs E2E Squat",
+          primaryMuscles: ["legs"],
+        },
+      }),
+    );
+  });
+
   it("accepts a weight and weightUnit together, and rejects either one given alone", async () => {
     const createRes = await practitionerA
       .post("/programs")

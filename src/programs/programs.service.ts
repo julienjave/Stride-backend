@@ -230,14 +230,22 @@ export class ProgramsService {
     this.assertCanModify(template, currentUser);
     await this.findTemplateExerciseOrThrow(templateId, templateExerciseId);
 
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(templateExercises)
         .set(dto)
         .where(eq(templateExercises.id, templateExerciseId))
         .returning(),
     );
-    return updated;
+    // Returns the FULL enriched template, not just the bare updated row
+    // — matches addExercise/removeExercise/reorderExercises' own
+    // convention (see addExercise's comment for the original reasoning).
+    // This one was missed when that consistency was established
+    // elsewhere on this controller, since nothing on the frontend called
+    // this specific endpoint yet — the gap only became visible once the
+    // View/Edit screen actually needed the exercise's name/muscles/
+    // photos back in the response after a save.
+    return this.findOne(templateId);
   }
 
   // --- DELETE ROUTES ---
