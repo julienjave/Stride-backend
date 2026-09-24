@@ -40,4 +40,16 @@ describe("hasStartedWeight", () => {
   it("treats a weight of exactly 0 as started, not absent", () => {
     expect(hasStartedWeight({ weight: 0 })).toBe(true);
   });
+
+  // The clearing case: null means "not provided," same as undefined, so
+  // { weight: null, weightUnit: null } skips validation entirely and can
+  // reach the database as a real "remove this weight."
+  it("treats null the same as absent, for both fields", () => {
+    expect(hasStartedWeight({ weight: null, weightUnit: null })).toBe(false);
+  });
+
+  it("still counts a half-cleared pair as started, so the null half gets rejected", () => {
+    expect(hasStartedWeight({ weight: null, weightUnit: "kg" })).toBe(true);
+    expect(hasStartedWeight({ weight: 62.5, weightUnit: null })).toBe(true);
+  });
 });

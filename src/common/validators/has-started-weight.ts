@@ -26,13 +26,27 @@
 // reasoning as hasStartedAddress, just for a simpler two-field,
 // symmetric case rather than address's four-of-six-fields shape.
 //
-// Uses `!== undefined`, not `!!`, specifically because weight is a
-// NUMBER — `!!weight` would incorrectly treat a genuine (if unusual)
-// weight of 0 as "not started," when it's actually a real provided
-// value that should still require a unit alongside it.
+// Uses `!= null`, not `!!`, specifically because weight is a NUMBER —
+// `!!weight` would incorrectly treat a genuine (if unusual) weight of 0
+// as "not started," when it's actually a real provided value that should
+// still require a unit alongside it.
+//
+// `!= null` (loose inequality) rather than `!== undefined` (strict): the
+// loose form is true for anything EXCEPT null and undefined, so both
+// count as "not provided." That's what makes clearing possible — a PATCH
+// of { weight: null, weightUnit: null } means "remove the weight," and
+// has to pass validation (and reach .set() as SQL NULLs). With the old
+// `!== undefined`, null counted as "started," so @IsNumber() then
+// rejected it and a weight could never be cleared. (undefined can't be
+// used for clearing instead: JSON has no undefined, so a key set to it
+// is simply dropped from the request body before it's ever sent.)
+//
+// Half-cleared payloads stay rejected, as they should: in
+// { weight: null, weightUnit: "kg" } the unit alone counts as started,
+// so weight must then be a real number — and null isn't one.
 export function hasStartedWeight(dto: {
-  weight?: number;
-  weightUnit?: string;
+  weight?: number | null;
+  weightUnit?: string | null;
 }): boolean {
-  return dto.weight !== undefined || dto.weightUnit !== undefined;
+  return dto.weight != null || dto.weightUnit != null;
 }

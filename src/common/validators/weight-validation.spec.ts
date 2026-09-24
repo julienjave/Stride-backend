@@ -3,12 +3,13 @@ import { plainToInstance } from "class-transformer";
 import { AddTemplateExerciseDto } from "../../programs/dto/add-template-exercise.dto";
 import { AssignedExerciseInputDto } from "../../assigned-programs/dto/assigned-exercise-input.dto";
 import { UpdateAssignedProgramExerciseDto } from "../../assigned-programs/dto/update-assigned-program-exercise.dto";
+import { UpdateTemplateExerciseDto } from "../../programs/dto/update-template-exercise.dto";
 
 function errorFieldNames(errors: { property: string }[]) {
   return errors.map((e) => e.property).sort();
 }
 
-// All three DTOs share the exact same weight/weightUnit shape (same
+// All four DTOs share the exact same weight/weightUnit shape (same
 // decorators, same hasStartedWeight rule) — tested together via
 // describe.each rather than duplicating every case three times, since a
 // divergence between them would be exactly the kind of drift
@@ -18,17 +19,23 @@ function errorFieldNames(errors: { property: string }[]) {
 // comment on why) — its weight/weightUnit fields are now an independent
 // copy, not inherited, so nothing guarantees they behave identically
 // just because the other two do.
+//
+// UpdateTemplateExerciseDto was MISSING from this list until 2026-09-23 —
+// and it was the one DTO that didn't actually follow the rule (see its
+// own comment: PartialType's @IsOptional() was overriding the
+// both-or-neither check). Adding it here is what proves the fix, and
+// keeps it proven.
 describe.each([
   ["AddTemplateExerciseDto", AddTemplateExerciseDto],
   ["AssignedExerciseInputDto", AssignedExerciseInputDto],
   ["UpdateAssignedProgramExerciseDto", UpdateAssignedProgramExerciseDto],
+  ["UpdateTemplateExerciseDto", UpdateTemplateExerciseDto],
 ])("Weight validation — %s", (name, DtoClass) => {
-  // UpdateAssignedProgramExerciseDto has no exerciseId/sortOrder at all
-  // (a PATCH only touches what's provided) — the other two require both.
-  const baseFields =
-    name === "UpdateAssignedProgramExerciseDto"
-      ? {}
-      : { exerciseId: 1, sortOrder: 0 };
+  // The two UPDATE dtos have no required exerciseId/sortOrder (a PATCH
+  // only touches what's provided) — the two creation dtos require both.
+  const baseFields = name.startsWith("Update")
+    ? {}
+    : { exerciseId: 1, sortOrder: 0 };
 
   // describe.each infers DtoClass as a UNION of all three constructor
   // types in the array above — correct for what the array actually
@@ -97,5 +104,25 @@ describe.each([
     const dto = makeDto({ weight: 62.555, weightUnit: "kg" });
     const errors = await validate(dto);
     expect(errorFieldNames(errors)).toEqual(["weight"]);
+  });
+
+  // --- null: how a weight is CLEARED ---------------------------------------
+
+  it("passes with both explicitly null — the way a weight is cleared", async () => {
+    const dto = makeDto({ weight: null, weightUnit: null });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("rejects clearing only the weight while keeping a unit", async () => {
+    const dto = makeDto({ weight: null, weightUnit: "kg" });
+    const errors = await validate(dto);
+    expect(errorFieldNames(errors)).toEqual(["weight"]);
+  });
+
+  it("rejects clearing only the unit while keeping a weight", async () => {
+    const dto = makeDto({ weight: 62.5, weightUnit: null });
+    const errors = await validate(dto);
+    expect(errorFieldNames(errors)).toEqual(["weightUnit"]);
   });
 });

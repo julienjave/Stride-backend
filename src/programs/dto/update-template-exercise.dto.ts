@@ -18,7 +18,9 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { PartialType, OmitType } from '@nestjs/mapped-types'
+import { IsIn, IsNumber, Min, ValidateIf } from 'class-validator'
 import { AddTemplateExerciseDto } from './add-template-exercise.dto'
+import { hasStartedWeight } from '../../common/validators/has-started-weight'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -27,6 +29,36 @@ import { AddTemplateExerciseDto } from './add-template-exercise.dto'
 // "update," it's closer to removing this slot and adding a different one.
 // Combining the two mapped-type helpers avoids hand-writing a near-duplicate
 // of AddTemplateExerciseDto just to drop one field.
+//
+// weight/weightUnit are ALSO omitted from the derivation, then redeclared
+// below — because PartialType silently broke them. PartialType works by
+// adding @IsOptional() to every inherited field, and @IsOptional() is a
+// "skip ALL of this field's validators when the value is null or
+// undefined" switch. On weight/weightUnit, that switch overrode
+// @ValidateIf(hasStartedWeight): a PATCH of { weight: 50 } with no unit,
+// or { weight: 50, weightUnit: null }, skipped the unit's check entirely
+// and passed — exactly the ambiguous "50 of what?" state the
+// both-or-neither rule exists to prevent. (Found 2026-09-23 while fixing
+// weight clearing; UpdateAssignedProgramExerciseDto never had this
+// problem, since it declares its fields explicitly.)
+//
+// Declaring them here, WITHOUT @IsOptional(), puts @ValidateIf(
+// hasStartedWeight) back in sole charge: a pair is either fully provided
+// (both validated), fully absent/null (both skipped — which is how a
+// weight gets cleared), or rejected.
 export class UpdateTemplateExerciseDto extends PartialType(
-  OmitType(AddTemplateExerciseDto, ['exerciseId'] as const),
-) {}
+  OmitType(AddTemplateExerciseDto, [
+    'exerciseId',
+    'weight',
+    'weightUnit',
+  ] as const),
+) {
+  @ValidateIf(hasStartedWeight)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  weight?: number | null
+
+  @ValidateIf(hasStartedWeight)
+  @IsIn(['kg', 'lbs'])
+  weightUnit?: 'kg' | 'lbs' | null
+}

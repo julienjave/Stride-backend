@@ -243,6 +243,75 @@ describe("Programs (e2e)", () => {
     expect(unitWithoutWeight.status).toBe(400);
   });
 
+  it("clears prescription fields with an explicit null, and enforces weight both-or-neither on update", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Clearing Template" });
+    const templateId = createRes.body.id;
+    const addRes = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({
+        exerciseId,
+        sets: 3,
+        reps: 10,
+        durationInSeconds: 30,
+        weight: 62.5,
+        weightUnit: "kg",
+        notes: "Go slow",
+        sortOrder: 0,
+      });
+    const rowId = addRes.body.exercises.find(
+      (e: any) => e.exerciseId === exerciseId,
+    ).id;
+    const rowUrl = `/programs/${templateId}/exercises/${rowId}`;
+    const readRow = async () =>
+      (await practitionerA.get(`/programs/${templateId}`)).body.exercises.find(
+        (e: any) => e.id === rowId,
+      );
+
+    // Half-cleared or half-provided weight pairs are rejected, and leave
+    // the row untouched. Before the fix, ALL THREE of these passed on this
+    // endpoint (PartialType's @IsOptional() was overriding the
+    // both-or-neither check).
+    for (const body of [
+      { weight: null, weightUnit: "kg" },
+      { weight: 50, weightUnit: null },
+      { weight: 50 },
+    ]) {
+      const res = await practitionerA.patch(rowUrl).send(body);
+      expect(res.status).toBe(400);
+    }
+    expect((await readRow()).weight).toBe(62.5);
+    expect((await readRow()).weightUnit).toBe("kg");
+
+    // Clearing each number field with null really clears it — read back
+    // with a separate GET, not just trusted from the PATCH response.
+    const clearNumbers = await practitionerA
+      .patch(rowUrl)
+      .send({ sets: null, reps: null, durationInSeconds: null });
+    expect(clearNumbers.status).toBe(200);
+
+    // Clearing the weight means clearing BOTH halves together.
+    const clearWeight = await practitionerA
+      .patch(rowUrl)
+      .send({ weight: null, weightUnit: null });
+    expect(clearWeight.status).toBe(200);
+
+    const clearNotes = await practitionerA.patch(rowUrl).send({ notes: null });
+    expect(clearNotes.status).toBe(200);
+
+    expect(await readRow()).toEqual(
+      expect.objectContaining({
+        sets: null,
+        reps: null,
+        durationInSeconds: null,
+        weight: null,
+        weightUnit: null,
+        notes: null,
+      }),
+    );
+  });
+
   it("rejects a different practitioner from adding an exercise to a template they do not own", async () => {
     const createRes = await practitionerA
       .post("/programs")

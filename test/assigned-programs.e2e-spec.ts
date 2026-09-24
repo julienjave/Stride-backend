@@ -457,6 +457,41 @@ describe("AssignedPrograms (e2e)", () => {
     expect(removeThroughWrongProgram.status).toBe(404);
   });
 
+  it("clears an assigned exercise's weight with explicit nulls, but rejects clearing only half of it", async () => {
+    const programRes = await practitionerA.post("/assigned-programs").send({
+      patientId: patientAId,
+      title: "Weight Clearing Program",
+      startDate: "2026-01-01",
+      exercises: [
+        { exerciseId, sets: 3, weight: 62.5, weightUnit: "kg", sortOrder: 0 },
+      ],
+    });
+    expect(programRes.status).toBe(201);
+    const programId = programRes.body.id;
+    const rowId = programRes.body.exercises[0].id;
+    const rowUrl = `/assigned-programs/${programId}/exercises/${rowId}`;
+    const readRow = async () =>
+      (
+        await practitionerA.get(`/assigned-programs/${programId}`)
+      ).body.exercises.find((e: any) => e.id === rowId);
+
+    const halfCleared = await practitionerA
+      .patch(rowUrl)
+      .send({ weight: null, weightUnit: "kg" });
+    expect(halfCleared.status).toBe(400);
+
+    // Rejected before this fix too — but for the WRONG reason (null
+    // counted as "started," so @IsNumber rejected it). Now it's accepted.
+    const cleared = await practitionerA
+      .patch(rowUrl)
+      .send({ weight: null, weightUnit: null, sets: null });
+    expect(cleared.status).toBe(200);
+
+    expect(await readRow()).toEqual(
+      expect.objectContaining({ weight: null, weightUnit: null, sets: null }),
+    );
+  });
+
   it("scopes GET /assigned-programs by role: patient sees own, practitioner sees managed, admin sees all", async () => {
     await practitionerA.post("/assigned-programs").send({
       patientId: patientAId,
