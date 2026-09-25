@@ -1309,6 +1309,96 @@ describe('UsersService.update', () => {
       ),
     ).rejects.toBe(otherError)
   })
+
+  // --- preferredWeightUnit is self-only ---
+
+  // A transaction whose only write is the `users` UPDATE — the preference
+  // is a plain users column. Returns that UPDATE's chain so a test can
+  // check exactly what reached .set().
+  function mockUsersOnlyTransaction() {
+    const usersUpdateChain = {
+      set: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([
+            {
+              id: 1,
+              email: 'prac@example.com',
+              firstName: 'Prac',
+              lastName: 'Titioner',
+              preferredWeightUnit: 'lbs',
+            },
+          ]),
+        }),
+      }),
+    }
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnValue(usersUpdateChain),
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+      query: {
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue({
+            userId: 1,
+            licenseNumber: 'PT-1',
+            specialties: [],
+            bio: null,
+          }),
+        },
+      },
+    }
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
+    return usersUpdateChain
+  }
+
+  // Two callers who DO pass the controller's "may edit this profile"
+  // check for user 1 — an admin, and (for a patient target) a managing
+  // practitioner — and are still refused this one field. The rule is
+  // about WHO the target is, not what role the caller holds.
+  it.each([
+    ['an admin', UserRole.ADMIN],
+    ['another practitioner', UserRole.PRACTITIONER],
+  ])(
+    "refuses %s changing someone else's weight unit — 403, before any write",
+    async (_who, activeRole) => {
+      mockPractitionerTarget()
+
+      await expect(
+        usersService.update(
+          1,
+          { preferredWeightUnit: 'lbs' },
+          { id: 9, activeRole },
+        ),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'Only the user themselves can change their weight unit preference',
+        ),
+      )
+      expect(db.transaction).not.toHaveBeenCalled()
+    },
+  )
+
+  it('lets a user change their own weight unit, written to the users row', async () => {
+    mockPractitionerTarget()
+    const usersUpdateChain = mockUsersOnlyTransaction()
+
+    const result = await usersService.update(
+      1,
+      { preferredWeightUnit: 'lbs' },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    expect(usersUpdateChain.set).toHaveBeenCalledWith({
+      preferredWeightUnit: 'lbs',
+    })
+    expect(result.preferredWeightUnit).toBe('lbs')
+  })
 })
 
 describe('UsersService.reactivate', () => {

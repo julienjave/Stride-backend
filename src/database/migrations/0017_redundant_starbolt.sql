@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "preferred_weight_unit" "weight_unit" DEFAULT 'kg' NOT NULL;

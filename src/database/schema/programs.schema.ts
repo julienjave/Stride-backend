@@ -29,6 +29,10 @@ import {
 } from "drizzle-orm/pg-core";
 import { users } from "./users.schema";
 import { exercises } from "./exercises.schema";
+// Defined in its own file (see the comment there): users.schema.ts needs
+// it too, and importing it from HERE would make the two files import each
+// other.
+import { weightUnitEnum } from "./weight-unit.schema";
 
 export const programStatusEnum = pgEnum("program_status", [
   "active",
@@ -36,14 +40,6 @@ export const programStatusEnum = pgEnum("program_status", [
   "on_hold",
   "cancelled",
 ]);
-
-// A weight value with no unit is genuinely ambiguous in a clinical
-// context — "50" could mean 50kg or 50lbs, and mixing those up is a
-// real safety concern, not just a display nitpick. Storing the unit
-// explicitly alongside every weight value (rather than assuming one
-// fixed unit app-wide, or a per-clinic/per-user setting looked up
-// elsewhere) removes that ambiguity at the row level, where it's read.
-export const weightUnitEnum = pgEnum("weight_unit", ["kg", "lbs"]);
 
 export const programTemplates = pgTable("program_templates", {
   id: serial("id").primaryKey(),

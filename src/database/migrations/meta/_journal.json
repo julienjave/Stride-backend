@@ -120,6 +120,13 @@
       "when": 1790089138102,
       "tag": "0016_massive_true_believers",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790358909642,
+      "tag": "0017_redundant_starbolt",
+      "breakpoints": true
     }
   ]
 }

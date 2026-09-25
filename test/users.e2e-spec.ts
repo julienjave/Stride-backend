@@ -742,4 +742,51 @@ describe('Users (e2e)', () => {
       expect(readBack.body.roles).toEqual(['patient']);
     });
   });
+
+  // The weight-unit preference (a users column, NOT NULL DEFAULT 'kg').
+  // Uses patient2, whom no earlier test successfully edits. In order:
+  // default, then refused changes (which must leave the default in place),
+  // then the one allowed change.
+  describe('preferredWeightUnit', () => {
+    it("defaults to 'kg' for an account that never set it — on /users/:id and /auth/me", async () => {
+      const userRes = await patient2.get(`/users/${patient2Id}`);
+      expect(userRes.body.preferredWeightUnit).toBe('kg');
+
+      // /auth/me is where the frontend actually reads it from.
+      const meRes = await patient2.get('/auth/me');
+      expect(meRes.body.preferredWeightUnit).toBe('kg');
+    });
+
+    it("refuses an admin changing someone else's preference, and changes nothing", async () => {
+      const res = await admin
+        .patch(`/users/${patient2Id}`)
+        .send({ preferredWeightUnit: 'lbs' });
+      expect(res.status).toBe(403);
+
+      const readBack = await admin.get(`/users/${patient2Id}`);
+      expect(readBack.body.preferredWeightUnit).toBe('kg');
+    });
+
+    // null: the column is NOT NULL — before the DTO rule this would have
+    // reached Postgres and come back as a 500.
+    it.each([null, 'stone'])('rejects %j with a 400', async (value) => {
+      const res = await patient2
+        .patch(`/users/${patient2Id}`)
+        .send({ preferredWeightUnit: value });
+      expect(res.status).toBe(400);
+    });
+
+    it('lets a user change their own preference, and /auth/me reflects it', async () => {
+      const res = await patient2
+        .patch(`/users/${patient2Id}`)
+        .send({ preferredWeightUnit: 'lbs' });
+      expect(res.status).toBe(200);
+      expect(res.body.preferredWeightUnit).toBe('lbs');
+
+      // A separate read: the session's user is rebuilt from the database on
+      // every request, so the next /auth/me must already carry the change.
+      const meRes = await patient2.get('/auth/me');
+      expect(meRes.body.preferredWeightUnit).toBe('lbs');
+    });
+  });
 });

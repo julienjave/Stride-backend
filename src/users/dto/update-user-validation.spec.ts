@@ -53,6 +53,22 @@ describe('UpdateUserDto — required columns can be omitted, but not cleared', (
   })
 })
 
+// Checked against the same WEIGHT_UNITS list the Postgres enum is built
+// from, so the database never sees a value it would reject.
+describe('UpdateUserDto — preferredWeightUnit', () => {
+  it.each(['kg', 'lbs'])('accepts %j', async (unit) => {
+    expect(await errorFields({ preferredWeightUnit: unit })).toEqual([])
+  })
+
+  // null: the column is NOT NULL — everyone always has a preference.
+  // 'KG': the check is exact; the frontend only ever sends lower case.
+  it.each([null, '', 'stone', 'KG', 1])('rejects %j', async (unit) => {
+    expect(await errorFields({ preferredWeightUnit: unit })).toEqual([
+      'preferredWeightUnit',
+    ])
+  })
+})
+
 describe('UpdateUserDto — nullable columns CAN be cleared with null', () => {
   it.each(['phone', 'bio', 'position', 'addressLine2', 'addressState'])(
     'accepts %s = null',

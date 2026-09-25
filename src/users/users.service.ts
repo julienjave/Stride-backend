@@ -431,9 +431,10 @@ export class UsersService {
   // with no practitioner role is a 400, not silently ignored or silently
   // scoped away, the same way an invalid field value would be.
   //
-  // One field-level rule sits on top of that: licenseNumber can only be
-  // changed by a caller whose ACTIVE role is admin (decisions §4) — see
-  // the check below.
+  // Two field-level rules sit on top of that: licenseNumber can only be
+  // changed by a caller whose ACTIVE role is admin (decisions §4), and
+  // preferredWeightUnit only by the user themselves — see the checks
+  // below.
   async update(
     id: number,
     dto: UpdateUserDto,
@@ -454,6 +455,18 @@ export class UsersService {
     const userFields = Object.fromEntries(
       Object.entries(rest).filter(([, value]) => value !== undefined),
     )
+
+    // The weight-unit preference is personal: it only changes how weights
+    // are shown to, and pre-filled for, this one person. Nobody else has a
+    // reason to change it — not even an admin — so it's self-only, the
+    // mirror image of the license rule below (which is admin-only). It
+    // compares ids, not roles: whichever role you're acting as, it's still
+    // your own preference. Same 403-before-any-write reasoning as below.
+    if (dto.preferredWeightUnit !== undefined && currentUser.id !== id) {
+      throw new ForbiddenException(
+        'Only the user themselves can change their weight unit preference',
+      )
+    }
 
     // licenseNumber is a professional credential: set or verified by an
     // admin, never self-edited (decided in design decisions §4). This is a

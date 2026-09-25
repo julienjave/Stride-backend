@@ -17,8 +17,9 @@
 
 // Re-exports every schema file from one place. Anything that needs the full schema
 // graph (drizzle.provider.ts, drizzle.config.ts) imports from here, rather than
-// listing all eight files individually and having to remember to update every
+// listing all nine files individually and having to remember to update every
 // import site whenever a new schema file is added.
+export * from './weight-unit.schema'
 export * from './clinics.schema'
 export * from './users.schema'
 export * from './medical-files.schema'

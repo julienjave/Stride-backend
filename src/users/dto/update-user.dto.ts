@@ -26,10 +26,15 @@ import {
   IsArray,
   ArrayMaxSize,
   IsDateString,
+  IsIn,
   ValidateIf,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
 import { isPresent } from '../../common/validators/is-present'
+import {
+  WEIGHT_UNITS,
+  type WeightUnit,
+} from '../../database/schema/weight-unit.schema'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -162,4 +167,15 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(100)
   position?: string
+
+  // --- Preference (every role; only the user themselves may change it) ---
+  // A NOT NULL column like the names, so the same pairing: may be
+  // omitted, never cleared. @IsIn checks the value against the SAME list
+  // the Postgres enum is built from — an unknown unit ('stone') is a clear
+  // 400 here, instead of reaching the database and failing as a 500.
+  // Self-only is enforced in UsersService.update(): who is asking is not
+  // something a DTO can know.
+  @ValidateIf(isPresent)
+  @IsIn(WEIGHT_UNITS)
+  preferredWeightUnit?: WeightUnit
 }

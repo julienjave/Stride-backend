@@ -31,6 +31,7 @@ import {
   index,
 } from 'drizzle-orm/pg-core'
 import { clinics } from './clinics.schema'
+import { weightUnitEnum } from './weight-unit.schema'
 
 // --- SCHEMA ------------------------------------------------------------------------------------------------
 
@@ -77,6 +78,21 @@ export const users = pgTable('users', {
   // column with a key held separately from the database itself (e.g. a KMS).
   mfaSecret: varchar('mfa_secret', { length: 255 }),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+  // The unit this person thinks in. It's used in two places: it's the unit
+  // pre-selected when they type a new weight (a practitioner building a
+  // program), and the unit every weight is DISPLAYED in for them
+  // (converted on screen when a weight was saved in the other unit).
+  // Stored weights are never converted — each keeps the unit it was
+  // prescribed in (see weight-unit.schema.ts).
+  //
+  // NOT NULL with a DEFAULT: every user always has a preference, so no
+  // code anywhere has to handle "no preference yet". The default also
+  // fills the column in for every EXISTING row when the migration adds
+  // it — Postgres can't add a NOT NULL column to a table that already has
+  // rows unless it knows what to put in them.
+  preferredWeightUnit: weightUnitEnum('preferred_weight_unit')
+    .notNull()
+    .default('kg'),
 })
 
 // One person can hold several roles (e.g. a clinic owner who is both admin
