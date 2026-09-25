@@ -10,6 +10,27 @@ import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from './dto/create-user.dto'
+import { DrizzleQueryError } from 'drizzle-orm'
+import {
+  PG_UNIQUE_VIOLATION,
+  PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+} from '../database/pg-errors'
+
+// What a duplicate licenseNumber really looks like by the time it reaches
+// UsersService: node-postgres's error (code 23505 + the constraint's name),
+// wrapped by drizzle in a DrizzleQueryError. Built with drizzle's real
+// error class rather than a hand-made look-alike, so these tests exercise
+// the same shape production code sees.
+function duplicateLicenseError() {
+  return new DrizzleQueryError(
+    'insert into "practitioner_profiles" ...',
+    [],
+    Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: PG_UNIQUE_VIOLATION,
+      constraint: PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+    }),
+  )
+}
 
 // attachProfile() now unconditionally looks up clinic membership for
 // every user it returns (a select().from(userClinics).innerJoin(clinics)
@@ -144,6 +165,29 @@ describe('UsersService.create', () => {
         firstName: 'Dup',
         lastName: 'Licate',
       }),
+    ).rejects.toThrow(ConflictException)
+  })
+
+  // licenseNumber is UNIQUE in the database. Before this fix, a duplicate
+  // reached Postgres and came back as an unhandled 500.
+  it('turns a duplicate licenseNumber into a 409 ConflictException, not a 500', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    // withRlsContext opens the transaction; failing it is the simplest way
+    // to make "the INSERT hit the unique constraint" happen in a unit test.
+    db.transaction.mockRejectedValue(duplicateLicenseError())
+
+    await expect(
+      usersService.create(
+        {
+          email: 'second-practitioner@example.com',
+          password: 'password123',
+          role: UserRole.PRACTITIONER,
+          firstName: 'Second',
+          lastName: 'Practitioner',
+          licenseNumber: 'PT-TAKEN',
+        },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
     ).rejects.toThrow(ConflictException)
   })
 
@@ -464,6 +508,19 @@ describe('UsersService.grantRole', () => {
 
     // Only the userRoles insert — the existing profile must not be re-inserted.
     expect(insert).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns a duplicate licenseNumber on the new practitioner profile into a 409', async () => {
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    db.transaction.mockRejectedValue(duplicateLicenseError())
+
+    await expect(
+      usersService.grantRole(
+        1,
+        { role: UserRole.PRACTITIONER, licenseNumber: 'PT-TAKEN' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(ConflictException)
   })
 })
 
@@ -1096,6 +1153,161 @@ describe('UsersService.update', () => {
     expect(profileUpdateChain.set).toHaveBeenCalledWith({
       dateOfBirth: '1985-05-05',
     })
+  })
+
+  // --- licenseNumber is admin-only (design decisions §4) ---
+
+  // Shared by the tests below: the target (id 1) is a practitioner, and
+  // findOne() resolves them before any rule is checked.
+  function mockPractitionerTarget() {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'prac@example.com',
+    })
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
+      }),
+    })
+  }
+
+  // A transaction whose only write is the practitioner_profiles UPDATE.
+  // `profileWhere` is what that UPDATE's final .where() returns, so a test
+  // can make the write succeed or fail.
+  function mockProfileOnlyTransaction(profileWhere: jest.Mock) {
+    const profileUpdateChain = {
+      set: jest.fn().mockReturnValue({ where: profileWhere }),
+    }
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnValue(profileUpdateChain),
+      query: {
+        users: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 1,
+            email: 'prac@example.com',
+            firstName: 'Prac',
+            lastName: 'Titioner',
+            avatarPath: null,
+            isActive: true,
+          }),
+        },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue({
+            userId: 1,
+            licenseNumber: 'PT-1',
+            specialties: ['ortho'],
+            bio: 'Bio.',
+          }),
+        },
+      },
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+    }
+    // Typed callback (not `cb: any`, the older pattern above): calling an
+    // `any` is exactly what the no-unsafe-call lint rule flags.
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
+    return profileUpdateChain
+  }
+
+  it('refuses a practitioner changing their OWN licenseNumber — 403, before any write', async () => {
+    mockPractitionerTarget()
+
+    await expect(
+      usersService.update(
+        1,
+        // Sent alongside a field they ARE allowed to change: the whole
+        // request must be refused, so specialties isn't half-applied.
+        { licenseNumber: 'PT-SELF', specialties: ['ortho'] },
+        { id: 1, activeRole: UserRole.PRACTITIONER },
+      ),
+    ).rejects.toThrow(
+      new ForbiddenException('Only an admin can change a license number'),
+    )
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // Multi-role accounts: it's the ACTIVE role that counts. The same person
+  // (id 1, holding practitioner + admin) is refused while acting as a
+  // practitioner, and allowed once switched to admin.
+  it('allows the same license change once the caller is ACTING as admin', async () => {
+    mockPractitionerTarget()
+    const profileUpdateChain = mockProfileOnlyTransaction(
+      jest.fn().mockResolvedValue(undefined),
+    )
+
+    await usersService.update(
+      1,
+      { licenseNumber: 'PT-NEW' },
+      { id: 1, activeRole: UserRole.ADMIN },
+    )
+
+    // What actually reached the UPDATE — exactly the license, nothing else.
+    expect(profileUpdateChain.set).toHaveBeenCalledWith({
+      licenseNumber: 'PT-NEW',
+    })
+  })
+
+  it('still lets a practitioner change their own specialties and bio', async () => {
+    mockPractitionerTarget()
+    const profileUpdateChain = mockProfileOnlyTransaction(
+      jest.fn().mockResolvedValue(undefined),
+    )
+
+    await usersService.update(
+      1,
+      { specialties: ['ortho', 'sports'], bio: 'New bio.' },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    expect(profileUpdateChain.set).toHaveBeenCalledWith({
+      specialties: ['ortho', 'sports'],
+      bio: 'New bio.',
+    })
+  })
+
+  it('turns a duplicate licenseNumber into a 409 ConflictException, not a 500', async () => {
+    mockPractitionerTarget()
+    mockProfileOnlyTransaction(
+      jest.fn().mockRejectedValue(duplicateLicenseError()),
+    )
+
+    await expect(
+      usersService.update(
+        1,
+        { licenseNumber: 'PT-TAKEN' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(
+      new ConflictException(
+        'This license number is already registered to another practitioner',
+      ),
+    )
+  })
+
+  // The translation must be narrow: any OTHER failure keeps its own
+  // identity, so a real bug still surfaces as the error it really is.
+  it('rethrows any other database error unchanged', async () => {
+    mockPractitionerTarget()
+    const otherError = new Error('connection terminated')
+    mockProfileOnlyTransaction(jest.fn().mockRejectedValue(otherError))
+
+    await expect(
+      usersService.update(
+        1,
+        { bio: 'Anything' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toBe(otherError)
   })
 })
 

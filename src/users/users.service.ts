@@ -42,7 +42,45 @@ import { GrantRoleDto } from './dto/grant-role.dto'
 import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { withRlsContext } from '../database/rls-context'
+import {
+  isUniqueViolation,
+  PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+} from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
+
+// --- HELPER ------------------------------------------------------------------------------------------------
+
+// Runs a write that may store a practitioner's licenseNumber, and turns a
+// duplicate-license failure into a proper 409 Conflict.
+//
+// Why this is needed at all: licenseNumber is UNIQUE in the database, and
+// until now nothing checked for a collision first. A duplicate reached
+// Postgres, failed with SQLSTATE 23505, and the catch-all exception filter
+// reported it as a 500 — "the server broke" — when the truth is "that value
+// is taken", a client-side problem with a specific, fixable cause.
+//
+// Why catch the database error instead of checking first (a findFirst on
+// licenseNumber before writing, like the email check in create()): a
+// check-then-write has a race window — two requests can both pass the
+// check before either writes (see deferred-improvements.md, "TOCTOU").
+// The UNIQUE constraint is the only thing that decides atomically, so
+// translating ITS verdict is correct under concurrency, with no extra
+// query.
+//
+// Anything that is NOT this specific violation is rethrown untouched: the
+// helper must never turn an unrelated failure into a misleading 409.
+async function translateDuplicateLicense<T>(write: () => Promise<T>) {
+  try {
+    return await write()
+  } catch (error) {
+    if (isUniqueViolation(error, PRACTITIONER_LICENSE_NUMBER_UNIQUE)) {
+      throw new ConflictException(
+        'This license number is already registered to another practitioner',
+      )
+    }
+    throw error
+  }
+}
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 @Injectable()
@@ -100,66 +138,69 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10)
 
-    return withRlsContext(this.db, requestingUser, async (tx) => {
-      const [user] = await tx
-        .insert(users)
-        .values({
-          email: dto.email,
-          passwordHash,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          phone: dto.phone,
-          addressLine1: dto.addressLine1,
-          addressLine2: dto.addressLine2,
-          addressCity: dto.addressCity,
-          addressState: dto.addressState,
-          addressPostalCode: dto.addressPostalCode,
-          addressCountry: dto.addressCountry,
-        })
-        .returning()
+    // Wrapped: creating a practitioner inserts their licenseNumber.
+    return translateDuplicateLicense(() =>
+      withRlsContext(this.db, requestingUser, async (tx) => {
+        const [user] = await tx
+          .insert(users)
+          .values({
+            email: dto.email,
+            passwordHash,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            phone: dto.phone,
+            addressLine1: dto.addressLine1,
+            addressLine2: dto.addressLine2,
+            addressCity: dto.addressCity,
+            addressState: dto.addressState,
+            addressPostalCode: dto.addressPostalCode,
+            addressCountry: dto.addressCountry,
+          })
+          .returning()
 
-      await tx.insert(userRoles).values({ userId: user.id, role: dto.role })
+        await tx.insert(userRoles).values({ userId: user.id, role: dto.role })
 
-      if (dto.role === UserRole.PRACTITIONER) {
-        await tx.insert(practitionerProfiles).values({
-          userId: user.id,
-          licenseNumber: dto.licenseNumber!,
-          specialties: dto.specialties ?? [],
-          bio: dto.bio,
-        })
-      } else if (dto.role === UserRole.PATIENT) {
-        await tx.insert(patientProfiles).values({
-          userId: user.id,
-          dateOfBirth: dto.dateOfBirth!,
-        })
-      } else if (dto.role === UserRole.ADMIN) {
-        await tx.insert(adminProfiles).values({
-          userId: user.id,
-          position: dto.position,
-        })
-      }
-
-      // Validated as a plain query against the clinics table — not by
-      // injecting ClinicsService, which would create a circular dependency
-      // between UsersModule and ClinicsModule. Both services independently
-      // query whatever tables they need via the shared, global DRIZZLE
-      // token; neither needs the other's NestJS module imported.
-      if (dto.clinicId) {
-        const clinic = await tx.query.clinics.findFirst({
-          where: eq(clinics.id, dto.clinicId),
-        })
-        if (!clinic) {
-          throw new NotFoundException(`Clinic ${dto.clinicId} not found`)
+        if (dto.role === UserRole.PRACTITIONER) {
+          await tx.insert(practitionerProfiles).values({
+            userId: user.id,
+            licenseNumber: dto.licenseNumber!,
+            specialties: dto.specialties ?? [],
+            bio: dto.bio,
+          })
+        } else if (dto.role === UserRole.PATIENT) {
+          await tx.insert(patientProfiles).values({
+            userId: user.id,
+            dateOfBirth: dto.dateOfBirth!,
+          })
+        } else if (dto.role === UserRole.ADMIN) {
+          await tx.insert(adminProfiles).values({
+            userId: user.id,
+            position: dto.position,
+          })
         }
-        await tx.insert(userClinics).values({
-          userId: user.id,
-          clinicId: dto.clinicId,
-        })
-      }
 
-      const roles = [dto.role]
-      return this.attachProfile({ ...this.toPublic(user), roles }, roles, tx)
-    })
+        // Validated as a plain query against the clinics table — not by
+        // injecting ClinicsService, which would create a circular dependency
+        // between UsersModule and ClinicsModule. Both services independently
+        // query whatever tables they need via the shared, global DRIZZLE
+        // token; neither needs the other's NestJS module imported.
+        if (dto.clinicId) {
+          const clinic = await tx.query.clinics.findFirst({
+            where: eq(clinics.id, dto.clinicId),
+          })
+          if (!clinic) {
+            throw new NotFoundException(`Clinic ${dto.clinicId} not found`)
+          }
+          await tx.insert(userClinics).values({
+            userId: user.id,
+            clinicId: dto.clinicId,
+          })
+        }
+
+        const roles = [dto.role]
+        return this.attachProfile({ ...this.toPublic(user), roles }, roles, tx)
+      }),
+    )
   }
 
   // Grants an ADDITIONAL role to an already-existing user
@@ -177,47 +218,50 @@ export class UsersService {
       throw new ConflictException(`User already has the "${dto.role}" role`)
     }
 
-    return withRlsContext(this.db, currentUser, async (tx) => {
-      await tx.insert(userRoles).values({ userId, role: dto.role })
+    // Wrapped: granting the practitioner role inserts a licenseNumber.
+    return translateDuplicateLicense(() =>
+      withRlsContext(this.db, currentUser, async (tx) => {
+        await tx.insert(userRoles).values({ userId, role: dto.role })
 
-      // Only creates the profile row if this user doesn't already have one
-      // for this role (relevant if a role was previously granted, then
-      // somehow re-granted after removal — defensive, not expected in
-      // normal use, but cheap to guard against).
-      if (dto.role === UserRole.PRACTITIONER) {
-        const hasProfile = await tx.query.practitionerProfiles.findFirst({
-          where: eq(practitionerProfiles.userId, userId),
-        })
-        if (!hasProfile) {
-          await tx.insert(practitionerProfiles).values({
-            userId,
-            licenseNumber: dto.licenseNumber!,
-            specialties: dto.specialties ?? [],
-            bio: dto.bio,
+        // Only creates the profile row if this user doesn't already have one
+        // for this role (relevant if a role was previously granted, then
+        // somehow re-granted after removal — defensive, not expected in
+        // normal use, but cheap to guard against).
+        if (dto.role === UserRole.PRACTITIONER) {
+          const hasProfile = await tx.query.practitionerProfiles.findFirst({
+            where: eq(practitionerProfiles.userId, userId),
           })
+          if (!hasProfile) {
+            await tx.insert(practitionerProfiles).values({
+              userId,
+              licenseNumber: dto.licenseNumber!,
+              specialties: dto.specialties ?? [],
+              bio: dto.bio,
+            })
+          }
+        } else if (dto.role === UserRole.PATIENT) {
+          const hasProfile = await tx.query.patientProfiles.findFirst({
+            where: eq(patientProfiles.userId, userId),
+          })
+          if (!hasProfile) {
+            await tx
+              .insert(patientProfiles)
+              .values({ userId, dateOfBirth: dto.dateOfBirth! })
+          }
+        } else if (dto.role === UserRole.ADMIN) {
+          const hasProfile = await tx.query.adminProfiles.findFirst({
+            where: eq(adminProfiles.userId, userId),
+          })
+          if (!hasProfile) {
+            await tx
+              .insert(adminProfiles)
+              .values({ userId, position: dto.position })
+          }
         }
-      } else if (dto.role === UserRole.PATIENT) {
-        const hasProfile = await tx.query.patientProfiles.findFirst({
-          where: eq(patientProfiles.userId, userId),
-        })
-        if (!hasProfile) {
-          await tx
-            .insert(patientProfiles)
-            .values({ userId, dateOfBirth: dto.dateOfBirth! })
-        }
-      } else if (dto.role === UserRole.ADMIN) {
-        const hasProfile = await tx.query.adminProfiles.findFirst({
-          where: eq(adminProfiles.userId, userId),
-        })
-        if (!hasProfile) {
-          await tx
-            .insert(adminProfiles)
-            .values({ userId, position: dto.position })
-        }
-      }
 
-      return this.getRolesForUser(userId, tx)
-    })
+        return this.getRolesForUser(userId, tx)
+      }),
+    )
   }
 
   // Uploads a new avatar and stores its object key on the user's row.
@@ -386,6 +430,10 @@ export class UsersService {
   // ever touch patientProfile fields; sending licenseNumber for a target
   // with no practitioner role is a 400, not silently ignored or silently
   // scoped away, the same way an invalid field value would be.
+  //
+  // One field-level rule sits on top of that: licenseNumber can only be
+  // changed by a caller whose ACTIVE role is admin (decisions §4) — see
+  // the check below.
   async update(
     id: number,
     dto: UpdateUserDto,
@@ -407,6 +455,28 @@ export class UsersService {
       Object.entries(rest).filter(([, value]) => value !== undefined),
     )
 
+    // licenseNumber is a professional credential: set or verified by an
+    // admin, never self-edited (decided in design decisions §4). This is a
+    // FIELD-level rule, a different question from the controller's
+    // "may this caller edit this profile at all?": a practitioner editing
+    // their own profile passes that check, and may still change their
+    // specialties or bio — just not this one field.
+    //
+    // It checks the caller's ACTIVE role, like every other role check in
+    // this app: an account holding both roles can change its own license
+    // while switched to admin, not while acting as a practitioner.
+    //
+    // 403, not 400: the request is well-formed and the field does apply to
+    // the target — the caller simply isn't allowed to do it. Checked
+    // before any write, so a refused request changes nothing, not even the
+    // other fields sent alongside it.
+    if (
+      licenseNumber !== undefined &&
+      currentUser.activeRole !== UserRole.ADMIN
+    ) {
+      throw new ForbiddenException('Only an admin can change a license number')
+    }
+
     if (
       (licenseNumber !== undefined ||
         specialties !== undefined ||
@@ -427,52 +497,56 @@ export class UsersService {
       throw new BadRequestException('This user does not have an admin profile')
     }
 
-    return withRlsContext(this.db, currentUser, async (tx) => {
-      const updated =
-        Object.keys(userFields).length > 0
-          ? (
-              await tx
-                .update(users)
-                .set(userFields)
-                .where(eq(users.id, id))
-                .returning()
-            )[0]
-          : await tx.query.users.findFirst({ where: eq(users.id, id) })
+    // Wrapped: an admin may set a license number that another practitioner
+    // already holds — a 409, not a 500 (see translateDuplicateLicense).
+    return translateDuplicateLicense(() =>
+      withRlsContext(this.db, currentUser, async (tx) => {
+        const updated =
+          Object.keys(userFields).length > 0
+            ? (
+                await tx
+                  .update(users)
+                  .set(userFields)
+                  .where(eq(users.id, id))
+                  .returning()
+              )[0]
+            : await tx.query.users.findFirst({ where: eq(users.id, id) })
 
-      if (
-        licenseNumber !== undefined ||
-        specialties !== undefined ||
-        bio !== undefined
-      ) {
-        await tx
-          .update(practitionerProfiles)
-          .set({
-            ...(licenseNumber !== undefined && { licenseNumber }),
-            ...(specialties !== undefined && { specialties }),
-            ...(bio !== undefined && { bio }),
-          })
-          .where(eq(practitionerProfiles.userId, id))
-      }
-      if (dateOfBirth !== undefined) {
-        await tx
-          .update(patientProfiles)
-          .set({ dateOfBirth })
-          .where(eq(patientProfiles.userId, id))
-      }
-      if (position !== undefined) {
-        await tx
-          .update(adminProfiles)
-          .set({ position })
-          .where(eq(adminProfiles.userId, id))
-      }
+        if (
+          licenseNumber !== undefined ||
+          specialties !== undefined ||
+          bio !== undefined
+        ) {
+          await tx
+            .update(practitionerProfiles)
+            .set({
+              ...(licenseNumber !== undefined && { licenseNumber }),
+              ...(specialties !== undefined && { specialties }),
+              ...(bio !== undefined && { bio }),
+            })
+            .where(eq(practitionerProfiles.userId, id))
+        }
+        if (dateOfBirth !== undefined) {
+          await tx
+            .update(patientProfiles)
+            .set({ dateOfBirth })
+            .where(eq(patientProfiles.userId, id))
+        }
+        if (position !== undefined) {
+          await tx
+            .update(adminProfiles)
+            .set({ position })
+            .where(eq(adminProfiles.userId, id))
+        }
 
-      const roles = await this.getRolesForUser(id, tx)
-      return this.attachProfile(
-        { ...this.toPublic(updated!), roles },
-        roles,
-        tx,
-      )
-    })
+        const roles = await this.getRolesForUser(id, tx)
+        return this.attachProfile(
+          { ...this.toPublic(updated!), roles },
+          roles,
+          tx,
+        )
+      }),
+    )
   }
 
   // --- DELETE ROUTES ---

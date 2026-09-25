@@ -49,6 +49,7 @@ describe('Users (e2e)', () => {
     bio: string | null;
   };
   let practitionerBId: number;
+  let practitionerBLicense: string;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -183,6 +184,7 @@ describe('Users (e2e)', () => {
     });
     expect(practitionerBRes.status).toBe(201);
     practitionerBId = practitionerBRes.body.id;
+    practitionerBLicense = `PT-B-${stamp}`;
     await practitionerB.post('/auth/login').send({
       email: `practitioner-b-${stamp}@example.com`,
       password: 'password123',
@@ -551,12 +553,41 @@ describe('Users (e2e)', () => {
       });
     });
 
-    it('lets a practitioner self-update their own practitionerProfile fields, licenseNumber included (self-editable by design — see docs)', async () => {
-      const stamp = Date.now();
-      const newLicense = `PT-A-UPDATED-${stamp}`;
+    // licenseNumber became admin-only (design decisions §4): a professional
+    // credential, set or verified by an admin — no longer self-editable.
+    it('refuses a practitioner changing their own licenseNumber, and changes nothing — not even the other field sent with it', async () => {
       const res = await practitionerA
         .patch(`/users/${practitionerAId}`)
-        .send({ licenseNumber: newLicense, specialties: ['sports rehab'] });
+        .send({ licenseNumber: `PT-A-SELF-${Date.now()}`, specialties: ['should not apply'] });
+      expect(res.status).toBe(403);
+
+      // Read back with a separate GET: the response to a refused request
+      // proves nothing about what's stored.
+      const readBack = await admin.get(`/users/${practitionerAId}`);
+      expect(readBack.body.practitionerProfile).toEqual({
+        licenseNumber: practitionerAProfile.licenseNumber,
+        specialties: ['sports rehab', 'geriatrics'],
+        bio: practitionerAProfile.bio,
+      });
+    });
+
+    it("still lets a practitioner self-update their other practitionerProfile fields — specialties here", async () => {
+      const res = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({ specialties: ['sports rehab'] });
+      expect(res.status).toBe(200);
+      expect(res.body.practitionerProfile).toEqual({
+        licenseNumber: practitionerAProfile.licenseNumber,
+        specialties: ['sports rehab'],
+        bio: practitionerAProfile.bio,
+      });
+    });
+
+    it("lets an admin change a practitioner's licenseNumber", async () => {
+      const newLicense = `PT-A-UPDATED-${Date.now()}`;
+      const res = await admin
+        .patch(`/users/${practitionerAId}`)
+        .send({ licenseNumber: newLicense });
       expect(res.status).toBe(200);
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: newLicense,
@@ -564,6 +595,18 @@ describe('Users (e2e)', () => {
         bio: practitionerAProfile.bio,
       });
       practitionerACurrentLicense = newLicense;
+    });
+
+    // licenseNumber is UNIQUE in the database. A collision used to surface
+    // as a 500 (unhandled Postgres error 23505); it's now a 409.
+    it("returns 409 — not 500 — when an admin sets a license number another practitioner already holds, and keeps the old one", async () => {
+      const res = await admin
+        .patch(`/users/${practitionerAId}`)
+        .send({ licenseNumber: practitionerBLicense });
+      expect(res.status).toBe(409);
+
+      const readBack = await admin.get(`/users/${practitionerAId}`);
+      expect(readBack.body.practitionerProfile.licenseNumber).toBe(practitionerACurrentLicense);
     });
 
     // bio was a completely dead column before this fix: a real column on
@@ -630,6 +673,73 @@ describe('Users (e2e)', () => {
         .patch(`/users/${practitionerAId}`)
         .send({ dateOfBirth: '1990-01-01' });
       expect(dateOfBirthOnPractitioner.status).toBe(400);
+    });
+
+    // Required (NOT NULL) columns can be left out of a PATCH, but not
+    // cleared. An explicit null used to slip past @IsOptional() and reach
+    // Postgres, which answered with a 500; it's now a 400 from validation.
+    it('rejects clearing a required field (null or empty) with a 400', async () => {
+      const nullFirstName = await admin.patch(`/users/${patient1Id}`).send({ firstName: null });
+      expect(nullFirstName.status).toBe(400);
+
+      const emptyLastName = await admin.patch(`/users/${patient1Id}`).send({ lastName: '' });
+      expect(emptyLastName.status).toBe(400);
+
+      const nullDateOfBirth = await admin.patch(`/users/${patient1Id}`).send({ dateOfBirth: null });
+      expect(nullDateOfBirth.status).toBe(400);
+
+      const nullSpecialties = await admin.patch(`/users/${practitionerAId}`).send({ specialties: null });
+      expect(nullSpecialties.status).toBe(400);
+    });
+
+    // ...while nullable columns CAN be cleared — this is how the profile
+    // page removes a value.
+    it('lets a user clear an optional field with null, and reads it back as null', async () => {
+      const res = await practitionerA.patch(`/users/${practitionerAId}`).send({ bio: null, phone: null });
+      expect(res.status).toBe(200);
+
+      const readBack = await admin.get(`/users/${practitionerAId}`);
+      expect(readBack.body.phone).toBeNull();
+      expect(readBack.body.practitionerProfile.bio).toBeNull();
+    });
+  });
+
+  // The same unique constraint guards the two other places a license
+  // number is written: creating a practitioner, and granting the
+  // practitioner role. Both used to answer a duplicate with a 500.
+  describe('duplicate licenseNumber on create and grant-role', () => {
+    it('returns 409 when creating a practitioner with a taken license — and leaves no half-created account behind', async () => {
+      const email = `dup-license-${Date.now()}@example.com`;
+      const body = {
+        email,
+        password: 'password123',
+        role: 'practitioner',
+        firstName: 'Dup',
+        lastName: 'License',
+        licenseNumber: practitionerBLicense,
+        clinicId: clinicXId,
+      };
+
+      const duplicate = await admin.post('/users').send(body);
+      expect(duplicate.status).toBe(409);
+
+      // The users row is inserted BEFORE the profile row, in the same
+      // transaction. If the rollback didn't happen, this email would now be
+      // taken and the retry would be a 409 for the EMAIL instead.
+      const retry = await admin
+        .post('/users')
+        .send({ ...body, licenseNumber: `PT-DUP-RETRY-${Date.now()}` });
+      expect(retry.status).toBe(201);
+    });
+
+    it('returns 409 when granting the practitioner role with a taken license — and the role is not granted', async () => {
+      const res = await admin
+        .post(`/users/${patient1Id}/roles`)
+        .send({ role: 'practitioner', licenseNumber: practitionerBLicense });
+      expect(res.status).toBe(409);
+
+      const readBack = await admin.get(`/users/${patient1Id}`);
+      expect(readBack.body.roles).toEqual(['patient']);
     });
   });
 });

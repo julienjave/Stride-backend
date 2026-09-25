@@ -20,6 +20,7 @@
 import {
   IsOptional,
   IsString,
+  IsNotEmpty,
   MaxLength,
   Length,
   IsArray,
@@ -28,6 +29,25 @@ import {
   ValidateIf,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
+
+// --- HELPER ------------------------------------------------------------------------------------------------
+
+// "Validate this field only if the request actually sent it."
+//
+// Used INSTEAD of @IsOptional() on fields whose database column is NOT NULL
+// (firstName, lastName, licenseNumber, specialties, dateOfBirth). The two
+// look alike but differ on exactly one value, null:
+//   - @IsOptional() skips every other validator when the value is
+//     undefined OR null. So `{ firstName: null }` sailed through, reached
+//     `.set({ firstName: null })`, and Postgres rejected it with a NOT NULL
+//     violation — a 500 instead of a 400.
+//   - This ValidateIf skips only when the value is undefined (the field was
+//     not sent). An explicit null now reaches @IsString()/@IsArray()/
+//     @IsDateString(), which reject it with a proper 400.
+// Nullable columns (phone, bio, position, address fields) keep
+// @IsOptional(), because for them null is a real, meaningful value:
+// "clear this field".
+const isPresent = (_dto: object, value: unknown) => value !== undefined
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -58,13 +78,17 @@ import { hasStartedAddress } from '../../common/validators/has-started-address'
 // UsersService.update() checks each field against the TARGET's actual
 // held roles (not the caller's) before writing — see the comment there.
 export class UpdateUserDto {
-  @IsOptional()
+  // Required columns: may be omitted, but never cleared — see isPresent.
+  // @IsNotEmpty() additionally rejects '' (an empty name is not a name).
+  @ValidateIf(isPresent)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(100)
   firstName?: string
 
-  @IsOptional()
+  @ValidateIf(isPresent)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(100)
   lastName?: string
 
@@ -121,14 +145,20 @@ export class UpdateUserDto {
   addressCountry?: string
 
   // --- Practitioner-profile fields (target must hold the practitioner role) ---
-  @IsOptional()
+  // Admin-only to CHANGE (decisions §4) — enforced in UsersService.update(),
+  // not here: a DTO validates the shape of a request, and cannot know who
+  // sent it.
+  @ValidateIf(isPresent)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(100)
   licenseNumber?: string
 
   // A full replacement of the array, not a merge/append — same semantics
-  // CreateUserDto's specialties already has at creation time.
-  @IsOptional()
+  // CreateUserDto's specialties already has at creation time. Clearing
+  // every specialty is `[]`, never null (the column is NOT NULL, default
+  // empty array).
+  @ValidateIf(isPresent)
   @IsArray()
   @ArrayMaxSize(20)
   @IsString({ each: true })
@@ -141,7 +171,7 @@ export class UpdateUserDto {
   bio?: string
 
   // --- Patient-profile field (target must hold the patient role) ---
-  @IsOptional()
+  @ValidateIf(isPresent)
   @IsDateString()
   dateOfBirth?: string
 
