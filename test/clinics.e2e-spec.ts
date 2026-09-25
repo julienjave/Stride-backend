@@ -242,4 +242,58 @@ describe('Clinics (e2e)', () => {
     const listAfterDeactivate = await admin.get('/clinics');
     expect(listAfterDeactivate.body.map((c: any) => c.id)).not.toContain(clinicId);
   });
+
+  // name/email are NOT NULL: a PATCH may omit them but not clear them
+  // (was a 500 from Postgres, now a 400 from validation). Optional fields
+  // — phone, website, the address — CAN be cleared with null, which is how
+  // the admin's clinic page removes a value. Each result is read back with
+  // a separate GET: a response alone doesn't prove what's stored.
+  it('rejects clearing name or email, but clears optional fields and the whole address with null', async () => {
+    const stamp = Date.now();
+    const clinicRes = await admin.post('/clinics').send({
+      name: 'Clearing Clinic',
+      email: `clearing-${stamp}@example.com`,
+      phone: '555-0199',
+      website: 'https://clearing.example',
+      addressLine1: '1 Clear St',
+      addressCity: 'Springfield',
+      addressPostalCode: '62704',
+      addressCountry: 'US',
+    });
+    expect(clinicRes.status).toBe(201);
+    const clinicId = clinicRes.body.id;
+
+    const nullName = await admin.patch(`/clinics/${clinicId}`).send({ name: null });
+    expect(nullName.status).toBe(400);
+    const emptyName = await admin.patch(`/clinics/${clinicId}`).send({ name: '' });
+    expect(emptyName.status).toBe(400);
+    const nullEmail = await admin.patch(`/clinics/${clinicId}`).send({ email: null });
+    expect(nullEmail.status).toBe(400);
+
+    const cleared = await admin.patch(`/clinics/${clinicId}`).send({
+      phone: null,
+      website: null,
+      addressLine1: null,
+      addressLine2: null,
+      addressCity: null,
+      addressState: null,
+      addressPostalCode: null,
+      addressCountry: null,
+    });
+    expect(cleared.status).toBe(200);
+
+    const readBack = await admin.get(`/clinics/${clinicId}`);
+    expect(readBack.body).toMatchObject({
+      name: 'Clearing Clinic',
+      email: `clearing-${stamp}@example.com`,
+      phone: null,
+      website: null,
+      addressLine1: null,
+      addressLine2: null,
+      addressCity: null,
+      addressState: null,
+      addressPostalCode: null,
+      addressCountry: null,
+    });
+  });
 });

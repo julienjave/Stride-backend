@@ -29,25 +29,7 @@ import {
   ValidateIf,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
-
-// --- HELPER ------------------------------------------------------------------------------------------------
-
-// "Validate this field only if the request actually sent it."
-//
-// Used INSTEAD of @IsOptional() on fields whose database column is NOT NULL
-// (firstName, lastName, licenseNumber, specialties, dateOfBirth). The two
-// look alike but differ on exactly one value, null:
-//   - @IsOptional() skips every other validator when the value is
-//     undefined OR null. So `{ firstName: null }` sailed through, reached
-//     `.set({ firstName: null })`, and Postgres rejected it with a NOT NULL
-//     violation — a 500 instead of a 400.
-//   - This ValidateIf skips only when the value is undefined (the field was
-//     not sent). An explicit null now reaches @IsString()/@IsArray()/
-//     @IsDateString(), which reject it with a proper 400.
-// Nullable columns (phone, bio, position, address fields) keep
-// @IsOptional(), because for them null is a real, meaningful value:
-// "clear this field".
-const isPresent = (_dto: object, value: unknown) => value !== undefined
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
