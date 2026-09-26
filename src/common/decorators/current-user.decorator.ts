@@ -27,15 +27,18 @@ import type { UserRole } from '../../users/dto/create-user.dto'
 // UsersService.findOne() on every request and merges in the session's
 // activeRole. Matches UsersService.findOne()'s return shape (every users
 // column except the server-internal ones toPublic() strips — passwordHash,
-// mfaSecret, passwordResetTokenHash, passwordResetTokenExpiresAt — plus
-// roles, plus the role-named profile objects UsersService.attachProfile()
-// conditionally attaches) with activeRole added on top.
+// mfaSecret, passwordResetTokenHash, passwordResetTokenExpiresAt — with
+// avatarPath swapped for a presigned avatarUrl, plus roles, plus the
+// role-named profile objects UsersService.attachProfile() conditionally
+// attaches) with activeRole added on top.
 export interface CurrentUser {
   id: number
   email: string
   firstName: string
   lastName: string
-  avatarPath: string | null
+  // A presigned URL (or null for "no photo"), never the raw storage key —
+  // see UsersService.toPublic().
+  avatarUrl: string | null
   isActive: boolean
   createdAt: Date
   mfaEnabled: boolean

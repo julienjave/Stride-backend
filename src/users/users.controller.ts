@@ -159,6 +159,29 @@ export class UsersController {
     return this.usersService.update(id, dto, currentUser)
   }
 
+  // Removes the user's avatar (back to initials). Same rule as
+  // uploadAvatar above — the user themselves or an admin, nobody else —
+  // so whoever can set a photo can also take it down, and a managing
+  // practitioner can do neither.
+  //
+  // Declared as its own path (/users/:id/avatar) rather than a flag on
+  // DELETE /users/:id, which already means "deactivate this account" —
+  // two very different actions should never share a route. Express matches
+  // the full path, so DELETE /users/5 and DELETE /users/5/avatar can't be
+  // confused for each other.
+  @Delete(':id/avatar')
+  removeAvatar(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() currentUser: CurrentUser,
+  ) {
+    const isSelf = currentUser.id === id
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    if (!isSelf && !isAdmin) {
+      throw new ForbiddenException('You can only remove your own avatar')
+    }
+    return this.usersService.removeAvatar(id, currentUser)
+  }
+
   // Self (any role deactivating their own account), a practitioner
   // deactivating one of their own patients, or an admin acting on anyone.
   @Delete(':id')

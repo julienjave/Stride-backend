@@ -24,12 +24,41 @@ jest.mock('./mfa-secret-crypto', () => ({
   decryptMfaSecret: jest.fn((stored: string) => stored),
 }))
 
+// A stand-in for UsersService.toPublic() that honours its contract
+// (drop the private fields, turn avatarPath into avatarUrl) without
+// needing a StorageService. Deliberately NOT a passthrough (user => user):
+// the tests below assert that private fields never reach a response, and
+// with a passthrough they'd fail even though AuthService is correct. With
+// this fake, they fail only if AuthService stops routing the raw row
+// through toPublic() — which is exactly the bug they exist to catch.
+// The REAL toPublic() is tested in users.service.spec.ts.
+function fakeToPublic(user: {
+  avatarPath?: string | null
+  [field: string]: unknown
+}) {
+  const {
+    passwordHash,
+    mfaSecret,
+    passwordResetTokenHash,
+    passwordResetTokenExpiresAt,
+    avatarPath,
+    ...rest
+  } = user
+  return Promise.resolve({
+    ...rest,
+    avatarUrl: avatarPath
+      ? `https://storage.example.com/signed/${avatarPath}`
+      : null,
+  })
+}
+
 describe('AuthService.validateUser', () => {
   let authService: AuthService
   let usersService: {
     findByEmailWithHash: jest.Mock
     getRolesForUser: jest.Mock
     attachProfile: jest.Mock
+    toPublic: jest.Mock
   }
   let auditService: { log: jest.Mock }
 
@@ -42,6 +71,7 @@ describe('AuthService.validateUser', () => {
       // tests in this block don't care; the dedicated test below overrides
       // this to assert the real behavior.
       attachProfile: jest.fn().mockImplementation((user) => user),
+      toPublic: jest.fn().mockImplementation(fakeToPublic),
     }
     // AuthService now calls auditService.log() from inside validateUser()
     // itself (LOGIN_SUCCESS/LOGIN_FAILURE) — this mock needs a real, callable
@@ -143,7 +173,11 @@ describe('AuthService.validateUser', () => {
   // passwordResetTokenHash/passwordResetTokenExpiresAt — meaning a login
   // response for an account with a pending password reset leaked the
   // token's hash and expiry.
-  it('strips passwordHash, mfaSecret, and password-reset token fields from the login result', async () => {
+  //
+  // Extended for avatars: the raw row's avatarPath (an internal storage
+  // key) must not reach the login response either — it's replaced by
+  // avatarUrl, via UsersService.toPublic().
+  it('strips passwordHash, mfaSecret, password-reset token fields and the raw avatarPath from the login result', async () => {
     usersService.findByEmailWithHash.mockResolvedValue({
       id: 1,
       email: 'jane@example.com',
@@ -152,6 +186,7 @@ describe('AuthService.validateUser', () => {
       mfaSecret: 'iv:authTag:ciphertext',
       passwordResetTokenHash: 'reset-hash',
       passwordResetTokenExpiresAt: new Date(),
+      avatarPath: 'avatars/1/123.png',
     })
     usersService.getRolesForUser.mockResolvedValue(['practitioner'])
 
@@ -164,6 +199,10 @@ describe('AuthService.validateUser', () => {
     expect(result).not.toHaveProperty('mfaSecret')
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
+    expect(result).not.toHaveProperty('avatarPath')
+    expect(result?.avatarUrl).toBe(
+      'https://storage.example.com/signed/avatars/1/123.png',
+    )
   })
 
   // Regression coverage for the actual gap this fix closes: validateUser()
@@ -227,7 +266,7 @@ describe('AuthService.registerClinic', () => {
     }
     transaction: jest.Mock
   }
-  let usersService: { attachProfile: jest.Mock }
+  let usersService: { attachProfile: jest.Mock; toPublic: jest.Mock }
   let auditService: { log: jest.Mock }
 
   beforeEach(async () => {
@@ -249,6 +288,7 @@ describe('AuthService.registerClinic', () => {
     // overrides it to assert the real behavior and the tx it's called with.
     usersService = {
       attachProfile: jest.fn().mockImplementation((user) => user),
+      toPublic: jest.fn().mockImplementation(fakeToPublic),
     }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
 
@@ -376,6 +416,10 @@ describe('AuthService.registerClinic', () => {
     expect(result).not.toHaveProperty('mfaSecret')
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
+    // A brand-new account has no photo yet: the raw avatarPath is gone and
+    // avatarUrl is present, as null.
+    expect(result).not.toHaveProperty('avatarPath')
+    expect(result.avatarUrl).toBeNull()
   })
 
   // Regression coverage for the actual gap this fix closes: adminProfiles

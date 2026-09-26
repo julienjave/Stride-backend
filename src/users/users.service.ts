@@ -50,6 +50,22 @@ import { AuditService } from '../audit/audit.service'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
+// How long a user's avatarUrl (a presigned RustFS URL) stays valid. Same
+// 24 hours as a clinic logo, for the same reasons (see
+// CLINIC_LOGO_URL_EXPIRY_SECONDS in clinics.service.ts): long enough to
+// outlive an ordinary working session, far shorter than the 7-day login
+// session, so a URL that leaks (browser history, a screenshot, a log
+// line) stops working long before the session that produced it would.
+//
+// One difference from logos, accepted knowingly (design decisions): the
+// logged-in user's OWN avatarUrl arrives through GET /auth/me, which the
+// frontend caches with no expiry and only reloads on a full page load.
+// A tab left open for more than 24 hours without a reload can therefore
+// hold an expired URL. The frontend's UserAvatar falls back to initials
+// when the image fails to load, so the worst case is initials in place
+// of the photo until the next reload — never a broken image.
+const AVATAR_URL_EXPIRY_SECONDS = 60 * 60 * 24
+
 // Runs a write that may store a practitioner's licenseNumber, and turns a
 // duplicate-license failure into a proper 409 Conflict.
 //
@@ -198,7 +214,11 @@ export class UsersService {
         }
 
         const roles = [dto.role]
-        return this.attachProfile({ ...this.toPublic(user), roles }, roles, tx)
+        return this.attachProfile(
+          { ...(await this.toPublic(user)), roles },
+          roles,
+          tx,
+        )
       }),
     )
   }
@@ -264,16 +284,24 @@ export class UsersService {
     )
   }
 
-  // Uploads a new avatar and stores its object key on the user's row.
-  // Authorization (self-or-admin) happens in the controller, matching
-  // update()'s rule — same pattern, just triggered by a file instead of a
-  // JSON body.
+  // Uploads a new avatar, points the user's row at it, then deletes the
+  // previous file (if any). Mirrors ClinicsService.updateLogo().
+  //
+  // Authorization happens in the controller: the user themselves or an
+  // admin. Deliberately narrower than update(), which also lets a
+  // managing practitioner in — a photo is personal, and there's no
+  // clinical reason for a practitioner to change a patient's.
+  //
+  // Every upload gets a NEW object key (the timestamp), rather than
+  // overwriting one fixed key per user. That's what makes it safe for a
+  // browser to cache an avatar image: a given URL's content never changes,
+  // a new photo simply lives at a new URL.
   async updateAvatar(
     id: number,
     file: Express.Multer.File,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    await this.findOne(id)
+    const existing = await this.findRawOrThrow(id)
     const objectKey = `avatars/${id}/${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
@@ -283,8 +311,20 @@ export class UsersService {
         .where(eq(users.id, id))
         .returning(),
     )
+    // Order matters: upload the new file, point the row at it, and only
+    // THEN delete the old one. If anything before this line fails, the
+    // user still points at a file that exists. Deleting first would open a
+    // window where the row points at a file that's already gone. The worst
+    // case of this order is the reverse, and harmless: if the delete below
+    // fails, an unreferenced file is left in storage.
+    if (existing.avatarPath) {
+      await this.storageService.delete(existing.avatarPath)
+    }
     const roles = await this.getRolesForUser(id)
-    return this.attachProfile({ ...this.toPublic(updated), roles }, roles)
+    return this.attachProfile(
+      { ...(await this.toPublic(updated)), roles },
+      roles,
+    )
   }
 
   // --- GET ROUTES ---
@@ -301,13 +341,18 @@ export class UsersService {
     const rows = await this.db.query.users.findMany({
       where: includeInactive ? undefined : eq(users.isActive, true),
     })
-    return this.attachProfilesToMany(rows.map((u) => this.toPublic(u)))
+    // Promise.all: toPublic() is async (see its comment), so mapping over
+    // the rows gives an array of Promises; Promise.all waits for all of
+    // them at once rather than one after another.
+    return this.attachProfilesToMany(
+      await Promise.all(rows.map((u) => this.toPublic(u))),
+    )
   }
 
   // dbOrTx defaults to this.db (a fresh connection, always seeing the
   // latest COMMITTED state) — correct for every caller that runs this
   // after its own writing transaction has already resolved
-  // (findOne/update/softDelete/updateAvatar all call this only once
+  // (findOne/update/softDelete/updateAvatar/removeAvatar all call this once
   // withRlsContext's promise has settled). grantRole() is the one
   // exception: it calls this from INSIDE its own still-open transaction,
   // so it passes `tx` explicitly — without that, this would query via a
@@ -360,7 +405,9 @@ export class UsersService {
         ),
       )
 
-    return this.attachProfilesToMany(rows.map((r) => this.toPublic(r.user)))
+    return this.attachProfilesToMany(
+      await Promise.all(rows.map((r) => this.toPublic(r.user))),
+    )
   }
 
   // The shared building block behind the PATCH/DELETE ownership checks below
@@ -398,14 +445,9 @@ export class UsersService {
   }
 
   async findOne(id: number) {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, id),
-    })
-    if (!user) {
-      throw new NotFoundException(`User ${id} not found`)
-    }
+    const user = await this.findRawOrThrow(id)
     const roles = await this.getRolesForUser(id)
-    return this.attachProfile({ ...this.toPublic(user), roles }, roles)
+    return this.attachProfile({ ...(await this.toPublic(user)), roles }, roles)
   }
 
   // INTERNAL USE ONLY — the one method in this service that does NOT strip
@@ -554,7 +596,7 @@ export class UsersService {
 
         const roles = await this.getRolesForUser(id, tx)
         return this.attachProfile(
-          { ...this.toPublic(updated!), roles },
+          { ...(await this.toPublic(updated!)), roles },
           roles,
           tx,
         )
@@ -579,7 +621,46 @@ export class UsersService {
         .returning(),
     )
     const roles = await this.getRolesForUser(id)
-    return this.attachProfile({ ...this.toPublic(deactivated), roles }, roles)
+    return this.attachProfile(
+      { ...(await this.toPublic(deactivated)), roles },
+      roles,
+    )
+  }
+
+  // Clears the avatar: the row goes back to avatarPath = null (so every
+  // response carries avatarUrl: null and the frontend shows initials),
+  // and the file itself is deleted from storage. Mirrors
+  // ClinicsService.removeLogo(); self-or-admin, checked in the controller
+  // like updateAvatar().
+  //
+  // Idempotent: removing an avatar that isn't there succeeds and changes
+  // nothing — the storage delete is skipped, and setting null on a null
+  // column is a harmless no-op. "Make sure there's no photo" is satisfied
+  // either way, so a double click or a retry after a network error isn't
+  // an error.
+  async removeAvatar(
+    id: number,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
+    const existing = await this.findRawOrThrow(id)
+    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .update(users)
+        .set({ avatarPath: null })
+        .where(eq(users.id, id))
+        .returning(),
+    )
+    // Same order as updateAvatar(), same reason: the row stops pointing at
+    // the file BEFORE the file is deleted, so a failed delete leaves an
+    // orphaned file, never a user pointing at a missing one.
+    if (existing.avatarPath) {
+      await this.storageService.delete(existing.avatarPath)
+    }
+    const roles = await this.getRolesForUser(id)
+    return this.attachProfile(
+      { ...(await this.toPublic(updated)), roles },
+      roles,
+    )
   }
 
   // Admin-only — enforced by @Roles(UserRole.ADMIN) on the controller
@@ -624,30 +705,73 @@ export class UsersService {
       entityId: id,
     })
     const roles = await this.getRolesForUser(id)
-    return this.attachProfile({ ...this.toPublic(reactivated), roles }, roles)
+    return this.attachProfile(
+      { ...(await this.toPublic(reactivated)), roles },
+      roles,
+    )
   }
 
   // === HELPER FUNCTIONS =====================================================
 
-  // Strips every server-internal field before anything leaves the
-  // service: passwordHash (obviously), but also mfaSecret (still an
-  // encrypted secret that should never reach a client), and
-  // passwordResetTokenHash/passwordResetTokenExpiresAt (reveal whether a
-  // password reset is currently pending, and when it expires). This is
-  // the one funnel findOne()/findAll()/update()/softDelete()/
-  // updateAvatar() all go through — findOne() is also what
+  // The raw `users` row, or a 404. RAW means unstripped — passwordHash,
+  // avatarPath and all — which is exactly why it's private: its callers
+  // need a raw field (updateAvatar/removeAvatar need the OLD avatarPath to
+  // delete the file, which the public shape no longer carries) or pass the
+  // row straight on to toPublic() (findOne). It must never be returned
+  // from a route as-is. Same idea as ClinicsService.findRawForLogoOp().
+  private async findRawOrThrow(id: number) {
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.id, id),
+    })
+    if (!user) {
+      throw new NotFoundException(`User ${id} not found`)
+    }
+    return user
+  }
+
+  // Turns a raw `users` row into the shape that is allowed to leave the
+  // server. Two jobs:
+  //
+  // 1. Strip every server-internal field: passwordHash (obviously),
+  //    mfaSecret (still an encrypted secret that should never reach a
+  //    client), and passwordResetTokenHash/passwordResetTokenExpiresAt
+  //    (they reveal whether a password reset is pending, and when it
+  //    expires).
+  // 2. Swap avatarPath (the internal RustFS object key) for avatarUrl, a
+  //    presigned URL a browser can load directly — the same conversion
+  //    ClinicsService.withLogoUrl() does for logoPath. The key itself is
+  //    dropped, not sent alongside: where a file lives in storage is an
+  //    implementation detail, and nothing in the frontend can use it.
+  //
+  // This is THE one funnel for user responses. Every method in this
+  // service that returns a user goes through it, and so do AuthService's
+  // login and register-clinic responses — which is why it's public, not
+  // private: those two build their response from a raw row (they need the
+  // real passwordHash, or just inserted the row themselves), and they used
+  // to keep their own copy of the strip list. Two copies of a security
+  // rule drift apart; one shared function can't. findOne() is also what
   // SessionSerializer.deserializeUser() calls to build req.user on every
-  // authenticated request, so this one change is what keeps these fields
-  // out of GET /auth/me, POST /auth/mfa/verify, and POST /auth/switch-role.
-  private toPublic(user: typeof users.$inferSelect) {
+  // authenticated request, so this is what shapes GET /auth/me,
+  // POST /auth/mfa/verify and POST /auth/switch-role too.
+  //
+  // async because presigning is: getSignedUrl() is a Promise-based API.
+  // No network call happens, though — a presigned URL is a signature
+  // computed locally from the access key, so this stays cheap even on the
+  // per-request /auth/me path.
+  async toPublic(user: typeof users.$inferSelect) {
     const {
       passwordHash,
       mfaSecret,
       passwordResetTokenHash,
       passwordResetTokenExpiresAt,
+      avatarPath,
       ...publicUser
     } = user
-    return publicUser
+    const avatarUrl = await this.storageService.getPresignedUrlOrNull(
+      avatarPath,
+      AVATAR_URL_EXPIRY_SECONDS,
+    )
+    return { ...publicUser, avatarUrl }
   }
 
   // licenseNumber/specialties, dateOfBirth, and position are written to

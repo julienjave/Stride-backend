@@ -50,6 +50,16 @@ function emptyClinicsSelect() {
   })
 }
 
+// toPublic() now presigns avatarPath on every user it returns, so every
+// describe block needs a StorageService with a callable
+// getPresignedUrlOrNull — an empty {} would throw "is not a function".
+// Resolving null is the "this user has no photo" answer, which is what
+// most tests' fixtures are (avatarPath: null or absent); tests that are
+// ABOUT avatars build their own storage mock with real-looking URLs.
+function storageStub() {
+  return { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) }
+}
+
 describe('UsersService.create', () => {
   let usersService: UsersService
   let db: {
@@ -69,7 +79,7 @@ describe('UsersService.create', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -418,7 +428,7 @@ describe('UsersService.grantRole', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -554,7 +564,7 @@ describe('UsersService.findPatientsForPractitioner', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -706,7 +716,7 @@ describe('UsersService.isPatientManagedBy', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -803,7 +813,7 @@ describe('UsersService.findOne', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -928,7 +938,7 @@ describe('UsersService.update', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -1441,7 +1451,7 @@ describe('UsersService.reactivate', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: auditService },
       ],
     }).compile()
@@ -1486,6 +1496,8 @@ describe('UsersService.reactivate', () => {
       id: 5,
       email: 'returning-patient@example.com',
       isActive: true,
+      // Always present on a returned user — null when there's no photo.
+      avatarUrl: null,
       roles: [UserRole.PATIENT],
       clinics: [],
     })
@@ -1553,7 +1565,7 @@ describe('UsersService.findAll', () => {
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile()
@@ -1576,5 +1588,291 @@ describe('UsersService.findAll', () => {
     await usersService.findAll(true)
 
     expect(db.query.users.findMany).toHaveBeenCalledWith({ where: undefined })
+  })
+})
+
+// --- Avatars ------------------------------------------------------------------
+
+// Shared by the three avatar describe blocks below. The only moving parts
+// are what the raw users row looks like, and what the UPDATE returns —
+// everything after that (roles, clinics) resolves to "none", since none of
+// these tests are about roles or clinic membership.
+function avatarTestDb() {
+  const db = {
+    query: { users: { findFirst: jest.fn() } },
+    update: jest.fn(),
+    // withRlsContext() runs the UPDATE inside db.transaction() and sets two
+    // session variables through tx.execute() first. tx === db here, so the
+    // update() mock above is what the transaction body actually calls.
+    execute: jest.fn().mockResolvedValue(undefined),
+    transaction: jest.fn(),
+    // getRolesForUser() (.from().where()) and attachProfile()'s clinic join
+    // (.from().innerJoin().where()) — both resolving to nothing.
+    select: jest.fn().mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([]),
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
+  }
+  db.transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(db))
+  return db
+}
+
+// Builds the update().set().where().returning() chain and hands back the
+// set() mock, so a test can assert on what actually reached the UPDATE.
+function mockUpdateReturning(
+  db: ReturnType<typeof avatarTestDb>,
+  row: Record<string, unknown>,
+) {
+  const set = jest.fn().mockReturnValue({
+    where: jest.fn().mockReturnValue({
+      returning: jest.fn().mockResolvedValue([row]),
+    }),
+  })
+  db.update.mockReturnValue({ set })
+  return set
+}
+
+const fakeAvatar = {
+  mimetype: 'image/png',
+  buffer: Buffer.from('fake-avatar'),
+} as Express.Multer.File
+
+const selfUser = { id: 5, activeRole: UserRole.PATIENT }
+
+// The raw `users` row type toPublic() takes, derived from the method's own
+// signature — so a fixture can list only the columns a test cares about
+// (cast to this type) without importing the schema just for its type.
+type RawUserRow = Parameters<UsersService['toPublic']>[0]
+
+describe('UsersService.toPublic', () => {
+  let usersService: UsersService
+  let storageService: { getPresignedUrlOrNull: jest.Mock }
+
+  beforeEach(async () => {
+    storageService = {
+      getPresignedUrlOrNull: jest
+        .fn()
+        .mockResolvedValue(
+          'https://storage.example.com/signed/avatars/5/123.png',
+        ),
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: {} },
+        { provide: StorageService, useValue: storageService },
+        { provide: AuditService, useValue: {} },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  // A full toEqual, not a list of not.toHaveProperty checks: the point is
+  // that the output is EXACTLY the public fields plus avatarUrl — nothing
+  // private survives, and nothing public goes missing.
+  it('drops the private fields and swaps avatarPath for a presigned avatarUrl', async () => {
+    const result = await usersService.toPublic({
+      id: 5,
+      email: 'patient@example.com',
+      firstName: 'Pat',
+      lastName: 'Ient',
+      passwordHash: 'bcrypt-hash',
+      mfaSecret: 'iv:authTag:ciphertext',
+      passwordResetTokenHash: 'reset-hash',
+      passwordResetTokenExpiresAt: new Date(),
+      avatarPath: 'avatars/5/123.png',
+      isActive: true,
+    } as RawUserRow)
+
+    expect(result).toEqual({
+      id: 5,
+      email: 'patient@example.com',
+      firstName: 'Pat',
+      lastName: 'Ient',
+      isActive: true,
+      avatarUrl: 'https://storage.example.com/signed/avatars/5/123.png',
+    })
+    // 24 hours, like a clinic logo — not StorageService's own 15-minute
+    // default, which would expire while an ordinary page is still open.
+    expect(storageService.getPresignedUrlOrNull).toHaveBeenCalledWith(
+      'avatars/5/123.png',
+      60 * 60 * 24,
+    )
+  })
+
+  it('returns avatarUrl: null for a user with no photo', async () => {
+    storageService.getPresignedUrlOrNull.mockResolvedValue(null)
+
+    const result = await usersService.toPublic({
+      id: 5,
+      avatarPath: null,
+    } as RawUserRow)
+
+    expect(result).toEqual({ id: 5, avatarUrl: null })
+    expect(storageService.getPresignedUrlOrNull).toHaveBeenCalledWith(
+      null,
+      60 * 60 * 24,
+    )
+  })
+})
+
+describe('UsersService.updateAvatar', () => {
+  let usersService: UsersService
+  let db: ReturnType<typeof avatarTestDb>
+  let storageService: {
+    // Typed with upload()'s real argument list (objectKey, buffer,
+    // contentType), so mock.calls below is typed too, not `any`.
+    upload: jest.Mock<Promise<void>, [string, Buffer, string]>
+    delete: jest.Mock
+    getPresignedUrlOrNull: jest.Mock
+  }
+
+  beforeEach(async () => {
+    db = avatarTestDb()
+    storageService = {
+      upload: jest
+        .fn<Promise<void>, [string, Buffer, string]>()
+        .mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
+      getPresignedUrlOrNull: jest
+        .fn()
+        .mockResolvedValue(
+          'https://storage.example.com/signed/avatars/5/NEW.png',
+        ),
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: storageService },
+        { provide: AuditService, useValue: {} },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('throws NotFoundException for a nonexistent user, without touching storage or the DB', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+
+    await expect(
+      usersService.updateAvatar(999, fakeAvatar, selfUser),
+    ).rejects.toThrow(NotFoundException)
+    expect(storageService.upload).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('uploads the file under a new key, stores that key, and returns avatarUrl — never avatarPath', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, avatarPath: null })
+    const set = mockUpdateReturning(db, {
+      id: 5,
+      avatarPath: 'avatars/5/NEW.png',
+    })
+
+    const result = await usersService.updateAvatar(5, fakeAvatar, selfUser)
+
+    expect(storageService.upload).toHaveBeenCalledWith(
+      expect.stringMatching(/^avatars\/5\/\d+\.png$/),
+      Buffer.from('fake-avatar'),
+      'image/png',
+    )
+    // The key that reached the UPDATE is the same one that was uploaded.
+    const [uploadedKey] = storageService.upload.mock.calls[0]
+    expect(set).toHaveBeenCalledWith({ avatarPath: uploadedKey })
+    expect(result).toEqual({
+      id: 5,
+      avatarUrl: 'https://storage.example.com/signed/avatars/5/NEW.png',
+      roles: [],
+      clinics: [],
+    })
+    // No previous photo, so nothing to clean up.
+    expect(storageService.delete).not.toHaveBeenCalled()
+  })
+
+  it('deletes the OLD file — only after the new one is uploaded and the row points at it', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 5,
+      avatarPath: 'avatars/5/OLD.png',
+    })
+    mockUpdateReturning(db, { id: 5, avatarPath: 'avatars/5/NEW.png' })
+
+    await usersService.updateAvatar(5, fakeAvatar, selfUser)
+
+    expect(storageService.delete).toHaveBeenCalledTimes(1)
+    expect(storageService.delete).toHaveBeenCalledWith('avatars/5/OLD.png')
+    // invocationCallOrder: a global counter Jest stamps on every mock call
+    // — a lower number means an earlier call.
+    const deleteOrder = storageService.delete.mock.invocationCallOrder[0]
+    expect(storageService.upload.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteOrder,
+    )
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(deleteOrder)
+  })
+})
+
+describe('UsersService.removeAvatar', () => {
+  let usersService: UsersService
+  let db: ReturnType<typeof avatarTestDb>
+  let storageService: { delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+
+  beforeEach(async () => {
+    db = avatarTestDb()
+    storageService = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: storageService },
+        { provide: AuditService, useValue: {} },
+      ],
+    }).compile()
+
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('throws NotFoundException for a nonexistent user, without touching storage or the DB', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+
+    await expect(usersService.removeAvatar(999, selfUser)).rejects.toThrow(
+      NotFoundException,
+    )
+    expect(db.update).not.toHaveBeenCalled()
+    expect(storageService.delete).not.toHaveBeenCalled()
+  })
+
+  it('clears avatarPath, then deletes the file, and returns avatarUrl: null', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 5,
+      avatarPath: 'avatars/5/OLD.png',
+    })
+    const set = mockUpdateReturning(db, { id: 5, avatarPath: null })
+
+    const result = await usersService.removeAvatar(5, selfUser)
+
+    expect(set).toHaveBeenCalledWith({ avatarPath: null })
+    expect(storageService.delete).toHaveBeenCalledWith('avatars/5/OLD.png')
+    // The row stops pointing at the file BEFORE the file is deleted.
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
+      storageService.delete.mock.invocationCallOrder[0],
+    )
+    expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
+  })
+
+  it('is idempotent — succeeds without touching storage when there was no photo', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, avatarPath: null })
+    mockUpdateReturning(db, { id: 5, avatarPath: null })
+
+    const result = await usersService.removeAvatar(5, selfUser)
+
+    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
   })
 })

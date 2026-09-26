@@ -54,7 +54,7 @@ interface RegisterClinicResult {
   email: string
   firstName: string
   lastName: string
-  avatarPath: string | null
+  avatarUrl: string | null
   isActive: boolean
   createdAt: Date
   roles: UserRole[]
@@ -194,20 +194,14 @@ export class AuthService {
           clinicId: clinic.id,
         })
 
-        // Same bypass as validateUser() further down this file — this
-        // insert's .returning() is a raw row, never routed through
-        // UsersService.toPublic(), so it needs its own strip. Harmless
-        // today (a brand-new row has all three as their column defaults,
-        // null), but the shape is identical to every other leak this pass
-        // closed, so it gets the same treatment rather than relying on
-        // "currently always null".
-        const {
-          passwordHash: _omit,
-          mfaSecret: _omitMfaSecret,
-          passwordResetTokenHash: _omitResetHash,
-          passwordResetTokenExpiresAt: _omitResetExpiry,
-          ...publicUser
-        } = user
+        // This insert's .returning() is a raw row (passwordHash and all),
+        // so it goes through UsersService.toPublic() — the same funnel as
+        // every other user response — rather than a hand-written strip
+        // list of its own. A copy kept here would have to be remembered
+        // every time a private column is added; this file used to keep
+        // exactly such a copy, and it's how avatarPath would have leaked
+        // raw from this route once toPublic() started converting it.
+        const publicUser = await this.usersService.toPublic(user)
         const roles = [UserRole.ADMIN]
         // adminProfiles.position was inserted two statements above, inside
         // this same still-open transaction — attachProfile needs tx, not
@@ -334,21 +328,15 @@ export class AuthService {
       details: { activeRole },
     })
 
-    // This method reads from findByEmailWithHash() — the one place that
-    // deliberately bypasses UsersService.toPublic(), since it needs the
-    // real passwordHash for the bcrypt.compare() above — so it has to do
-    // its own stripping here rather than inheriting toPublic()'s. It was
-    // already stripping passwordHash and mfaSecret, but had the same gap
-    // toPublic() itself had: passwordResetTokenHash and
-    // passwordResetTokenExpiresAt were still riding along in the login
-    // response for any account with a pending reset request.
-    const {
-      passwordHash,
-      mfaSecret,
-      passwordResetTokenHash,
-      passwordResetTokenExpiresAt,
-      ...publicUser
-    } = user
+    // This method reads from findByEmailWithHash() — the one lookup that
+    // returns the raw row, since the bcrypt.compare() above needs the real
+    // passwordHash. Now that the password is verified, the row goes
+    // through UsersService.toPublic() like every other user response:
+    // private fields stripped, avatarPath turned into a usable avatarUrl.
+    // (This used to be a hand-copied strip list, which once fell behind
+    // toPublic() — passwordResetTokenHash/ExpiresAt leaked from login for
+    // a while. Sharing the one function removes that whole class of bug.)
+    const publicUser = await this.usersService.toPublic(user)
     const withProfile = await this.usersService.attachProfile(
       publicUser,
       roles,

@@ -789,4 +789,142 @@ describe('Users (e2e)', () => {
       expect(meRes.body.preferredWeightUnit).toBe('lbs');
     });
   });
+
+  // Avatars (POST/DELETE /users/:id/avatar). These go all the way to the
+  // real RustFS, so besides status codes they check the thing a user would
+  // notice: does the returned avatarUrl actually load the image, and does
+  // an old one stop loading once it's replaced or removed? Uses patient1
+  // (managed by practitionerA, not by practitionerB) and patient2.
+  describe('avatars', () => {
+    // A stand-in for real image bytes — the upload filter only checks the
+    // declared Content-Type, never the content (same as in
+    // exercises.e2e-spec.ts).
+    const fakeImage = (label: string) => Buffer.from(`fake-avatar-${label}`);
+
+    // Loads a presigned URL the way a browser's <img> would: a plain GET,
+    // no cookie, straight to storage. Returns the status and the body.
+    const loadImage = async (url: string) => {
+      const response = await fetch(url);
+      return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
+    };
+
+    // Carried between the tests below, which run in order.
+    let firstAvatarUrl: string;
+    let secondAvatarUrl: string;
+
+    it('starts as avatarUrl: null, with no raw avatarPath anywhere', async () => {
+      const meRes = await patient1.get('/auth/me');
+      expect(meRes.body.avatarUrl).toBeNull();
+      expect(meRes.body).not.toHaveProperty('avatarPath');
+
+      const userRes = await admin.get(`/users/${patient1Id}`);
+      expect(userRes.body.avatarUrl).toBeNull();
+      expect(userRes.body).not.toHaveProperty('avatarPath');
+    });
+
+    it('lets a user upload their own avatar, and the returned avatarUrl really serves the image', async () => {
+      const res = await patient1
+        .post(`/users/${patient1Id}/avatar`)
+        .attach('file', fakeImage('first'), { filename: 'me.png', contentType: 'image/png' });
+      expect(res.status).toBe(201);
+      expect(res.body).not.toHaveProperty('avatarPath');
+      expect(typeof res.body.avatarUrl).toBe('string');
+      firstAvatarUrl = res.body.avatarUrl;
+
+      const image = await loadImage(firstAvatarUrl);
+      expect(image.status).toBe(200);
+      expect(image.body.toString()).toBe('fake-avatar-first');
+
+      // /auth/me is where the header reads it from.
+      const meRes = await patient1.get('/auth/me');
+      expect(typeof meRes.body.avatarUrl).toBe('string');
+      expect(meRes.body).not.toHaveProperty('avatarPath');
+    });
+
+    it('deletes the old file when the avatar is replaced', async () => {
+      const res = await patient1
+        .post(`/users/${patient1Id}/avatar`)
+        .attach('file', fakeImage('second'), { filename: 'me.png', contentType: 'image/png' });
+      expect(res.status).toBe(201);
+      secondAvatarUrl = res.body.avatarUrl;
+      expect(secondAvatarUrl).not.toBe(firstAvatarUrl);
+
+      const newImage = await loadImage(secondAvatarUrl);
+      expect(newImage.status).toBe(200);
+      expect(newImage.body.toString()).toBe('fake-avatar-second');
+
+      // The first URL's signature is still valid (24 hours), so a 404 here
+      // can only mean one thing: the file itself is gone from storage.
+      const oldImage = await loadImage(firstAvatarUrl);
+      expect(oldImage.status).toBe(404);
+    });
+
+    it('rejects a file that is not an image with a 400', async () => {
+      const res = await patient1
+        .post(`/users/${patient1Id}/avatar`)
+        .attach('file', Buffer.from('not an image'), {
+          filename: 'notes.txt',
+          contentType: 'text/plain',
+        });
+      expect(res.status).toBe(400);
+    });
+
+    it("refuses a managing practitioner uploading or removing their patient's avatar, and changes nothing", async () => {
+      const uploadRes = await practitionerA
+        .post(`/users/${patient1Id}/avatar`)
+        .attach('file', fakeImage('intruder'), { filename: 'x.png', contentType: 'image/png' });
+      expect(uploadRes.status).toBe(403);
+
+      const removeRes = await practitionerA.delete(`/users/${patient1Id}/avatar`);
+      expect(removeRes.status).toBe(403);
+
+      // Still the second photo, still in storage.
+      const image = await loadImage(secondAvatarUrl);
+      expect(image.status).toBe(200);
+      expect(image.body.toString()).toBe('fake-avatar-second');
+    });
+
+    it("refuses another patient removing someone else's avatar", async () => {
+      const res = await patient2.delete(`/users/${patient1Id}/avatar`);
+      expect(res.status).toBe(403);
+    });
+
+    it("lets an admin remove someone's avatar: avatarUrl becomes null and the file is gone", async () => {
+      const res = await admin.delete(`/users/${patient1Id}/avatar`);
+      expect(res.status).toBe(200);
+      expect(res.body.avatarUrl).toBeNull();
+      expect(res.body).not.toHaveProperty('avatarPath');
+
+      const image = await loadImage(secondAvatarUrl);
+      expect(image.status).toBe(404);
+
+      const meRes = await patient1.get('/auth/me');
+      expect(meRes.body.avatarUrl).toBeNull();
+    });
+
+    it('treats removing an avatar that is already gone as a success (idempotent)', async () => {
+      const res = await patient1.delete(`/users/${patient1Id}/avatar`);
+      expect(res.status).toBe(200);
+      expect(res.body.avatarUrl).toBeNull();
+    });
+
+    it("lets an admin set someone else's avatar, and that user remove it themselves", async () => {
+      const uploadRes = await admin
+        .post(`/users/${patient2Id}/avatar`)
+        .attach('file', fakeImage('by-admin'), { filename: 'p2.png', contentType: 'image/png' });
+      expect(uploadRes.status).toBe(201);
+      const url = uploadRes.body.avatarUrl;
+      expect((await loadImage(url)).status).toBe(200);
+
+      const removeRes = await patient2.delete(`/users/${patient2Id}/avatar`);
+      expect(removeRes.status).toBe(200);
+      expect(removeRes.body.avatarUrl).toBeNull();
+      expect((await loadImage(url)).status).toBe(404);
+    });
+
+    it('returns 404 for an avatar route on a user that does not exist', async () => {
+      const res = await admin.delete('/users/999999/avatar');
+      expect(res.status).toBe(404);
+    });
+  });
 });
