@@ -251,7 +251,7 @@ describe("ExercisesService.reorderImages", () => {
 
 describe("ExercisesService.removeImage", () => {
   let exercisesService: ExercisesService;
-  let storageService: { delete: jest.Mock; getPresignedUrl: jest.Mock };
+  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrl: jest.Mock };
   let db: {
     query: { exercises: { findFirst: jest.Mock } };
     update: jest.Mock;
@@ -261,7 +261,7 @@ describe("ExercisesService.removeImage", () => {
 
   beforeEach(async () => {
     storageService = {
-      delete: jest.fn().mockResolvedValue(undefined),
+      deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrl: jest
         .fn()
         .mockImplementation((key: string) =>
@@ -317,7 +317,16 @@ describe("ExercisesService.removeImage", () => {
       id: 1,
       images: [{ objectKey: "b.jpg", url: "https://signed.example/b.jpg" }],
     });
-    expect(storageService.delete).toHaveBeenCalledWith("a.jpg");
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith("a.jpg");
+    // The key is removed from the row (what actually reached the UPDATE)…
+    const { set } = db.update.mock.results[0].value as { set: jest.Mock };
+    expect(set).toHaveBeenCalledWith({ mediaUrls: ["b.jpg"] });
+    // …BEFORE the file is deleted, so a failed UPDATE can never leave the
+    // exercise listing a photo whose file is already gone.
+    // invocationCallOrder: lower number = called earlier.
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0],
+    );
   });
 
   it("throws NotFoundException for a key that does not belong to this exercise", async () => {
@@ -328,7 +337,7 @@ describe("ExercisesService.removeImage", () => {
         "not-mine.jpg",
       ),
     ).rejects.toThrow(NotFoundException);
-    expect(storageService.delete).not.toHaveBeenCalled();
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled();
   });
 });
 

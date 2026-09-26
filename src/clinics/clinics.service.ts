@@ -160,9 +160,11 @@ export class ClinicsService {
     // Only AFTER the new file is safely uploaded and the DB successfully
     // points at it — deleting the OLD file at this point, not before,
     // means a failure earlier in this method never leaves the clinic
-    // pointing at a file that's already been deleted.
+    // pointing at a file that's already been deleted. Best-effort
+    // (deleteUnreferenced): the new logo is already saved, so failing to
+    // clean up the old file must not turn this into an error response.
     if (existing.logoPath) {
-      await this.storageService.delete(existing.logoPath)
+      await this.storageService.deleteUnreferenced(existing.logoPath)
     }
     return this.withLogoUrl(updated)
   }
@@ -186,9 +188,9 @@ export class ClinicsService {
     // orphaned file sitting in RustFS (recoverable with a cleanup pass
     // later) rather than a clinic record pointing at a file that's
     // already gone (which would 404 the next time anyone tried to load
-    // the logo image).
+    // the logo image). Best-effort for the same reason as updateLogo().
     if (existing.logoPath) {
-      await this.storageService.delete(existing.logoPath)
+      await this.storageService.deleteUnreferenced(existing.logoPath)
     }
     return this.withLogoUrl(updated)
   }

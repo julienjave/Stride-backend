@@ -1728,7 +1728,7 @@ describe('UsersService.updateAvatar', () => {
     // Typed with upload()'s real argument list (objectKey, buffer,
     // contentType), so mock.calls below is typed too, not `any`.
     upload: jest.Mock<Promise<void>, [string, Buffer, string]>
-    delete: jest.Mock
+    deleteUnreferenced: jest.Mock
     getPresignedUrlOrNull: jest.Mock
   }
 
@@ -1738,7 +1738,7 @@ describe('UsersService.updateAvatar', () => {
       upload: jest
         .fn<Promise<void>, [string, Buffer, string]>()
         .mockResolvedValue(undefined),
-      delete: jest.fn().mockResolvedValue(undefined),
+      deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest
         .fn()
         .mockResolvedValue(
@@ -1791,7 +1791,7 @@ describe('UsersService.updateAvatar', () => {
       clinics: [],
     })
     // No previous photo, so nothing to clean up.
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
   })
 
   it('deletes the OLD file — only after the new one is uploaded and the row points at it', async () => {
@@ -1803,11 +1803,11 @@ describe('UsersService.updateAvatar', () => {
 
     await usersService.updateAvatar(5, fakeAvatar, selfUser)
 
-    expect(storageService.delete).toHaveBeenCalledTimes(1)
-    expect(storageService.delete).toHaveBeenCalledWith('avatars/5/OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledTimes(1)
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('avatars/5/OLD.png')
     // invocationCallOrder: a global counter Jest stamps on every mock call
     // — a lower number means an earlier call.
-    const deleteOrder = storageService.delete.mock.invocationCallOrder[0]
+    const deleteOrder = storageService.deleteUnreferenced.mock.invocationCallOrder[0]
     expect(storageService.upload.mock.invocationCallOrder[0]).toBeLessThan(
       deleteOrder,
     )
@@ -1818,12 +1818,12 @@ describe('UsersService.updateAvatar', () => {
 describe('UsersService.removeAvatar', () => {
   let usersService: UsersService
   let db: ReturnType<typeof avatarTestDb>
-  let storageService: { delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
 
   beforeEach(async () => {
     db = avatarTestDb()
     storageService = {
-      delete: jest.fn().mockResolvedValue(undefined),
+      deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
     }
     const moduleRef = await Test.createTestingModule({
@@ -1845,7 +1845,7 @@ describe('UsersService.removeAvatar', () => {
       NotFoundException,
     )
     expect(db.update).not.toHaveBeenCalled()
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
   })
 
   it('clears avatarPath, then deletes the file, and returns avatarUrl: null', async () => {
@@ -1858,10 +1858,10 @@ describe('UsersService.removeAvatar', () => {
     const result = await usersService.removeAvatar(5, selfUser)
 
     expect(set).toHaveBeenCalledWith({ avatarPath: null })
-    expect(storageService.delete).toHaveBeenCalledWith('avatars/5/OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('avatars/5/OLD.png')
     // The row stops pointing at the file BEFORE the file is deleted.
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
-      storageService.delete.mock.invocationCallOrder[0],
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
     expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
   })
@@ -1872,7 +1872,7 @@ describe('UsersService.removeAvatar', () => {
 
     const result = await usersService.removeAvatar(5, selfUser)
 
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
     expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
   })
 })

@@ -391,7 +391,7 @@ describe('ClinicsService.update', () => {
 
 describe('ClinicsService.updateLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { upload: jest.Mock; delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: { upload: jest.Mock; deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -402,7 +402,7 @@ describe('ClinicsService.updateLogo', () => {
   beforeEach(async () => {
     storageService = {
       upload: jest.fn().mockResolvedValue(undefined),
-      delete: jest.fn().mockResolvedValue(undefined),
+      deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest
         .fn()
         .mockResolvedValue('https://storage.example.com/signed/clinics/1/logo-123.png'),
@@ -479,7 +479,7 @@ describe('ClinicsService.updateLogo', () => {
     })
     // This clinic had no prior logo (the mocked findFirst above returns
     // no logoPath at all) — nothing should be deleted.
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
   })
 
   it('deletes the OLD logo file from storage after a successful replace', async () => {
@@ -502,17 +502,17 @@ describe('ClinicsService.updateLogo', () => {
       buffer: Buffer.from('fake-logo'),
     } as Express.Multer.File)
 
-    expect(storageService.delete).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
     // Deleted AFTER the new file was uploaded and the DB pointed at it —
     // never before, so a failure partway through this method can't leave
     // the clinic pointing at an already-deleted file. invocationCallOrder
     // is plain Jest (no extra matcher library installed here) — lower
     // numbers mean earlier calls.
     expect(storageService.upload.mock.invocationCallOrder[0]).toBeLessThan(
-      storageService.delete.mock.invocationCallOrder[0],
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
-      storageService.delete.mock.invocationCallOrder[0],
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
   })
 
@@ -531,13 +531,13 @@ describe('ClinicsService.updateLogo', () => {
       buffer: Buffer.from('fake-logo'),
     } as Express.Multer.File)
 
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
   })
 })
 
 describe('ClinicsService.removeLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { delete: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -547,7 +547,7 @@ describe('ClinicsService.removeLogo', () => {
 
   beforeEach(async () => {
     storageService = {
-      delete: jest.fn().mockResolvedValue(undefined),
+      deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
     }
     db = {
@@ -576,7 +576,7 @@ describe('ClinicsService.removeLogo', () => {
       NotFoundException,
     )
     expect(db.update).not.toHaveBeenCalled()
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
   })
 
   it('clears logoPath and deletes the file from storage when a logo exists', async () => {
@@ -595,13 +595,13 @@ describe('ClinicsService.removeLogo', () => {
     const result = await clinicsService.removeLogo(1, adminUser)
 
     expect(set).toHaveBeenCalledWith({ logoPath: null })
-    expect(storageService.delete).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
     // The DB update happens before the storage delete — same ordering
     // rule as updateLogo(), for the same reason: a failed storage delete
     // should leave an orphaned file, never a clinic still pointing at
     // one that's already gone.
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
-      storageService.delete.mock.invocationCallOrder[0],
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
     expect(result).toEqual({ id: 1, logoUrl: null })
   })
@@ -618,7 +618,7 @@ describe('ClinicsService.removeLogo', () => {
 
     const result = await clinicsService.removeLogo(1, adminUser)
 
-    expect(storageService.delete).not.toHaveBeenCalled()
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
     expect(result).toEqual({ id: 1, logoUrl: null })
   })
 })

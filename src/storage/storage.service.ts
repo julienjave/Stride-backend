@@ -149,4 +149,33 @@ export class StorageService implements OnModuleInit {
       new DeleteObjectCommand({ Bucket: this.bucket, Key: objectKey }),
     )
   }
+
+  // Best-effort cleanup of a file the database NO LONGER points at — call
+  // it only AFTER the row that referenced the key has been updated.
+  //
+  // Why swallow the error instead of letting it propagate: at this point
+  // the user's change (a new avatar, a removed logo, a removed exercise
+  // photo) is already saved. If the storage server hiccups now, the only
+  // thing left undone is freeing some bytes. Throwing would turn a
+  // SUCCESSFUL change into a 500, the person would see "something went
+  // wrong" and likely retry an action that already worked. An orphaned
+  // file costs a little disk space and nothing else; nothing links to it.
+  //
+  // It's still logged, not silently ignored: a warning naming the key is
+  // what makes the leftover file findable later (a periodic cleanup of
+  // unreferenced keys is noted in deferred-improvements.md).
+  //
+  // Lives HERE, not in each service: avatars, clinic logos and exercise
+  // photos all need exactly this, and one definition means one place that
+  // decides what "best effort" means.
+  async deleteUnreferenced(objectKey: string): Promise<void> {
+    try {
+      await this.delete(objectKey)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.logger.warn(
+        `Could not delete unreferenced object "${objectKey}"; it is left orphaned in storage: ${reason}`,
+      )
+    }
+  }
 }

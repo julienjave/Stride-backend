@@ -314,11 +314,14 @@ export class UsersService {
     // Order matters: upload the new file, point the row at it, and only
     // THEN delete the old one. If anything before this line fails, the
     // user still points at a file that exists. Deleting first would open a
-    // window where the row points at a file that's already gone. The worst
-    // case of this order is the reverse, and harmless: if the delete below
-    // fails, an unreferenced file is left in storage.
+    // window where the row points at a file that's already gone.
+    //
+    // deleteUnreferenced, not delete: the new photo is saved at this point,
+    // so a storage hiccup while cleaning up the OLD file must not turn this
+    // successful upload into an error — it just leaves an orphaned file
+    // (logged). See StorageService.deleteUnreferenced().
     if (existing.avatarPath) {
-      await this.storageService.delete(existing.avatarPath)
+      await this.storageService.deleteUnreferenced(existing.avatarPath)
     }
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
@@ -652,9 +655,10 @@ export class UsersService {
     )
     // Same order as updateAvatar(), same reason: the row stops pointing at
     // the file BEFORE the file is deleted, so a failed delete leaves an
-    // orphaned file, never a user pointing at a missing one.
+    // orphaned file, never a user pointing at a missing one. Best-effort
+    // for the same reason too: the removal is already saved.
     if (existing.avatarPath) {
-      await this.storageService.delete(existing.avatarPath)
+      await this.storageService.deleteUnreferenced(existing.avatarPath)
     }
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(

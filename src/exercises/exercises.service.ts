@@ -323,8 +323,11 @@ export class ExercisesService {
       );
     }
 
-    await this.storageService.delete(objectKey);
-
+    // The row stops listing the photo FIRST, and only then is the file
+    // deleted — the same order as avatars and clinic logos. (This used to
+    // be the other way round: if the UPDATE below failed after the file was
+    // already gone, the exercise kept listing a photo that no longer
+    // existed, and it showed as a broken image.)
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(exercises)
@@ -334,6 +337,11 @@ export class ExercisesService {
         .where(eq(exercises.id, id))
         .returning(),
     );
+
+    // Best-effort: the removal is already saved, so a storage hiccup here
+    // leaves an orphaned file (logged), not an error response.
+    await this.storageService.deleteUnreferenced(objectKey);
+
     return this.withImages(updated);
   }
 
