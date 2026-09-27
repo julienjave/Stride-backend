@@ -151,6 +151,12 @@ describe('Sessions (e2e)', () => {
       password: 'password123',
     });
 
+    // Since the care team (decisions §3), sharing a clinic no longer makes a
+    // practitioner "manage" a patient — being on the patient's care team does.
+    // practitionerA joins through the real endpoint (an empty body = "join").
+    const joinRes = await practitionerA.post(`/users/${patientAId}/care-team`).send({});
+    expect(joinRes.status).toBe(201);
+
     await patientB.post('/auth/register').send({
       email: `patient-b-${stamp}@example.com`,
       password: 'password123',

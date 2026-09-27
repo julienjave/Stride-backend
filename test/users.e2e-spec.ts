@@ -218,6 +218,12 @@ describe('Users (e2e)', () => {
       password: 'password123',
     });
 
+    // Since the care team (decisions §3), sharing a clinic no longer makes a
+    // practitioner "manage" a patient — being on the patient's care team does.
+    // practitionerA joins through the real endpoint (an empty body = "join").
+    const joinRes = await practitionerA.post(`/users/${patient1Id}/care-team`).send({});
+    expect(joinRes.status).toBe(201);
+
     patient2Email = `patient2-${stamp}@example.com`;
     const patient2Res = await admin.post('/users').send({
       email: patient2Email,
@@ -275,7 +281,7 @@ describe('Users (e2e)', () => {
     expect(res.body.firstName).toBe('AdminEdited');
   });
 
-  it('lets a managing practitioner (sharing a clinic) update the patient', async () => {
+  it('lets a managing practitioner (on the care team) update the patient', async () => {
     const res = await practitionerA.patch(`/users/${patient1Id}`).send({ firstName: 'PractitionerEdited' });
     expect(res.status).toBe(200);
     expect(res.body.firstName).toBe('PractitionerEdited');
@@ -294,7 +300,7 @@ describe('Users (e2e)', () => {
     expect(updateRes.status).toBe(403);
   });
 
-  it('scopes GET /users to only clinic-shared patients for a practitioner, and to everyone for an admin — and attaches roles + profile data to both branches', async () => {
+  it('scopes GET /users to only care-team patients for a practitioner, and to everyone for an admin — and attaches roles + profile data to both branches', async () => {
     const forPractitionerA = await practitionerA.get('/users');
     expect(forPractitionerA.status).toBe(200);
     const idsForA = forPractitionerA.body.map((u: any) => u.id);
@@ -357,7 +363,10 @@ describe('Users (e2e)', () => {
 
   it('lets a managing practitioner deactivate one of their own patients', async () => {
     const stamp = Date.now();
-    const create = await admin.post('/users').send({
+    // Created BY practitionerA: a practitioner who creates a patient is put
+    // on their care team automatically (UsersService.create()), which is
+    // what makes them "one of their own patients" here.
+    const create = await practitionerA.post('/users').send({
       email: `managed-delete-${stamp}@example.com`,
       password: 'password123',
       role: 'patient',

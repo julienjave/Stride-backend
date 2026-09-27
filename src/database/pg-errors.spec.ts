@@ -1,6 +1,9 @@
 import { DrizzleQueryError } from 'drizzle-orm'
 import {
+  CARE_TEAM_NO_OVERLAP,
+  isExclusionViolation,
   isUniqueViolation,
+  PG_EXCLUSION_VIOLATION,
   PG_UNIQUE_VIOLATION,
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
 } from './pg-errors'
@@ -58,5 +61,36 @@ describe('isUniqueViolation', () => {
     expect(isUniqueViolation('23505')).toBe(false)
     expect(isUniqueViolation(undefined)).toBe(false)
     expect(isUniqueViolation(null)).toBe(false)
+  })
+})
+
+describe('isExclusionViolation', () => {
+  it('matches an exclusion violation on the named constraint, wrapped by drizzle', () => {
+    const wrapped = new DrizzleQueryError(
+      'insert into "care_team_members" ...',
+      [],
+      pgError(PG_EXCLUSION_VIOLATION, CARE_TEAM_NO_OVERLAP),
+    )
+    expect(isExclusionViolation(wrapped, CARE_TEAM_NO_OVERLAP)).toBe(true)
+  })
+
+  it('is 23P01 — the SQLSTATE Postgres uses for exclusion_violation', () => {
+    expect(PG_EXCLUSION_VIOLATION).toBe('23P01')
+  })
+
+  it('does not match an exclusion violation on a DIFFERENT constraint', () => {
+    expect(
+      isExclusionViolation(
+        pgError(PG_EXCLUSION_VIOLATION, 'other_exclusion'),
+        CARE_TEAM_NO_OVERLAP,
+      ),
+    ).toBe(false)
+  })
+
+  // The two helpers must not be confused for each other: a unique violation
+  // is not an exclusion violation, and vice versa.
+  it('does not match a unique violation, and isUniqueViolation does not match it', () => {
+    expect(isExclusionViolation(pgError(PG_UNIQUE_VIOLATION))).toBe(false)
+    expect(isUniqueViolation(pgError(PG_EXCLUSION_VIOLATION))).toBe(false)
   })
 })

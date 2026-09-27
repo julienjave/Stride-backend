@@ -8,6 +8,19 @@ import {
 import { UsersService } from './users.service'
 import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
+import { CareTeamService } from '../care-team/care-team.service'
+
+// CareTeamService is where the care-team rule lives (and has its own spec).
+// Here it's a stub: these tests are about what THIS service does with the
+// answers — each test that cares sets them through moduleRef.get(...).
+function careTeamStub() {
+  return {
+    isOnCareTeam: jest.fn().mockResolvedValue(false),
+    findPatientIdsForPractitioner: jest.fn().mockResolvedValue([]),
+    linkCreator: jest.fn().mockResolvedValue({ id: 900 }),
+    endLinksWithoutSharedClinic: jest.fn().mockResolvedValue([]),
+  }
+}
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from './dto/create-user.dto'
 import { DrizzleQueryError } from 'drizzle-orm'
@@ -62,6 +75,8 @@ function storageStub() {
 
 describe('UsersService.create', () => {
   let usersService: UsersService
+  let careTeam: ReturnType<typeof careTeamStub>
+  let auditLog: jest.Mock
   let db: {
     query: { users: { findFirst: jest.Mock } }
     transaction: jest.Mock
@@ -81,10 +96,13 @@ describe('UsersService.create', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
     usersService = moduleRef.get(UsersService)
+    careTeam = moduleRef.get(CareTeamService)
+    auditLog = moduleRef.get<{ log: jest.Mock }>(AuditService).log
   })
 
   it('refuses a practitioner creating anything other than a patient account', async () => {
@@ -107,38 +125,64 @@ describe('UsersService.create', () => {
     expect(db.query.users.findFirst).not.toHaveBeenCalled()
   })
 
-  it('allows a practitioner to create a patient account', async () => {
-    db.query.users.findFirst.mockResolvedValue(undefined)
-    db.transaction.mockImplementation((cb: any) =>
-      cb({
-        // withRlsContext() sets two session GUCs via tx.execute() before
-        // invoking the callback, since requestingUser is defined here.
-        execute: jest.fn().mockResolvedValue(undefined),
-        select: emptyClinicsSelect(),
-        insert: jest.fn().mockReturnValue({
-          values: jest.fn().mockReturnValue({
-            returning: jest.fn().mockResolvedValue([
-              {
-                id: 10,
-                email: 'patient@example.com',
-                passwordHash: 'hashed',
-                firstName: 'New',
-                lastName: 'Patient',
-                avatarPath: null,
-                isActive: true,
-              },
-            ]),
-          }),
-        }),
-        query: {
-          clinics: { findFirst: jest.fn() },
-          patientProfiles: {
-            findFirst: jest
-              .fn()
-              .mockResolvedValue({ userId: 10, dateOfBirth: '1990-01-01' }),
-          },
+  // Since the care team: a practitioner-created patient must belong to a
+  // clinic, or nobody (the creator included) could ever reach them.
+  it('refuses a practitioner creating a patient without a clinic', async () => {
+    await expect(
+      usersService.create(
+        {
+          email: 'patient@example.com',
+          password: 'password123',
+          role: UserRole.PATIENT,
+          firstName: 'New',
+          lastName: 'Patient',
+          dateOfBirth: '1990-01-01',
         },
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+      ),
+    ).rejects.toThrow(BadRequestException)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('lets a practitioner create a patient in their clinic, and puts them on the care team', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    // getClinicIdsForUser(): the practitioner belongs to clinic 3.
+    db.select.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockResolvedValue([{ clinicId: 3 }]),
       }),
+    })
+    const tx = {
+      // withRlsContext() sets two session GUCs via tx.execute() before
+      // invoking the callback, since requestingUser is defined here.
+      execute: jest.fn().mockResolvedValue(undefined),
+      select: emptyClinicsSelect(),
+      insert: jest.fn().mockReturnValue({
+        values: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([
+            {
+              id: 10,
+              email: 'patient@example.com',
+              passwordHash: 'hashed',
+              firstName: 'New',
+              lastName: 'Patient',
+              avatarPath: null,
+              isActive: true,
+            },
+          ]),
+        }),
+      }),
+      query: {
+        clinics: { findFirst: jest.fn().mockResolvedValue({ id: 3 }) },
+        patientProfiles: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ userId: 10, dateOfBirth: '1990-01-01' }),
+        },
+      },
+    }
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) =>
+      cb(tx),
     )
 
     const result = await usersService.create(
@@ -149,6 +193,7 @@ describe('UsersService.create', () => {
         firstName: 'New',
         lastName: 'Patient',
         dateOfBirth: '1990-01-01',
+        clinicId: 3,
       },
       { id: 7, activeRole: UserRole.PRACTITIONER },
     )
@@ -159,6 +204,59 @@ describe('UsersService.create', () => {
     // written inside this same insert, but never attached to create()'s own
     // response until attachProfile() started reading it back.
     expect(result.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+
+    // The creator joins the care team INSIDE the same transaction (same tx
+    // object), so the patient and the link exist together or not at all…
+    expect(careTeam.linkCreator).toHaveBeenCalledWith(tx, 10, 7)
+    // …and it's audited, after the transaction.
+    expect(auditLog).toHaveBeenCalledWith({
+      performedBy: 7,
+      action: 'CARE_TEAM_JOINED',
+      targetUserId: 10,
+      entityType: 'care_team_members',
+      entityId: 900,
+      details: { practitionerId: 7, reason: 'Created the patient' },
+    })
+    expect(auditLog.mock.invocationCallOrder[0]).toBeGreaterThan(
+      careTeam.linkCreator.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('does not put an ADMIN who creates a patient on the care team', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      select: emptyClinicsSelect(),
+      insert: jest.fn().mockReturnValue({
+        values: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([
+            { id: 10, email: 'p@example.com', passwordHash: 'x' },
+          ]),
+        }),
+      }),
+      query: {
+        clinics: { findFirst: jest.fn() },
+        patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+    }
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) =>
+      cb(tx),
+    )
+
+    await usersService.create(
+      {
+        email: 'p@example.com',
+        password: 'password123',
+        role: UserRole.PATIENT,
+        firstName: 'New',
+        lastName: 'Patient',
+        dateOfBirth: '1990-01-01',
+      },
+      { id: 1, activeRole: UserRole.ADMIN },
+    )
+
+    expect(careTeam.linkCreator).not.toHaveBeenCalled()
+    expect(auditLog).not.toHaveBeenCalled()
   })
 
   it('rejects an email that already belongs to another account', async () => {
@@ -430,6 +528,7 @@ describe('UsersService.grantRole', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -536,6 +635,7 @@ describe('UsersService.grantRole', () => {
 
 describe('UsersService.findPatientsForPractitioner', () => {
   let usersService: UsersService
+  let careTeam: ReturnType<typeof careTeamStub>
   let db: {
     select: jest.Mock
     selectDistinct: jest.Mock
@@ -566,67 +666,61 @@ describe('UsersService.findPatientsForPractitioner', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
     usersService = moduleRef.get(UsersService)
+    careTeam = moduleRef.get(CareTeamService)
   })
 
-  it('returns an empty list without querying further when the practitioner belongs to no clinic', async () => {
-    db.select.mockReturnValue({
-      from: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+  // Mocks the users query and the two batched queries attachProfilesToMany()
+  // runs after it (roles, clinics), for the given patients.
+  function mockPatientRows(
+    patients: { id: number; email: string }[],
+    clinicRows: { userId: number; id: number; name: string }[] = [],
+  ) {
+    db.selectDistinct.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        innerJoin: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(
+            patients.map((p) => ({ user: { ...p, passwordHash: 'x' } })),
+          ),
+        }),
+      }),
     })
+    db.select
+      // attachProfilesToMany()'s batched userRoles query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(
+            patients.map((p) => ({ userId: p.id, role: UserRole.PATIENT })),
+          ),
+        }),
+      })
+      // attachProfilesToMany()'s batched clinic-membership query.
+      .mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue(clinicRows),
+          }),
+        }),
+      })
+  }
+
+  it('returns an empty list without querying users when the practitioner is on no care team', async () => {
+    careTeam.findPatientIdsForPractitioner.mockResolvedValue([])
 
     const result = await usersService.findPatientsForPractitioner(1)
 
     expect(result).toEqual([])
+    expect(careTeam.findPatientIdsForPractitioner).toHaveBeenCalledWith(1)
     expect(db.selectDistinct).not.toHaveBeenCalled()
   })
 
-  it("returns patients sharing at least one of the practitioner's clinics", async () => {
-    db.select
-      // getClinicIdsForUser()'s query.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
-        }),
-      })
-      // attachProfilesToMany()'s batched userRoles query.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest
-            .fn()
-            .mockResolvedValue([{ userId: 20, role: UserRole.PATIENT }]),
-        }),
-      })
-      // attachProfilesToMany()'s batched clinic-membership query — not
-      // what this test is about, so it resolves to no memberships.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      })
-    db.selectDistinct.mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        innerJoin: jest.fn().mockReturnValue({
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([
-              {
-                user: {
-                  id: 20,
-                  email: 'patient@example.com',
-                  passwordHash: 'hashed',
-                },
-              },
-            ]),
-          }),
-        }),
-      }),
-    })
+  it("returns the patients of the practitioner's care teams, stripped and with their profile", async () => {
+    careTeam.findPatientIdsForPractitioner.mockResolvedValue([20])
+    mockPatientRows([{ id: 20, email: 'patient@example.com' }])
     db.query.patientProfiles.findMany.mockResolvedValue([
       { userId: 20, dateOfBirth: '1990-01-01' },
     ])
@@ -643,55 +737,21 @@ describe('UsersService.findPatientsForPractitioner', () => {
   })
 
   // Dedicated coverage for attachProfilesToMany's clinic-grouping logic
-  // specifically — the test above only ever has ONE user in the result,
-  // so it can't catch a bug where two different users' clinic rows get
-  // mixed together instead of grouped correctly by userId.
+  // specifically — with only ONE user in the result, a bug mixing two
+  // users' clinic rows together couldn't show.
   it("groups each returned patient's OWN clinics separately, not mixed across patients", async () => {
-    db.select
-      // getClinicIdsForUser()'s query.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
-        }),
-      })
-      // attachProfilesToMany()'s batched userRoles query.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([
-            { userId: 20, role: UserRole.PATIENT },
-            { userId: 21, role: UserRole.PATIENT },
-          ]),
-        }),
-      })
-      // attachProfilesToMany()'s batched clinic-membership query — patient
-      // 20 belongs to two clinics, patient 21 to only the shared one.
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([
-              { userId: 20, id: 7, name: 'Shared Clinic' },
-              { userId: 20, id: 1, name: 'Patient 20 Only Clinic' },
-              { userId: 21, id: 7, name: 'Shared Clinic' },
-            ]),
-          }),
-        }),
-      })
-    db.selectDistinct.mockReturnValue({
-      from: jest.fn().mockReturnValue({
-        innerJoin: jest.fn().mockReturnValue({
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([
-              { user: { id: 20, email: 'p20@example.com', passwordHash: 'x' } },
-              { user: { id: 21, email: 'p21@example.com', passwordHash: 'x' } },
-            ]),
-          }),
-        }),
-      }),
-    })
-    db.query.patientProfiles.findMany.mockResolvedValue([
-      { userId: 20, dateOfBirth: '1990-01-01' },
-      { userId: 21, dateOfBirth: '1991-02-02' },
-    ])
+    careTeam.findPatientIdsForPractitioner.mockResolvedValue([20, 21])
+    mockPatientRows(
+      [
+        { id: 20, email: 'p20@example.com' },
+        { id: 21, email: 'p21@example.com' },
+      ],
+      [
+        { userId: 20, id: 7, name: 'Shared Clinic' },
+        { userId: 20, id: 1, name: 'Patient 20 Only Clinic' },
+        { userId: 21, id: 7, name: 'Shared Clinic' },
+      ],
+    )
 
     const result = await usersService.findPatientsForPractitioner(1)
 
@@ -707,71 +767,36 @@ describe('UsersService.findPatientsForPractitioner', () => {
 
 describe('UsersService.isPatientManagedBy', () => {
   let usersService: UsersService
-  let db: { select: jest.Mock }
+  let careTeam: ReturnType<typeof careTeamStub>
 
   beforeEach(async () => {
-    db = { select: jest.fn() }
-
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
-        { provide: DRIZZLE, useValue: db },
+        { provide: DRIZZLE, useValue: {} },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
     usersService = moduleRef.get(UsersService)
+    careTeam = moduleRef.get(CareTeamService)
   })
 
-  it('returns false when the practitioner belongs to no clinic at all', async () => {
-    db.select.mockReturnValue({
-      from: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
-    })
+  // The rule itself is CareTeamService's (and the e2e parity test's); what
+  // matters here is that the arguments aren't swapped on the way through —
+  // isPatientManagedBy takes (patient, practitioner), isOnCareTeam takes
+  // (practitioner, patient).
+  it.each([true, false])(
+    'answers with the care-team check (%s), practitioner first',
+    async (answer) => {
+      careTeam.isOnCareTeam.mockResolvedValue(answer)
 
-    const result = await usersService.isPatientManagedBy(20, 1)
-    expect(result).toBe(false)
-  })
-
-  it('returns true when the patient shares a clinic with the practitioner', async () => {
-    db.select
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
-        }),
-      })
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([{ id: 1 }]),
-          }),
-        }),
-      })
-
-    const result = await usersService.isPatientManagedBy(20, 1)
-    expect(result).toBe(true)
-  })
-
-  it('returns false when the patient does not belong to any shared clinic', async () => {
-    db.select
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ clinicId: 7 }]),
-        }),
-      })
-      .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({
-          where: jest
-            .fn()
-            .mockReturnValue({ limit: jest.fn().mockResolvedValue([]) }),
-        }),
-      })
-
-    const result = await usersService.isPatientManagedBy(20, 1)
-    expect(result).toBe(false)
-  })
+      await expect(usersService.isPatientManagedBy(20, 1)).resolves.toBe(answer)
+      expect(careTeam.isOnCareTeam).toHaveBeenCalledWith(1, 20)
+    },
+  )
 })
 
 describe('UsersService.findOne', () => {
@@ -815,6 +840,7 @@ describe('UsersService.findOne', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -940,6 +966,7 @@ describe('UsersService.update', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -1453,6 +1480,7 @@ describe('UsersService.reactivate', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: auditService },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -1567,6 +1595,7 @@ describe('UsersService.findAll', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -1666,6 +1695,7 @@ describe('UsersService.toPublic', () => {
         { provide: DRIZZLE, useValue: {} },
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -1751,6 +1781,7 @@ describe('UsersService.updateAvatar', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -1832,6 +1863,7 @@ describe('UsersService.removeAvatar', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 

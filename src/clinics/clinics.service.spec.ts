@@ -3,6 +3,19 @@ import { ConflictException, NotFoundException } from '@nestjs/common'
 import { ClinicsService } from './clinics.service'
 import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
+import { CareTeamService } from '../care-team/care-team.service'
+
+// CareTeamService is where the care-team rule lives (and has its own spec).
+// Here it's a stub: these tests are about what THIS service does with the
+// answers — each test that cares sets them through moduleRef.get(...).
+function careTeamStub() {
+  return {
+    isOnCareTeam: jest.fn().mockResolvedValue(false),
+    findPatientIdsForPractitioner: jest.fn().mockResolvedValue([]),
+    linkCreator: jest.fn().mockResolvedValue({ id: 900 }),
+    endLinksWithoutSharedClinic: jest.fn().mockResolvedValue([]),
+  }
+}
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
 
@@ -62,6 +75,7 @@ describe('ClinicsService.addMember', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -168,6 +182,7 @@ describe('ClinicsService.findOne', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -204,6 +219,7 @@ describe('ClinicsService.create', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -290,6 +306,7 @@ describe('ClinicsService.findAll', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -358,6 +375,7 @@ describe('ClinicsService.update', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -423,6 +441,7 @@ describe('ClinicsService.updateLogo', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -563,6 +582,7 @@ describe('ClinicsService.removeLogo', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -639,6 +659,7 @@ describe('ClinicsService.exists', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -683,6 +704,7 @@ describe('ClinicsService.listMembers', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -764,6 +786,7 @@ describe('ClinicsService.deactivate', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -823,6 +846,7 @@ describe('ClinicsService.reactivate', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: auditService },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
@@ -876,6 +900,8 @@ describe('ClinicsService.reactivate', () => {
 
 describe('ClinicsService.removeMember', () => {
   let clinicsService: ClinicsService
+  let careTeam: ReturnType<typeof careTeamStub>
+  let auditLog: jest.Mock
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     delete: jest.Mock
@@ -903,10 +929,13 @@ describe('ClinicsService.removeMember', () => {
           useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
         },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
 
     clinicsService = moduleRef.get(ClinicsService)
+    careTeam = moduleRef.get(CareTeamService)
+    auditLog = moduleRef.get<{ log: jest.Mock }>(AuditService).log
   })
 
   it('throws NotFoundException when the clinic does not exist, without touching the delete', async () => {
@@ -946,5 +975,70 @@ describe('ClinicsService.removeMember', () => {
       'app.current_user_id',
     )
     expect(flattenSqlChunks(executeCalls[1][0])).toContain('app.current_role')
+  })
+
+  // Leaving a clinic ends the care-team links that no longer have a clinic
+  // in common — in the SAME transaction as the membership delete (the same
+  // tx object), after the delete (so the shared-clinic check sees the
+  // membership gone), and each one is audited once committed.
+  it('ends the care-team links left without a shared clinic, in the same transaction, and audits each', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    const where = jest.fn().mockResolvedValue(undefined)
+    db.delete.mockReturnValue({ where })
+    careTeam.endLinksWithoutSharedClinic.mockResolvedValue([
+      { id: 31, patientId: 10, practitionerId: 4 },
+      { id: 32, patientId: 10, practitionerId: 5 },
+    ])
+
+    await clinicsService.removeMember(1, 10, adminUser)
+
+    // tx === db in this suite (see beforeEach).
+    expect(careTeam.endLinksWithoutSharedClinic).toHaveBeenCalledWith(
+      db,
+      10,
+      adminUser.id,
+    )
+    expect(where.mock.invocationCallOrder[0]).toBeLessThan(
+      careTeam.endLinksWithoutSharedClinic.mock.invocationCallOrder[0],
+    )
+    expect(auditLog.mock.calls).toEqual([
+      [
+        {
+          performedBy: adminUser.id,
+          action: 'CARE_TEAM_ENDED',
+          targetUserId: 10,
+          entityType: 'care_team_members',
+          entityId: 31,
+          details: {
+            practitionerId: 4,
+            reason: 'No longer share a clinic',
+            clinicId: 1,
+          },
+        },
+      ],
+      [
+        {
+          performedBy: adminUser.id,
+          action: 'CARE_TEAM_ENDED',
+          targetUserId: 10,
+          entityType: 'care_team_members',
+          entityId: 32,
+          details: {
+            practitionerId: 5,
+            reason: 'No longer share a clinic',
+            clinicId: 1,
+          },
+        },
+      ],
+    ])
+  })
+
+  it('writes no care-team audit entry when no link had to end', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.delete.mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) })
+
+    await clinicsService.removeMember(1, 10, adminUser)
+
+    expect(auditLog).not.toHaveBeenCalled()
   })
 })

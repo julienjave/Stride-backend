@@ -181,6 +181,16 @@ describe('MessagingGateway (e2e)', () => {
     const patientCookie = patientLogin.cookie!;
     const patientMe = await get('/auth/me', patientCookie);
 
+    // Since the care team (decisions §3), starting a conversation needs a
+    // care-team relationship, not just a shared clinic: the practitioner
+    // joins the patient's care team first (an empty body = "join").
+    const joinRes = await post(
+      `/users/${patientMe.id}/care-team`,
+      {},
+      sharedPractitionerCookie,
+    );
+    expect(joinRes.status).toBe(201);
+
     const conversationRes = await post(
       '/conversations',
       { userId: patientMe.id },

@@ -47,24 +47,13 @@ import {
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
 } from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
+import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
+import {
+  CareTeamService,
+  CREATED_PATIENT_REASON,
+} from '../care-team/care-team.service'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
-
-// How long a user's avatarUrl (a presigned RustFS URL) stays valid. Same
-// 24 hours as a clinic logo, for the same reasons (see
-// CLINIC_LOGO_URL_EXPIRY_SECONDS in clinics.service.ts): long enough to
-// outlive an ordinary working session, far shorter than the 7-day login
-// session, so a URL that leaks (browser history, a screenshot, a log
-// line) stops working long before the session that produced it would.
-//
-// One difference from logos, accepted knowingly (design decisions): the
-// logged-in user's OWN avatarUrl arrives through GET /auth/me, which the
-// frontend caches with no expiry and only reloads on a full page load.
-// A tab left open for more than 24 hours without a reload can therefore
-// hold an expired URL. The frontend's UserAvatar falls back to initials
-// when the image fails to load, so the worst case is initials in place
-// of the photo until the next reload — never a broken image.
-const AVATAR_URL_EXPIRY_SECONDS = 60 * 60 * 24
 
 // Runs a write that may store a practitioner's licenseNumber, and turns a
 // duplicate-license failure into a proper 409 Conflict.
@@ -105,6 +94,7 @@ export class UsersService {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
     private readonly auditService: AuditService,
+    private readonly careTeamService: CareTeamService,
   ) {}
 
   // === ROUTES =============================================================
@@ -125,11 +115,20 @@ export class UsersService {
       )
     }
 
+    // Since the care team (2026-09-27), a practitioner creating a patient
+    // must say which clinic the patient belongs to: the practitioner joins
+    // the new patient's care team (below), and a care-team link only grants
+    // access while both people share a clinic. A patient created without
+    // one would be unreachable — for their creator and for everyone else.
+    if (requestingUser?.activeRole === UserRole.PRACTITIONER && !dto.clinicId) {
+      throw new BadRequestException('Choose the clinic this patient belongs to')
+    }
+
     // The one place in this app that actually CREATES a practitioner-patient
     // relationship — every other path that trusts one already going through
     // it (findOne/update/remove on users, AssignedPrograms, Sessions,
-    // MedicalFiles, Messaging) does so via isPatientManagedBy, which checks
-    // REAL shared clinic membership. This check was missing here entirely:
+    // MedicalFiles, Messaging) does so via isPatientManagedBy, which now
+    // checks the care team. This clinic check was missing here entirely:
     // dto.clinicId was only ever verified to exist as a real clinic, never
     // verified as one the REQUESTING practitioner actually belongs to —
     // meaning a practitioner in Clinic A could plant a patient record
@@ -154,8 +153,12 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10)
 
+    // Set inside the transaction when a practitioner creates a patient (see
+    // below), read after it has committed to write the audit entry.
+    let creatorLink: { id: number } | undefined
+
     // Wrapped: creating a practitioner inserts their licenseNumber.
-    return translateDuplicateLicense(() =>
+    const created = await translateDuplicateLicense(() =>
       withRlsContext(this.db, requestingUser, async (tx) => {
         const [user] = await tx
           .insert(users)
@@ -213,6 +216,20 @@ export class UsersService {
           })
         }
 
+        // A practitioner who creates a patient joins their care team, in
+        // this same transaction — the patient, their clinic membership and
+        // this link are all created, or none of them. (The earlier check
+        // guarantees a clinic here, and the RLS insert policy on
+        // care_team_members requires one: it can see the membership just
+        // inserted above, because it's the same transaction.)
+        if (requestingUser?.activeRole === UserRole.PRACTITIONER) {
+          creatorLink = await this.careTeamService.linkCreator(
+            tx,
+            user.id,
+            requestingUser.id,
+          )
+        }
+
         const roles = [dto.role]
         return this.attachProfile(
           { ...(await this.toPublic(user)), roles },
@@ -221,6 +238,24 @@ export class UsersService {
         )
       }),
     )
+
+    // After the commit, not inside the transaction: AuditService writes on
+    // its own connection, so logging from inside could record a link that
+    // a later failure then rolls back.
+    if (creatorLink && requestingUser) {
+      await this.auditService.log({
+        performedBy: requestingUser.id,
+        action: 'CARE_TEAM_JOINED',
+        targetUserId: created.id,
+        entityType: 'care_team_members',
+        entityId: creatorLink.id,
+        details: {
+          practitionerId: requestingUser.id,
+          reason: CREATED_PATIENT_REASON,
+        },
+      })
+    }
+    return created
   }
 
   // Grants an ADDITIONAL role to an already-existing user
@@ -376,9 +411,8 @@ export class UsersService {
     return rows.map((r) => r.role)
   }
 
-  // Shared by findPatientsForPractitioner, isPatientManagedBy, and (new)
-  // create()'s clinic-ownership check below — three places that all
-  // needed "which clinics does this user actually belong to".
+  // Used by create()'s clinic-ownership check: "which clinics does this
+  // user actually belong to".
   private async getClinicIdsForUser(userId: number): Promise<number[]> {
     const rows = await this.db
       .select({ clinicId: userClinics.clinicId })
@@ -387,24 +421,29 @@ export class UsersService {
     return rows.map((r) => r.clinicId)
   }
 
-  // "My patients," for a practitioner — defined as any active patient who
-  // shares at least one clinic with them.
+  // "My patients," for a practitioner: every active patient whose care team
+  // they are on (design decisions §3) — no longer every patient of their
+  // clinics. GET /users (for a practitioner), and the assigned-programs and
+  // sessions lists, are all built from this.
+  //
+  // WHICH patients is CareTeamService's decision (the care-team rule lives
+  // there, once); this method only turns those ids into full user objects.
   async findPatientsForPractitioner(practitionerId: number) {
-    const clinicIds = await this.getClinicIdsForUser(practitionerId)
-    if (clinicIds.length === 0) {
+    const patientIds =
+      await this.careTeamService.findPatientIdsForPractitioner(practitionerId)
+    if (patientIds.length === 0) {
       return []
     }
 
     const rows = await this.db
       .selectDistinct({ user: users })
       .from(users)
-      .innerJoin(userClinics, eq(userClinics.userId, users.id))
       .innerJoin(userRoles, eq(userRoles.userId, users.id))
       .where(
         and(
           eq(userRoles.role, UserRole.PATIENT),
           eq(users.isActive, true),
-          inArray(userClinics.clinicId, clinicIds),
+          inArray(users.id, patientIds),
         ),
       )
 
@@ -413,38 +452,26 @@ export class UsersService {
     )
   }
 
-  // The shared building block behind the PATCH/DELETE ownership checks below
-  // — "is this patient one this practitioner can act on," using the same
-  // clinic-sharing definition as findPatientsForPractitioner.
+  // "May this practitioner act on this patient's clinical data?" — the check
+  // behind every clinical endpoint: profile (GET/PATCH/DELETE /users/:id),
+  // assigned programs, sessions, medical files, starting a conversation.
   //
-  // Mirrored independently in SQL by rls_practitioner_manages_patient() in
-  // src/database/migrations/0003_assigned_programs_rls.sql — same rule,
-  // TypeScript here vs. a Postgres function there, with no automatic check
-  // keeping the two in sync. A future change to either one needs the other
-  // checked too. RLS can only narrow what a query returns, never broaden
-  // it, so a drift here would fail silently: rows would just start going
-  // quietly missing for a practitioner, never throw an error.
+  // Since 2026-09-27 it means "is on the patient's care team" (an active
+  // link AND a clinic they still share), no longer "shares a clinic". It
+  // keeps its name and signature so its ~15 callers — and their unit-test
+  // mocks — didn't have to change; the rule itself lives in
+  // CareTeamService.isOnCareTeam().
+  //
+  // The SQL twin, rls_care_team_member() (migration 0019), is kept in step
+  // by test/care-team.e2e-spec.ts, which runs the same scenarios through
+  // both and requires identical answers. A drift would otherwise fail
+  // silently: RLS can only narrow what a query returns, so rows would just
+  // go quietly missing for a practitioner, never throw an error.
   async isPatientManagedBy(
     patientId: number,
     practitionerId: number,
   ): Promise<boolean> {
-    const clinicIds = await this.getClinicIdsForUser(practitionerId)
-    if (clinicIds.length === 0) {
-      return false
-    }
-
-    const match = await this.db
-      .select()
-      .from(userClinics)
-      .where(
-        and(
-          eq(userClinics.userId, patientId),
-          inArray(userClinics.clinicId, clinicIds),
-        ),
-      )
-      .limit(1)
-
-    return match.length > 0
+    return this.careTeamService.isOnCareTeam(practitionerId, patientId)
   }
 
   async findOne(id: number) {

@@ -21,11 +21,12 @@ import { Module } from '@nestjs/common'
 import { UsersController } from './users.controller'
 import { UsersService } from './users.service'
 import { StorageModule } from '../storage/storage.module'
+import { CareTeamModule } from '../care-team/care-team.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 @Module({
-  imports: [StorageModule],
+  imports: [StorageModule, CareTeamModule],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

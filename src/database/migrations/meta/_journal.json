@@ -127,6 +127,20 @@
       "when": 1790358909642,
       "tag": "0017_redundant_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790545731071,
+      "tag": "0018_sharp_guardian",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790545788942,
+      "tag": "0019_care_team_rls",
+      "breakpoints": true
     }
   ]
 }

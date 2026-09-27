@@ -24,12 +24,22 @@
 // on than the human-readable error message, which can change.
 export const PG_UNIQUE_VIOLATION = '23505'
 
+// 23P01 is "exclusion_violation": a row would break an EXCLUDE constraint —
+// a rule of the form "no two rows may have X equal AND Y overlapping". The
+// care team uses one: no two OVERLAPPING periods for the same patient and
+// practitioner (migration 0019).
+export const PG_EXCLUSION_VIOLATION = '23P01'
+
 // Constraint names this app translates into a 409. Drizzle names a column's
 // .unique() constraint `<table>_<column>_unique` (see migration 0000).
 // Kept as named constants so the service and its tests can't disagree on
 // the spelling.
 export const PRACTITIONER_LICENSE_NUMBER_UNIQUE =
   'practitioner_profiles_license_number_unique'
+
+// Named by hand in migration 0019 (Drizzle can't declare EXCLUDE
+// constraints), so it must match that file exactly.
+export const CARE_TEAM_NO_OVERLAP = 'care_team_members_no_overlap'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -42,8 +52,9 @@ interface PgErrorFields {
   cause?: unknown
 }
 
-// True when `error` is (or wraps) a Postgres unique violation — optionally
-// on one specific constraint.
+// True when `error` is (or wraps) a Postgres error with this SQLSTATE `code`
+// — optionally on one specific constraint. The shared engine behind
+// isUniqueViolation and isExclusionViolation below.
 //
 // Why walk `cause`: drizzle-orm (0.44+) does not rethrow the driver's error
 // as-is. It wraps it in a DrizzleQueryError (which adds the failing SQL and
@@ -56,20 +67,36 @@ interface PgErrorFields {
 // unique constraints, and each deserves its own message ("license number
 // already in use" must not be shown when the real collision was on
 // something else). Passing no constraint matches ANY unique violation.
-export function isUniqueViolation(
-  error: unknown,
-  constraint?: string,
-): boolean {
+function isPgError(error: unknown, code: string, constraint?: string): boolean {
   let current: unknown = error
   for (let depth = 0; depth < 5 && current; depth++) {
     if (typeof current !== 'object') {
       return false
     }
     const fields = current as PgErrorFields
-    if (fields.code === PG_UNIQUE_VIOLATION) {
+    if (fields.code === code) {
       return constraint === undefined || fields.constraint === constraint
     }
     current = fields.cause
   }
   return false
+}
+
+// A unique violation (23505), optionally on one named constraint.
+export function isUniqueViolation(
+  error: unknown,
+  constraint?: string,
+): boolean {
+  return isPgError(error, PG_UNIQUE_VIOLATION, constraint)
+}
+
+// An exclusion violation (23P01), optionally on one named constraint.
+// Same reasoning as isUniqueViolation: the constraint decides atomically,
+// so translating ITS verdict into a 409 is correct under concurrency,
+// where a "check first, then insert" would have a race window.
+export function isExclusionViolation(
+  error: unknown,
+  constraint?: string,
+): boolean {
+  return isPgError(error, PG_EXCLUSION_VIOLATION, constraint)
 }

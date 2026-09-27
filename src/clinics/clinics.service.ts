@@ -33,6 +33,7 @@ import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
+import { CareTeamService } from '../care-team/care-team.service'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -61,6 +62,7 @@ export class ClinicsService {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
     private readonly auditService: AuditService,
+    private readonly careTeamService: CareTeamService,
   ) {}
 
   // Converts a raw clinic row (which carries logoPath, the internal RustFS
@@ -306,21 +308,51 @@ export class ClinicsService {
     return this.withLogoUrl(reactivated)
   }
 
+  // Removes someone from a clinic — and, in the SAME transaction, ends each
+  // of their care-team links that no longer has a clinic in common
+  // (CareTeamService.endLinksWithoutSharedClinic). Either both happen or
+  // neither does: a membership gone but its links still looking active
+  // would make the care-team history lie.
   async removeMember(
     clinicId: number,
     userId: number,
     currentUser: CurrentUser,
   ) {
     await this.findOne(clinicId)
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .delete(userClinics)
-        .where(
-          and(
-            eq(userClinics.clinicId, clinicId),
-            eq(userClinics.userId, userId),
-          ),
-        ),
+    const endedLinks = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        await tx
+          .delete(userClinics)
+          .where(
+            and(
+              eq(userClinics.clinicId, clinicId),
+              eq(userClinics.userId, userId),
+            ),
+          )
+        return this.careTeamService.endLinksWithoutSharedClinic(
+          tx,
+          userId,
+          currentUser.id,
+        )
+      },
     )
+    // One audit entry per ended link, after the commit (see
+    // UsersService.create() for why not inside the transaction).
+    for (const link of endedLinks) {
+      await this.auditService.log({
+        performedBy: currentUser.id,
+        action: 'CARE_TEAM_ENDED',
+        targetUserId: link.patientId,
+        entityType: 'care_team_members',
+        entityId: link.id,
+        details: {
+          practitionerId: link.practitionerId,
+          reason: 'No longer share a clinic',
+          clinicId,
+        },
+      })
+    }
   }
 }
