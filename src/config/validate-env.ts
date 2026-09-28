@@ -15,6 +15,8 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
+import { getEmailTransportKind } from '../email/email-transport.config'
+
 // Called as the very first thing bootstrap() does, before NestFactory.create()
 // even runs — nothing about this app should construct a single module if a
 // critical piece of config is missing or still set to a known-insecure
@@ -42,16 +44,15 @@ export function validateEnv(): void {
     )
   }
 
-  // Email sending is now a real, working feature (Resend),
-  // a missing key here would otherwise only surface the first
-  // time someone actually requests a password reset, as a confusing runtime
-  // failure deep inside EmailService, rather than a clear error at boot.
-  if (!process.env.RESEND_API_KEY) {
-    throw new Error(
-      'Missing required environment variable: RESEND_API_KEY. Set a real API key ' +
-        'from your Resend dashboard before starting the app.',
-    )
-  }
+  // Email delivery: EMAIL_TRANSPORT must be set and valid, 'log' is refused
+  // in production, and RESEND_API_KEY is required only when Resend is the
+  // transport in use. The rules live in getEmailTransportKind() rather
+  // than here, because the e2e tests build the app without main.ts (so
+  // without this function) and EmailModule's factory has to apply the
+  // same rules there. Called here too so a bad value still stops the app
+  // at boot, before any module is built — same principle as everything
+  // else in this function.
+  getEmailTransportKind()
 
   // Same reasoning, applied to MFA secret encryption — validated for both
   // presence AND correct shape (64 hex characters = 32 bytes = AES-256's

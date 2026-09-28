@@ -407,11 +407,13 @@ export class AuthService {
     // ran before the response, while the unknown-email early return above
     // responds in single-digit ms — a timing side-channel that let a
     // caller infer account existence without ever reading the (otherwise
-    // identical) response body. EmailService already turns a Resend-level
-    // send failure into a logged, swallowed no-op rather than a throw
-    // (see its own comment); this .catch() only guards the rarer case
-    // where the call itself rejects (e.g. a network-level failure), so
-    // that case can't become an unhandled rejection either.
+    // identical) response body. EmailService rejects on ANY send failure
+    // (a Resend API error or a network failure alike — it no longer
+    // swallows either itself, see EmailTransport's comment), so this
+    // .catch() is the one place a failed reset email gets logged, and what
+    // keeps it from becoming an unhandled rejection. Logging is all that
+    // can be done here: the caller gets the same 204 whether or not the
+    // email went out, on purpose.
     this.emailService
       .sendPasswordResetEmail(user.email, rawToken)
       .catch((err) =>

@@ -12,12 +12,18 @@ import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import { OTP } from 'otplib'
+import * as bcrypt from 'bcrypt'
 import { AppModule } from '../src/app.module'
+import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { auditLogs } from '../src/database/schema'
 import { withRlsContext } from '../src/database/rls-context'
 import { UserRole } from '../src/users/dto/create-user.dto'
+import {
+  InMemoryEmailTransport,
+  findLink,
+} from './support/in-memory-email-transport'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -43,21 +49,28 @@ describe('Auth (e2e)', () => {
   // the same way AuditController's real /audit-logs route does.
   let adminId: number
   let clinicId: number
-  // Resend's unverified-sandbox mode rejects any recipient outside its own
-  // fixed test addresses outright (422, "Please use our testing email
-  // address instead of domains like example.com") — confirmed directly by
-  // running the audit test below before this fix, not assumed. delivered@
-  // resend.dev is the one account this file registers that's actually safe
-  // to send to; the audit-log test reuses it (see mfaAccountId) rather than
-  // registering its own @example.com account, which doc 28 already
-  // diagnosed as the same root cause for a different test.
-  const resendSafeEmail = 'delivered@resend.dev'
+  // Every email the app sends during this file lands here instead of
+  // leaving the machine (see test/support/in-memory-email-transport.ts).
+  // This replaced live calls to Resend, whose sandbox only delivered to its
+  // own test address (delivered@resend.dev) — which is why this file used
+  // to route every forgot-password call through that one account, and why
+  // no test could ever read a reset link and follow it.
+  const outbox = new InMemoryEmailTransport()
+  // The MFA test registers this account; the audit-log test reuses it
+  // (mfaAccountId) because it needs an account with a known id.
+  const mfaAccountEmail = 'mfa-user@example.com'
   let mfaAccountId: number
 
   beforeAll(async () => {
+    // overrideProvider() swaps what Nest injects under EMAIL_TRANSPORT,
+    // wherever it's asked for inside AppModule — EmailModule's factory
+    // (and so EMAIL_TRANSPORT / RESEND_API_KEY) is never consulted.
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile()
+    })
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(outbox)
+      .compile()
 
     app = moduleRef.createNestApplication()
     app.useGlobalPipes(
@@ -364,14 +377,7 @@ describe('Auth (e2e)', () => {
 
   it('walks the full two-step MFA login flow using the same session throughout', async () => {
     const mfa = mfaAgent()
-    // Resend's unverified-sandbox mode only delivers to the address the
-    // Resend account itself was signed up with, so a random timestamped
-    // address here would only work for whoever's personal Resend account
-    // happens to be configured — non-portable to a teammate, CI, or a
-    // future run. delivered@resend.dev is Resend's own dedicated test
-    // address for exactly this: always succeeds, no account-specific
-    // restriction (documented in Resend's own examples). See docs/journal/17.
-    const mfaEmail = resendSafeEmail
+    const mfaEmail = mfaAccountEmail
 
     const registerRes = await mfa.post('/auth/register').send({
       email: mfaEmail,
@@ -382,7 +388,7 @@ describe('Auth (e2e)', () => {
     })
     expect(registerRes.status).toBe(201)
     // The audit-log test below reuses this same account rather than
-    // registering its own — see the comment on resendSafeEmail.
+    // registering its own — see the comment on mfaAccountEmail.
     mfaAccountId = registerRes.body.id
 
     const setupRes = await mfa.post('/auth/mfa/setup')
@@ -470,25 +476,28 @@ describe('Auth (e2e)', () => {
     expect(switchRes.body.patientProfile).toEqual({
       dateOfBirth: '1990-01-01',
     })
-    // 15s, not Jest's 5s default: this test's forgot-password call above is
-    // a real, awaited round trip to the live Resend API (see docs/journal/17)
-    // — normal latency plus margin, independent of the delivered@resend.dev
-    // switch above, since that fixes deliverability, not network variance.
-  }, 15000)
+  })
 
   it('forgot-password always responds 204, whether or not the email exists — no account enumeration', async () => {
     const stamp = Date.now()
     const agent = request(app.getHttpServer())
 
+    const firstEmail = `single-role-${stamp}-unknown@example.com`
     const knownRes = await agent
       .post('/auth/forgot-password')
-      .send({ email: `single-role-${stamp}-unknown@example.com` })
+      .send({ email: firstEmail })
     expect(knownRes.status).toBe(204)
 
+    const secondEmail = `definitely-does-not-exist-${stamp}@example.com`
     const unknownRes = await agent
       .post('/auth/forgot-password')
-      .send({ email: `definitely-does-not-exist-${stamp}@example.com` })
+      .send({ email: secondEmail })
     expect(unknownRes.status).toBe(204)
+
+    // The other half of "no enumeration": the identical 204 must not be
+    // hiding a difference in what actually happened. No account, no email.
+    expect(outbox.sentTo(firstEmail)).toHaveLength(0)
+    expect(outbox.sentTo(secondEmail)).toHaveLength(0)
   })
 
   // Regression coverage for the fire-and-forget change to the email send in
@@ -498,12 +507,10 @@ describe('Auth (e2e)', () => {
   // back, with no wait/poll/retry, or the fire-and-forget change would have
   // silently reordered work that's supposed to happen before the response.
   //
-  // Reuses the MFA test's already-registered delivered@resend.dev account
-  // (mfaAccountId) instead of registering a fresh @example.com one, which
-  // is what this test originally did — Resend's sandbox rejects any
-  // @example.com recipient outright (422), the same root cause doc 28
-  // diagnosed and fixed for the MFA-flow test specifically, just never
-  // applied here. That account already has ONE PASSWORD_RESET_REQUESTED
+  // Reuses the MFA test's already-registered account (mfaAccountId) — a
+  // workaround from when emails really went to Resend, whose sandbox
+  // rejected @example.com recipients; kept because it costs nothing and
+  // spares a registration. That account already has ONE PASSWORD_RESET_REQUESTED
   // entry from the MFA test's own forgot-password call, so this orders by
   // the newest row (desc(auditLogs.id)) rather than findFirst()'s
   // unspecified order, to actually grab the entry this request just wrote.
@@ -514,7 +521,7 @@ describe('Auth (e2e)', () => {
     const before = Date.now()
     const forgotRes = await request(app.getHttpServer())
       .post('/auth/forgot-password')
-      .send({ email: resendSafeEmail })
+      .send({ email: mfaAccountEmail })
     expect(forgotRes.status).toBe(204)
     const after = Date.now()
 
@@ -557,10 +564,95 @@ describe('Auth (e2e)', () => {
     expect(createdAtMs).toBeLessThanOrEqual(after + 2000)
   })
 
+  // The whole reset flow, the way a user lives it: ask for a reset, open
+  // the email, follow its link, choose a new password. Impossible to test
+  // while emails went to Resend — nothing could read the link back.
+  //
+  // Proves the new password took effect by checking the stored hash, not by
+  // logging in: this file's login calls already use the route's full
+  // allowance (5 per minute, @Throttle on AuthController.login), and a
+  // sixth would fail with 429 for reasons unrelated to this test.
+  it('emails a working reset link that sets the new password, ends existing sessions, and only works once', async () => {
+    const email = 'reset-flow@example.com'
+    const oldPassword = 'password123'
+    const newPassword = 'new-password-456'
+
+    // register logs the new account in, so this agent holds a live session
+    // — the one the reset must end.
+    const user = request.agent(app.getHttpServer())
+    const registerRes = await user.post('/auth/register').send({
+      email,
+      password: oldPassword,
+      firstName: 'Reset',
+      lastName: 'Flow',
+      dateOfBirth: '1990-01-01',
+    })
+    expect(registerRes.status).toBe(201)
+    expect((await user.get('/auth/me')).status).toBe(200)
+
+    const forgotRes = await request(app.getHttpServer())
+      .post('/auth/forgot-password')
+      .send({ email })
+    expect(forgotRes.status).toBe(204)
+
+    // Exactly one email, to this address, with the reset subject. Already
+    // in the outbox although forgotPassword() doesn't await its send — see
+    // InMemoryEmailTransport.send().
+    expect(outbox.sentTo(email)).toHaveLength(1)
+    const resetEmail = outbox.lastSentTo(email)
+    expect(resetEmail.subject).toBe('Reset your Stride password')
+
+    // The link points at the frontend's reset page, carries the raw token
+    // (64 hex characters = the 32 random bytes from forgotPassword()), and
+    // the HTML body links to exactly the same URL as the text body.
+    const link = findLink(resetEmail, '/reset-password')
+    expect(link.origin).toBe(
+      new URL(process.env.FRONTEND_URL ?? 'http://localhost:5173').origin,
+    )
+    const token = link.searchParams.get('token')
+    expect(token).toMatch(/^[0-9a-f]{64}$/)
+    expect(resetEmail.html).toContain(`href="${link.href}"`)
+
+    const resetRes = await request(app.getHttpServer())
+      .post('/auth/reset-password')
+      .send({ token, newPassword })
+    expect(resetRes.status).toBe(204)
+
+    // Read as the owner connection (sessionPool), which isn't subject to
+    // RLS — this checks the stored row itself, not what any route shows.
+    const { rows } = await sessionPool.query<{
+      password_hash: string
+      password_reset_token_hash: string | null
+    }>(
+      'SELECT password_hash, password_reset_token_hash FROM users WHERE email = $1',
+      [email],
+    )
+    expect(await bcrypt.compare(newPassword, rows[0].password_hash)).toBe(true)
+    expect(await bcrypt.compare(oldPassword, rows[0].password_hash)).toBe(false)
+    expect(rows[0].password_reset_token_hash).toBeNull()
+
+    // The session that existed before the reset is gone (see
+    // destroyAllSessionsForUser in resetPassword()).
+    expect((await user.get('/auth/me')).status).toBe(401)
+
+    // Single use: the token was cleared on success, so the same link now
+    // fails — with the same message as a token that never existed.
+    const reuseRes = await request(app.getHttpServer())
+      .post('/auth/reset-password')
+      .send({ token, newPassword: 'another-password-789' })
+    expect(reuseRes.status).toBe(400)
+    expect(reuseRes.body.message).toEqual([
+      'This password reset link is invalid or has expired',
+    ])
+  })
+
   it('rejects a reset-password attempt with a token that was never issued', async () => {
     const res = await request(app.getHttpServer())
       .post('/auth/reset-password')
       .send({ token: 'not-a-real-token', newPassword: 'newpassword123' })
     expect(res.status).toBe(400)
+    expect(res.body.message).toEqual([
+      'This password reset link is invalid or has expired',
+    ])
   })
 })

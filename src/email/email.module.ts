@@ -18,12 +18,24 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
+import { EMAIL_TRANSPORT } from './email-transport'
+import { createEmailTransport } from './email-transport.config'
 import { EmailService } from './email.service'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 @Module({
-  providers: [EmailService],
+  providers: [
+    // A factory provider: instead of a class for Nest to instantiate, a
+    // function whose return value becomes the thing injected under
+    // EMAIL_TRANSPORT. That's how one token resolves to a different class
+    // depending on configuration. Called with no arguments, it reads
+    // process.env (see createEmailTransport's default parameter).
+    { provide: EMAIL_TRANSPORT, useFactory: () => createEmailTransport() },
+    EmailService,
+  ],
+  // Only EmailService is exported: the rest of the app asks for "send a
+  // password reset email", never for a raw transport.
   exports: [EmailService],
 })
 export class EmailModule {}

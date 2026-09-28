@@ -17,47 +17,61 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Injectable, Logger } from '@nestjs/common'
-import { Resend } from 'resend'
+import { Inject, Injectable } from '@nestjs/common'
+import { EMAIL_TRANSPORT, type EmailTransport } from './email-transport'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
+// Decides WHAT each email says — subject, HTML and plain-text bodies, the
+// link inside — and hands the finished email to whichever transport
+// EmailModule chose (see email-transport.ts). Nothing in here knows
+// whether the email goes to Resend, the console, or a test's outbox.
 @Injectable()
 export class EmailService {
-  private readonly logger = new Logger(EmailService.name)
-  private readonly resend = new Resend(process.env.RESEND_API_KEY)
+  // @Inject(EMAIL_TRANSPORT) is needed because the parameter's type is an
+  // interface, which doesn't exist at runtime — Nest can't infer what to
+  // inject from it the way it does for a class-typed parameter, so the
+  // token names it explicitly.
+  constructor(
+    @Inject(EMAIL_TRANSPORT) private readonly transport: EmailTransport,
+  ) {}
 
+  // Rejects if the transport couldn't send. It used to log and swallow a
+  // Resend error itself; now the caller decides (forgotPassword() logs it
+  // and moves on, fire-and-forget — see the comment there).
   async sendPasswordResetEmail(
     toEmail: string,
     rawToken: string,
   ): Promise<void> {
-    const resetUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/reset-password?token=${rawToken}`
+    const resetUrl = `${frontendUrl()}/reset-password?token=${rawToken}`
 
-    // Resend's SDK returns errors as a VALUE ({ error }), never throws them —
-    // must be checked explicitly, or a failed send would silently look
-    // identical to a successful one.
-    const { data, error } = await this.resend.emails.send({
-      from: process.env.EMAIL_FROM ?? 'Stride <onboarding@resend.dev>',
+    await this.transport.send({
+      from: senderAddress(),
       to: toEmail,
       subject: 'Reset your Stride password',
       html: `<p>Someone requested a password reset for this account.</p>
              <p><a href="${resetUrl}">Reset your password</a> — this link expires in 1 hour.</p>
              <p>If you didn't request this, you can safely ignore this email.</p>`,
+      text: [
+        'Someone requested a password reset for this account.',
+        '',
+        `Reset your password: ${resetUrl}`,
+        'This link expires in 1 hour.',
+        '',
+        "If you didn't request this, you can safely ignore this email.",
+      ].join('\n'),
     })
-
-    if (error) {
-      // Logged for operator visibility, but DELIBERATELY not thrown further.
-      // Letting this propagate would give forgotPassword() a different
-      // response (500) than the "email doesn't exist" case (204) — leaking
-      // exactly the account-existence signal that endpoint exists to hide.
-      // A send failure and a nonexistent email must look identical to the caller.
-      this.logger.error(
-        `Failed to send password reset email to ${toEmail}`,
-        error,
-      )
-      return
-    }
-
-    this.logger.log(`Password reset email sent to ${toEmail} (id: ${data?.id})`)
   }
+}
+
+// --- HELPERS -----------------------------------------------------------------------------------------------
+
+// Read on every call rather than once at startup, same as before the
+// transport split — and what lets the spec set these per test.
+function frontendUrl(): string {
+  return process.env.FRONTEND_URL ?? 'http://localhost:5173'
+}
+
+function senderAddress(): string {
+  return process.env.EMAIL_FROM ?? 'Stride <onboarding@resend.dev>'
 }
