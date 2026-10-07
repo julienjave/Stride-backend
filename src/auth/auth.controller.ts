@@ -255,6 +255,20 @@ export class AuthController {
 
   // --- GET ROUTES ---
 
+  // == First-time setup ==
+
+  // Public: the sign-in page asks before anyone is signed in, to decide
+  // whether to offer "First time? Set up Stride" (decisions §3). It reveals
+  // one bit — whether Stride has been set up — which POST
+  // /auth/register-clinic already reveals to anyone (it answers 403 once it
+  // has). One small read; the global rate limit is enough.
+  @Get('setup-status')
+  async setupStatus(): Promise<{ setupComplete: boolean }> {
+    return { setupComplete: await this.authService.isSetupComplete() }
+  }
+
+  // == Current user ==
+
   @UseGuards(SessionAuthGuard)
   @Get('me')
   me(@CurrentUser() user: CurrentUser) {

@@ -342,7 +342,11 @@ describe('AuthService.registerClinic', () => {
         firstName: 'New',
         lastName: 'Admin',
       }),
-    ).rejects.toThrow(ForbiddenException)
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'An administrator account already exists. Ask an existing admin to create additional accounts.',
+      ),
+    )
 
     expect(db.transaction).not.toHaveBeenCalled()
   })
@@ -496,6 +500,40 @@ describe('AuthService.registerClinic', () => {
       tx,
     )
     expect(result.adminProfile).toEqual({ position: 'Clinic Director' })
+  })
+})
+
+// The one definition of "Stride has been set up", shared by GET
+// /auth/setup-status and registerClinic(). Both answers are tested: a method
+// that always said "true" (or always "false") would pass either test alone.
+describe('AuthService.isSetupComplete', () => {
+  let authService: AuthService
+  let findFirst: jest.Mock
+
+  beforeEach(async () => {
+    findFirst = jest.fn()
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: {} },
+        { provide: EmailService, useValue: {} },
+        { provide: DRIZZLE, useValue: { query: { userRoles: { findFirst } } } },
+      ],
+    }).compile()
+    authService = moduleRef.get(AuthService)
+  })
+
+  it('is false while no administrator account exists', async () => {
+    findFirst.mockResolvedValue(undefined)
+
+    await expect(authService.isSetupComplete()).resolves.toBe(false)
+  })
+
+  it('is true once an administrator account exists', async () => {
+    findFirst.mockResolvedValue({ id: 1 })
+
+    await expect(authService.isSetupComplete()).resolves.toBe(true)
   })
 })
 

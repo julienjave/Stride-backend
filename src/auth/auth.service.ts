@@ -83,6 +83,27 @@ export class AuthService {
   // (register() — public self-registration — was removed with invitations;
   // see AuthController. registerClinic() is the one-time first setup.)
 
+  // === FIRST-TIME SETUP ===========================================================
+
+  // Has Stride been set up — does any administrator account exist? The ONE
+  // definition of "set up", used both by GET /auth/setup-status (whether the
+  // sign-in page offers "First time? Set up Stride") and by registerClinic()
+  // below (whether it still runs), so the link can never point at a setup
+  // that refuses to run, nor hide one that would.
+  //
+  // Any admin row counts, a deactivated admin included: setup happened.
+  // (An install whose only admin was deactivated needs a database fix, not a
+  // second founding admin created by whoever finds the setup page first.)
+  // user_roles is readable without a session context (migration 0009), so
+  // this works for a visitor who isn't signed in.
+  async isSetupComplete(): Promise<boolean> {
+    const admin = await this.db.query.userRoles.findFirst({
+      where: eq(userRoles.role, UserRole.ADMIN),
+      columns: { id: true },
+    })
+    return admin !== undefined
+  }
+
   // Bootstraps a brand-new clinic AND its founding admin account together.
   // Gated to only work when NO admin exists anywhere in the system yet —
   // this is deliberately a ONE-TIME setup operation, not an ongoing public
@@ -90,10 +111,7 @@ export class AuthService {
   // isolated multi-tenant boundaries, so letting anyone spin up unlimited
   // clinics indefinitely would be a different product than the one designed.
   async registerClinic(dto: RegisterClinicDto) {
-    const existingAdmin = await this.db.query.userRoles.findFirst({
-      where: eq(userRoles.role, UserRole.ADMIN),
-    })
-    if (existingAdmin) {
+    if (await this.isSetupComplete()) {
       throw new ForbiddenException(
         'An administrator account already exists. Ask an existing admin to create additional accounts.',
       )

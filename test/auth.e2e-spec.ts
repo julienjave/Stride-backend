@@ -121,6 +121,14 @@ describe('Auth (e2e)', () => {
       'TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE',
     )
 
+    // The "before" half of GET /auth/setup-status, checked here because this
+    // is the only moment the database has no admin: an empty install says
+    // setup is NOT done — that's what makes the sign-in page offer it. The
+    // "after" half is a test below.
+    const before = await request(app.getHttpServer()).get('/auth/setup-status')
+    expect(before.status).toBe(200)
+    expect(before.body).toEqual({ setupComplete: false })
+
     adminAgent = admin()
     const stamp = Date.now()
     const clinicRes = await adminAgent.post('/auth/register-clinic').send({
@@ -192,6 +200,20 @@ describe('Auth (e2e)', () => {
         lastName: 'Admin',
       })
     expect(res.status).toBe(403)
+    expect(res.body.message).toEqual([
+      'An administrator account already exists. Ask an existing admin to create additional accounts.',
+    ])
+  })
+
+  // The "after" half (the "before" half is in beforeAll): once the founding
+  // admin exists, setup is done — and a visitor with no session (a plain
+  // request, not an agent) can ask, since the sign-in page asks before
+  // anyone has signed in.
+  it('reports setup as complete once the founding admin exists, to a visitor without a session', async () => {
+    const res = await request(app.getHttpServer()).get('/auth/setup-status')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ setupComplete: true })
   })
 
   // registerClinic()'s clinicAddressLine1 (and friends) are fields on the
