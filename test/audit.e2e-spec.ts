@@ -12,6 +12,9 @@ import connectPgSimple from 'connect-pg-simple';
 import { Pool } from 'pg';
 import { sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
+import { EMAIL_TRANSPORT } from '../src/email/email-transport';
+import { InMemoryEmailTransport } from './support/in-memory-email-transport';
+import { activateAccount } from './support/accounts';
 import { getDatabaseUrl } from '../src/config/database-url';
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 
@@ -35,7 +38,12 @@ describe('Audit (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // Every invitation email lands in memory — tests never send real
+      // email, whatever EMAIL_TRANSPORT says in .env.
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(new InMemoryEmailTransport())
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
@@ -113,12 +121,12 @@ describe('Audit (e2e)', () => {
 
     await admin.post('/users').send({
       email: `practitioner-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Audit',
       lastName: 'Practitioner',
       licenseNumber: `PT-${stamp}`,
     });
+    await activateAccount(sessionPool, `practitioner-${stamp}@example.com`);
     await practitioner.post('/auth/login').send({
       email: `practitioner-${stamp}@example.com`,
       password: 'password123',

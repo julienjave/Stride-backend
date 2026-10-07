@@ -12,6 +12,12 @@ import connectPgSimple from 'connect-pg-simple';
 import { Pool } from 'pg';
 import { sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
+import { EMAIL_TRANSPORT } from '../src/email/email-transport';
+import {
+  InMemoryEmailTransport,
+  findLink,
+} from './support/in-memory-email-transport';
+import { activateAccount } from './support/accounts';
 import { getDatabaseUrl } from '../src/config/database-url';
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 
@@ -24,6 +30,8 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 describe('Users (e2e)', () => {
   let app: INestApplication;
   let sessionPool: Pool;
+  // Kept, not just created inline: the invitation tests read what was sent.
+  const outbox = new InMemoryEmailTransport();
 
   const adminAgent = () => request.agent(app.getHttpServer());
   const practitionerAAgent = () => request.agent(app.getHttpServer());
@@ -37,6 +45,7 @@ describe('Users (e2e)', () => {
   let patient1: ReturnType<typeof patient1Agent>;
   let patient2: ReturnType<typeof patient2Agent>;
   let clinicXId: number;
+  let adminId: number;
   let clinicYId: number;
   let patient1Id: number;
   let patient2Id: number;
@@ -54,7 +63,12 @@ describe('Users (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // Every invitation email lands in memory — tests never send real
+      // email, whatever EMAIL_TRANSPORT says in .env.
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(outbox)
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
@@ -127,6 +141,7 @@ describe('Users (e2e)', () => {
       throw new Error(`Failed to bootstrap the founding admin: ${JSON.stringify(clinicXRes.body)}`);
     }
     clinicXId = clinicXRes.body.clinicId;
+    adminId = clinicXRes.body.id;
 
     const clinicYRes = await admin.post('/clinics').send({
       name: 'Users E2E Clinic Y',
@@ -137,7 +152,6 @@ describe('Users (e2e)', () => {
 
     const practitionerARes = await admin.post('/users').send({
       email: `practitioner-a-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Practitioner',
       lastName: 'A',
@@ -151,6 +165,7 @@ describe('Users (e2e)', () => {
       addressCountry: 'US',
       clinicId: clinicXId,
     });
+    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`);
     expect(practitionerARes.status).toBe(201);
     // Regression coverage for the gap this fix closes: practitioner_profiles
     // is written by UsersService.create() but was never attached to its own
@@ -175,13 +190,13 @@ describe('Users (e2e)', () => {
 
     const practitionerBRes = await admin.post('/users').send({
       email: `practitioner-b-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Practitioner',
       lastName: 'B',
       licenseNumber: `PT-B-${stamp}`,
       clinicId: clinicYId,
     });
+    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`);
     expect(practitionerBRes.status).toBe(201);
     practitionerBId = practitionerBRes.body.id;
     practitionerBLicense = `PT-B-${stamp}`;
@@ -192,7 +207,6 @@ describe('Users (e2e)', () => {
 
     const patient1Res = await admin.post('/users').send({
       email: `patient1-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Patient',
       lastName: 'One',
@@ -204,6 +218,7 @@ describe('Users (e2e)', () => {
       addressCountry: 'US',
       clinicId: clinicXId,
     });
+    await activateAccount(sessionPool, `patient1-${stamp}@example.com`);
     expect(patient1Res.status).toBe(201);
     patient1Id = patient1Res.body.id;
     expect(patient1Res.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
@@ -227,13 +242,13 @@ describe('Users (e2e)', () => {
     patient2Email = `patient2-${stamp}@example.com`;
     const patient2Res = await admin.post('/users').send({
       email: patient2Email,
-      password: 'password123',
       role: 'patient',
       firstName: 'Patient',
       lastName: 'Two',
       dateOfBirth: '1990-01-01',
       clinicId: clinicYId,
     });
+    await activateAccount(sessionPool, patient2Email);
     expect(patient2Res.status).toBe(201);
     patient2Id = patient2Res.body.id;
     await patient2.post('/auth/login').send({
@@ -340,12 +355,12 @@ describe('Users (e2e)', () => {
     const stamp = Date.now();
     const selfCreate = await admin.post('/users').send({
       email: `self-delete-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Self',
       lastName: 'Delete',
       dateOfBirth: '1990-01-01',
     });
+    await activateAccount(sessionPool, `self-delete-${stamp}@example.com`);
     expect(selfCreate.status).toBe(201);
     const selfAgent = request.agent(app.getHttpServer());
     await selfAgent.post('/auth/login').send({
@@ -368,7 +383,6 @@ describe('Users (e2e)', () => {
     // what makes them "one of their own patients" here.
     const create = await practitionerA.post('/users').send({
       email: `managed-delete-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Managed',
       lastName: 'Delete',
@@ -386,7 +400,6 @@ describe('Users (e2e)', () => {
     const stamp = Date.now();
     const create = await admin.post('/users').send({
       email: `unmanaged-delete-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Unmanaged',
       lastName: 'Delete',
@@ -399,11 +412,93 @@ describe('Users (e2e)', () => {
     expect(deleteRes.status).toBe(403);
   });
 
+  // --- Accounts are created by invitation (design decisions §3) ---
+
+  // No password in the request, none stored, and an invitation emailed at
+  // once — the person chooses their own password by accepting it
+  // (test/invitations.e2e-spec.ts tests that half).
+  it('creates an account without a password, and sends it a pending invitation', async () => {
+    const email = `invited-${Date.now()}@example.com`;
+    const res = await admin.post('/users').send({
+      email,
+      role: 'patient',
+      firstName: 'Invited',
+      lastName: 'Patient',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.invitation).toMatchObject({
+      status: 'pending',
+      emailSent: true,
+    });
+    expect(res.body).not.toHaveProperty('passwordHash');
+
+    const { rows } = await sessionPool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [res.body.id],
+    );
+    expect(rows[0].password_hash).toBeNull();
+
+    const sent = outbox.lastSentTo(email);
+    expect(sent.subject).toBe("You're invited to Stride");
+    expect(
+      findLink(sent, '/accept-invitation').searchParams.get('token'),
+    ).toMatch(/^[0-9a-f]{64}$/);
+
+    const history = await admin.get(`/users/${res.body.id}/invitations`);
+    expect(history.body).toHaveLength(1);
+    expect(history.body[0]).toMatchObject({
+      id: res.body.invitation.id,
+      status: 'pending',
+      invitedBy: { id: adminId },
+    });
+  });
+
+  // An old client still sending a password fails loudly (the global
+  // ValidationPipe forbids unknown fields) instead of having it silently
+  // ignored — someone would otherwise believe they had set it.
+  it('refuses a password in the request', async () => {
+    const res = await admin.post('/users').send({
+      email: `with-password-${Date.now()}@example.com`,
+      password: 'password123',
+      role: 'admin',
+      firstName: 'With',
+      lastName: 'Password',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain('property password should not exist');
+  });
+
+  // Against the REAL row-level security: the invitations insert policy
+  // lets a practitioner invite only a patient whose care team they're on.
+  // UsersService.create() links the creator to the care team BEFORE it
+  // creates the invitation, in the same transaction — reversed, the policy
+  // would refuse the INSERT and this creation would fail.
+  it('records the practitioner who creates a patient as the inviter', async () => {
+    const email = `invited-by-practitioner-${Date.now()}@example.com`;
+    const res = await practitionerA.post('/users').send({
+      email,
+      role: 'patient',
+      firstName: 'Invited',
+      lastName: 'ByPractitioner',
+      dateOfBirth: '1990-01-01',
+      clinicId: clinicXId,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.invitation.status).toBe('pending');
+
+    const history = await practitionerA.get(
+      `/users/${res.body.id}/invitations`,
+    );
+    expect(history.body[0].invitedBy.id).toBe(practitionerAId);
+    expect(outbox.sentTo(email)).toHaveLength(1);
+  });
+
   it('rejects a practitioner creating anything other than a patient account', async () => {
     const stamp = Date.now();
     const res = await practitionerA.post('/users').send({
       email: `should-not-be-created-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Should',
       lastName: 'NotWork',
@@ -416,7 +511,6 @@ describe('Users (e2e)', () => {
     const stamp = Date.now();
     const res = await practitionerA.post('/users').send({
       email: `cross-clinic-patient-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Cross',
       lastName: 'Clinic',
@@ -430,7 +524,6 @@ describe('Users (e2e)', () => {
     const stamp = Date.now();
     const res = await practitionerA.post('/users').send({
       email: `own-clinic-patient-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Own',
       lastName: 'Clinic',
@@ -444,7 +537,6 @@ describe('Users (e2e)', () => {
     const stamp = Date.now();
     const res = await admin.post('/users').send({
       email: `admin-cross-clinic-patient-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Admin',
       lastName: 'CrossClinic',
@@ -721,7 +813,6 @@ describe('Users (e2e)', () => {
       const email = `dup-license-${Date.now()}@example.com`;
       const body = {
         email,
-        password: 'password123',
         role: 'practitioner',
         firstName: 'Dup',
         lastName: 'License',

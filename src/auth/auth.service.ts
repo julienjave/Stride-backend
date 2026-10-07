@@ -40,7 +40,6 @@ import {
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { UserRole } from '../users/dto/create-user.dto'
-import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
@@ -81,32 +80,8 @@ export class AuthService {
 
   // === REGISTRATION ============================================================
 
-  async register(dto: RegisterDto) {
-    const user = await this.usersService.create({
-      email: dto.email,
-      password: dto.password,
-      role: UserRole.PATIENT,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      dateOfBirth: dto.dateOfBirth,
-      phone: dto.phone,
-      addressLine1: dto.addressLine1,
-      addressLine2: dto.addressLine2,
-      addressCity: dto.addressCity,
-      addressState: dto.addressState,
-      addressPostalCode: dto.addressPostalCode,
-      addressCountry: dto.addressCountry,
-    })
-
-    await this.auditService.log({
-      performedBy: user.id,
-      action: 'REGISTER',
-      entityType: 'users',
-      entityId: user.id,
-    })
-
-    return { ...user, activeRole: UserRole.PATIENT }
-  }
+  // (register() — public self-registration — was removed with invitations;
+  // see AuthController. registerClinic() is the one-time first setup.)
 
   // Bootstraps a brand-new clinic AND its founding admin account together.
   // Gated to only work when NO admin exists anywhere in the system yet —
@@ -387,7 +362,7 @@ export class AuthService {
     //
     // This UPDATE has no real session to run withRlsContext's usual
     // caller-identity context through — forgotPassword() is a fully public,
-    // unauthenticated endpoint, the same as register(). But unlike an
+    // unauthenticated endpoint, like registerClinic(). But unlike an
     // INSERT, users_update has no "no session context" branch (deliberately
     // — see the migration comment on why a blanket no-context UPDATE would
     // be a materially bigger hole than a no-context INSERT). Instead, this

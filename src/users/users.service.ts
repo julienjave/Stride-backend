@@ -25,7 +25,6 @@ import {
   ForbiddenException,
 } from '@nestjs/common'
 import { eq, and, inArray } from 'drizzle-orm'
-import * as bcrypt from 'bcrypt'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
@@ -47,6 +46,8 @@ import {
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
 } from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
+import { InvitationsService } from '../invitations/invitations.service'
+import type { InvitationStatus } from '../invitations/invitation-status'
 import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
 import {
   CareTeamService,
@@ -88,6 +89,22 @@ async function translateDuplicateLicense<T>(write: () => Promise<T>) {
 }
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
+// --- TYPES -------------------------------------------------------------------------------------------------
+
+// Who is creating an account (and so sending its first invitation).
+type InvitingUser = { id: number; activeRole: UserRole }
+
+// What POST /users adds to the created user: its first invitation, and
+// whether the email went out (false → the screen offers to send it again).
+export interface CreatedUserInvitation {
+  id: number
+  status: InvitationStatus
+  expiresAt: Date
+  emailSent: boolean
+}
+
+// --- SERVICE ------------------------------------------------------------------------------------------------
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -95,6 +112,7 @@ export class UsersService {
     private readonly storageService: StorageService,
     private readonly auditService: AuditService,
     private readonly careTeamService: CareTeamService,
+    private readonly invitationsService: InvitationsService,
   ) {}
 
   // === ROUTES =============================================================
@@ -102,12 +120,20 @@ export class UsersService {
   // --- POST ROUTES ---
 
   // requestingUser is checked against ACTIVE role, not just "has this role somewhere"
-  async create(
-    dto: CreateUserDto,
-    requestingUser?: { id: number; activeRole: UserRole },
-  ) {
+  //
+  // Accounts are created by invitation only (design decisions §3): no
+  // password here. The account is created with none (password_hash NULL),
+  // its first invitation is created in the SAME transaction, and the email
+  // goes out after the commit. The person chooses their own password by
+  // accepting it (POST /invitations/accept) — nobody ever sets someone
+  // else's password.
+  //
+  // requestingUser is required: since public self-registration was removed
+  // (it used to call this with no one signed in), every account is created
+  // by a signed-in admin or practitioner — who is also the inviter.
+  async create(dto: CreateUserDto, requestingUser: InvitingUser) {
     if (
-      requestingUser?.activeRole === UserRole.PRACTITIONER &&
+      requestingUser.activeRole === UserRole.PRACTITIONER &&
       dto.role !== UserRole.PATIENT
     ) {
       throw new ForbiddenException(
@@ -120,7 +146,7 @@ export class UsersService {
     // the new patient's care team (below), and a care-team link only grants
     // access while both people share a clinic. A patient created without
     // one would be unreachable — for their creator and for everyone else.
-    if (requestingUser?.activeRole === UserRole.PRACTITIONER && !dto.clinicId) {
+    if (requestingUser.activeRole === UserRole.PRACTITIONER && !dto.clinicId) {
       throw new BadRequestException('Choose the clinic this patient belongs to')
     }
 
@@ -135,7 +161,7 @@ export class UsersService {
     // directly into Clinic B's roster purely by knowing Clinic B's id.
     // Admin is exempt — admins have legitimate oversight across every
     // clinic, consistent with every other admin-bypass check in this app.
-    if (requestingUser?.activeRole === UserRole.PRACTITIONER && dto.clinicId) {
+    if (requestingUser.activeRole === UserRole.PRACTITIONER && dto.clinicId) {
       const ownClinicIds = await this.getClinicIdsForUser(requestingUser.id)
       if (!ownClinicIds.includes(dto.clinicId)) {
         throw new ForbiddenException(
@@ -151,11 +177,13 @@ export class UsersService {
       throw new ConflictException('A user with this email already exists')
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10)
-
     // Set inside the transaction when a practitioner creates a patient (see
     // below), read after it has committed to write the audit entry.
     let creatorLink: { id: number } | undefined
+    // The first invitation, with its raw token — set inside the transaction,
+    // emailed after it has committed.
+    let issued:
+      Awaited<ReturnType<InvitationsService['insertInvitation']>> | undefined
 
     // Wrapped: creating a practitioner inserts their licenseNumber.
     const created = await translateDuplicateLicense(() =>
@@ -164,7 +192,7 @@ export class UsersService {
           .insert(users)
           .values({
             email: dto.email,
-            passwordHash,
+            // No passwordHash: NULL until the invitation is accepted.
             firstName: dto.firstName,
             lastName: dto.lastName,
             phone: dto.phone,
@@ -222,13 +250,23 @@ export class UsersService {
         // guarantees a clinic here, and the RLS insert policy on
         // care_team_members requires one: it can see the membership just
         // inserted above, because it's the same transaction.)
-        if (requestingUser?.activeRole === UserRole.PRACTITIONER) {
+        if (requestingUser.activeRole === UserRole.PRACTITIONER) {
           creatorLink = await this.careTeamService.linkCreator(
             tx,
             user.id,
             requestingUser.id,
           )
         }
+
+        // AFTER the care-team link, on purpose: the invitations insert
+        // policy (migration 0021) lets a practitioner invite only a patient
+        // whose care team they're on — which, inside this transaction,
+        // they've just joined.
+        issued = await this.invitationsService.insertInvitation(
+          tx,
+          user.id,
+          requestingUser.id,
+        )
 
         const roles = [dto.role]
         return this.attachProfile(
@@ -242,7 +280,7 @@ export class UsersService {
     // After the commit, not inside the transaction: AuditService writes on
     // its own connection, so logging from inside could record a link that
     // a later failure then rolls back.
-    if (creatorLink && requestingUser) {
+    if (creatorLink) {
       await this.auditService.log({
         performedBy: requestingUser.id,
         action: 'CARE_TEAM_JOINED',
@@ -255,7 +293,37 @@ export class UsersService {
         },
       })
     }
-    return created
+
+    // Unreachable — the transaction always sets it — but it tells
+    // TypeScript (and a reader) that the code below has an invitation.
+    if (!issued) {
+      throw new Error('The account was created without an invitation')
+    }
+
+    // The email, after the commit (same order as InvitationsService.send):
+    // a failure doesn't undo the account — it's reported, and the person
+    // who created it can send the invitation again.
+    const emailSent = await this.invitationsService.deliver(
+      created,
+      issued.token,
+      requestingUser,
+    )
+    await this.auditService.log({
+      performedBy: requestingUser.id,
+      action: 'INVITATION_SENT',
+      targetUserId: created.id,
+      entityType: 'invitations',
+      entityId: issued.invitation.id,
+      details: { emailSent },
+    })
+
+    const invitation: CreatedUserInvitation = {
+      id: issued.invitation.id,
+      status: 'pending',
+      expiresAt: issued.invitation.expiresAt,
+      emailSent,
+    }
+    return { ...created, invitation }
   }
 
   // Grants an ADDITIONAL role to an already-existing user

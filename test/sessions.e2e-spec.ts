@@ -12,6 +12,9 @@ import connectPgSimple from 'connect-pg-simple';
 import { Pool } from 'pg';
 import { sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
+import { EMAIL_TRANSPORT } from '../src/email/email-transport';
+import { InMemoryEmailTransport } from './support/in-memory-email-transport';
+import { activateAccount } from './support/accounts';
 import { getDatabaseUrl } from '../src/config/database-url';
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 
@@ -41,7 +44,12 @@ describe('Sessions (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // Every invitation email lands in memory — tests never send real
+      // email, whatever EMAIL_TRANSPORT says in .env.
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(new InMemoryEmailTransport())
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
@@ -111,13 +119,13 @@ describe('Sessions (e2e)', () => {
 
     await admin.post('/users').send({
       email: `practitioner-a-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Practitioner',
       lastName: 'A',
       licenseNumber: `PT-A-${stamp}`,
       clinicId,
     });
+    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`);
     await practitionerA.post('/auth/login').send({
       email: `practitioner-a-${stamp}@example.com`,
       password: 'password123',
@@ -125,12 +133,12 @@ describe('Sessions (e2e)', () => {
 
     await admin.post('/users').send({
       email: `practitioner-b-${stamp}@example.com`,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Practitioner',
       lastName: 'B',
       licenseNumber: `PT-B-${stamp}`,
     });
+    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`);
     await practitionerB.post('/auth/login').send({
       email: `practitioner-b-${stamp}@example.com`,
       password: 'password123',
@@ -138,13 +146,13 @@ describe('Sessions (e2e)', () => {
 
     const patientARes = await admin.post('/users').send({
       email: `patient-a-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Patient',
       lastName: 'A',
       dateOfBirth: '1990-01-01',
       clinicId,
     });
+    await activateAccount(sessionPool, `patient-a-${stamp}@example.com`);
     const patientAId = patientARes.body.id;
     await patientA.post('/auth/login').send({
       email: `patient-a-${stamp}@example.com`,
@@ -157,13 +165,21 @@ describe('Sessions (e2e)', () => {
     const joinRes = await practitionerA.post(`/users/${patientAId}/care-team`).send({});
     expect(joinRes.status).toBe(201);
 
-    await patientB.post('/auth/register').send({
+    // Public self-registration was removed (accounts are created by
+    // invitation): the admin creates this patient instead — still in no
+    // clinic, like the self-registered one it replaces — then the account
+    // is activated (test/support/accounts.ts) and signs in.
+    await admin.post('/users').send({
       email: `patient-b-${stamp}@example.com`,
-      password: 'password123',
       firstName: 'Patient',
       lastName: 'B',
       dateOfBirth: '1990-01-01',
+      role: 'patient',
     });
+    await activateAccount(sessionPool, `patient-b-${stamp}@example.com`);
+    await patientB
+      .post('/auth/login')
+      .send({ email: `patient-b-${stamp}@example.com`, password: 'password123' });
 
     const exerciseRes = await practitionerA.post('/exercises').send({
       name: 'Sessions E2E Squat',

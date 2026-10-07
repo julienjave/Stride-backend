@@ -20,7 +20,6 @@
 import {
   IsEmail,
   IsString,
-  MinLength,
   MaxLength,
   Length,
   IsEnum,
@@ -48,10 +47,11 @@ export class CreateUserDto {
   @MaxLength(255)
   email!: string
 
-  @IsString()
-  @MinLength(8)
-  @MaxLength(128) // bcrypt only ever uses the first 72 bytes, but capping the input avoids wasted work on an oversized one
-  password!: string // the PLAIN password from the request — never stored as-is, see service
+  // No password field (removed with invitations, 2026-10-07): the person
+  // chooses their own when accepting the invitation this creates. Sending
+  // one now gets a 400 — the global ValidationPipe rejects unknown fields
+  // (forbidNonWhitelisted), so an old client fails loudly instead of having
+  // its password silently ignored.
 
   @IsEnum(UserRole)
   role!: UserRole

@@ -8,6 +8,9 @@ import { Pool } from 'pg';
 import { sql } from 'drizzle-orm';
 import { io, Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module';
+import { EMAIL_TRANSPORT } from '../src/email/email-transport';
+import { InMemoryEmailTransport } from './support/in-memory-email-transport';
+import { activateAccount } from './support/accounts';
 import { getDatabaseUrl } from '../src/config/database-url';
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 import { SessionIoAdapter } from '../src/messaging/session-io.adapter';
@@ -63,7 +66,12 @@ describe('MessagingGateway (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // Every invitation email lands in memory — tests never send real
+      // email, whatever EMAIL_TRANSPORT says in .env.
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(new InMemoryEmailTransport())
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
@@ -146,7 +154,6 @@ describe('MessagingGateway (e2e)', () => {
       '/users',
       {
         email: `ws-practitioner-${stamp}@example.com`,
-        password: 'password123',
         role: 'practitioner',
         firstName: 'WS',
         lastName: 'Practitioner',
@@ -155,6 +162,7 @@ describe('MessagingGateway (e2e)', () => {
       },
       adminCookie,
     );
+    await activateAccount(sessionPool, `ws-practitioner-${stamp}@example.com`);
     const practitionerLogin = await post('/auth/login', {
       email: `ws-practitioner-${stamp}@example.com`,
       password: 'password123',
@@ -165,7 +173,6 @@ describe('MessagingGateway (e2e)', () => {
       '/users',
       {
         email: `ws-patient-${stamp}@example.com`,
-        password: 'password123',
         role: 'patient',
         firstName: 'WS',
         lastName: 'Patient',
@@ -174,6 +181,7 @@ describe('MessagingGateway (e2e)', () => {
       },
       adminCookie,
     );
+    await activateAccount(sessionPool, `ws-patient-${stamp}@example.com`);
     const patientLogin = await post('/auth/login', {
       email: `ws-patient-${stamp}@example.com`,
       password: 'password123',
@@ -265,7 +273,6 @@ describe('MessagingGateway (e2e)', () => {
       '/users',
       {
         email: `ws-unrelated-practitioner-${stamp}@example.com`,
-        password: 'password123',
         role: 'practitioner',
         firstName: 'WS',
         lastName: 'Unrelated',
@@ -273,6 +280,7 @@ describe('MessagingGateway (e2e)', () => {
       },
       adminCookie,
     );
+    await activateAccount(sessionPool, `ws-unrelated-practitioner-${stamp}@example.com`);
     const unrelatedLogin = await post('/auth/login', {
       email: `ws-unrelated-practitioner-${stamp}@example.com`,
       password: 'password123',

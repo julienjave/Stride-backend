@@ -20,6 +20,7 @@ import {
   InMemoryEmailTransport,
   findLink,
 } from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
 
 // Invitations (design decisions §3), tested against the real database.
 //
@@ -63,13 +64,21 @@ describe('Invitations (e2e)', () => {
   let patientId: number
   let patientEmail: string
 
-  // The open invitation's token. The database only ever sees its hash.
-  const token = randomBytes(32).toString('hex')
-  const tokenHash = sha256(token)
+  // The patient's open invitation — the one POST /users created with the
+  // account — and its token, read from the invitation email. The database
+  // only ever sees the token's hash.
+  let token: string
+  let tokenHash: string
   let invitationId: number
 
   function sha256(value: string) {
     return createHash('sha256').update(value).digest('hex')
+  }
+
+  // The token from the most recent invitation email to `email`.
+  function tokenSentTo(email: string) {
+    const link = findLink(outbox.lastSentTo(email), '/accept-invitation')
+    return link.searchParams.get('token') as string
   }
 
   // --- Running queries as someone, then throwing the changes away ---------
@@ -258,7 +267,6 @@ describe('Invitations (e2e)', () => {
     const practitionerAEmail = `inv-pa-${stamp}@example.com`
     const createA = await admin.post('/users').send({
       email: practitionerAEmail,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Alice',
       lastName: 'Practitioner',
@@ -267,11 +275,12 @@ describe('Invitations (e2e)', () => {
     })
     expect(createA.status).toBe(201)
     practitionerAId = createA.body.id as number
+    // As if A had accepted their own invitation (test/support/accounts.ts).
+    await activateAccount(sessionPool, practitionerAEmail)
 
     practitionerBEmail = `inv-pb-${stamp}@example.com`
     const createB = await admin.post('/users').send({
       email: practitionerBEmail,
-      password: 'password123',
       role: 'practitioner',
       firstName: 'Bob',
       lastName: 'Practitioner',
@@ -280,10 +289,10 @@ describe('Invitations (e2e)', () => {
     })
     expect(createB.status).toBe(201)
     practitionerBId = createB.body.id as number
+    await activateAccount(sessionPool, practitionerBEmail)
 
     // practitionerA creates the patient, so joins their care team (same
-    // transaction, UsersService.create). Until the invitation endpoints
-    // exist, POST /users still takes a password — removed just below.
+    // transaction, UsersService.create) — and sends their first invitation.
     const loginA = await practitionerA
       .post('/auth/login')
       .send({ email: practitionerAEmail, password: 'password123' })
@@ -291,7 +300,6 @@ describe('Invitations (e2e)', () => {
     patientEmail = `inv-patient-${stamp}@example.com`
     const createPatient = await practitionerA.post('/users').send({
       email: patientEmail,
-      password: 'password123',
       role: 'patient',
       firstName: 'Ines',
       lastName: 'Vited',
@@ -301,20 +309,11 @@ describe('Invitations (e2e)', () => {
     expect(createPatient.status).toBe(201)
     patientId = createPatient.body.id as number
 
-    // The state an invited account is in before accepting: no password, and
-    // one open invitation. Written as the database owner (sessionPool), which
-    // isn't subject to RLS — this is test setup, not what's under test.
-    await sessionPool.query(
-      'UPDATE users SET password_hash = NULL WHERE id = $1',
-      [patientId],
-    )
-    const invitation = await sessionPool.query<{ id: number }>(
-      `INSERT INTO invitations (user_id, token_hash, invited_by, expires_at)
-       VALUES ($1, $2, $3, now() + interval '7 days')
-       RETURNING id`,
-      [patientId, tokenHash, practitionerAId],
-    )
-    invitationId = invitation.rows[0].id
+    // The state every new account starts in: no password, and one open
+    // invitation, sent by its creator.
+    invitationId = createPatient.body.invitation.id as number
+    token = tokenSentTo(patientEmail)
+    tokenHash = sha256(token)
   })
 
   afterAll(async () => {
@@ -350,8 +349,14 @@ describe('Invitations (e2e)', () => {
         .send({ email: practitionerBEmail })
       expect(ordinary.status).toBe(204)
 
-      expect(outbox.sentTo(patientEmail)).toHaveLength(0)
-      expect(outbox.sentTo(practitionerBEmail)).toHaveLength(1)
+      // Both accounts also received their invitation email when they were
+      // created, so count RESET emails only.
+      const resetEmailsTo = (email: string) =>
+        outbox
+          .sentTo(email)
+          .filter((sent) => sent.subject === 'Reset your Stride password')
+      expect(resetEmailsTo(patientEmail)).toHaveLength(0)
+      expect(resetEmailsTo(practitionerBEmail)).toHaveLength(1)
 
       const { rows } = await sessionPool.query<{
         password_reset_token_hash: string | null
@@ -402,9 +407,17 @@ describe('Invitations (e2e)', () => {
   describe('invitations row-level security', () => {
     describe('reading', () => {
       it('lets an admin and the care team see the invitation', async () => {
-        expect((await run(asAdmin(), selectInvitations)).rows).toEqual([
-          { id: invitationId },
-        ])
+        // An admin sees every invitation — the practitioners' own, from
+        // their accounts' creation, included: exactly what the owner
+        // connection (not subject to RLS) sees.
+        const everything = await sessionPool.query<{ id: number }>(
+          'SELECT id FROM invitations ORDER BY id',
+        )
+        expect(everything.rows).toContainEqual({ id: invitationId })
+        expect(
+          (await run(asAdmin(), sql`SELECT id FROM invitations ORDER BY id`))
+            .rows,
+        ).toEqual(everything.rows)
         expect((await run(asPractitionerA(), selectInvitations)).rows).toEqual([
           { id: invitationId },
         ])
@@ -719,14 +732,12 @@ describe('Invitations (e2e)', () => {
   describe('invitation endpoints', () => {
     let practitionerB: ReturnType<typeof agent>
 
-    // A patient created by practitionerA (so on their care team) whose
-    // password is then removed — what POST /users will produce by itself
-    // in step 3, when it stops taking a password.
-    async function createPasswordlessPatient(label: string) {
+    // A patient created by practitionerA — so on their care team, with no
+    // password, and with a first invitation sent by A (UsersService.create).
+    async function createInvitedPatient(label: string) {
       const email = `inv-${label}-${stamp}@example.com`
       const res = await practitionerA.post('/users').send({
         email,
-        password: 'password123',
         role: 'patient',
         firstName: `First-${label}`,
         lastName: 'Patient',
@@ -734,18 +745,7 @@ describe('Invitations (e2e)', () => {
         clinicId,
       })
       expect(res.status).toBe(201)
-      const id = res.body.id as number
-      await sessionPool.query(
-        'UPDATE users SET password_hash = NULL WHERE id = $1',
-        [id],
-      )
-      return { id, email }
-    }
-
-    // The token from the most recent invitation email to `email`.
-    function tokenSentTo(email: string) {
-      const link = findLink(outbox.lastSentTo(email), '/accept-invitation')
-      return link.searchParams.get('token') as string
+      return { id: res.body.id as number, email }
     }
 
     const lookup = (token: string) =>
@@ -764,15 +764,26 @@ describe('Invitations (e2e)', () => {
     })
 
     describe('sending', () => {
-      it('lets the care team send one: it is pending, and emailed with a working link', async () => {
-        const patient = await createPasswordlessPatient('send')
+      it('starts every account with an invitation from its creator, and lets the care team send a new one', async () => {
+        const patient = await createInvitedPatient('send')
 
+        // The first invitation, from POST /users.
         const before = await practitionerA.get(
           `/users/${patient.id}/invitations`,
         )
         expect(before.status).toBe(200)
-        expect(before.body).toEqual([])
+        expect(before.body).toHaveLength(1)
+        expect(before.body[0]).toMatchObject({
+          status: 'pending',
+          invitedBy: { id: practitionerAId },
+        })
+        const email = outbox.lastSentTo(patient.email)
+        expect(email.subject).toBe("You're invited to Stride")
+        expect(email.text).toContain('Hello First-send,')
+        expect(email.text).toContain('Alice Practitioner invited you to join')
+        expect(tokenSentTo(patient.email)).toMatch(/^[0-9a-f]{64}$/)
 
+        // A new one, through the endpoint.
         const res = await practitionerA.post(`/users/${patient.id}/invitations`)
         expect(res.status).toBe(201)
         expect(res.body).toMatchObject({
@@ -789,18 +800,12 @@ describe('Invitations (e2e)', () => {
         // The response never carries the token or its hash.
         expect(res.body).not.toHaveProperty('tokenHash')
         expect(res.body).not.toHaveProperty('token')
-
-        const email = outbox.lastSentTo(patient.email)
-        expect(email.subject).toBe("You're invited to Stride")
-        expect(email.text).toContain('Hello First-send,')
-        expect(email.text).toContain('Alice Practitioner invited you to join')
-        expect(tokenSentTo(patient.email)).toMatch(/^[0-9a-f]{64}$/)
       })
 
       // Same clinic, not on the care team: the rule every clinical action
       // follows.
       it('refuses a practitioner of the same clinic who is not on the care team', async () => {
-        const patient = await createPasswordlessPatient('not-team')
+        const patient = await createInvitedPatient('not-team')
         const res = await practitionerB.post(`/users/${patient.id}/invitations`)
         expect(res.status).toBe(403)
         expect(res.body.message).toEqual([
@@ -814,7 +819,6 @@ describe('Invitations (e2e)', () => {
       it('lets an admin invite a staff account, and refuses a practitioner', async () => {
         const created = await admin.post('/users').send({
           email: `inv-staff-${stamp}@example.com`,
-          password: 'password123',
           role: 'practitioner',
           firstName: 'Staff',
           lastName: 'Member',
@@ -822,10 +826,6 @@ describe('Invitations (e2e)', () => {
           clinicId,
         })
         expect(created.status).toBe(201)
-        await sessionPool.query(
-          'UPDATE users SET password_hash = NULL WHERE id = $1',
-          [created.body.id],
-        )
 
         const byPractitioner = await practitionerA.post(
           `/users/${created.body.id}/invitations`,
@@ -848,7 +848,7 @@ describe('Invitations (e2e)', () => {
       })
 
       it('refuses a deactivated account', async () => {
-        const patient = await createPasswordlessPatient('deactivated-send')
+        const patient = await createInvitedPatient('deactivated-send')
         expect((await admin.delete(`/users/${patient.id}`)).status).toBe(200)
         const res = await admin.post(`/users/${patient.id}/invitations`)
         expect(res.status).toBe(409)
@@ -867,8 +867,7 @@ describe('Invitations (e2e)', () => {
       // Resend = close the open one, open a new one: the old link stops
       // working at once, the new one works, and the history shows both.
       it('makes the previous link stop working, and keeps both in the history', async () => {
-        const patient = await createPasswordlessPatient('resend')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('resend')
         const firstToken = tokenSentTo(patient.email)
 
         const resent = await admin.post(`/users/${patient.id}/invitations`)
@@ -912,7 +911,7 @@ describe('Invitations (e2e)', () => {
       // the partial unique index (201 + 409). Either way, the rule holds:
       // exactly ONE open invitation afterwards.
       it('never leaves two open invitations, even when two sends race', async () => {
-        const patient = await createPasswordlessPatient('send-race')
+        const patient = await createInvitedPatient('send-race')
         const results = await Promise.all([
           practitionerA.post(`/users/${patient.id}/invitations`),
           admin.post(`/users/${patient.id}/invitations`),
@@ -931,8 +930,7 @@ describe('Invitations (e2e)', () => {
       })
 
       it('revokes the open invitation, after which its link stops working', async () => {
-        const patient = await createPasswordlessPatient('revoke')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('revoke')
         const token = tokenSentTo(patient.email)
 
         const revoked = await practitionerA.post(
@@ -968,8 +966,7 @@ describe('Invitations (e2e)', () => {
       // Expiry is set by hand: the test can't wait 7 days. created_at moves
       // back too, so the row still satisfies "expires after creation".
       it('refuses an expired invitation, for lookup and for accept', async () => {
-        const patient = await createPasswordlessPatient('expired')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('expired')
         const token = tokenSentTo(patient.email)
         await sessionPool.query(
           `UPDATE invitations
@@ -1000,8 +997,7 @@ describe('Invitations (e2e)', () => {
       // Deactivated after the email went out: the link must not let the
       // person in. The accept is refused AND rolled back — no password set.
       it("refuses a deactivated account's invitation, for lookup and for accept", async () => {
-        const patient = await createPasswordlessPatient('deactivated-accept')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('deactivated-accept')
         const token = tokenSentTo(patient.email)
         expect((await admin.delete(`/users/${patient.id}`)).status).toBe(200)
 
@@ -1026,8 +1022,7 @@ describe('Invitations (e2e)', () => {
 
       // The case the whole feature is for.
       it('sets the chosen password, so the person can sign in — and the link works only once', async () => {
-        const patient = await createPasswordlessPatient('accept')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('accept')
         const token = tokenSentTo(patient.email)
 
         const res = await accept(token, 'my-own-password')
@@ -1091,8 +1086,7 @@ describe('Invitations (e2e)', () => {
       // accepted — refused by the accepted-or-revoked CHECK as a 500, not a
       // clear 410.)
       it('refuses to accept a revoked invitation', async () => {
-        const patient = await createPasswordlessPatient('accept-revoked')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('accept-revoked')
         const token = tokenSentTo(patient.email)
         await practitionerA.post(`/users/${patient.id}/invitations/revoke`)
 
@@ -1133,8 +1127,7 @@ describe('Invitations (e2e)', () => {
       // Two tabs submitting at the same moment. The conditional UPDATE
       // lets exactly one through; the password stored is that one's.
       it('accepts only one of two simultaneous submissions', async () => {
-        const patient = await createPasswordlessPatient('accept-race')
-        await practitionerA.post(`/users/${patient.id}/invitations`)
+        const patient = await createInvitedPatient('accept-race')
         const token = tokenSentTo(patient.email)
 
         const [first, second] = await Promise.all([

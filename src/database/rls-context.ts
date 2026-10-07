@@ -31,25 +31,22 @@ type CurrentUser = { id: number; activeRole: UserRole }
 // policies during the rollout (medical_files first, more since); callers decide
 // which of their queries actually need to run through the returned tx.
 //
-// currentUser is optional — undefined for the two genuinely unauthenticated
-// callers on the users table (AuthService.register()'s self-signup, routed
-// through UsersService.create()). When undefined, both set_config calls are
-// skipped entirely, so app.current_user_id/app.current_role stay genuinely
-// unset for the transaction, not set to some placeholder value — this is
-// exactly the state users_insert's third policy branch
-// (current_setting(...) IS NULL) checks for. Every other caller across every
-// other service always passes a real, defined currentUser, so this is
-// additive: their behavior is unchanged, since the new branch only triggers
-// on a value none of them ever pass.
+// currentUser is REQUIRED (since 2026-10-07). It used to be optional for
+// one context-less caller: public self-registration, which created accounts
+// through UsersService.create() with nobody signed in. Registration was
+// removed with invitations — every account is now created by a signed-in
+// admin or practitioner — so the compiler now guarantees no request reaches
+// a policy here without a user context. (The one remaining context-less
+// INSERT on users, the first-admin setup in AuthService.registerClinic(),
+// opens its own transaction rather than coming through here; users_insert's
+// "no session context" branch exists for it.)
 export async function withRlsContext<T>(
   db: DrizzleDb,
-  currentUser: CurrentUser | undefined,
+  currentUser: CurrentUser,
   fn: (tx: DrizzleDb) => Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
-    if (currentUser) {
-      await applyUserContext(tx, currentUser)
-    }
+    await applyUserContext(tx, currentUser)
     return fn(tx)
   })
 }

@@ -9,10 +9,24 @@ import { UsersService } from './users.service'
 import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
 import { CareTeamService } from '../care-team/care-team.service'
+import { InvitationsService } from '../invitations/invitations.service'
 
 // CareTeamService is where the care-team rule lives (and has its own spec).
 // Here it's a stub: these tests are about what THIS service does with the
 // answers — each test that cares sets them through moduleRef.get(...).
+// create() hands every new account to InvitationsService: its first
+// invitation inside the transaction, the email after it.
+const INVITATION_EXPIRES_AT = new Date('2026-10-14T10:00:00Z')
+function invitationsStub() {
+  return {
+    insertInvitation: jest.fn().mockResolvedValue({
+      invitation: { id: 500, expiresAt: INVITATION_EXPIRES_AT },
+      token: 'raw-token',
+    }),
+    deliver: jest.fn().mockResolvedValue(true),
+  }
+}
+
 function careTeamStub() {
   return {
     isOnCareTeam: jest.fn().mockResolvedValue(false),
@@ -76,6 +90,7 @@ function storageStub() {
 describe('UsersService.create', () => {
   let usersService: UsersService
   let careTeam: ReturnType<typeof careTeamStub>
+  let invitations: ReturnType<typeof invitationsStub>
   let auditLog: jest.Mock
   let db: {
     query: { users: { findFirst: jest.Mock } }
@@ -97,12 +112,14 @@ describe('UsersService.create', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
     usersService = moduleRef.get(UsersService)
     careTeam = moduleRef.get(CareTeamService)
     auditLog = moduleRef.get<{ log: jest.Mock }>(AuditService).log
+    invitations = moduleRef.get(InvitationsService)
   })
 
   it('refuses a practitioner creating anything other than a patient account', async () => {
@@ -110,7 +127,6 @@ describe('UsersService.create', () => {
       usersService.create(
         {
           email: 'new-practitioner@example.com',
-          password: 'password123',
           role: UserRole.PRACTITIONER,
           firstName: 'New',
           lastName: 'Practitioner',
@@ -132,7 +148,6 @@ describe('UsersService.create', () => {
       usersService.create(
         {
           email: 'patient@example.com',
-          password: 'password123',
           role: UserRole.PATIENT,
           firstName: 'New',
           lastName: 'Patient',
@@ -188,7 +203,6 @@ describe('UsersService.create', () => {
     const result = await usersService.create(
       {
         email: 'patient@example.com',
-        password: 'password123',
         role: UserRole.PATIENT,
         firstName: 'New',
         lastName: 'Patient',
@@ -220,6 +234,87 @@ describe('UsersService.create', () => {
     expect(auditLog.mock.invocationCallOrder[0]).toBeGreaterThan(
       careTeam.linkCreator.mock.invocationCallOrder[0],
     )
+
+    // Invitations: no password is ever written — the users INSERT carries
+    // no passwordHash at all…
+    // A mock's recorded arguments are typed `any`; destructuring the first
+    // call as a one-object tuple gives the inserted values a real type.
+    const insertValues = tx.insert.mock.results[0].value as {
+      values: jest.Mock
+    }
+    const [usersRow] = insertValues.values.mock.calls[0] as [
+      Record<string, unknown>,
+    ]
+    expect(usersRow).not.toHaveProperty('passwordHash')
+    // …the first invitation is created in the SAME transaction, by the
+    // creator, and AFTER the care-team link (the invitations insert policy
+    // only lets a practitioner invite a patient whose care team they're on)…
+    expect(invitations.insertInvitation).toHaveBeenCalledWith(tx, 10, 7)
+    expect(
+      invitations.insertInvitation.mock.invocationCallOrder[0],
+    ).toBeGreaterThan(careTeam.linkCreator.mock.invocationCallOrder[0])
+    // …emailed after the transaction, with the raw token, as the creator…
+    expect(invitations.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 10, email: 'patient@example.com' }),
+      'raw-token',
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+    )
+    expect(auditLog).toHaveBeenCalledWith({
+      performedBy: 7,
+      action: 'INVITATION_SENT',
+      targetUserId: 10,
+      entityType: 'invitations',
+      entityId: 500,
+      details: { emailSent: true },
+    })
+    // …and reported in the response.
+    expect(result.invitation).toEqual({
+      id: 500,
+      status: 'pending',
+      expiresAt: INVITATION_EXPIRES_AT,
+      emailSent: true,
+    })
+  })
+
+  // The account and its invitation exist once the transaction commits; a
+  // failed email is reported, never turned into a failed creation.
+  it('still creates the account when the invitation email fails, and says so', async () => {
+    db.query.users.findFirst.mockResolvedValue(undefined)
+    invitations.deliver.mockResolvedValue(false)
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      select: emptyClinicsSelect(),
+      insert: jest.fn().mockReturnValue({
+        values: jest.fn().mockReturnValue({
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 12, email: 'staff@example.com' }]),
+        }),
+      }),
+      query: {
+        clinics: { findFirst: jest.fn() },
+        adminProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+    }
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
+
+    const result = await usersService.create(
+      {
+        email: 'staff@example.com',
+        role: UserRole.ADMIN,
+        firstName: 'New',
+        lastName: 'Admin',
+      },
+      { id: 1, activeRole: UserRole.ADMIN },
+    )
+
+    expect(result.invitation.emailSent).toBe(false)
+    expect(auditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'INVITATION_SENT',
+        details: { emailSent: false },
+      }),
+    )
   })
 
   it('does not put an ADMIN who creates a patient on the care team', async () => {
@@ -246,7 +341,6 @@ describe('UsersService.create', () => {
     await usersService.create(
       {
         email: 'p@example.com',
-        password: 'password123',
         role: UserRole.PATIENT,
         firstName: 'New',
         lastName: 'Patient',
@@ -256,7 +350,11 @@ describe('UsersService.create', () => {
     )
 
     expect(careTeam.linkCreator).not.toHaveBeenCalled()
-    expect(auditLog).not.toHaveBeenCalled()
+    // Audit entries ARE written now (INVITATION_SENT, for every new
+    // account) — just never a care-team join for an admin.
+    expect(auditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'CARE_TEAM_JOINED' }),
+    )
   })
 
   it('rejects an email that already belongs to another account', async () => {
@@ -266,13 +364,15 @@ describe('UsersService.create', () => {
     })
 
     await expect(
-      usersService.create({
-        email: 'taken@example.com',
-        password: 'password123',
-        role: UserRole.ADMIN,
-        firstName: 'Dup',
-        lastName: 'Licate',
-      }),
+      usersService.create(
+        {
+          email: 'taken@example.com',
+          role: UserRole.ADMIN,
+          firstName: 'Dup',
+          lastName: 'Licate',
+        },
+        { id: 1, activeRole: UserRole.ADMIN },
+      ),
     ).rejects.toThrow(ConflictException)
   })
 
@@ -288,7 +388,6 @@ describe('UsersService.create', () => {
       usersService.create(
         {
           email: 'second-practitioner@example.com',
-          password: 'password123',
           role: UserRole.PRACTITIONER,
           firstName: 'Second',
           lastName: 'Practitioner',
@@ -297,12 +396,17 @@ describe('UsersService.create', () => {
         { id: 9, activeRole: UserRole.ADMIN },
       ),
     ).rejects.toThrow(ConflictException)
+    // Nothing was created, so nothing may be emailed: the email only goes
+    // out after a successful commit.
+    expect(invitations.deliver).not.toHaveBeenCalled()
   })
 
   it('rejects a clinicId that does not correspond to any real clinic', async () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
     db.transaction.mockImplementation((cb: any) =>
       cb({
+        // withRlsContext() sets the creator's session context first.
+        execute: jest.fn().mockResolvedValue(undefined),
         insert: jest.fn().mockReturnValue({
           values: jest.fn().mockReturnValue({
             returning: jest.fn().mockResolvedValue([
@@ -325,14 +429,16 @@ describe('UsersService.create', () => {
     )
 
     await expect(
-      usersService.create({
-        email: 'admin@example.com',
-        password: 'password123',
-        role: UserRole.ADMIN,
-        firstName: 'New',
-        lastName: 'Admin',
-        clinicId: 999,
-      }),
+      usersService.create(
+        {
+          email: 'admin@example.com',
+          role: UserRole.ADMIN,
+          firstName: 'New',
+          lastName: 'Admin',
+          clinicId: 999,
+        },
+        { id: 1, activeRole: UserRole.ADMIN },
+      ),
     ).rejects.toThrow(NotFoundException)
   })
 
@@ -351,7 +457,6 @@ describe('UsersService.create', () => {
       usersService.create(
         {
           email: 'other-clinic-patient@example.com',
-          password: 'password123',
           role: UserRole.PATIENT,
           firstName: 'New',
           lastName: 'Patient',
@@ -408,7 +513,6 @@ describe('UsersService.create', () => {
     const result = await usersService.create(
       {
         email: 'own-clinic-patient@example.com',
-        password: 'password123',
         role: UserRole.PATIENT,
         firstName: 'New',
         lastName: 'Patient',
@@ -458,7 +562,6 @@ describe('UsersService.create', () => {
     const result = await usersService.create(
       {
         email: 'admin-created-patient@example.com',
-        password: 'password123',
         role: UserRole.PATIENT,
         firstName: 'New',
         lastName: 'Patient',
@@ -529,6 +632,7 @@ describe('UsersService.grantRole', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -667,6 +771,7 @@ describe('UsersService.findPatientsForPractitioner', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -777,6 +882,7 @@ describe('UsersService.isPatientManagedBy', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -841,6 +947,7 @@ describe('UsersService.findOne', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -967,6 +1074,7 @@ describe('UsersService.update', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -1481,6 +1589,7 @@ describe('UsersService.reactivate', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: auditService },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -1596,6 +1705,7 @@ describe('UsersService.findAll', () => {
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -1696,6 +1806,7 @@ describe('UsersService.toPublic', () => {
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -1782,6 +1893,7 @@ describe('UsersService.updateAvatar', () => {
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 
@@ -1864,6 +1976,7 @@ describe('UsersService.removeAvatar', () => {
         { provide: StorageService, useValue: storageService },
         { provide: AuditService, useValue: {} },
         { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
 

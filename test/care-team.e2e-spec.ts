@@ -8,6 +8,9 @@ import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
 import { sql, type SQL } from 'drizzle-orm'
 import { AppModule } from '../src/app.module'
+import { EMAIL_TRANSPORT } from '../src/email/email-transport'
+import { InMemoryEmailTransport } from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { CareTeamService } from '../src/care-team/care-team.service'
@@ -67,15 +70,16 @@ describe('Care team (e2e)', () => {
     })
   }
 
-  // Creates a user through the API (as the admin), logs them in on `who`.
+  // Creates a user through the API (as the admin), activates the account
+  // (test/support/accounts.ts — as if the invitation were accepted), and
+  // logs them in on `who`.
   async function createUser(
     who: ReturnType<typeof agent>,
     fields: Record<string, unknown>,
   ) {
-    const res = await admin
-      .post('/users')
-      .send({ password: 'password123', ...fields })
+    const res = await admin.post('/users').send(fields)
     expect(res.status).toBe(201)
+    await activateAccount(sessionPool, fields.email as string)
     await who
       .post('/auth/login')
       .send({ email: fields.email, password: 'password123' })
@@ -85,7 +89,12 @@ describe('Care team (e2e)', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile()
+    })
+      // Every invitation email lands in memory — tests never send real
+      // email, whatever EMAIL_TRANSPORT says in .env.
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue(new InMemoryEmailTransport())
+      .compile()
 
     app = moduleRef.createNestApplication()
     app.useGlobalPipes(

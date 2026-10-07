@@ -38,7 +38,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuthService } from './auth.service'
 import { UsersService } from '../users/users.service'
 import { LoginDto } from './dto/login.dto'
-import { RegisterDto } from './dto/register.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { SwitchRoleDto } from './dto/switch-role.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
@@ -63,16 +62,11 @@ export class AuthController {
 
   // == Register ==
 
-  @Throttle({ default: { limit: 10, ttl: seconds(60) } })
-  @Post('register')
-  async register(@Body() dto: RegisterDto, @Req() req: Request) {
-    const user = await this.authService.register(dto)
-    return new Promise((resolve, reject) => {
-      req.login(user, (err: Error | null) =>
-        err ? reject(err) : resolve(user),
-      )
-    })
-  }
+  // POST /auth/register (public self-registration) was REMOVED with
+  // invitations (design decisions §3, 2026-10-07): accounts are created by an
+  // admin or a practitioner and receive an invitation — a self-registered
+  // patient belonged to no clinic and was visible to nobody. What remains is
+  // the one-time setup of the very first clinic and admin:
 
   // Public, but self-limiting: AuthService.registerClinic() refuses to run
   // at all once any admin account exists — see the comment there.

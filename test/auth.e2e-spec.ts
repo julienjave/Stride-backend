@@ -10,20 +10,13 @@ import session from 'express-session'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
-import { and, desc, eq, sql } from 'drizzle-orm'
-import { OTP } from 'otplib'
-import * as bcrypt from 'bcrypt'
+import { sql } from 'drizzle-orm'
 import { AppModule } from '../src/app.module'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
-import { auditLogs } from '../src/database/schema'
-import { withRlsContext } from '../src/database/rls-context'
-import { UserRole } from '../src/users/dto/create-user.dto'
-import {
-  InMemoryEmailTransport,
-  findLink,
-} from './support/in-memory-email-transport'
+import { InMemoryEmailTransport } from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -31,11 +24,17 @@ import {
 // `docker compose up -d db storage` running, and must be pointed at the
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
+// Signing in: the one-time first setup (register-clinic), sessions, and
+// choosing a role at login. MFA and password recovery are in
+// auth-recovery.e2e-spec.ts — split (2026-10-07) when public registration
+// was removed: the tests that used to get a signed-in account from
+// /auth/register now need a login each, and login allows 5 calls a minute
+// per app instance. Each file builds its own app, so each gets its own 5.
+// This file uses 4.
 describe('Auth (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
   let db: DrizzleDb
-  const otp = new OTP({ strategy: 'totp' })
 
   // register-clinic only ever succeeds ONCE per (truncated) database — the
   // founding admin is bootstrapped a single time here and reused across
@@ -43,23 +42,10 @@ describe('Auth (e2e)', () => {
   // its own.
   const admin = () => request.agent(app.getHttpServer())
   let adminAgent: ReturnType<typeof admin>
-  // audit_logs' own RLS policy (see 0002_audit_logs_rls.sql) only allows
-  // SELECT when app.current_role = 'admin' — the founding admin's id below
-  // is what a direct audit_logs read in a test has to authenticate as,
-  // the same way AuditController's real /audit-logs route does.
-  let adminId: number
   let clinicId: number
-  // Every email the app sends during this file lands here instead of
-  // leaving the machine (see test/support/in-memory-email-transport.ts).
-  // This replaced live calls to Resend, whose sandbox only delivered to its
-  // own test address (delivered@resend.dev) — which is why this file used
-  // to route every forgot-password call through that one account, and why
-  // no test could ever read a reset link and follow it.
+  // Every email the app sends during this file (the invitations POST /users
+  // sends) lands here instead of leaving the machine.
   const outbox = new InMemoryEmailTransport()
-  // The MFA test registers this account; the audit-log test reuses it
-  // (mfaAccountId) because it needs an account with a known id.
-  const mfaAccountEmail = 'mfa-user@example.com'
-  let mfaAccountId: number
 
   beforeAll(async () => {
     // overrideProvider() swaps what Nest injects under EMAIL_TRANSPORT,
@@ -160,7 +146,6 @@ describe('Auth (e2e)', () => {
         `Failed to bootstrap the founding admin: ${JSON.stringify(clinicRes.body)}`,
       )
     }
-    adminId = clinicRes.body.id
     clinicId = clinicRes.body.clinicId
     // Regression coverage for the actual gap this fix closes: adminProfiles
     // is written inside registerClinic()'s own transaction but was never
@@ -193,7 +178,6 @@ describe('Auth (e2e)', () => {
   // session cookie the server issued.
   const patientAgent = () => request.agent(app.getHttpServer())
   const dualRoleAgent = () => request.agent(app.getHttpServer())
-  const mfaAgent = () => request.agent(app.getHttpServer())
 
   it('refuses a second register-clinic once a founding admin already exists', async () => {
     const stamp = Date.now()
@@ -232,9 +216,11 @@ describe('Auth (e2e)', () => {
     const patient = patientAgent()
     const stamp = Date.now()
 
-    const registerRes = await patient.post('/auth/register').send({
+    // Created by the admin (public registration was removed), then activated
+    // as if the invitation were accepted (test/support/accounts.ts).
+    const createRes = await adminAgent.post('/users').send({
       email: `single-role-${stamp}@example.com`,
-      password: 'password123',
+      role: 'patient',
       firstName: 'Single',
       lastName: 'Role',
       dateOfBirth: '1990-01-01',
@@ -244,31 +230,20 @@ describe('Auth (e2e)', () => {
       addressPostalCode: '62704',
       addressCountry: 'US',
     })
-    expect(registerRes.status).toBe(201)
+    expect(createRes.status).toBe(201)
     // Regression coverage: patient_profiles.dateOfBirth is written by
-    // UsersService.create() (which AuthService.register() calls directly)
-    // but was never attached to the response — not even here, on the
-    // account's own creation.
-    expect(registerRes.body.patientProfile).toEqual({
+    // UsersService.create() but was once never attached to the response —
+    // not even on the account's own creation.
+    expect(createRes.body.patientProfile).toEqual({
       dateOfBirth: '1990-01-01',
     })
-    expect(registerRes.body).not.toHaveProperty('practitionerProfile')
-    expect(registerRes.body).not.toHaveProperty('adminProfile')
-    // phone/address now live on `users` itself (moved off patient_profiles),
-    // so they're common to every role — round-tripped here through the
-    // public registration path.
-    expect(registerRes.body.phone).toBe('555-0101')
-    expect(registerRes.body.addressLine1).toBe('1 Patient Lane')
-    // /auth/register already logs the caller in via req.login() — confirm
-    // that session is real before logging out and testing login separately.
-    const meAfterRegister = await patient.get('/auth/me')
-    expect(meAfterRegister.status).toBe(200)
-    expect(meAfterRegister.body.patientProfile).toEqual({
-      dateOfBirth: '1990-01-01',
-    })
-    expect(meAfterRegister.body.phone).toBe('555-0101')
-    expect(meAfterRegister.body.addressLine1).toBe('1 Patient Lane')
-    await patient.post('/auth/logout')
+    expect(createRes.body).not.toHaveProperty('practitionerProfile')
+    expect(createRes.body).not.toHaveProperty('adminProfile')
+    // phone/address live on `users` itself (moved off patient_profiles),
+    // so they're common to every role.
+    expect(createRes.body.phone).toBe('555-0101')
+    expect(createRes.body.addressLine1).toBe('1 Patient Lane')
+    await activateAccount(sessionPool, `single-role-${stamp}@example.com`)
 
     const loginRes = await patient.post('/auth/login').send({
       email: `single-role-${stamp}@example.com`,
@@ -290,13 +265,13 @@ describe('Auth (e2e)', () => {
 
     const createRes = await adminAgent.post('/users').send({
       email: `dual-role-${stamp}@example.com`,
-      password: 'password123',
       role: 'patient',
       firstName: 'Dual',
       lastName: 'Role',
       dateOfBirth: '1990-01-01',
     })
     expect(createRes.status).toBe(201)
+    await activateAccount(sessionPool, `dual-role-${stamp}@example.com`)
     const dualRoleUserId = createRes.body.id
 
     const grantRes = await adminAgent
@@ -373,286 +348,5 @@ describe('Auth (e2e)', () => {
       .post('/auth/switch-role')
       .send({ role: 'admin' })
     expect(switchDenied.status).toBe(403)
-  })
-
-  it('walks the full two-step MFA login flow using the same session throughout', async () => {
-    const mfa = mfaAgent()
-    const mfaEmail = mfaAccountEmail
-
-    const registerRes = await mfa.post('/auth/register').send({
-      email: mfaEmail,
-      password: 'password123',
-      firstName: 'MFA',
-      lastName: 'User',
-      dateOfBirth: '1990-01-01',
-    })
-    expect(registerRes.status).toBe(201)
-    // The audit-log test below reuses this same account rather than
-    // registering its own — see the comment on mfaAccountEmail.
-    mfaAccountId = registerRes.body.id
-
-    const setupRes = await mfa.post('/auth/mfa/setup')
-    expect(setupRes.status).toBe(201)
-    const { secret } = setupRes.body
-    expect(typeof secret).toBe('string')
-
-    const enableCode = await otp.generate({ secret })
-    const enableRes = await mfa
-      .post('/auth/mfa/enable')
-      .send({ code: enableCode })
-    expect(enableRes.status).toBe(204)
-
-    // Also leaves this account with a genuinely pending password-reset
-    // token — forgot-password doesn't touch the current session, only
-    // generates and stores a token — so the me/mfa-verify assertions below
-    // exercise both leak-prone fields at once (mfaSecret from the enabled
-    // MFA, passwordResetTokenHash/Expiry from this).
-    const forgotRes = await request(app.getHttpServer())
-      .post('/auth/forgot-password')
-      .send({ email: mfaEmail })
-    expect(forgotRes.status).toBe(204)
-
-    await mfa.post('/auth/logout')
-
-    const loginRes = await mfa.post('/auth/login').send({
-      email: mfaEmail,
-      password: 'password123',
-    })
-    expect(loginRes.status).toBe(201)
-    expect(loginRes.body).toEqual({ mfaRequired: true })
-
-    // Still MFA-pending, not yet authenticated — the session exists (it's
-    // what carries mfaPending across these two requests) but isAuthenticated()
-    // must stay false until MFA actually succeeds.
-    const meWhilePending = await mfa.get('/auth/me')
-    expect(meWhilePending.status).toBe(401)
-
-    const wrongCodeRes = await mfa
-      .post('/auth/mfa/verify')
-      .send({ code: '000000' })
-    expect(wrongCodeRes.status).toBe(401)
-
-    const verifyCode = await otp.generate({ secret })
-    const verifyRes = await mfa
-      .post('/auth/mfa/verify')
-      .send({ code: verifyCode })
-    expect(verifyRes.status).toBe(201)
-    // Regression coverage: this response body used to be built from
-    // UsersService.findOne(), which only stripped passwordHash — leaking
-    // the encrypted mfaSecret and the pending reset token's hash/expiry
-    // into the very login response right after completing MFA.
-    expect(verifyRes.body).not.toHaveProperty('mfaSecret')
-    expect(verifyRes.body).not.toHaveProperty('passwordResetTokenHash')
-    expect(verifyRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')
-    // Regression coverage: mfa/verify's response comes straight from
-    // findOne() (via req.login(authenticatedUser)) — this is the funnel
-    // fix, exercised end to end through the full two-step MFA path.
-    expect(verifyRes.body.patientProfile).toEqual({
-      dateOfBirth: '1990-01-01',
-    })
-
-    // The SAME agent/session that was MFA-pending a moment ago is now fully
-    // authenticated — no separate login round trip was needed.
-    const meAfterVerify = await mfa.get('/auth/me')
-    expect(meAfterVerify.status).toBe(200)
-    expect(meAfterVerify.body.email).toBe(mfaEmail)
-    expect(meAfterVerify.body).not.toHaveProperty('passwordHash')
-    expect(meAfterVerify.body).not.toHaveProperty('mfaSecret')
-    expect(meAfterVerify.body).not.toHaveProperty('passwordResetTokenHash')
-    expect(meAfterVerify.body).not.toHaveProperty('passwordResetTokenExpiresAt')
-    expect(meAfterVerify.body.patientProfile).toEqual({
-      dateOfBirth: '1990-01-01',
-    })
-
-    // switch-role re-runs req.login() with a freshly deserialized user too
-    // — same leak shape, same fix, same regression risk.
-    const switchRes = await mfa
-      .post('/auth/switch-role')
-      .send({ role: 'patient' })
-    expect(switchRes.status).toBe(201)
-    expect(switchRes.body).not.toHaveProperty('mfaSecret')
-    expect(switchRes.body).not.toHaveProperty('passwordResetTokenHash')
-    expect(switchRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')
-    expect(switchRes.body.patientProfile).toEqual({
-      dateOfBirth: '1990-01-01',
-    })
-  })
-
-  it('forgot-password always responds 204, whether or not the email exists — no account enumeration', async () => {
-    const stamp = Date.now()
-    const agent = request(app.getHttpServer())
-
-    const firstEmail = `single-role-${stamp}-unknown@example.com`
-    const knownRes = await agent
-      .post('/auth/forgot-password')
-      .send({ email: firstEmail })
-    expect(knownRes.status).toBe(204)
-
-    const secondEmail = `definitely-does-not-exist-${stamp}@example.com`
-    const unknownRes = await agent
-      .post('/auth/forgot-password')
-      .send({ email: secondEmail })
-    expect(unknownRes.status).toBe(204)
-
-    // The other half of "no enumeration": the identical 204 must not be
-    // hiding a difference in what actually happened. No account, no email.
-    expect(outbox.sentTo(firstEmail)).toHaveLength(0)
-    expect(outbox.sentTo(secondEmail)).toHaveLength(0)
-  })
-
-  // Regression coverage for the fire-and-forget change to the email send in
-  // forgotPassword(): the token hash / DB UPDATE / audit log write all stay
-  // awaited exactly as before — only the Resend call itself was made
-  // non-blocking. So this row must be readable the INSTANT the 204 comes
-  // back, with no wait/poll/retry, or the fire-and-forget change would have
-  // silently reordered work that's supposed to happen before the response.
-  //
-  // Reuses the MFA test's already-registered account (mfaAccountId) — a
-  // workaround from when emails really went to Resend, whose sandbox
-  // rejected @example.com recipients; kept because it costs nothing and
-  // spares a registration. That account already has ONE PASSWORD_RESET_REQUESTED
-  // entry from the MFA test's own forgot-password call, so this orders by
-  // the newest row (desc(auditLogs.id)) rather than findFirst()'s
-  // unspecified order, to actually grab the entry this request just wrote.
-  it('writes a PASSWORD_RESET_REQUESTED audit entry that is already present by the time the response returns', async () => {
-    const userId = mfaAccountId
-    expect(typeof userId).toBe('number')
-
-    const before = Date.now()
-    const forgotRes = await request(app.getHttpServer())
-      .post('/auth/forgot-password')
-      .send({ email: mfaAccountEmail })
-    expect(forgotRes.status).toBe(204)
-    const after = Date.now()
-
-    // audit_logs has its own RLS SELECT policy requiring
-    // app.current_role = 'admin' (0002_audit_logs_rls.sql) — the founding
-    // admin's id/role from beforeAll is what authenticates this read, same
-    // as the real /audit-logs route would for an admin caller.
-    const entry = await withRlsContext(
-      db,
-      { id: adminId, activeRole: UserRole.ADMIN },
-      (tx) =>
-        tx.query.auditLogs.findFirst({
-          where: and(
-            eq(auditLogs.performedBy, userId),
-            eq(auditLogs.action, 'PASSWORD_RESET_REQUESTED'),
-          ),
-          orderBy: desc(auditLogs.id),
-        }),
-    )
-
-    expect(entry).toBeDefined()
-    expect(entry?.performedBy).toBe(userId)
-    expect(entry?.entityType).toBe('users')
-    expect(entry?.entityId).toBe(userId)
-    expect(entry?.createdAt).toBeInstanceOf(Date)
-    // A real timestamp, not a placeholder — bounded by the request's own
-    // start/end, with a small margin for clock skew between the test
-    // process and the database.
-    //
-    // That margin assumes host/container clock parity, which doesn't
-    // always hold: Docker Desktop's WSL2 VM clock can drift several
-    // seconds ahead of the host (observed directly — `SELECT now()`
-    // in-container vs. `Date.now()` on the host — while diagnosing a flake
-    // in this exact test), which would reopen this assertion if the drift
-    // exceeds 2s. `wsl --shutdown` resyncs it; not run as part of this fix
-    // — host-level infrastructure, out of scope here. See DEPLOYMENT.md
-    // Part 1.
-    const createdAtMs = entry!.createdAt.getTime()
-    expect(createdAtMs).toBeGreaterThanOrEqual(before - 2000)
-    expect(createdAtMs).toBeLessThanOrEqual(after + 2000)
-  })
-
-  // The whole reset flow, the way a user lives it: ask for a reset, open
-  // the email, follow its link, choose a new password. Impossible to test
-  // while emails went to Resend — nothing could read the link back.
-  //
-  // Proves the new password took effect by checking the stored hash, not by
-  // logging in: this file's login calls already use the route's full
-  // allowance (5 per minute, @Throttle on AuthController.login), and a
-  // sixth would fail with 429 for reasons unrelated to this test.
-  it('emails a working reset link that sets the new password, ends existing sessions, and only works once', async () => {
-    const email = 'reset-flow@example.com'
-    const oldPassword = 'password123'
-    const newPassword = 'new-password-456'
-
-    // register logs the new account in, so this agent holds a live session
-    // — the one the reset must end.
-    const user = request.agent(app.getHttpServer())
-    const registerRes = await user.post('/auth/register').send({
-      email,
-      password: oldPassword,
-      firstName: 'Reset',
-      lastName: 'Flow',
-      dateOfBirth: '1990-01-01',
-    })
-    expect(registerRes.status).toBe(201)
-    expect((await user.get('/auth/me')).status).toBe(200)
-
-    const forgotRes = await request(app.getHttpServer())
-      .post('/auth/forgot-password')
-      .send({ email })
-    expect(forgotRes.status).toBe(204)
-
-    // Exactly one email, to this address, with the reset subject. Already
-    // in the outbox although forgotPassword() doesn't await its send — see
-    // InMemoryEmailTransport.send().
-    expect(outbox.sentTo(email)).toHaveLength(1)
-    const resetEmail = outbox.lastSentTo(email)
-    expect(resetEmail.subject).toBe('Reset your Stride password')
-
-    // The link points at the frontend's reset page, carries the raw token
-    // (64 hex characters = the 32 random bytes from forgotPassword()), and
-    // the HTML body links to exactly the same URL as the text body.
-    const link = findLink(resetEmail, '/reset-password')
-    expect(link.origin).toBe(
-      new URL(process.env.FRONTEND_URL ?? 'http://localhost:5173').origin,
-    )
-    const token = link.searchParams.get('token')
-    expect(token).toMatch(/^[0-9a-f]{64}$/)
-    expect(resetEmail.html).toContain(`href="${link.href}"`)
-
-    const resetRes = await request(app.getHttpServer())
-      .post('/auth/reset-password')
-      .send({ token, newPassword })
-    expect(resetRes.status).toBe(204)
-
-    // Read as the owner connection (sessionPool), which isn't subject to
-    // RLS — this checks the stored row itself, not what any route shows.
-    const { rows } = await sessionPool.query<{
-      password_hash: string
-      password_reset_token_hash: string | null
-    }>(
-      'SELECT password_hash, password_reset_token_hash FROM users WHERE email = $1',
-      [email],
-    )
-    expect(await bcrypt.compare(newPassword, rows[0].password_hash)).toBe(true)
-    expect(await bcrypt.compare(oldPassword, rows[0].password_hash)).toBe(false)
-    expect(rows[0].password_reset_token_hash).toBeNull()
-
-    // The session that existed before the reset is gone (see
-    // destroyAllSessionsForUser in resetPassword()).
-    expect((await user.get('/auth/me')).status).toBe(401)
-
-    // Single use: the token was cleared on success, so the same link now
-    // fails — with the same message as a token that never existed.
-    const reuseRes = await request(app.getHttpServer())
-      .post('/auth/reset-password')
-      .send({ token, newPassword: 'another-password-789' })
-    expect(reuseRes.status).toBe(400)
-    expect(reuseRes.body.message).toEqual([
-      'This password reset link is invalid or has expired',
-    ])
-  })
-
-  it('rejects a reset-password attempt with a token that was never issued', async () => {
-    const res = await request(app.getHttpServer())
-      .post('/auth/reset-password')
-      .send({ token: 'not-a-real-token', newPassword: 'newpassword123' })
-    expect(res.status).toBe(400)
-    expect(res.body.message).toEqual([
-      'This password reset link is invalid or has expired',
-    ])
   })
 })
