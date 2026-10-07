@@ -58,3 +58,30 @@ export async function withRlsContext<T>(
     return fn(tx)
   })
 }
+
+// The token holder's context, for the invitation accept page — whose
+// requests have no session at all (the visitor has no password yet). Puts
+// the SHA-256 hash of the emailed token in app.invitation_token_hash for
+// this transaction only; the invitations policies (migration 0021) then let
+// the transaction see and update exactly the one invitation with that hash,
+// and nothing else. Without a matching token it sees no invitation at all.
+//
+// The HASH, not the raw token: it's what the table stores, so the policy
+// compares like with like — and the raw token never reaches the database,
+// not even as a setting.
+//
+// set_config(..., true): transaction-local, like the user context above —
+// the setting is gone when the transaction ends, so it can't leak to the
+// next request that reuses this pooled connection.
+export async function withInvitationTokenContext<T>(
+  db: DrizzleDb,
+  tokenHash: string,
+  fn: (tx: DrizzleDb) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.invitation_token_hash', ${tokenHash}, true)`,
+    )
+    return fn(tx)
+  })
+}

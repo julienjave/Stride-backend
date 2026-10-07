@@ -43,7 +43,14 @@ export const roleEnum = pgEnum('role', ['admin', 'practitioner', 'patient'])
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   email: varchar('email', { length: 255 }).notNull().unique(),
-  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  // NULL = the person hasn't chosen a password yet: the account was created
+  // by invitation (decisions §3) and the invitation hasn't been accepted.
+  // Such an account can't log in, and can't get in through forgot/reset
+  // password either — accepting the invitation is its only way in (see
+  // AuthService.validateUser / forgotPassword / resetPassword). A NULL rather
+  // than a fake "unusable" hash, so "has this person set a password?" is a
+  // fact the code and the database can ask directly.
+  passwordHash: varchar('password_hash', { length: 255 }),
   firstName: varchar('first_name', { length: 100 }).notNull(),
   lastName: varchar('last_name', { length: 100 }).notNull(),
   avatarPath: varchar('avatar_path', { length: 500 }),

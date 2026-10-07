@@ -255,7 +255,16 @@ export class AuthService {
       return null
     }
 
-    const passwordMatches = await bcrypt.compare(password, user.passwordHash)
+    // An account created by invitation has no password until the invitation
+    // is accepted (users.password_hash NULL). It fails exactly like a wrong
+    // password — same null, so the same 401 "Invalid email or password" —
+    // which reveals nothing about the account's state to someone who
+    // doesn't hold the invitation. Checked BEFORE bcrypt.compare(), which
+    // throws on a null hash (a 500, not a 401). Recorded like any failed
+    // attempt against a real account (below).
+    const passwordMatches =
+      user.passwordHash !== null &&
+      (await bcrypt.compare(password, user.passwordHash))
     if (!passwordMatches) {
       // Attributable to a REAL account — this is the security-relevant
       // case worth capturing: repeated failed attempts against one known
@@ -353,7 +362,13 @@ export class AuthService {
     // email matches a real account or not — the response never reveals
     // which case actually happened. Only a real match generates a token
     // and sends an email at all.
-    if (!user) {
+    //
+    // An account with no password yet (created by invitation, not yet
+    // accepted) is treated as no match too. Its only way in is its
+    // invitation: a reset link would let anyone who knows the address — or
+    // the invitee, after an admin REVOKED their invitation — set a password
+    // and walk in around the invitation's checks.
+    if (!user || user.passwordHash === null) {
       return
     }
 
@@ -438,8 +453,13 @@ export class AuthService {
       where: eq(users.passwordResetTokenHash, tokenHash),
     })
 
+    // The passwordHash check is defence in depth: forgotPassword() never
+    // issues a reset token to an account without a password, so a match
+    // here would mean a token got there some other way — and then the
+    // reset must still not become a way around the invitation.
     if (
       !user ||
+      user.passwordHash === null ||
       !user.passwordResetTokenExpiresAt ||
       user.passwordResetTokenExpiresAt < new Date()
     ) {

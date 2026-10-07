@@ -118,6 +118,27 @@ describe('AuthService.validateUser', () => {
     expect(result).toBeNull()
   })
 
+  // An account created by invitation, not yet accepted: no password. It
+  // must fail exactly like a wrong password (null → the controller's 401).
+  // Without the guard, bcrypt.compare() throws on the null hash, so this
+  // test would see a rejected promise (a 500 in real life), not null.
+  it('returns null for an account with no password yet, and records the failed attempt', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'invited@example.com',
+      passwordHash: null,
+      isActive: true,
+    })
+    const result = await authService.validateUser(
+      'invited@example.com',
+      'any-password',
+    )
+    expect(result).toBeNull()
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'LOGIN_FAILURE', performedBy: 1 }),
+    )
+  })
+
   it('auto-selects the active role when the account has exactly one', async () => {
     usersService.findByEmailWithHash.mockResolvedValue({
       id: 1,
@@ -478,6 +499,107 @@ describe('AuthService.registerClinic', () => {
   })
 })
 
+// Had no unit tests until the invitation guard (2026-10-07). The three cases
+// are the two halves of the rule plus the case it exists for: the normal
+// account must still get its email, or "sends nothing" tests would pass
+// for a forgotPassword() that never sends anything at all.
+describe('AuthService.forgotPassword', () => {
+  let authService: AuthService
+  let usersService: {
+    findByEmailWithHash: jest.Mock
+    getRolesForUser: jest.Mock
+  }
+  let db: { transaction: jest.Mock }
+  let emailService: { sendPasswordResetEmail: jest.Mock }
+  let auditService: { log: jest.Mock }
+
+  beforeEach(async () => {
+    usersService = {
+      findByEmailWithHash: jest.fn(),
+      getRolesForUser: jest.fn().mockResolvedValue(['patient']),
+    }
+    // Same transaction stand-in as the resetPassword tests below:
+    // withRlsContext() runs two set_config calls through tx.execute(), then
+    // the token UPDATE through tx.update().set().where(). The callback is
+    // typed rather than `any` (deferred-improvements.md, lint entry).
+    db = {
+      transaction: jest
+        .fn()
+        .mockImplementation((cb: (tx: unknown) => unknown) =>
+          cb({
+            execute: jest.fn().mockResolvedValue(undefined),
+            update: jest.fn().mockReturnValue({
+              set: jest.fn().mockReturnValue({
+                where: jest.fn().mockResolvedValue(undefined),
+              }),
+            }),
+          }),
+        ),
+    }
+    emailService = {
+      sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
+    }
+    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
+        { provide: EmailService, useValue: emailService },
+        { provide: DRIZZLE, useValue: db },
+      ],
+    }).compile()
+
+    authService = moduleRef.get(AuthService)
+  })
+
+  it('stores a reset token and emails the raw token to an account with a password', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: 'a-bcrypt-hash',
+    })
+
+    await authService.forgotPassword('jane@example.com')
+
+    expect(db.transaction).toHaveBeenCalledTimes(1)
+    expect(emailService.sendPasswordResetEmail).toHaveBeenCalledWith(
+      'jane@example.com',
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+    )
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'PASSWORD_RESET_REQUESTED' }),
+    )
+  })
+
+  it('does nothing for an email that matches no account', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue(undefined)
+
+    await authService.forgotPassword('nobody@example.com')
+
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(emailService.sendPasswordResetEmail).not.toHaveBeenCalled()
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  // The invitation is such an account's only way in: no token stored, no
+  // email sent, nothing audited — indistinguishable from "no account".
+  it('does nothing for an account with no password yet', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'invited@example.com',
+      passwordHash: null,
+    })
+
+    await authService.forgotPassword('invited@example.com')
+
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(emailService.sendPasswordResetEmail).not.toHaveBeenCalled()
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+})
+
 describe('AuthService.resetPassword', () => {
   let authService: AuthService
   let db: {
@@ -524,6 +646,22 @@ describe('AuthService.resetPassword', () => {
     await expect(
       authService.resetPassword('bogus-token', 'newpassword123'),
     ).rejects.toThrow(BadRequestException)
+  })
+
+  // Defence in depth: forgotPassword() never gives such an account a reset
+  // token, but if one got there anyway, the reset must still refuse — same
+  // message as any invalid link, and nothing written.
+  it('rejects a valid, unexpired token on an account with no password yet', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      passwordHash: null,
+      passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+    })
+
+    await expect(
+      authService.resetPassword('valid-token', 'newpassword123'),
+    ).rejects.toThrow('This password reset link is invalid or has expired')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('rejects a token that has already expired', async () => {
