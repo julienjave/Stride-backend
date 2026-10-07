@@ -41,6 +41,12 @@ export const PRACTITIONER_LICENSE_NUMBER_UNIQUE =
 // constraints), so it must match that file exactly.
 export const CARE_TEAM_NO_OVERLAP = 'care_team_members_no_overlap'
 
+// The partial unique index allowing at most one OPEN invitation per account
+// (migration 0020). Hit when two "send invitation" requests race: the loser's
+// INSERT finds the winner's fresh open invitation. InvitationsService turns it
+// into a 409.
+export const INVITATIONS_ONE_OPEN = 'invitations_one_open_per_user'
+
 // --- HELPER ------------------------------------------------------------------------------------------------
 
 // The shape we read off a Postgres error. node-postgres's DatabaseError

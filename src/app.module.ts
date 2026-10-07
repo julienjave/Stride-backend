@@ -25,6 +25,7 @@ import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
 import { UsersModule } from './users/users.module'
 import { CareTeamModule } from './care-team/care-team.module'
+import { InvitationsModule } from './invitations/invitations.module'
 import { AuthModule } from './auth/auth.module'
 import { ExercisesModule } from './exercises/exercises.module'
 import { ClinicsModule } from './clinics/clinics.module'
@@ -81,6 +82,7 @@ import { HealthModule } from './health/health.module'
     StorageModule,
     UsersModule,
     CareTeamModule,
+    InvitationsModule,
     AuthModule,
     ExercisesModule,
     ClinicsModule,

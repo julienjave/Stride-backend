@@ -17,7 +17,7 @@
 
 import { Test } from '@nestjs/testing'
 import { EMAIL_TRANSPORT, type OutgoingEmail } from './email-transport'
-import { EmailService } from './email.service'
+import { EmailService, describeWhere } from './email.service'
 
 describe('EmailService', () => {
   let service: EmailService
@@ -93,5 +93,87 @@ describe('EmailService', () => {
         service.sendPasswordResetEmail('user@example.com', 'abc123'),
       ).rejects.toThrow('delivery failed')
     })
+  })
+
+  describe('sendInvitationEmail', () => {
+    const invitation = {
+      to: 'jane@example.com',
+      rawToken: 'tok123',
+      firstName: 'Jane',
+      invitedByName: 'Alice Martin',
+      clinicNames: ['Clinique Sud'],
+      validForDays: 7,
+    }
+
+    it('sends one email to the invited person, from EMAIL_FROM, with a fixed subject', async () => {
+      await service.sendInvitationEmail(invitation)
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('jane@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe("You're invited to Stride")
+    })
+
+    it('puts the accept link, the greeting, the inviter, the clinic and the validity in both bodies', async () => {
+      await service.sendInvitationEmail(invitation)
+
+      const email = send.mock.calls[0][0]
+      const link = 'https://app.stride.test/accept-invitation?token=tok123'
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+      for (const body of [email.html, email.text]) {
+        expect(body).toContain('Hello Jane,')
+        expect(body).toContain(
+          'Alice Martin invited you to join Clinique Sud on Stride.',
+        )
+        expect(body).toContain('expires in 7 days')
+      }
+    })
+
+    // Names are typed by people. In the HTML body they must arrive as text,
+    // never as markup — while the plain-text body shows them as typed.
+    it('escapes every name in the HTML body, and only there', async () => {
+      await service.sendInvitationEmail({
+        ...invitation,
+        firstName: '<a href="https://evil.example">Click</a>',
+        invitedByName: 'Tom & Jerry',
+        clinicNames: ['<b>Bold</b> Clinic'],
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).not.toContain('<a href="https://evil.example">')
+      expect(email.html).toContain(
+        'Hello &lt;a href=&quot;https://evil.example&quot;&gt;Click&lt;/a&gt;,',
+      )
+      expect(email.html).toContain('Tom &amp; Jerry invited you')
+      expect(email.html).toContain('&lt;b&gt;Bold&lt;/b&gt; Clinic on Stride')
+      expect(email.text).toContain(
+        'Hello <a href="https://evil.example">Click</a>,',
+      )
+    })
+
+    it('rejects when the transport fails', async () => {
+      send.mockRejectedValue(new Error('delivery failed'))
+
+      await expect(service.sendInvitationEmail(invitation)).rejects.toThrow(
+        'delivery failed',
+      )
+    })
+  })
+})
+
+describe('describeWhere', () => {
+  it('names Stride alone when the account has no clinic', () => {
+    expect(describeWhere([])).toBe('Stride')
+  })
+
+  it('names one clinic', () => {
+    expect(describeWhere(['Clinique Sud'])).toBe('Clinique Sud on Stride')
+  })
+
+  it('joins several clinics with commas and a final "and"', () => {
+    expect(describeWhere(['A', 'B'])).toBe('A and B on Stride')
+    expect(describeWhere(['A', 'B', 'C'])).toBe('A, B and C on Stride')
   })
 })

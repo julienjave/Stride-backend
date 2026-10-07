@@ -48,15 +48,29 @@ export async function withRlsContext<T>(
 ): Promise<T> {
   return db.transaction(async (tx) => {
     if (currentUser) {
-      await tx.execute(
-        sql`SELECT set_config('app.current_user_id', ${String(currentUser.id)}, true)`,
-      )
-      await tx.execute(
-        sql`SELECT set_config('app.current_role', ${currentUser.activeRole}, true)`,
-      )
+      await applyUserContext(tx, currentUser)
     }
     return fn(tx)
   })
+}
+
+// The two settings withRlsContext() starts its transaction with, on their
+// own — for a transaction that only learns WHO it acts as part-way through.
+// Accepting an invitation is that case: it starts as the token holder
+// (withInvitationTokenContext, below), finds out from the invitation which
+// account it is, and only then may act as that account to set its password.
+// Must be called inside a transaction (set_config(..., true) lasts until the
+// transaction ends; outside one, it would vanish after this statement).
+export async function applyUserContext(
+  tx: DrizzleDb,
+  currentUser: CurrentUser,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT set_config('app.current_user_id', ${String(currentUser.id)}, true)`,
+  )
+  await tx.execute(
+    sql`SELECT set_config('app.current_role', ${currentUser.activeRole}, true)`,
+  )
 }
 
 // The token holder's context, for the invitation accept page — whose
