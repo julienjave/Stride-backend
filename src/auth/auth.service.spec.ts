@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common'
 import * as bcrypt from 'bcrypt'
 import { AuthService } from './auth.service'
@@ -609,6 +610,35 @@ describe('AuthService.forgotPassword', () => {
     expect(auditService.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'PASSWORD_RESET_REQUESTED' }),
     )
+  })
+
+  // The email is sent without waiting (the 204 must not reveal whether
+  // it went out), so a failure is only ever visible in the logs — the log
+  // line must say why.
+  it('still answers, and logs the reason, when the reset email fails', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: 'a-bcrypt-hash',
+    })
+    emailService.sendPasswordResetEmail.mockRejectedValue(
+      new Error('connect ECONNREFUSED 127.0.0.1:1025'),
+    )
+    const errorLog = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined)
+
+    await expect(
+      authService.forgotPassword('jane@example.com'),
+    ).resolves.toBeUndefined()
+    // The .catch() runs after forgotPassword() returned (fire-and-forget):
+    // one turn of the event loop lets the rejected promise reach it.
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(errorLog).toHaveBeenCalledWith(
+      'Failed to send password reset email to jane@example.com: connect ECONNREFUSED 127.0.0.1:1025',
+    )
+    errorLog.mockRestore()
   })
 
   it('does nothing for an email that matches no account', async () => {

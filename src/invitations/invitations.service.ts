@@ -47,6 +47,7 @@ import { INVITATIONS_ONE_OPEN, isUniqueViolation } from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
 import { CareTeamService, type Actor } from '../care-team/care-team.service'
 import { EmailService } from '../email/email.service'
+import { errorMessage } from '../common/error-message'
 import { UserRole } from '../users/dto/create-user.dto'
 import { invitationStatus, type InvitationStatus } from './invitation-status'
 
@@ -72,6 +73,8 @@ export interface InvitationSummary {
   expiresAt: Date
   acceptedAt: Date | null
   revokedAt: Date | null
+  // NULL: the email couldn't be sent (see the column's comment).
+  emailSentAt: Date | null
   invitedBy: PersonRef
   revokedBy: PersonRef | null
 }
@@ -216,7 +219,12 @@ export class InvitationsService {
     // After the transaction has committed: the invitation exists whatever
     // happens to the email. (Sent before commit, a failed commit would leave
     // someone holding a link to an invitation that never existed.)
-    const emailSent = await this.deliver(account, issued.token, actor)
+    const emailSent = await this.deliver(
+      issued.invitation.id,
+      account,
+      issued.token,
+      actor,
+    )
 
     await this.auditService.log({
       performedBy: actor.id,
@@ -300,7 +308,11 @@ export class InvitationsService {
   // Emails an invitation. Never throws: a failure is logged and reported as
   // false, because the invitation itself is already saved — the caller
   // tells the person who sent it, and they can send it again.
+  //
+  // On success, records WHEN on the invitation (email_sent_at), so the
+  // account's page can tell later whether the person ever got the link.
   async deliver(
+    invitationId: number,
     account: Pick<InvitedAccount, 'id' | 'email' | 'firstName'>,
     rawToken: string,
     actor: Actor,
@@ -318,14 +330,35 @@ export class InvitationsService {
         clinicNames: await this.findClinicNames(this.db, account.id),
         validForDays: INVITATION_VALIDITY_DAYS,
       })
-      return true
     } catch (error) {
+      // The reason in the text, not as a second argument (which the
+      // logger would drop — see errorMessage()).
       this.logger.error(
-        `Failed to send the invitation email to ${account.email}`,
-        error,
+        `Failed to send the invitation email to ${account.email}: ${errorMessage(error)}`,
       )
       return false
     }
+
+    // The email has gone out: from here on the answer is true, whatever
+    // happens to the record. A separate step, after sending — an email
+    // can't be un-sent, so recording first would claim one that might
+    // never leave. If only the record fails, the page shows "couldn't be
+    // sent" for an email that did go: misleading but harmless (sending
+    // again just issues a fresh link), so it's logged, not thrown.
+    // As the actor, under row-level security, like every other write here.
+    try {
+      await withRlsContext(this.db, actor, (tx) =>
+        tx
+          .update(invitations)
+          .set({ emailSentAt: sql`now()` })
+          .where(eq(invitations.id, invitationId)),
+      )
+    } catch (error) {
+      this.logger.error(
+        `The invitation email to ${account.email} was sent, but recording that failed: ${errorMessage(error)}`,
+      )
+    }
+    return true
   }
 
   // === USING AN INVITATION (the token holder, no session) =================
@@ -585,6 +618,7 @@ export class InvitationsService {
       expiresAt: row.invitation.expiresAt,
       acceptedAt: row.invitation.acceptedAt,
       revokedAt: row.invitation.revokedAt,
+      emailSentAt: row.invitation.emailSentAt,
       invitedBy: row.inviter,
       revokedBy:
         row.revokerId === null

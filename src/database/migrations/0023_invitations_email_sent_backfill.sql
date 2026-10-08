@@ -1,0 +1,15 @@
+-- Custom SQL migration: backfill invitations.email_sent_at (added by 0022).
+--
+-- Every invitation that existed before this column was sent through the
+-- Resend or log transport, and nothing recorded whether its email went
+-- out. Left NULL, every one of them would now read "the email couldn't be
+-- sent" on the user page — wrong for nearly all of them. Treating them as
+-- sent when they were created is the closer guess; the few whose email
+-- really failed can simply be sent again.
+--
+-- From now on the app sets the column itself, after the mail server
+-- accepts the email (InvitationsService.deliver).
+--
+-- Runs as the migration (owner) role, which row-level security doesn't
+-- apply to, so every row is updated whatever the policies say.
+UPDATE "invitations" SET "email_sent_at" = "created_at" WHERE "email_sent_at" IS NULL;

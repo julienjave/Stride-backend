@@ -28,6 +28,7 @@ import { Observable } from 'rxjs'
 import { tap } from 'rxjs/operators'
 import { AuditService } from '../../audit/audit.service'
 import { AuthenticatedRequest } from '../decorators/current-user.decorator'
+import { errorMessage } from '../error-message'
 
 // --- INTERCEPTOR -------------------------------------------------------------------------------------------
 
@@ -82,7 +83,13 @@ export class AuditLogInterceptor implements NestInterceptor {
             entityType,
             entityId,
           })
-          .catch((err) => this.logger.error('Failed to write audit log', err))
+          // The reason in the text, not as a second argument (which the
+          // logger would drop — see errorMessage()).
+          .catch((err) =>
+            this.logger.error(
+              `Failed to write audit log for ${method} ${originalUrl}: ${errorMessage(err)}`,
+            ),
+          )
       }),
     )
   }

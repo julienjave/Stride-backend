@@ -304,6 +304,7 @@ export class UsersService {
     // a failure doesn't undo the account — it's reported, and the person
     // who created it can send the invitation again.
     const emailSent = await this.invitationsService.deliver(
+      issued.invitation.id,
       created,
       issued.token,
       requestingUser,

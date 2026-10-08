@@ -155,6 +155,20 @@
       "when": 1791334136801,
       "tag": "0021_invitations_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791453586820,
+      "tag": "0022_invitations_email_sent_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791453628238,
+      "tag": "0023_invitations_email_sent_backfill",
+      "breakpoints": true
     }
   ]
 }

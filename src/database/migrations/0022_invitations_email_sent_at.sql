@@ -1,0 +1,1 @@
+ALTER TABLE "invitations" ADD COLUMN "email_sent_at" timestamp with time zone;

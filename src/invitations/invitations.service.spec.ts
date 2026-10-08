@@ -27,6 +27,7 @@ import {
   type InvitationSummary,
 } from './invitations.service'
 import { DRIZZLE } from '../database/drizzle.provider'
+import { invitations } from '../database/schema'
 import { CareTeamService } from '../care-team/care-team.service'
 import { EmailService } from '../email/email.service'
 import { AuditService } from '../audit/audit.service'
@@ -69,6 +70,7 @@ describe('InvitationsService', () => {
     expiresAt: new Date(),
     acceptedAt: null,
     revokedAt: null,
+    emailSentAt: new Date(),
     invitedBy: { id: 7, firstName: 'Alice', lastName: 'Martin' },
     revokedBy: null,
   }
@@ -288,8 +290,11 @@ describe('InvitationsService', () => {
         [{ firstName: 'Alice', lastName: 'Martin' }],
         [{ name: 'Clinique Sud' }],
       )
+      fakeTransaction([])
 
-      await expect(service.deliver(account, 'tok', admin)).resolves.toBe(true)
+      await expect(service.deliver(100, account, 'tok', admin)).resolves.toBe(
+        true,
+      )
       expect(emailService.sendInvitationEmail).toHaveBeenCalledWith({
         to: 'jane@example.com',
         rawToken: 'tok',
@@ -303,10 +308,59 @@ describe('InvitationsService', () => {
     it('resolves false instead of throwing when the email fails', async () => {
       fakeSelects([{ firstName: 'Alice', lastName: 'Martin' }], [])
       emailService.sendInvitationEmail.mockRejectedValue(new Error('down'))
-      // Keeps the expected error log out of the test output.
-      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+      // Keeps the expected error log out of the test output — and lets the
+      // test read what was logged.
+      const errorLog = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined)
 
-      await expect(service.deliver(account, 'tok', admin)).resolves.toBe(false)
+      await expect(service.deliver(100, account, 'tok', admin)).resolves.toBe(
+        false,
+      )
+      // The reason is part of the logged TEXT, as the only argument: a
+      // second argument would be dropped by the logger (errorMessage()).
+      expect(errorLog).toHaveBeenCalledWith(
+        'Failed to send the invitation email to jane@example.com: down',
+      )
+      // Nothing recorded: email_sent_at stays NULL, which is what tells
+      // the account's page the email never left.
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    // What the column is for. (That the right ROW gets the time — and
+    // that the policies let the actor write it — is checked against the
+    // real database in test/invitations.e2e-spec.ts.)
+    it("records that the email was sent, under the actor's RLS context", async () => {
+      fakeSelects([{ firstName: 'Alice', lastName: 'Martin' }], [])
+      const tx = fakeTransaction([])
+
+      await service.deliver(100, account, 'tok', admin)
+
+      // withRlsContext's two set_config calls ran first.
+      expect(tx.execute).toHaveBeenCalledTimes(2)
+      expect(tx.update).toHaveBeenCalledWith(invitations)
+      // update() returned the { set } stub; what reached set() is the
+      // column list. Typed explicitly: jest's mock records are `any`.
+      const { set } = tx.update.mock.results[0].value as { set: jest.Mock }
+      const [values] = set.mock.calls[0] as [Record<string, unknown>]
+      expect(Object.keys(values)).toEqual(['emailSentAt'])
+    })
+
+    // The email has gone; failing to RECORD it must not turn into "the
+    // email failed" (false), nor into an error for the caller.
+    it('still resolves true, and logs why, when recording the time fails', async () => {
+      fakeSelects([{ firstName: 'Alice', lastName: 'Martin' }], [])
+      db.transaction.mockRejectedValue(new Error('connection terminated'))
+      const errorLog = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined)
+
+      await expect(service.deliver(100, account, 'tok', admin)).resolves.toBe(
+        true,
+      )
+      expect(errorLog).toHaveBeenCalledWith(
+        'The invitation email to jane@example.com was sent, but recording that failed: connection terminated',
+      )
     })
   })
 

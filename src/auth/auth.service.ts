@@ -43,6 +43,7 @@ import { UserRole } from '../users/dto/create-user.dto'
 import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
+import { errorMessage } from '../common/error-message'
 import { encryptMfaSecret, decryptMfaSecret } from './mfa-secret-crypto'
 import { withRlsContext } from '../database/rls-context'
 
@@ -424,10 +425,11 @@ export class AuthService {
     // email went out, on purpose.
     this.emailService
       .sendPasswordResetEmail(user.email, rawToken)
+      // The reason in the text, not as a second argument (which the
+      // logger would drop — see errorMessage()).
       .catch((err) =>
         this.logger.error(
-          `Failed to send password reset email to ${user.email}`,
-          err,
+          `Failed to send password reset email to ${user.email}: ${errorMessage(err)}`,
         ),
       )
 

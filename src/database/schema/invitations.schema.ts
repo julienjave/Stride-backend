@@ -80,6 +80,13 @@ export const invitations = pgTable(
     // Set by the service (7 days after creation — decisions §3). Not a
     // database default, so the rule lives in one place, in TypeScript.
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    // When the mail server ACCEPTED this invitation's email; NULL = the
+    // email couldn't be sent (so the person doesn't have the link), until a
+    // new invitation is sent. "Accepted by the server", not "delivered to
+    // the inbox": nothing tells an app the second. Recorded so the user
+    // page can say so later — before, only POST /users' response knew
+    // (emailSent), and the page showed "Sent" either way.
+    emailSentAt: timestamp('email_sent_at', { withTimezone: true }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedBy: integer('revoked_by').references(() => users.id, {

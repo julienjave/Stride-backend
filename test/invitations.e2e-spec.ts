@@ -802,6 +802,54 @@ describe('Invitations (e2e)', () => {
         expect(res.body).not.toHaveProperty('token')
       })
 
+      // email_sent_at, end to end: written by the app as the practitioner
+      // who sent it — through the real row-level security policies — and
+      // read back by the user page's endpoint.
+      it('records whether the email went out: empty when sending failed, set by a new invitation that is sent', async () => {
+        outbox.failNext() // the mail server is "down" for the next email
+        const email = `inv-mail-down-${stamp}@example.com`
+        const created = await practitionerA.post('/users').send({
+          email,
+          role: 'patient',
+          firstName: 'Mail',
+          lastName: 'Down',
+          dateOfBirth: '1991-02-03',
+          clinicId,
+        })
+        expect(created.status).toBe(201)
+        expect(created.body.invitation.emailSent).toBe(false)
+        expect(outbox.sentTo(email)).toHaveLength(0)
+
+        const before = await practitionerA.get(
+          `/users/${created.body.id}/invitations`,
+        )
+        expect(before.body).toHaveLength(1)
+        expect(before.body[0]).toMatchObject({
+          status: 'pending',
+          emailSentAt: null,
+        })
+
+        const resent = await practitionerA.post(
+          `/users/${created.body.id}/invitations`,
+        )
+        expect(resent.status).toBe(201)
+        expect(resent.body.emailSent).toBe(true)
+        // Set by deliver(), so present in the send's own response, which is
+        // read back afterwards.
+        expect(Date.parse(resent.body.emailSentAt)).not.toBeNaN()
+
+        const after = await practitionerA.get(
+          `/users/${created.body.id}/invitations`,
+        )
+        // Newest first: the new one has a time, the closed one still none.
+        expect(after.body.map((i: { status: string }) => i.status)).toEqual([
+          'pending',
+          'revoked',
+        ])
+        expect(after.body[0].emailSentAt).toBe(resent.body.emailSentAt)
+        expect(after.body[1].emailSentAt).toBeNull()
+      })
+
       // Same clinic, not on the care team: the rule every clinical action
       // follows.
       it('refuses a practitioner of the same clinic who is not on the care team', async () => {

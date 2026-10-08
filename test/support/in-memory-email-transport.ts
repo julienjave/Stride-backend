@@ -42,11 +42,32 @@ import type {
 export class InMemoryEmailTransport implements EmailTransport {
   readonly sent: OutgoingEmail[] = []
 
+  // How many of the next send() calls fail, like a mail server that's down.
+  private failuresLeft = 0
+
+  // Makes the next `count` emails fail instead of being recorded — the way
+  // a real transport rejects when Mailpit or Resend can't be reached — so a
+  // test can check what the app does then (the account is still created;
+  // emailSent: false; email_sent_at left NULL). One-shot by design: the
+  // emails after those go through again, so a test can't forget to "turn
+  // the server back on" and break the tests that follow it.
+  failNext(count = 1): void {
+    this.failuresLeft += count
+  }
+
   // Records the email synchronously, the moment send() is called — so an
   // email sent fire-and-forget during a request (forgotPassword() doesn't
   // await its send) is already in `sent` by the time the response arrives,
   // with no polling in the test.
   send(email: OutgoingEmail): Promise<void> {
+    if (this.failuresLeft > 0) {
+      this.failuresLeft -= 1
+      return Promise.reject(
+        new Error(
+          `Simulated delivery failure for ${email.to} (InMemoryEmailTransport.failNext)`,
+        ),
+      )
+    }
     this.sent.push(email)
     return Promise.resolve()
   }

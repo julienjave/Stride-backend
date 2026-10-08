@@ -38,6 +38,20 @@ services:
       RUSTFS_VOLUMES: "/data"
     volumes:
       - rustfs_data:/data
+
+  # A fake mail server for development: it accepts every email over SMTP
+  # and shows it in a web inbox — http://localhost:8025 — instead of
+  # delivering it. Nothing ever reaches a real address, whatever the "to".
+  # Used with EMAIL_TRANSPORT=smtp, SMTP_HOST=localhost, SMTP_PORT=1025.
+  # No volume on purpose: the inbox is scratch space, emptied when the
+  # container is recreated (it also keeps only the newest 500 messages).
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: stride-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # SMTP — where the app sends
+      - "8025:8025" # web inbox — where you read
  
 volumes:
   pgdata:

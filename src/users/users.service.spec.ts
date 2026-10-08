@@ -253,8 +253,10 @@ describe('UsersService.create', () => {
     expect(
       invitations.insertInvitation.mock.invocationCallOrder[0],
     ).toBeGreaterThan(careTeam.linkCreator.mock.invocationCallOrder[0])
-    // …emailed after the transaction, with the raw token, as the creator…
+    // …emailed after the transaction, with the raw token, as the creator,
+    // for THIS invitation (deliver records the send time on it)…
     expect(invitations.deliver).toHaveBeenCalledWith(
+      500,
       expect.objectContaining({ id: 10, email: 'patient@example.com' }),
       'raw-token',
       { id: 7, activeRole: UserRole.PRACTITIONER },
