@@ -13,6 +13,8 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "seed:exercises": "ts-node scripts/seed-exercises.ts",
+    "seed:dev": "ts-node scripts/seed-dev.ts",
+    "seed": "npm run seed:exercises && npm run seed:dev --",
     "db:create-app-role": "ts-node scripts/create-app-role.ts",
     "db:migrate:test": "cross-env POSTGRES_DB=stride_test drizzle-kit migrate",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
@@ -99,6 +101,7 @@
       "ts"
     ],
     "rootDir": "src",
+    "roots": ["<rootDir>", "<rootDir>/../scripts"],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
