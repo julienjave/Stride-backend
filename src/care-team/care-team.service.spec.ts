@@ -714,6 +714,133 @@ describe('CareTeamService', () => {
     })
   })
 
+  describe('listCandidates', () => {
+    // The first select(): the patient's clinic ids.
+    function mockPatientClinics(clinicIds: number[]) {
+      db.select.mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest
+            .fn()
+            .mockResolvedValue(clinicIds.map((clinicId) => ({ clinicId }))),
+        }),
+      })
+    }
+
+    it('404s for someone who is not a patient', async () => {
+      givenRoles({ patient: false })
+      await expect(
+        service.listCandidates(9, { id: 1, activeRole: UserRole.ADMIN }),
+      ).rejects.toThrow(new NotFoundException('Patient 9 not found'))
+    })
+
+    it('refuses a practitioner of another clinic, and the patient themselves (403)', async () => {
+      givenRoles({})
+      givenSharedClinics([])
+      for (const actor of [
+        { id: 4, activeRole: UserRole.PRACTITIONER },
+        { id: 9, activeRole: UserRole.PATIENT },
+      ]) {
+        await expect(service.listCandidates(9, actor)).rejects.toThrow(
+          new ForbiddenException(
+            "You can't add anyone to this patient's care team",
+          ),
+        )
+      }
+      expect(db.select).not.toHaveBeenCalled()
+    })
+
+    it('returns nothing, without searching, for a patient in no clinic', async () => {
+      givenRoles({})
+      mockPatientClinics([])
+      await expect(
+        service.listCandidates(9, { id: 1, activeRole: UserRole.ADMIN }),
+      ).resolves.toEqual([])
+      expect(db.selectDistinct).not.toHaveBeenCalled()
+    })
+
+    it("lists the practitioners of the patient's clinics: specialties, shared clinics, already on the team or not", async () => {
+      givenRoles({})
+      givenSharedClinics([[4, 9]])
+      mockPatientClinics([3, 8])
+      db.selectDistinct.mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            innerJoin: jest.fn().mockReturnValue({
+              leftJoin: jest.fn().mockReturnValue({
+                where: jest.fn().mockReturnValue({
+                  orderBy: jest.fn().mockResolvedValue([
+                    {
+                      id: 4,
+                      firstName: 'Sam',
+                      lastName: 'Okafor',
+                      avatarPath: 'avatars/4/a.jpg',
+                      specialties: ['Sports'],
+                    },
+                    {
+                      id: 5,
+                      firstName: 'Blake',
+                      lastName: 'Martin',
+                      avatarPath: null,
+                      // A missing profile (LEFT JOIN) still lists the person.
+                      specialties: null,
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      })
+      // The shared clinics of all candidates, in one query.
+      db.select.mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockResolvedValue([
+                { userId: 4, id: 3, name: 'North' },
+                { userId: 5, id: 8, name: 'South' },
+              ]),
+            }),
+          }),
+        }),
+      })
+      // Who is on the team now (read under the caller's RLS context).
+      db.select.mockReturnValueOnce({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ practitionerId: 4 }]),
+        }),
+      })
+
+      const result = await service.listCandidates(9, {
+        id: 4,
+        activeRole: UserRole.PRACTITIONER,
+      })
+
+      expect(result).toStrictEqual([
+        {
+          id: 4,
+          firstName: 'Sam',
+          lastName: 'Okafor',
+          avatarUrl: 'https://signed/avatars/4/a.jpg',
+          specialties: ['Sports'],
+          sharedClinics: [{ id: 3, name: 'North' }],
+          onCareTeam: true,
+        },
+        {
+          id: 5,
+          firstName: 'Blake',
+          lastName: 'Martin',
+          avatarUrl: null,
+          specialties: [],
+          sharedClinics: [{ id: 8, name: 'South' }],
+          onCareTeam: false,
+        },
+      ])
+      // The team was read as the caller, under RLS.
+      expect(rlsContextSet()).toContainEqual(['app.current_user_id', '4'])
+    })
+  })
+
   describe('containsPattern', () => {
     it('matches the text anywhere', () => {
       expect(containsPattern('mar')).toBe('%mar%')

@@ -31,6 +31,7 @@ import {
   careTeamMembers,
   clinics,
   patientProfiles,
+  practitionerProfiles,
   userClinics,
   userRoles,
   users,
@@ -82,6 +83,24 @@ export interface CareTeamEntry {
 // One patient in the clinic directory: enough to recognise someone and
 // decide to join their care team — nothing clinical, no contact details
 // (design decisions §3, "two levels of access").
+// A practitioner who could be added to a patient's care team ("Add a
+// colleague", decided 2026-10-09): directory fields for STAFF — enough to
+// choose the right person (name, photo, specialties, where they work with
+// this patient) and nothing else (no email, phone, license number).
+export interface CareTeamCandidate {
+  id: number
+  firstName: string
+  lastName: string
+  avatarUrl: string | null
+  specialties: string[]
+  // The clinics where this practitioner works AND the patient attends —
+  // the reason they can be added at all (clinical access needs one).
+  sharedClinics: { id: number; name: string }[]
+  // Already on the team (an active period): adding them again would be
+  // refused (the no-overlap constraint → 409), so the screen disables them.
+  onCareTeam: boolean
+}
+
 export interface DirectoryPatient {
   id: number
   firstName: string
@@ -488,6 +507,118 @@ export class CareTeamService {
           .filter((clinic) => clinic.userId === row.id)
           .map(({ id, name }) => ({ id, name })),
         onMyCareTeam: mine.has(row.id),
+      })),
+    )
+  }
+
+  // --- GET /users/:id/care-team/candidates ---
+
+  // Who could join this patient's care team: every active practitioner who
+  // works at one of THE PATIENT's clinics — not the caller's (Sam, at
+  // Riverside, may add Blake, at Harbour, to Robin, who attends both: the
+  // backend's addMember() checks the ADDED practitioner against the
+  // patient). Ordered by name. No search and no limit: a clinic has a
+  // handful of practitioners, so the screen filters as you type.
+  //
+  // Who may ask: an admin, or a practitioner sharing a clinic with the
+  // patient — exactly who may add someone (addMember). A patient choosing
+  // their own team is not a feature, so a patient gets a 403.
+  async listCandidates(
+    patientId: number,
+    actor: Actor,
+  ): Promise<CareTeamCandidate[]> {
+    await this.assertActivePatient(patientId)
+    const isAdmin = actor.activeRole === UserRole.ADMIN
+    const isClinicColleague =
+      actor.activeRole === UserRole.PRACTITIONER &&
+      (await this.sharesClinic(actor.id, patientId))
+    if (!isAdmin && !isClinicColleague) {
+      throw new ForbiddenException(
+        "You can't add anyone to this patient's care team",
+      )
+    }
+
+    const patientClinics = await this.db
+      .select({ clinicId: userClinics.clinicId })
+      .from(userClinics)
+      .where(eq(userClinics.userId, patientId))
+    const patientClinicIds = patientClinics.map((row) => row.clinicId)
+    if (patientClinicIds.length === 0) {
+      return []
+    }
+
+    // One row per practitioner (selectDistinct: someone working at two of
+    // the patient's clinics would otherwise appear twice). The LEFT JOIN on
+    // the profile brings the specialties; a practitioner always has one, but
+    // a LEFT JOIN means a missing profile can't hide a person.
+    const rows = await this.db
+      .selectDistinct({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        avatarPath: users.avatarPath,
+        specialties: practitionerProfiles.specialties,
+      })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .innerJoin(userClinics, eq(userClinics.userId, users.id))
+      .leftJoin(practitionerProfiles, eq(practitionerProfiles.userId, users.id))
+      .where(
+        and(
+          eq(userRoles.role, UserRole.PRACTITIONER),
+          eq(users.isActive, true),
+          inArray(userClinics.clinicId, patientClinicIds),
+        ),
+      )
+      .orderBy(asc(users.lastName), asc(users.firstName))
+
+    if (rows.length === 0) {
+      return []
+    }
+    const practitionerIds = rows.map((row) => row.id)
+
+    // Batched for the whole list, as in searchDirectory(): the clinics each
+    // practitioner shares with the patient, and who is on the team now.
+    const clinicRows = await this.db
+      .select({
+        userId: userClinics.userId,
+        id: clinics.id,
+        name: clinics.name,
+      })
+      .from(userClinics)
+      .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
+      .where(
+        and(
+          inArray(userClinics.userId, practitionerIds),
+          inArray(userClinics.clinicId, patientClinicIds),
+        ),
+      )
+      .orderBy(asc(clinics.name))
+    // Read under the caller's RLS context: the care_team_members SELECT
+    // policy lets an admin and any clinic-sharing practitioner see a
+    // patient's links (directory level — who treats a patient isn't
+    // clinical data).
+    const onTeamRows = await withRlsContext(this.db, actor, (tx) =>
+      tx
+        .select({ practitionerId: careTeamMembers.practitionerId })
+        .from(careTeamMembers)
+        .where(
+          and(eq(careTeamMembers.patientId, patientId), activePeriod()),
+        ),
+    )
+    const onTeam = new Set(onTeamRows.map((row) => row.practitionerId))
+
+    return Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        avatarUrl: await this.avatarUrl(row.avatarPath),
+        specialties: row.specialties ?? [],
+        sharedClinics: clinicRows
+          .filter((clinic) => clinic.userId === row.id)
+          .map(({ id, name }) => ({ id, name })),
+        onCareTeam: onTeam.has(row.id),
       })),
     )
   }

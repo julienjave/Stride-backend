@@ -71,6 +71,17 @@ export class CareTeamController {
   }
 
   // "Join care team" (empty body) or "add a colleague" (practitionerId).
+  // Who could be added to this patient's care team ("Add a colleague" /
+  // the admin's "Add someone"). No clash with GET `:id/care-team` above:
+  // routes are matched on the WHOLE path, and this one has a segment more.
+  @Get(':id/care-team/candidates')
+  candidates(
+    @Param('id', ParseIntPipe) patientId: number,
+    @CurrentUser() currentUser: CurrentUser,
+  ) {
+    return this.careTeamService.listCandidates(patientId, currentUser)
+  }
+
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
   @Post(':id/care-team')
