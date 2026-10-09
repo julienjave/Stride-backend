@@ -26,6 +26,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
@@ -35,6 +36,7 @@ import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
 import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
+import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -85,9 +87,17 @@ export class AssignedProgramsController {
   // Role-scoped inside the service — patient sees their own, practitioner
   // sees their managed patients', admin sees all. No @Roles() restriction
   // here since every role is allowed, just to a different slice of data.
+  // ?patientId= narrows it to one patient (the patient page) — see the
+  // service for who may ask.
   @Get()
-  findAll(@CurrentUser() user: CurrentUser) {
-    return this.assignedProgramsService.findAllForCurrentUser(user)
+  findAll(
+    @CurrentUser() user: CurrentUser,
+    @Query() query: ListAssignedProgramsQueryDto,
+  ) {
+    return this.assignedProgramsService.findAllForCurrentUser(
+      user,
+      query.patientId,
+    )
   }
 
   @Get(':id')

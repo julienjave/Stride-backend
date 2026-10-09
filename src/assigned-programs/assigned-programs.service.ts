@@ -31,6 +31,7 @@ import {
   assignedProgramExercises,
   templateExercises,
   exercises,
+  users,
 } from "../database/schema";
 import { UsersService } from "../users/users.service";
 import { CreateAssignedProgramDto } from "./dto/create-assigned-program.dto";
@@ -227,9 +228,40 @@ export class AssignedProgramsService {
   // --- GET ROUTES ---
 
   // Role-scoped, not a single "list everything": patient sees their own,
-  // practitioner sees programs for patients they manage (clinic-scoped,
-  // reusing UsersService's existing definition), admin sees all.
-  async findAllForCurrentUser(currentUser: CurrentUser) {
+  // practitioner sees programs for patients they manage (their care team,
+  // through UsersService's definition), admin sees all.
+  //
+  // `patientId` (GET /assigned-programs?patientId=, added 2026-10-08 for the
+  // practitioner's patient page) narrows the list to ONE patient — every
+  // program of theirs, whoever assigned it. It is checked with the same
+  // rule as viewing a single program (assertCanView): an admin, the patient
+  // themselves, or a practitioner on their care team. Anyone else gets the
+  // same 403 as for one of that patient's programs — never an empty list,
+  // which would quietly say "this patient has no programs" to someone who
+  // isn't allowed to know.
+  //
+  // Every program comes back with its `assigner` (id and name), so a screen
+  // can say "assigned by Sam Okafor" without one request per program.
+  async findAllForCurrentUser(currentUser: CurrentUser, patientId?: number) {
+    const programs = await this.findProgramRows(currentUser, patientId);
+    return this.withAssigners(programs);
+  }
+
+  private async findProgramRows(
+    currentUser: CurrentUser,
+    patientId: number | undefined,
+  ) {
+    if (patientId !== undefined) {
+      await this.assertCanView(patientId, currentUser);
+      return withRlsContext(this.db, currentUser, (tx) =>
+        tx.query.assignedPrograms.findMany({
+          where: and(
+            eq(assignedPrograms.patientId, patientId),
+            eq(assignedPrograms.isArchived, false),
+          ),
+        }),
+      );
+    }
     if (currentUser.activeRole === UserRole.ADMIN) {
       return withRlsContext(this.db, currentUser, (tx) =>
         tx.query.assignedPrograms.findMany({
@@ -262,6 +294,35 @@ export class AssignedProgramsService {
         ),
       }),
     );
+  }
+
+  // Adds `assigner: { id, firstName, lastName }` to each program: ONE query
+  // for all the assigners, then a Map lookup per program — not one
+  // query per program (the "N+1 queries" problem: 30 programs would be 31
+  // round trips). Same batching idea as UsersService.attachProfilesToMany.
+  //
+  // Read without an RLS context, like every identity read in this app:
+  // `users` stays readable without one (migration 0007), and only names
+  // are selected — no contact details.
+  private async withAssigners<T extends { assignedBy: number }>(programs: T[]) {
+    if (programs.length === 0) return [];
+    // Duplicates are harmless here: `IN (7, 7, 8)` matches exactly what
+    // `IN (7, 8)` does (a mutation check showed de-duplicating changed
+    // nothing observable, so it was left out).
+    const assignerIds = programs.map((p) => p.assignedBy);
+    const assigners = await this.db
+      .select({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(users)
+      .where(inArray(users.id, assignerIds));
+    const byId = new Map(assigners.map((a) => [a.id, a]));
+    // `?? null` can't happen today (assigned_by is NOT NULL and its foreign
+    // key RESTRICTs deleting the user), but a missing name must never turn
+    // a whole list into a 500.
+    return programs.map((p) => ({ ...p, assigner: byId.get(p.assignedBy) ?? null }));
   }
 
   async findOne(id: number, currentUser: CurrentUser) {

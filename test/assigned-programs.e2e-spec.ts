@@ -537,4 +537,74 @@ describe("AssignedPrograms (e2e)", () => {
     expect(asAdmin.status).toBe(200);
     expect(asAdmin.body.length).toBeGreaterThan(0);
   });
+
+  // --- ?patientId= (the practitioner's patient page, 2026-10-08) ---
+
+  it("narrows GET /assigned-programs to one patient with ?patientId=, naming each program's assigner", async () => {
+    // A second patient of practitionerA, with a program of their own: the
+    // unfiltered list holds both patients' programs, the filtered one must not.
+    const stamp = Date.now();
+    const clinicId = (await admin.get(`/users/${patientAId}`)).body.clinics[0].id;
+    const otherRes = await admin.post("/users").send({
+      email: `patient-c-${stamp}@example.com`,
+      role: "patient",
+      firstName: "Patient",
+      lastName: "C",
+      dateOfBirth: "1991-01-01",
+      clinicId,
+    });
+    const otherPatientId = otherRes.body.id;
+    expect(
+      (await practitionerA.post(`/users/${otherPatientId}/care-team`).send({})).status,
+    ).toBe(201);
+    for (const patientId of [patientAId, otherPatientId]) {
+      const res = await practitionerA.post("/assigned-programs").send({
+        patientId,
+        title: `Filter Check ${patientId}`,
+        startDate: "2026-01-01",
+        exercises: [{ exerciseId, sortOrder: 0 }],
+      });
+      expect(res.status).toBe(201);
+    }
+    const practitionerAId = (await practitionerA.get("/auth/me")).body.id;
+
+    const all = await practitionerA.get("/assigned-programs");
+    expect(all.body.some((p: any) => p.patientId === otherPatientId)).toBe(true);
+
+    const res = await practitionerA.get(`/assigned-programs?patientId=${patientAId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(res.body.every((p: any) => p.patientId === patientAId)).toBe(true);
+    // The assigner's id and name — and nothing else (no email, no contact
+    // details): toStrictEqual fails on any extra key.
+    for (const program of res.body) {
+      expect(program.assigner).toStrictEqual({
+        id: practitionerAId,
+        firstName: "Practitioner",
+        lastName: "A",
+      });
+    }
+  });
+
+  it("allows ?patientId= to the care team, the patient and an admin — and refuses anyone else with a 403, not an empty list", async () => {
+    const url = `/assigned-programs?patientId=${patientAId}`;
+    expect((await practitionerA.get(url)).status).toBe(200);
+    expect((await patientA.get(url)).status).toBe(200);
+    expect((await admin.get(url)).status).toBe(200);
+
+    for (const outsider of [practitionerB, patientB]) {
+      const res = await outsider.get(url);
+      expect(res.status).toBe(403);
+      expect(res.body.message).toEqual([
+        "You do not have permission to view this assigned program",
+      ]);
+    }
+  });
+
+  it("rejects a ?patientId= that is not a positive whole number (400)", async () => {
+    for (const bad of ["abc", "0", "1.5"]) {
+      const res = await practitionerA.get(`/assigned-programs?patientId=${bad}`);
+      expect(res.status).toBe(400);
+    }
+  });
 });

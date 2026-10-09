@@ -262,8 +262,13 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
     isPatientManagedBy: jest.Mock;
     findPatientsForPractitioner: jest.Mock;
   };
+  // The assigners' names come from ONE select().from().where() chain;
+  // `assignerRows` is what that query answers, `assignerWhere` records it.
+  let assignerRows: { id: number; firstName: string; lastName: string }[];
+  let assignerWhere: jest.Mock;
   let db: {
     query: { assignedPrograms: { findMany: jest.Mock } };
+    select: jest.Mock;
     execute: jest.Mock;
     transaction: jest.Mock;
   };
@@ -273,12 +278,15 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
       isPatientManagedBy: jest.fn(),
       findPatientsForPractitioner: jest.fn(),
     };
+    assignerRows = [{ id: 7, firstName: "Alex", lastName: "Moreau" }];
+    assignerWhere = jest.fn(() => Promise.resolve(assignerRows));
     db = {
       query: {
         assignedPrograms: {
-          findMany: jest.fn().mockResolvedValue([{ id: 1 }]),
+          findMany: jest.fn().mockResolvedValue([{ id: 1, assignedBy: 7 }]),
         },
       },
+      select: jest.fn(() => ({ from: () => ({ where: assignerWhere }) })),
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     };
@@ -318,6 +326,8 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
     });
 
     expect(result).toEqual([]);
+    // Nothing to name either: no query for assigners.
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it("returns only managed patients' programs for a practitioner", async () => {
@@ -332,6 +342,69 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
     });
 
     expect(db.query.assignedPrograms.findMany).toHaveBeenCalled();
+  });
+
+  it("adds each program's assigner, all looked up in ONE query", async () => {
+    db.query.assignedPrograms.findMany.mockResolvedValue([
+      { id: 1, assignedBy: 7 },
+      { id: 2, assignedBy: 8 },
+      { id: 3, assignedBy: 7 },
+    ]);
+    assignerRows = [
+      { id: 7, firstName: "Alex", lastName: "Moreau" },
+      { id: 8, firstName: "Sam", lastName: "Okafor" },
+    ];
+
+    const result = await service.findAllForCurrentUser({
+      id: 1,
+      activeRole: UserRole.ADMIN,
+    });
+
+    expect(result).toEqual([
+      { id: 1, assignedBy: 7, assigner: { id: 7, firstName: "Alex", lastName: "Moreau" } },
+      { id: 2, assignedBy: 8, assigner: { id: 8, firstName: "Sam", lastName: "Okafor" } },
+      { id: 3, assignedBy: 7, assigner: { id: 7, firstName: "Alex", lastName: "Moreau" } },
+    ]);
+    // One query for three programs — not one per program.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  describe("with patientId", () => {
+    it("lets a practitioner on the care team list that patient's programs", async () => {
+      usersService.isPatientManagedBy.mockResolvedValue(true);
+
+      const result = await service.findAllForCurrentUser(
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        20,
+      );
+
+      expect(usersService.isPatientManagedBy).toHaveBeenCalledWith(20, 7);
+      expect(result).toHaveLength(1);
+      // Not the whole roster: the patient's list replaces it.
+      expect(usersService.findPatientsForPractitioner).not.toHaveBeenCalled();
+    });
+
+    it("refuses a practitioner who is not on the care team, without querying programs", async () => {
+      usersService.isPatientManagedBy.mockResolvedValue(false);
+
+      await expect(
+        service.findAllForCurrentUser(
+          { id: 7, activeRole: UserRole.PRACTITIONER },
+          20,
+        ),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          "You do not have permission to view this assigned program",
+        ),
+      );
+      expect(db.query.assignedPrograms.findMany).not.toHaveBeenCalled();
+    });
+
+    it("refuses a patient asking for someone else's programs", async () => {
+      await expect(
+        service.findAllForCurrentUser({ id: 20, activeRole: UserRole.PATIENT }, 21),
+      ).rejects.toThrow(ForbiddenException);
+    });
   });
 });
 
