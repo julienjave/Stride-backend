@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  BadRequestException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -37,10 +38,33 @@ import { UpdateSessionDto, SessionStatus } from './dto/update-session.dto'
 import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
+import { addDays, utcToday } from '../common/calendar-date'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
 type CurrentUser = { id: number; activeRole: UserRole }
+
+// A session's local date must be the patient's TODAY. The server can't
+// know which day that is (it doesn't know their time zone), but it knows
+// the possible answers: every time zone's date is UTC's date, the day
+// before, or the day after (UTC−12 to UTC+14). Anything else can't be "now"
+// anywhere on Earth — a buggy client, or a session being filed under a
+// day it didn't happen on. Exported for its unit tests; `now` pins the
+// clock there.
+//
+// (Recording a session done on an EARLIER day — offline, say — would need
+// its own rules; that belongs to the Phase 4 session flow.)
+export function assertLocalDateIsToday(
+  localDate: string,
+  now: Date = new Date(),
+) {
+  const today = utcToday(now)
+  if (localDate < addDays(today, -1) || localDate > addDays(today, 1)) {
+    throw new BadRequestException(
+      "localDate must be today's date in the patient's time zone",
+    )
+  }
+}
 
 @Injectable()
 export class SessionsService {
@@ -77,6 +101,7 @@ export class SessionsService {
         'You can only create sessions for your own assigned programs',
       )
     }
+    assertLocalDateIsToday(dto.localDate)
 
     const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
       const [session] = await tx
@@ -87,6 +112,7 @@ export class SessionsService {
           scheduledDate: dto.scheduledDate
             ? new Date(dto.scheduledDate)
             : new Date(),
+          localDate: dto.localDate,
           status: 'pending',
         })
         .returning()

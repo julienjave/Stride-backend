@@ -21,9 +21,11 @@ import {
   IsOptional,
   IsString,
   MaxLength,
-  IsDateString,
   IsEnum,
+  ValidateIf,
 } from 'class-validator'
+import { isPresent } from '../../common/validators/is-present'
+import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -34,21 +36,27 @@ export enum AssignedProgramStatus {
   CANCELLED = 'cancelled',
 }
 
+// title, startDate and status are NOT NULL columns: @ValidateIf(isPresent)
+// rather than @IsOptional(), so an explicit null gets a 400 instead of
+// reaching the database as a NOT NULL violation (a 500) — the null trap
+// described in is-present.ts. endDate is nullable, and null is meaningful
+// there ("no end date any more": the program becomes open-ended), so it
+// keeps @IsOptional().
 export class UpdateAssignedProgramDto {
-  @IsOptional()
+  @ValidateIf(isPresent)
   @IsString()
   @MaxLength(200)
   title?: string
 
-  @IsOptional()
-  @IsDateString()
+  @ValidateIf(isPresent)
+  @IsCalendarDate()
   startDate?: string
 
   @IsOptional()
-  @IsDateString()
-  endDate?: string
+  @IsCalendarDate()
+  endDate?: string | null
 
-  @IsOptional()
+  @ValidateIf(isPresent)
   @IsEnum(AssignedProgramStatus)
   status?: AssignedProgramStatus
 }

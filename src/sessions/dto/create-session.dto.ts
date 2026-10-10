@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsInt, IsOptional, IsDateString } from 'class-validator'
+import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -29,4 +30,13 @@ export class CreateSessionDto {
   @IsOptional()
   @IsDateString()
   scheduledDate?: string
+
+  // The patient's own calendar day, from their device (decisions §5,
+  // point 4): what the schedule judges ("was Monday done?"). Required —
+  // only the patient's device knows their time zone, so the server can't
+  // fill it in. The service also refuses a day more than one day away from
+  // UTC's (no real time zone is further), so a session can't be filed
+  // under last month.
+  @IsCalendarDate()
+  localDate!: string
 }

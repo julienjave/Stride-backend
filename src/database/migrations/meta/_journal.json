@@ -169,6 +169,20 @@
       "when": 1791453628238,
       "tag": "0023_invitations_email_sent_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791622697219,
+      "tag": "0024_program_schedules",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791622875445,
+      "tag": "0025_program_schedules_rls",
+      "breakpoints": true
     }
   ]
 }

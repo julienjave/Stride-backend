@@ -59,6 +59,7 @@ import { ProgramsService } from '../src/programs/programs.service'
 import { CreateTemplateDto } from '../src/programs/dto/create-template.dto'
 import { AddTemplateExerciseDto } from '../src/programs/dto/add-template-exercise.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
+import { addDays, utcToday } from '../src/common/calendar-date'
 import { CreateAssignedProgramDto } from '../src/assigned-programs/dto/create-assigned-program.dto'
 import type { CurrentUser } from '../src/common/decorators/current-user.decorator'
 import {
@@ -365,6 +366,9 @@ async function run(): Promise<void> {
     const missingLibrary = libraryNames.filter((name) => !libraryIds.has(name))
 
     const templateIds = new Map<string, number>()
+    // How many exercises each template really got — fewer than listed when
+    // the library isn't imported (its exercises are skipped below).
+    const templateSizes = new Map<string, number>()
     for (const template of TEMPLATES) {
       const created = await programs.create(
         alex,
@@ -392,17 +396,29 @@ async function run(): Promise<void> {
         )
         sortOrder += 1
       }
+      templateSizes.set(template.title, sortOrder)
     }
 
-    const today = new Date().toISOString().slice(0, 10)
+    // UTC's today: the seed has no user, hence no time zone to prefer.
+    const today = utcToday()
+    // A template left EMPTY (all of its exercises come from the library,
+    // which isn't imported) can't be assigned: the service refuses a
+    // template with nothing to copy (400). Skip it and say so at the end,
+    // like the skipped library exercises, instead of failing the whole seed.
+    const skippedAssignments: string[] = []
     for (const assignment of ASSIGNED_PROGRAMS) {
+      if (templateSizes.get(assignment.template) === 0) {
+        skippedAssignments.push(assignment.title)
+        continue
+      }
       await assignedPrograms.create(
         await as(assignment.by, UserRole.PRACTITIONER),
         await validated(CreateAssignedProgramDto, {
           patientId: idOf(assignment.patient),
           basedOnTemplateId: templateIds.get(assignment.template),
           title: assignment.title,
-          startDate: today,
+          startDate: addDays(today, -assignment.startsDaysAgo),
+          schedule: assignment.schedule,
         }),
       )
     }
@@ -437,6 +453,9 @@ async function run(): Promise<void> {
     if (missingLibrary.length > 0) {
       console.log(
         `\nNote: the exercise library isn't imported, so the templates skip: ${missingLibrary.join(', ')}.` +
+          (skippedAssignments.length > 0
+            ? `\nThese programs weren't assigned (their template ended up empty): ${skippedAssignments.join(', ')}.`
+            : '') +
           '\nRun `npm run seed:exercises`, then `npm run seed:dev -- --reset` (or `npm run seed -- --reset`).',
       )
     }

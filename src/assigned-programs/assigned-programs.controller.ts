@@ -37,6 +37,7 @@ import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
+import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -80,6 +81,22 @@ export class AssignedProgramsController {
     @Body() dto: AssignedExerciseInputDto,
   ) {
     return this.assignedProgramsService.addExercise(id, user, dto)
+  }
+
+  // A new schedule version: "from effectiveFrom on, the schedule is …".
+  // Same roles as every other change to an assigned program; the service
+  // checks the care team on top, and which days are allowed.
+  // A POST, not a PATCH of the program: it ADDS a version to a history
+  // (the earlier versions stay), rather than editing a field in place.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Post(':id/schedules')
+  addScheduleVersion(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: AddScheduleVersionDto,
+  ) {
+    return this.assignedProgramsService.addScheduleVersion(id, user, dto)
   }
 
   // --- GET ROUTES ---

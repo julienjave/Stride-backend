@@ -19,16 +19,19 @@
 
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   assignedPrograms,
   assignedProgramExercises,
+  programSchedules,
+  programTemplates,
   templateExercises,
   exercises,
   users,
@@ -38,8 +41,15 @@ import { CreateAssignedProgramDto } from "./dto/create-assigned-program.dto";
 import { UpdateAssignedProgramDto } from "./dto/update-assigned-program.dto";
 import { AssignedExerciseInputDto } from "./dto/assigned-exercise-input.dto";
 import { UpdateAssignedProgramExerciseDto } from "./dto/update-assigned-program-exercise.dto";
+import { ScheduleInputDto, ScheduleType } from "./dto/schedule-input.dto";
+import { AddScheduleVersionDto } from "./dto/add-schedule-version.dto";
 import { UserRole } from "../users/dto/create-user.dto";
 import { withRlsContext } from "../database/rls-context";
+import { addDays, utcToday } from "../common/calendar-date";
+import {
+  isUniqueViolation,
+  PROGRAM_SCHEDULES_ONE_PER_DAY,
+} from "../database/pg-errors";
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -66,6 +76,81 @@ interface ResolvedSourceExercise {
   weightUnit?: "kg" | "lbs";
   sortOrder: number;
   notes?: string;
+}
+
+// The two schedule columns for a schedule as the API received it: exactly
+// one of weekdays / timesPerWeek, the other explicitly null (the database's
+// program_schedules_fields_match_type check requires it). The DTO has
+// already guaranteed the right field is present for the type, which is
+// what the `!` assertions rely on.
+//
+// Weekdays are SORTED here: the database accepts one spelling per set
+// ({1,3,5}, never {5,1,3} — is_iso_weekday_set in migration 0025), and the
+// API accepts any order. `(a, b) => a - b` because sort() without a
+// comparator compares as TEXT ("10" before "9"). For 1–7 both orders are
+// the same — a mutation check confirmed no test can tell them apart, so
+// this is about saying what we mean, not about a bug. The spread copies
+// first: sort() reorders the array it's given, and the caller's DTO
+// shouldn't change under it.
+function toScheduleColumns(schedule: ScheduleInputDto) {
+  if (schedule.type === ScheduleType.WEEKDAYS) {
+    return {
+      type: schedule.type,
+      weekdays: [...schedule.weekdays!].sort((a, b) => a - b),
+      timesPerWeek: null,
+    };
+  }
+  return {
+    type: schedule.type,
+    weekdays: null,
+    timesPerWeek: schedule.timesPerWeek!,
+  };
+}
+
+// The end of a program can't come before its start (decisions §5: the
+// dates ARE the program's length). Checked here for a clear 400; the
+// database's assigned_programs_ends_after_start check is the guarantee
+// behind it. Calendar dates compare correctly as strings (calendar-date.ts).
+function assertDatesInOrder(startDate: string, endDate: string | null | undefined) {
+  if (endDate != null && endDate < startDate) {
+    throw new BadRequestException("The end date can't be before the start date");
+  }
+}
+
+// Which days a NEW schedule version may start on. Exported for its unit
+// tests (pure: the program's dates and the clock in, an exception or
+// nothing out).
+//   - Not before the program starts, nor after it ends: a version there
+//     would never apply to any day of the program.
+//   - Not in the past: past days were judged by the schedule in force
+//     then, and a backdated change would rewrite that history (decided
+//     2026-10-09). "The past" with ONE day of slack: the server only knows
+//     UTC's date, and a practitioner's today can be a day behind it (21:00
+//     in Montreal is already tomorrow in UTC). The INSERT and DELETE
+//     policies on program_schedules (migration 0025) enforce the same
+//     limit in the database.
+// The order of the checks decides which message wins when several apply;
+// the program's own dates come first, as the more useful explanation.
+export function assertScheduleDayAllowed(
+  day: string,
+  program: { startDate: string; endDate: string | null },
+  now: Date = new Date(),
+) {
+  if (day < program.startDate) {
+    throw new BadRequestException(
+      `A schedule change can't apply before the program starts (${program.startDate})`,
+    );
+  }
+  if (program.endDate !== null && day > program.endDate) {
+    throw new BadRequestException(
+      `A schedule change can't apply after the program ends (${program.endDate})`,
+    );
+  }
+  if (day < addDays(utcToday(now), -1)) {
+    throw new BadRequestException(
+      "A schedule change can't apply to a day in the past",
+    );
+  }
 }
 
 @Injectable()
@@ -126,6 +211,8 @@ export class AssignedProgramsService {
       );
     }
 
+    assertDatesInOrder(dto.startDate, dto.endDate);
+
     const sourceExercises = await this.resolveSourceExercises(dto);
 
     const programId = await withRlsContext(this.db, currentUser, async (tx) => {
@@ -164,6 +251,18 @@ export class AssignedProgramsService {
           notes: ex.notes,
         });
       }
+
+      // The program's first schedule version, applying from its start date,
+      // IN THE SAME TRANSACTION as the program: either both exist or
+      // neither does. That's what makes "every program has a schedule"
+      // true — the database itself can't require a row in ANOTHER table
+      // (a CHECK constraint only sees the row it's checking).
+      await tx.insert(programSchedules).values({
+        assignedProgramId: program.id,
+        ...toScheduleColumns(dto.schedule),
+        effectiveFrom: dto.startDate,
+        createdBy: currentUser.id,
+      });
 
       return program.id;
     });
@@ -225,6 +324,67 @@ export class AssignedProgramsService {
     return row;
   }
 
+  // POST /assigned-programs/:id/schedules — "from effectiveFrom on, the
+  // schedule is …" (decisions §5, point 5: schedules keep a history).
+  //
+  // A new version REPLACES every version starting on that day or later:
+  //   - the same day → a correction ("I picked the wrong days a minute
+  //     ago");
+  //   - a later day → a change planned earlier, now superseded. ("From next
+  //     Monday: Tue/Thu", then "from today: Mon/Fri" — the practitioner
+  //     means Mon/Fri from now on, not Mon/Fri until Monday.)
+  // So the rule reads simply: from that day on, THIS is the schedule.
+  // Versions before that day are untouched — they judged days that have
+  // passed. The delete and the insert share one transaction, so nobody ever
+  // sees the program with neither.
+  //
+  // Returns the full program (exercises and schedules), like every write
+  // the program page will put straight into its cache.
+  async addScheduleVersion(
+    id: number,
+    currentUser: CurrentUser,
+    dto: AddScheduleVersionDto,
+  ) {
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    assertScheduleDayAllowed(dto.effectiveFrom, program);
+
+    try {
+      await withRlsContext(this.db, currentUser, async (tx) => {
+        await tx
+          .delete(programSchedules)
+          .where(
+            and(
+              eq(programSchedules.assignedProgramId, id),
+              gte(programSchedules.effectiveFrom, dto.effectiveFrom),
+            ),
+          );
+        await tx.insert(programSchedules).values({
+          assignedProgramId: id,
+          ...toScheduleColumns(dto),
+          effectiveFrom: dto.effectiveFrom,
+          createdBy: currentUser.id,
+        });
+      });
+    } catch (error) {
+      // Two changes for the same program and day at the same moment: both
+      // transactions delete nothing (neither sees the other's uncommitted
+      // row), both insert, and the unique constraint makes the second WAIT
+      // for the first, then fail. The database decides atomically, so this
+      // is the reliable signal — no "check, then insert" race. (If the
+      // requests arrive one after the other instead, the second simply
+      // replaces the first: also correct.)
+      if (isUniqueViolation(error, PROGRAM_SCHEDULES_ONE_PER_DAY)) {
+        throw new ConflictException(
+          "Someone else changed this schedule at the same moment. Reload the program and try again.",
+        );
+      }
+      throw error;
+    }
+
+    return this.findProgramWithExercises(id, currentUser);
+  }
+
   // --- GET ROUTES ---
 
   // Role-scoped, not a single "list everything": patient sees their own,
@@ -242,9 +402,12 @@ export class AssignedProgramsService {
   //
   // Every program comes back with its `assigner` (id and name), so a screen
   // can say "assigned by Sam Okafor" without one request per program.
+  //
+  // ...and with its `schedules` (every version, oldest first), so a list row
+  // can say "3× a week · weeks start Thursday" — loaded the same batched way.
   async findAllForCurrentUser(currentUser: CurrentUser, patientId?: number) {
     const programs = await this.findProgramRows(currentUser, patientId);
-    return this.withAssigners(programs);
+    return this.withSchedules(currentUser, await this.withAssigners(programs));
   }
 
   private async findProgramRows(
@@ -325,6 +488,39 @@ export class AssignedProgramsService {
     return programs.map((p) => ({ ...p, assigner: byId.get(p.assignedBy) ?? null }));
   }
 
+  // Adds `schedules` to each program: ONE query for every program's
+  // versions, then grouped by program in memory — the same idea as
+  // withAssigners, for a one-to-MANY relation (a program has several
+  // versions), hence a Map of arrays rather than a Map of single rows.
+  //
+  // Unlike `users`, program_schedules has row-level security, so this read
+  // runs in the caller's RLS context: it can only ever return versions of
+  // programs the caller may see — which are exactly the ones asked for.
+  private async withSchedules<T extends { id: number }>(
+    currentUser: CurrentUser,
+    programs: T[],
+  ) {
+    if (programs.length === 0) return [];
+    const rows = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.programSchedules.findMany({
+        where: inArray(
+          programSchedules.assignedProgramId,
+          programs.map((p) => p.id),
+        ),
+        orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
+      }),
+    );
+    const byProgram = new Map<number, typeof rows>();
+    for (const row of rows) {
+      const versions = byProgram.get(row.assignedProgramId) ?? [];
+      versions.push(row);
+      byProgram.set(row.assignedProgramId, versions);
+    }
+    // Rows were read in date order, and pushing keeps that order within
+    // each program's array.
+    return programs.map((p) => ({ ...p, schedules: byProgram.get(p.id) ?? [] }));
+  }
+
   async findOne(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanView(program.patientId, currentUser);
@@ -340,14 +536,23 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+    // The dates as they WILL be: a PATCH may send only one of them, and the
+    // check is about the pair. `undefined` = not sent (keep the stored
+    // value); `null` = endDate cleared (open-ended), which is always fine.
+    assertDatesInOrder(
+      dto.startDate ?? program.startDate,
+      dto.endDate === undefined ? program.endDate : dto.endDate,
+    );
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(assignedPrograms)
         .set(dto)
-        .where(eq(assignedPrograms.id, id))
-        .returning(),
+        .where(eq(assignedPrograms.id, id)),
     );
-    return updated;
+    // The full program, not the bare row — the same reason as
+    // updateExercise below: the program page will write this response
+    // into its cache, and a bare row has no exercises or schedules.
+    return this.findProgramWithExercises(id, currentUser);
   }
 
   async updateExercise(
@@ -367,14 +572,19 @@ export class AssignedProgramsService {
       currentUser,
     );
 
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
+    await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(assignedProgramExercises)
         .set(dto)
-        .where(eq(assignedProgramExercises.id, rowId))
-        .returning(),
+        .where(eq(assignedProgramExercises.id, rowId)),
     );
-    return updated;
+    // The FULL program (exercises in order, schedules), not the bare
+    // updated row — closes the gap recorded in deferred-improvements.md,
+    // the same fix the template side got (ProgramsService.updateExercise):
+    // a screen that writes this response into its cache would otherwise
+    // replace the whole program with one exercise row, and the exercise
+    // list would vanish.
+    return this.findProgramWithExercises(assignedProgramId, currentUser);
   }
 
   async reorderExercises(
@@ -479,13 +689,34 @@ export class AssignedProgramsService {
     dto: CreateAssignedProgramDto,
   ): Promise<ResolvedSourceExercise[]> {
     if (dto.basedOnTemplateId) {
+      // The template ROW first (closes the gap in deferred-improvements.md:
+      // this used to read only template_exercises, so an ARCHIVED — i.e.
+      // deleted — template could still be assigned by calling the API
+      // directly). Same rule and wording style as ProgramsService.duplicate:
+      // an archived template can't be built upon. Templates are readable by
+      // everyone (their SELECT policy is `true`), so no RLS context needed.
+      const template = await this.db.query.programTemplates.findFirst({
+        where: eq(programTemplates.id, dto.basedOnTemplateId),
+      });
+      if (!template) {
+        throw new NotFoundException(
+          `Program template ${dto.basedOnTemplateId} not found`,
+        );
+      }
+      if (template.isArchived) {
+        throw new BadRequestException(
+          "Archived program templates cannot be assigned",
+        );
+      }
       const rows = await this.db.query.templateExercises.findMany({
         where: eq(templateExercises.templateId, dto.basedOnTemplateId),
         orderBy: (te, { asc }) => [asc(te.sortOrder)],
       });
+      // Now a 400, not a 404: the template exists (just checked), so "not
+      // found" would be wrong — the request is what can't be carried out.
       if (rows.length === 0) {
-        throw new NotFoundException(
-          `Template ${dto.basedOnTemplateId} not found, or has no exercises to copy`,
+        throw new BadRequestException(
+          `Program template ${dto.basedOnTemplateId} has no exercises to copy`,
         );
       }
       const snapshots = await this.fetchExerciseSnapshots(
@@ -548,15 +779,25 @@ export class AssignedProgramsService {
     });
   }
 
+  // The program with its exercises (in their order) and its schedule
+  // versions (oldest first — the order they took effect in).
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
-    const exerciseRows = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.query.assignedProgramExercises.findMany({
-        where: eq(assignedProgramExercises.assignedProgramId, id),
-        orderBy: (row, { asc }) => [asc(row.sortOrder)],
-      }),
+    const [exerciseRows, schedules] = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => [
+        await tx.query.assignedProgramExercises.findMany({
+          where: eq(assignedProgramExercises.assignedProgramId, id),
+          orderBy: (row, { asc }) => [asc(row.sortOrder)],
+        }),
+        await tx.query.programSchedules.findMany({
+          where: eq(programSchedules.assignedProgramId, id),
+          orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
+        }),
+      ] as const,
     );
-    return { ...program, exercises: exerciseRows };
+    return { ...program, exercises: exerciseRows, schedules };
   }
 
   private async findProgramOrThrow(id: number, currentUser: CurrentUser) {

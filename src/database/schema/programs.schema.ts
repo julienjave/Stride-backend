@@ -26,7 +26,9 @@ import {
   pgEnum,
   index,
   real,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { users } from "./users.schema";
 import { exercises } from "./exercises.schema";
 // Defined in its own file (see the comment there): users.schema.ts needs
@@ -113,6 +115,15 @@ export const assignedPrograms = pgTable(
     // inArray (practitioner's managed patients) — the single most-queried
     // column in this table.
     patientIdIdx: index("assigned_programs_patient_id_idx").on(table.patientId),
+    // Dates are the source of truth for a program's length (decisions §5,
+    // point 1): the number of sessions is DERIVED from them and the
+    // schedule. An end before the start would make that derivation
+    // meaningless (a negative number of weeks), so the database refuses it.
+    // >= rather than >: a one-day program is legitimate. NULL = open-ended.
+    endsAfterStart: check(
+      "assigned_programs_ends_after_start",
+      sql`${table.endDate} IS NULL OR ${table.endDate} >= ${table.startDate}`,
+    ),
   }),
 );
 

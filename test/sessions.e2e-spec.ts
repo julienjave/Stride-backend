@@ -17,6 +17,7 @@ import { InMemoryEmailTransport } from './support/in-memory-email-transport';
 import { activateAccount } from './support/accounts';
 import { getDatabaseUrl } from '../src/config/database-url';
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
+import { addDays, utcToday } from '../src/common/calendar-date';
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -192,6 +193,7 @@ describe('Sessions (e2e)', () => {
       patientId: patientAId,
       title: 'Sessions E2E Program',
       startDate: '2026-01-01',
+      schedule: { type: 'times_per_week', timesPerWeek: 3 },
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     assignedProgramId = assignedRes.body.id;
@@ -207,28 +209,61 @@ describe('Sessions (e2e)', () => {
   // ever reaches its own patientId-ownership check — same RLS-driven
   // 403->404 shift as the equivalent assigned-programs tests.
   it('rejects a patient creating a session for an assigned program that is not their own', async () => {
-    const res = await patientB.post('/sessions').send({ assignedProgramId });
+    const res = await patientB.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     expect(res.status).toBe(404);
   });
 
   it("rejects a practitioner or admin from creating a session at all — sessions role-restrict to 'patient'", async () => {
-    const asPractitioner = await practitionerA.post('/sessions').send({ assignedProgramId });
+    const asPractitioner = await practitionerA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     expect(asPractitioner.status).toBe(403);
 
-    const asAdmin = await admin.post('/sessions').send({ assignedProgramId });
+    const asAdmin = await admin.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     expect(asAdmin.status).toBe(403);
   });
 
   it("creates a session pre-populated from the assigned program's current exercises", async () => {
-    const res = await patientA.post('/sessions').send({ assignedProgramId });
+    const res = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('pending');
     expect(res.body.exercises).toHaveLength(1);
     expect(res.body.exercises[0].completed).toBe(false);
   });
 
+  // The patient's own day (decisions §5, point 4), stored as sent. The day
+  // AFTER UTC's is used on purpose: it's someone's today (east of UTC, late
+  // in the evening), and a server filling in its own date would get it
+  // wrong — so this proves the value really comes from the request.
+  it("stores the patient's local date, as sent", async () => {
+    const tomorrowInUtc = addDays(utcToday(), 1);
+    const res = await patientA
+      .post('/sessions')
+      .send({ assignedProgramId, localDate: tomorrowInUtc });
+    expect(res.status).toBe(201);
+    expect(res.body.localDate).toBe(tomorrowInUtc);
+
+    // ...and it's what the database holds, read back separately.
+    const readBack = await patientA.get(`/sessions/${res.body.id}`);
+    expect(readBack.body.localDate).toBe(tomorrowInUtc);
+  });
+
+  it('refuses a session without a local date, or with one that is nobody’s today', async () => {
+    const missing = await patientA.post('/sessions').send({ assignedProgramId });
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toContain(
+      'localDate must be a date written as YYYY-MM-DD',
+    );
+
+    const twoDaysAgo = await patientA
+      .post('/sessions')
+      .send({ assignedProgramId, localDate: addDays(utcToday(), -2) });
+    expect(twoDaysAgo.status).toBe(400);
+    expect(twoDaysAgo.body.message).toEqual([
+      "localDate must be today's date in the patient's time zone",
+    ]);
+  });
+
   it('walks the pending -> in_progress -> completed state machine, server-setting the timestamps', async () => {
-    const createRes = await patientA.post('/sessions').send({ assignedProgramId });
+    const createRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     const sessionId = createRes.body.id;
     expect(createRes.body.startedAt).toBeNull();
 
@@ -244,7 +279,7 @@ describe('Sessions (e2e)', () => {
   });
 
   it('lets a managing practitioner and an admin VIEW a session, but never WRITE to it', async () => {
-    const createRes = await patientA.post('/sessions').send({ assignedProgramId });
+    const createRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     const sessionId = createRes.body.id;
 
     const practitionerView = await practitionerA.get(`/sessions/${sessionId}`);
@@ -266,7 +301,7 @@ describe('Sessions (e2e)', () => {
   // practitioner before SessionsService.assertCanView() ever runs — same
   // RLS-driven 403->404 shift as the equivalent assigned-programs tests.
   it('rejects a non-managing practitioner and an unrelated patient from viewing the session at all', async () => {
-    const createRes = await patientA.post('/sessions').send({ assignedProgramId });
+    const createRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     const sessionId = createRes.body.id;
 
     const foreignPractitioner = await practitionerB.get(`/sessions/${sessionId}`);
@@ -277,8 +312,8 @@ describe('Sessions (e2e)', () => {
   });
 
   it('rejects updating a session-exercise row through the wrong session (IDOR check)', async () => {
-    const sessionARes = await patientA.post('/sessions').send({ assignedProgramId });
-    const sessionBRes = await patientA.post('/sessions').send({ assignedProgramId });
+    const sessionARes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
+    const sessionBRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     const sessionAId = sessionARes.body.id;
     const foreignRowId = sessionBRes.body.exercises[0].id;
 
@@ -289,7 +324,7 @@ describe('Sessions (e2e)', () => {
   });
 
   it('updates a session-exercise row that genuinely belongs to the session, honoring the difficultyRating bounds', async () => {
-    const createRes = await patientA.post('/sessions').send({ assignedProgramId });
+    const createRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
     const sessionId = createRes.body.id;
     const rowId = createRes.body.exercises[0].id;
 
@@ -306,7 +341,7 @@ describe('Sessions (e2e)', () => {
   });
 
   it('scopes GET /sessions by role: patient sees own, unrelated practitioner sees none, admin sees all', async () => {
-    await patientA.post('/sessions').send({ assignedProgramId });
+    await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
 
     const asPatient = await patientA.get('/sessions');
     expect(asPatient.status).toBe(200);

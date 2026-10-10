@@ -47,6 +47,12 @@ export const CARE_TEAM_NO_OVERLAP = 'care_team_members_no_overlap'
 // into a 409.
 export const INVITATIONS_ONE_OPEN = 'invitations_one_open_per_user'
 
+// One schedule version per program per day (program-schedules.schema.ts,
+// migration 0024). Hit when two schedule changes for the same program and
+// day race. AssignedProgramsService.addScheduleVersion turns it into a 409.
+export const PROGRAM_SCHEDULES_ONE_PER_DAY =
+  'program_schedules_program_effective_from_unique'
+
 // --- HELPER ------------------------------------------------------------------------------------------------
 
 // The shape we read off a Postgres error. node-postgres's DatabaseError

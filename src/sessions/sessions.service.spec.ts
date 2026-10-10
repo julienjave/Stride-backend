@@ -1,10 +1,15 @@
 import { Test } from '@nestjs/testing'
-import { ForbiddenException, NotFoundException } from '@nestjs/common'
-import { SessionsService } from './sessions.service'
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common'
+import { SessionsService, assertLocalDateIsToday } from './sessions.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { SessionStatus } from './dto/update-session.dto'
 import { UserRole } from '../users/dto/create-user.dto'
+import { addDays, utcToday } from '../common/calendar-date'
 
 describe('SessionsService.create', () => {
   let service: SessionsService
@@ -55,7 +60,7 @@ describe('SessionsService.create', () => {
     await expect(
       service.create(
         { id: 20, activeRole: UserRole.PATIENT },
-        { assignedProgramId: 999 },
+        { assignedProgramId: 999, localDate: utcToday() },
       ),
     ).rejects.toThrow(NotFoundException)
   })
@@ -69,7 +74,7 @@ describe('SessionsService.create', () => {
     await expect(
       service.create(
         { id: 20, activeRole: UserRole.PATIENT },
-        { assignedProgramId: 5 },
+        { assignedProgramId: 5, localDate: utcToday() },
       ),
     ).rejects.toThrow(ForbiddenException)
   })
@@ -102,7 +107,7 @@ describe('SessionsService.create', () => {
 
     const result = await service.create(
       { id: 20, activeRole: UserRole.PATIENT },
-      { assignedProgramId: 5 },
+      { assignedProgramId: 5, localDate: utcToday() },
     )
 
     expect(sessionExerciseInserts).toHaveLength(2)
@@ -114,6 +119,78 @@ describe('SessionsService.create', () => {
       }),
     )
     expect(result).toEqual(expect.objectContaining({ id: 500 }))
+  })
+
+  // The session row carries the patient's own day, exactly as sent.
+  it("stores the patient's local date on the session", async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 5,
+      patientId: 20,
+    })
+    const sessionInserts: Record<string, unknown>[] = []
+    db.insert.mockImplementation(() => ({
+      values: jest.fn().mockImplementation((values: Record<string, unknown>) => {
+        if (values.status === 'pending') {
+          sessionInserts.push(values)
+          return {
+            returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+          }
+        }
+        return Promise.resolve(undefined)
+      }),
+    }))
+    // Tomorrow in UTC: today for someone east of UTC late in the evening —
+    // allowed, and stored as sent (not replaced by the server's own day).
+    const tomorrow = addDays(utcToday(), 1)
+
+    await service.create(
+      { id: 20, activeRole: UserRole.PATIENT },
+      { assignedProgramId: 5, localDate: tomorrow },
+    )
+
+    expect(sessionInserts).toHaveLength(1)
+    expect(sessionInserts[0].localDate).toBe(tomorrow)
+  })
+
+  it('refuses a local date that cannot be today anywhere, before writing', async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 5,
+      patientId: 20,
+    })
+
+    await expect(
+      service.create(
+        { id: 20, activeRole: UserRole.PATIENT },
+        { assignedProgramId: 5, localDate: addDays(utcToday(), -2) },
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        "localDate must be today's date in the patient's time zone",
+      ),
+    )
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+})
+
+// Pinned clock: 2031-06-15 at 12:00 UTC. Every time zone's date is then the
+// 14th, 15th or 16th — exactly the accepted range. Deliberately FAR from
+// the day the tests were written: pinned to that day (2026-10-09), a
+// version of the function that ignored `now` and read the real clock
+// passed every test, the day it was written (a mutation check caught it).
+describe('assertLocalDateIsToday', () => {
+  const now = new Date('2031-06-15T12:00:00Z')
+
+  it.each(['2031-06-14', '2031-06-15', '2031-06-16'])('accepts %s', (day) => {
+    expect(() => assertLocalDateIsToday(day, now)).not.toThrow()
+  })
+
+  // One day past each edge: the boundaries are inclusive, and no further.
+  it.each(['2031-06-13', '2031-06-17', '2030-06-15'])('refuses %s', (day) => {
+    expect(() => assertLocalDateIsToday(day, now)).toThrow(
+      new BadRequestException(
+        "localDate must be today's date in the patient's time zone",
+      ),
+    )
   })
 })
 

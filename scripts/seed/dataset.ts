@@ -368,18 +368,48 @@ export const TEMPLATES: {
   },
 ]
 
+// A program's schedule, in the shape POST /assigned-programs takes
+// (ScheduleInputDto). Written as a union of the two kinds so a dataset
+// entry can't mix them up: a 'weekdays' schedule MUST list weekdays and
+// can't have a count, and the reverse. (The DTO checks the same at run
+// time; this makes a wrong entry fail to compile.)
+export type SeedSchedule =
+  | { type: 'weekdays'; weekdays: number[] }
+  | { type: 'times_per_week'; timesPerWeek: number }
+
 // Assigned programs: a copy of a template given to a patient (by a
-// practitioner on their care team).
+// practitioner on their care team), with its schedule (decisions §5).
+// One of each schedule type, so both can be looked at.
+//
+// startsDaysAgo: the program's start date, counted back from the day the
+// seed runs (0 = that day). Jo's started in the past, so its program
+// weeks don't line up with calendar weeks and the dates already passed
+// can be judged by the schedule (step 2).
 export const ASSIGNED_PROGRAMS: {
   patient: AccountKey
   by: AccountKey
   template: string
   title: string
+  startsDaysAgo: number
+  schedule: SeedSchedule
 }[] = [
   {
     patient: 'pat',
     by: 'alex',
     template: 'Knee Rehab — Phase 1',
     title: 'Knee Rehab — Pat',
+    startsDaysAgo: 0,
+    // ISO weekdays: Monday, Wednesday, Friday.
+    schedule: { type: 'weekdays', weekdays: [1, 3, 5] },
+  },
+  {
+    patient: 'jo',
+    // Sam, not Alex (whose template it is): Jo has a care team of two, and
+    // a program assigned by the colleague shows "Assigned by Sam" to Alex.
+    by: 'sam',
+    template: 'Lower Back Mobility',
+    title: 'Lower Back Mobility — Jo',
+    startsDaysAgo: 10,
+    schedule: { type: 'times_per_week', timesPerWeek: 3 },
   },
 ]

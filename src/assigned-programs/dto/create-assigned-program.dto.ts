@@ -22,13 +22,15 @@ import {
   IsOptional,
   IsString,
   MaxLength,
-  IsDateString,
   IsArray,
   ArrayMaxSize,
   ValidateNested,
+  IsDefined,
 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
+import { ScheduleInputDto } from './schedule-input.dto'
+import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
 
@@ -65,10 +67,31 @@ export class CreateAssignedProgramDto {
   @MaxLength(200)
   title!: string
 
-  @IsDateString()
+  // Calendar dates (YYYY-MM-DD), not timestamps — was @IsDateString(),
+  // which also accepted "2026-10-12T23:30:00-04:00" and let Postgres pick
+  // the day. See IsCalendarDate. The end must not be before the start
+  // (checked in the service, and by the database).
+  @IsCalendarDate()
   startDate!: string
 
+  // Omitted = open-ended (decisions §5: dates are the source of truth; the
+  // number of sessions is derived from them, never stored).
   @IsOptional()
-  @IsDateString()
+  @IsCalendarDate()
   endDate?: string
+
+  // Every assigned program has a schedule (decided 2026-10-09), set while
+  // assigning. It becomes the program's FIRST schedule version, applying
+  // from startDate.
+  //
+  // @IsDefined() because @ValidateNested() alone does nothing for a missing
+  // value: it validates an object's contents, and an absent object has
+  // none — the request would pass with no schedule at all. @Type() tells
+  // class-transformer to build a real ScheduleInputDto from the JSON, so
+  // that class's own decorators exist to be checked (same pair as
+  // `exercises` above).
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => ScheduleInputDto)
+  schedule!: ScheduleInputDto
 }

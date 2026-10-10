@@ -263,6 +263,7 @@ describe('Care team (e2e)', () => {
         patientId: patient1Id,
         title: 'Knee rehab',
         startDate: '2026-10-01',
+        schedule: { type: 'times_per_week', timesPerWeek: 3 },
         exercises: [{ exerciseId, sortOrder: 0 }],
       })
       expect(program.status).toBe(403)

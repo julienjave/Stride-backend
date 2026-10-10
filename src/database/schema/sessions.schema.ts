@@ -21,6 +21,7 @@ import {
   bigint,
   integer,
   timestamp,
+  date,
   boolean,
   text,
   pgEnum,
@@ -51,6 +52,14 @@ export const sessions = pgTable(
     scheduledDate: timestamp('scheduled_date', {
       withTimezone: true,
     }).notNull(),
+    // The PATIENT'S calendar day for this session, sent by their app
+    // (decisions §5, point 4). "Was Monday's session done?" is a question
+    // about the patient's day, and a moment alone can't answer it: 11 pm on
+    // Monday in Montreal is already Tuesday in UTC. The server can't work
+    // the day out either — it doesn't know the patient's time zone. So the
+    // app, which does, sends the day itself. The schedule module matches
+    // sessions to scheduled days on THIS column, never on scheduled_date.
+    localDate: date('local_date').notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     totalDurationInSeconds: integer('total_duration_in_seconds'),
@@ -59,6 +68,13 @@ export const sessions = pgTable(
   },
   (table) => ({
     patientIdIdx: index('sessions_patient_id_idx').on(table.patientId),
+    // "This program's sessions between two days" — the question every
+    // schedule summary asks (done / made up / missed over a date range).
+    // Column order matters: equality on the program first, then a RANGE on
+    // the day, which a B-tree index answers by reading one contiguous slice.
+    programLocalDateIdx: index(
+      'sessions_assigned_program_id_local_date_idx',
+    ).on(table.assignedProgramId, table.localDate),
   }),
 )
 

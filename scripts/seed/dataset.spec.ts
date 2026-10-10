@@ -126,6 +126,13 @@ describe('the seed dataset', () => {
       expect(careTeam).toContain(assignment.by)
     }
   })
+
+  // The point of having two programs: dev data shows both kinds of
+  // schedule (decisions §5) for the screens to be tried on.
+  it('includes a program of each schedule type', () => {
+    const types = new Set(ASSIGNED_PROGRAMS.map((a) => a.schedule.type))
+    expect([...types].sort()).toEqual(['times_per_week', 'weekdays'])
+  })
 })
 
 // The reviewers' guide describes this data; it must name every account

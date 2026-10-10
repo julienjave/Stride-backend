@@ -24,6 +24,11 @@ import { DRIZZLE, DrizzleDb } from "../src/database/drizzle.provider";
 // `docker compose up -d db storage` running, and must be pointed at the
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
+// Every assigned program needs a schedule (decided 2026-10-09). The tests in
+// this file aren't about schedules (test/program-schedules.e2e-spec.ts is),
+// so they all share this one.
+const SCHEDULE = { type: "times_per_week", timesPerWeek: 3 };
+
 describe("AssignedPrograms (e2e)", () => {
   let app: INestApplication;
   let sessionPool: Pool;
@@ -213,6 +218,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: (await patientB.get("/auth/me")).body.id,
       title: "Should Not Work",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     expect(res.status).toBe(403);
@@ -223,6 +229,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Self Assigned",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     expect(res.status).toBe(403);
@@ -261,6 +268,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Copy Guarantee Assignment",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       basedOnTemplateId: templateId,
     });
     expect(assignRes.status).toBe(201);
@@ -355,6 +363,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Neither Provided",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
     });
     expect(res.status).toBe(400);
   });
@@ -364,6 +373,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "View Boundary Program",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     const programId = createRes.body.id;
@@ -398,6 +408,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Manage Boundary Program",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     const programId = createRes.body.id;
@@ -418,6 +429,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Reorder Program",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     const programId = createRes.body.id;
@@ -457,12 +469,14 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "IDOR Program A",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     const programBRes = await practitionerA.post("/assigned-programs").send({
       patientId: patientAId,
       title: "IDOR Program B",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
     const programAId = programARes.body.id;
@@ -484,6 +498,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Weight Clearing Program",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [
         { exerciseId, sets: 3, weight: 62.5, weightUnit: "kg", sortOrder: 0 },
       ],
@@ -519,6 +534,7 @@ describe("AssignedPrograms (e2e)", () => {
       patientId: patientAId,
       title: "Scope Check Program",
       startDate: "2026-01-01",
+      schedule: SCHEDULE,
       exercises: [{ exerciseId, sortOrder: 0 }],
     });
 
@@ -562,6 +578,7 @@ describe("AssignedPrograms (e2e)", () => {
         patientId,
         title: `Filter Check ${patientId}`,
         startDate: "2026-01-01",
+        schedule: SCHEDULE,
         exercises: [{ exerciseId, sortOrder: 0 }],
       });
       expect(res.status).toBe(201);
