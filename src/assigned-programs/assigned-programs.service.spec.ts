@@ -10,6 +10,19 @@ import {
   assertScheduleDayAllowed,
 } from "./assigned-programs.service";
 import { addDays, utcToday } from "../common/calendar-date";
+import { AuditService } from "../audit/audit.service";
+import { AssignedProgramStatus } from "./dto/update-assigned-program.dto";
+
+// The audit entries written by create / update / addScheduleVersion
+// (AuditService.logInTransaction) — shared by every test module below, and
+// cleared before each test.
+const auditService = {
+  logInTransaction: jest.fn().mockResolvedValue(undefined),
+};
+beforeEach(() => {
+  auditService.logInTransaction.mockReset();
+  auditService.logInTransaction.mockResolvedValue(undefined);
+});
 import { UsersService } from "../users/users.service";
 import { DRIZZLE } from "../database/drizzle.provider";
 import { UserRole } from "../users/dto/create-user.dto";
@@ -80,6 +93,7 @@ describe("AssignedProgramsService.create", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -421,6 +435,74 @@ describe("AssignedProgramsService.create", () => {
     });
   });
 
+  // The whole prescription as assigned, in ONE entry written in the
+  // program's own transaction: dates, the first schedule version, every
+  // exercise with its prescription — what the patient was given, by whom.
+  it("audits the program as assigned: dates, schedule and every exercise", async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(true);
+    db.query.exercises.findMany.mockResolvedValue([
+      { id: 3, name: "Lunge", primaryMuscles: [], secondaryMuscles: [], equipment: [], instructions: [] },
+    ]);
+    recordInserts();
+
+    await service.create(
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      {
+        ...inlineProgram,
+        endDate: "2026-12-15",
+        exercises: [{ exerciseId: 3, sortOrder: 0, sets: 3, reps: 12 }],
+        schedule: MWF,
+      },
+    );
+
+    expect(auditService.logInTransaction).toHaveBeenCalledTimes(1);
+    // Typed: a jest mock's recorded arguments are `any` otherwise.
+    const [tx, entry] = auditService.logInTransaction.mock.calls[0] as [
+      unknown,
+      unknown,
+    ];
+    // Through the transaction the program was written in (tx === db in
+    // these mocks, as withRlsContext passes it on).
+    expect(tx).toBe(db);
+    expect(entry).toStrictEqual({
+      performedBy: 7,
+      action: "ASSIGNED_PROGRAM_CREATED",
+      targetUserId: 20,
+      entityType: "assigned-programs",
+      entityId: 900,
+      details: {
+        title: "Rehab Plan",
+        startDate: "2026-10-15",
+        endDate: "2026-12-15",
+        basedOnTemplateId: null,
+        // What .returning() gave back for the schedule row (the mock
+        // answers every insert with id 900 and no createdAt).
+        schedule: {
+          id: 900,
+          type: "weekdays",
+          weekdays: [1, 3, 5],
+          timesPerWeek: null,
+          effectiveFrom: "2026-10-15",
+          createdBy: 7,
+          createdAt: undefined,
+        },
+        exercises: [
+          {
+            exerciseId: 3,
+            name: "Lunge",
+            sets: 3,
+            reps: 12,
+            durationInSeconds: null,
+            weight: null,
+            weightUnit: null,
+            sortOrder: 0,
+            notes: null,
+          },
+        ],
+      },
+    });
+  });
+
   it("refuses an end date before the start date, before writing anything", async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true);
     knownExercise();
@@ -495,6 +577,7 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -678,6 +761,7 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -762,6 +846,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -863,6 +948,7 @@ describe("AssignedProgramsService.addExercise", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -1010,6 +1096,7 @@ describe("AssignedProgramsService.reorderExercises", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -1139,6 +1226,10 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   // Which db.transaction() call is running (each withRlsContext opens one).
   let currentTransaction: number;
   let insertValues: jest.Mock;
+  // What the insert's RETURNING answers (a test can make it fail).
+  let insertReturning: jest.Mock;
+  // What the delete's RETURNING answers: the versions it "removed".
+  let replacedRows: Record<string, unknown>[];
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
@@ -1160,10 +1251,21 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
     usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) };
     writes = [];
     currentTransaction = 0;
-    insertValues = jest.fn((values: unknown) => {
+    replacedRows = [];
+    insertReturning = jest.fn();
+    insertValues = jest.fn((values: Record<string, unknown>) => {
       writes.push(["insert", values, currentTransaction]);
-      return Promise.resolve(undefined);
+      insertReturning.mockResolvedValue([
+        { id: 99, createdAt: new Date("2026-10-10T10:00:00Z"), ...values },
+      ]);
+      return { returning: insertReturning };
     });
+    auditService.logInTransaction.mockImplementation(
+      (_tx: unknown, entry: unknown) => {
+        writes.push(["audit", entry, currentTransaction]);
+        return Promise.resolve(undefined);
+      },
+    );
     db = {
       query: {
         assignedPrograms: {
@@ -1182,7 +1284,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       delete: jest.fn(() => ({
         where: jest.fn((condition: unknown) => {
           writes.push(["delete", condition, currentTransaction]);
-          return Promise.resolve(undefined);
+          return { returning: () => Promise.resolve(replacedRows) };
         }),
       })),
       insert: jest.fn(() => ({ values: insertValues })),
@@ -1198,6 +1300,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -1217,7 +1320,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       effectiveFrom: today,
     });
 
-    expect(writes.map(([kind]) => kind)).toEqual(["delete", "insert"]);
+    expect(writes.map(([kind]) => kind)).toEqual(["delete", "insert", "audit"]);
     expect(writes[1][1]).toStrictEqual({
       assignedProgramId: 900,
       type: "weekdays",
@@ -1226,9 +1329,11 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       effectiveFrom: today,
       createdBy: 7,
     });
-    // Both writes in the SAME transaction: otherwise a failed insert would
-    // leave the program with its versions deleted and nothing in their place.
-    expect(writes[0][2]).toBe(writes[1][2]);
+    // All three in the SAME transaction: otherwise a failed insert would
+    // leave the program with its versions deleted and nothing in their place
+    // — and the audit entry could describe a change that never happened, or
+    // the change happen with no entry.
+    expect(new Set(writes.map(([, , tx]) => tx)).size).toBe(1);
   });
 
   it("answers with the full program: exercises and every schedule version", async () => {
@@ -1246,6 +1351,82 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       exercises: [],
       schedules: [{ id: 1 }, { id: 2 }],
     });
+  });
+
+  // The audit entry: what was set, from when, and every version it
+  // replaced — after this transaction the replaced versions exist nowhere
+  // else, so the entry must carry them whole.
+  it("audits the new version and every version it replaced", async () => {
+    replacedRows = [
+      {
+        id: 7,
+        assignedProgramId: 900,
+        type: "times_per_week",
+        weekdays: null,
+        timesPerWeek: 3,
+        effectiveFrom: addDays(today, 7),
+        createdBy: 4,
+        createdAt: new Date("2026-10-02T08:00:00Z"),
+      },
+    ];
+
+    await service.addScheduleVersion(900, practitioner, {
+      type: ScheduleType.WEEKDAYS,
+      weekdays: [5, 1],
+      effectiveFrom: today,
+    });
+
+    const [, entry] = writes.find(([kind]) => kind === "audit")!;
+    expect(entry).toStrictEqual({
+      performedBy: 7,
+      action: "ASSIGNED_PROGRAM_SCHEDULE_SET",
+      targetUserId: 20,
+      entityType: "assigned-programs",
+      entityId: 900,
+      details: {
+        effectiveFrom: today,
+        added: {
+          id: 99,
+          type: "weekdays",
+          weekdays: [1, 5],
+          timesPerWeek: null,
+          effectiveFrom: today,
+          createdBy: 7,
+          createdAt: new Date("2026-10-10T10:00:00Z"),
+        },
+        replaced: [
+          {
+            id: 7,
+            type: "times_per_week",
+            weekdays: null,
+            timesPerWeek: 3,
+            effectiveFrom: addDays(today, 7),
+            createdBy: 4,
+            createdAt: new Date("2026-10-02T08:00:00Z"),
+          },
+        ],
+      },
+    });
+  });
+
+  // A failed change writes no entry: the insert fails before the audit
+  // call, and the transaction rolls everything back.
+  it("writes no audit entry when the change fails", async () => {
+    insertValues.mockImplementationOnce(() => ({
+      returning: () =>
+        Promise.reject(
+          pgError("23505", "program_schedules_program_effective_from_unique"),
+        ),
+    }));
+
+    await expect(
+      service.addScheduleVersion(900, practitioner, {
+        type: ScheduleType.TIMES_PER_WEEK,
+        timesPerWeek: 2,
+        effectiveFrom: today,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(auditService.logInTransaction).not.toHaveBeenCalled();
   });
 
   it("refuses someone who can't manage the program, before writing anything", async () => {
@@ -1289,9 +1470,12 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   }
 
   it("turns a same-day race (the unique constraint) into a 409", async () => {
-    insertValues.mockRejectedValueOnce(
-      pgError("23505", "program_schedules_program_effective_from_unique"),
-    );
+    insertValues.mockImplementationOnce(() => ({
+      returning: () =>
+        Promise.reject(
+          pgError("23505", "program_schedules_program_effective_from_unique"),
+        ),
+    }));
 
     await expect(
       service.addScheduleVersion(900, practitioner, {
@@ -1310,7 +1494,9 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   // a real failure and must surface as itself, not as a misleading 409.
   it("lets any other database error through unchanged", async () => {
     const other = pgError("23505", "some_other_unique");
-    insertValues.mockRejectedValueOnce(other);
+    insertValues.mockImplementationOnce(() => ({
+      returning: () => Promise.reject(other),
+    }));
 
     await expect(
       service.addScheduleVersion(900, practitioner, {
@@ -1322,8 +1508,10 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   });
 });
 
-describe("AssignedProgramsService.update — dates", () => {
+describe("AssignedProgramsService.update — dates, start-date moves, audit", () => {
   let service: AssignedProgramsService;
+  // Every write in order: [kind, details].
+  let writes: [string, unknown][];
   let setValues: jest.Mock;
   let db: {
     query: {
@@ -1332,13 +1520,37 @@ describe("AssignedProgramsService.update — dates", () => {
       programSchedules: { findMany: jest.Mock };
     };
     update: jest.Mock;
+    delete: jest.Mock;
+    insert: jest.Mock;
     execute: jest.Mock;
     transaction: jest.Mock;
   };
 
+  // Relative to the real clock (the service reads it): a program that
+  // hasn't started yet — the only kind whose start date may move.
+  const today = utcToday();
+  const start = addDays(today, 10);
+  const end = addDays(today, 90);
+  const firstVersion = {
+    id: 51,
+    assignedProgramId: 900,
+    type: "weekdays",
+    weekdays: [1, 3, 5],
+    timesPerWeek: null,
+    effectiveFrom: start,
+    createdBy: 3,
+    createdAt: new Date("2026-10-01T09:00:00Z"),
+  };
+
   beforeEach(async () => {
-    setValues = jest.fn().mockReturnValue({
-      where: jest.fn().mockResolvedValue(undefined),
+    writes = [];
+    auditService.logInTransaction.mockImplementation((_tx: unknown, entry: unknown) => {
+      writes.push(["audit", entry]);
+      return Promise.resolve(undefined);
+    });
+    setValues = jest.fn((values: unknown) => {
+      writes.push(["update", values]);
+      return { where: jest.fn().mockResolvedValue(undefined) };
     });
     db = {
       query: {
@@ -1346,14 +1558,33 @@ describe("AssignedProgramsService.update — dates", () => {
           findFirst: jest.fn().mockResolvedValue({
             id: 900,
             patientId: 20,
-            startDate: "2026-10-01",
-            endDate: "2026-12-31",
+            title: "Knee Rehab",
+            startDate: start,
+            endDate: end,
           }),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
-        programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
+        programSchedules: { findMany: jest.fn().mockResolvedValue([firstVersion]) },
       },
       update: jest.fn().mockReturnValue({ set: setValues }),
+      delete: jest.fn(() => ({
+        where: jest.fn(() => ({
+          returning: jest.fn(() => {
+            writes.push(["delete", null]);
+            return Promise.resolve([firstVersion]);
+          }),
+        })),
+      })),
+      insert: jest.fn(() => ({
+        values: jest.fn((values: Record<string, unknown>) => {
+          writes.push(["insert", values]);
+          return {
+            returning: jest.fn().mockResolvedValue([
+              { id: 52, createdAt: new Date("2026-10-10T10:00:00Z"), ...values },
+            ]),
+          };
+        }),
+      })),
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     };
@@ -1363,6 +1594,7 @@ describe("AssignedProgramsService.update — dates", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -1375,26 +1607,156 @@ describe("AssignedProgramsService.update — dates", () => {
   // with the stored other one. Checking only what was sent would pass all
   // three refusals.
   it.each([
-    ["an end date before the stored start", { endDate: "2026-09-30" }],
-    ["a start date after the stored end", { startDate: "2027-01-01" }],
-    ["both, in the wrong order", { startDate: "2026-11-01", endDate: "2026-10-31" }],
+    ["an end date before the stored start", { endDate: addDays(start, -1) }],
+    ["a start date after the stored end", { startDate: addDays(end, 1) }],
+    ["both, in the wrong order", { startDate: addDays(today, 20), endDate: addDays(today, 19) }],
   ])("refuses %s, without writing", async (_label, dto) => {
     await expect(service.update(900, admin, dto)).rejects.toThrow(
       new BadRequestException("The end date can't be before the start date"),
     );
-    expect(setValues).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
   });
 
   // null = "no end date any more": the program becomes open-ended, and a
   // start after the OLD end is then fine. Treating null like "not sent"
   // (keeping the stored end) would refuse this.
   it("accepts clearing the end date together with a later start", async () => {
-    await service.update(900, admin, { startDate: "2027-01-01", endDate: null });
+    const later = addDays(end, 5);
+    await service.update(900, admin, { startDate: later, endDate: null });
 
-    expect(setValues).toHaveBeenCalledWith({
-      startDate: "2027-01-01",
+    expect(setValues).toHaveBeenCalledWith({ startDate: later, endDate: null });
+  });
+
+  it("refuses moving the start of a program that has started, without writing", async () => {
+    const started = addDays(today, -5);
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 900,
+      patientId: 20,
+      startDate: started,
       endDate: null,
     });
+
+    await expect(
+      service.update(900, admin, { startDate: addDays(today, 3) }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        `The start date can't change once the program has started (it started on ${started})`,
+      ),
+    );
+    expect(writes).toEqual([]);
+  });
+
+  // Sending the start date it already has isn't a move: no rule, no
+  // schedule work (a form re-sending every field must keep working on a
+  // program that has started).
+  it("treats the same start date as no move", async () => {
+    const started = addDays(today, -5);
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 900,
+      patientId: 20,
+      title: "Knee Rehab",
+      startDate: started,
+      endDate: null,
+    });
+
+    await service.update(900, admin, { startDate: started, title: "Knee" });
+
+    expect(writes.map(([kind]) => kind)).toEqual(["update", "audit"]);
+  });
+
+  // The program row, then its schedule (via planStartDateMove: here the one
+  // version moves), then the audit entry — all in that order, in one
+  // transaction.
+  it("moves the schedule with the start date, and audits both", async () => {
+    const newStart = addDays(today, 14);
+
+    await service.update(900, admin, { startDate: newStart });
+
+    expect(writes.map(([kind]) => kind)).toEqual([
+      "update",
+      "delete",
+      "insert",
+      "audit",
+    ]);
+    expect(writes[2][1]).toStrictEqual({
+      assignedProgramId: 900,
+      type: "weekdays",
+      weekdays: [1, 3, 5],
+      timesPerWeek: null,
+      effectiveFrom: newStart,
+      createdBy: 1,
+    });
+    expect(writes[3][1]).toStrictEqual({
+      performedBy: 1,
+      action: "ASSIGNED_PROGRAM_UPDATED",
+      targetUserId: 20,
+      entityType: "assigned-programs",
+      entityId: 900,
+      details: {
+        changes: { startDate: { from: start, to: newStart } },
+        scheduleVersions: {
+          replaced: [
+            {
+              id: 51,
+              type: "weekdays",
+              weekdays: [1, 3, 5],
+              timesPerWeek: null,
+              effectiveFrom: start,
+              createdBy: 3,
+              createdAt: new Date("2026-10-01T09:00:00Z"),
+            },
+          ],
+          added: {
+            id: 52,
+            type: "weekdays",
+            weekdays: [1, 3, 5],
+            timesPerWeek: null,
+            effectiveFrom: newStart,
+            createdBy: 1,
+            createdAt: new Date("2026-10-10T10:00:00Z"),
+          },
+        },
+      },
+    });
+  });
+
+  // Only REAL changes are listed: the title sent unchanged isn't one.
+  // (Without the comparison, every field a form re-sends would be logged as
+  // changed.)
+  it("audits only the fields that really changed", async () => {
+    await service.update(900, admin, {
+      title: "Knee Rehab",
+      endDate: null,
+      status: AssignedProgramStatus.ON_HOLD,
+      // A DTO instance can carry declared-but-unsent fields as undefined
+      // keys: "not sent" is not a change to undefined.
+      startDate: undefined,
+    });
+
+    const [, entry] = writes.find(([kind]) => kind === "audit")!;
+    expect((entry as { details: unknown }).details).toStrictEqual({
+      changes: {
+        endDate: { from: end, to: null },
+        status: { from: undefined, to: "on_hold" },
+      },
+    });
+  });
+
+  // The entry goes through the SAME transaction object as the change: that's
+  // what makes them commit or roll back together.
+  it("writes the audit entry through the change's transaction", async () => {
+    let txSeen: unknown;
+    db.transaction.mockImplementation((fn: (tx: unknown) => unknown) => {
+      txSeen = db;
+      return fn(db);
+    });
+
+    await service.update(900, admin, { title: "New" });
+
+    expect(auditService.logInTransaction).toHaveBeenCalledWith(
+      txSeen,
+      expect.objectContaining({ action: "ASSIGNED_PROGRAM_UPDATED" }),
+    );
   });
 });
 
@@ -1444,6 +1806,7 @@ describe("AssignedProgramsService.updateExercise", () => {
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 

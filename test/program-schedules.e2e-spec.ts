@@ -610,6 +610,202 @@ describe('Program schedules (e2e)', () => {
     })
   })
 
+  // --- 3b. Moving the start date ------------------------------------------------
+
+  describe('moving the start date', () => {
+    const patch = (programId: number, body: object) =>
+      practitionerA.patch(`/assigned-programs/${programId}`).send(body)
+
+    // Before the program starts, the schedule moves with it: still one
+    // version, now on the new start date.
+    it('moves the schedule with the start of a program that has not started', async () => {
+      const program = await createProgram({ startsIn: 10 })
+
+      const res = await patch(program.id, { startDate: addDays(today, 14) })
+      expect(res.status).toBe(200)
+      expect(summary(res.body.schedules)).toEqual([
+        [addDays(today, 14), [1, 3, 5]],
+      ])
+    })
+
+    // A change planned after the old start, and the start moved past it:
+    // the planned schedule is what starts on the new day.
+    it('starts with the schedule that would have been in force on the new day', async () => {
+      const program = await createProgram({ startsIn: 10 })
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ ...THREE_A_WEEK, effectiveFrom: addDays(today, 15) })
+
+      const res = await patch(program.id, { startDate: addDays(today, 20) })
+      expect(res.status).toBe(200)
+      expect(summary(res.body.schedules)).toEqual([[addDays(today, 20), 3]])
+    })
+
+    it('refuses to move the start of a program that has started, changing nothing', async () => {
+      const program = await createProgram({ startsIn: -20 })
+
+      const res = await patch(program.id, { startDate: addDays(today, 2) })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        `The start date can't change once the program has started (it started on ${program.startDate})`,
+      ])
+      const readBack = await practitionerA.get(
+        `/assigned-programs/${program.id}`,
+      )
+      expect(readBack.body.startDate).toBe(program.startDate)
+      expect(summary(readBack.body.schedules)).toEqual(
+        summary(program.schedules),
+      )
+    })
+
+    it('refuses to move a future start into the past', async () => {
+      const program = await createProgram({ startsIn: 10 })
+      const res = await patch(program.id, { startDate: addDays(today, -5) })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        "The start date can't be moved into the past",
+      ])
+    })
+
+    // Re-sending the start date it already has isn't a move: a program that
+    // has started can still have its title changed by a form sending both.
+    it('accepts the unchanged start date of a started program', async () => {
+      const program = await createProgram({ startsIn: -20 })
+      const res = await patch(program.id, {
+        startDate: program.startDate,
+        title: 'Renamed',
+      })
+      expect(res.status).toBe(200)
+      expect(res.body.title).toBe('Renamed')
+    })
+  })
+
+  // --- 3c. The audit trail -------------------------------------------------------
+
+  // What audit_logs holds for one program, read as the owner (an admin-only
+  // table for the app). The generic interceptor writes AFTER the response,
+  // fire-and-forget, so a short pause first gives a duplicate the chance to
+  // appear — otherwise "no generic entry" could pass just by being early.
+  async function auditTrail(programId: number) {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const { rows } = await sessionPool.query<{
+      action: string
+      performed_by: number
+      target_user_id: number | null
+      details: Record<string, unknown> | null
+    }>(
+      `SELECT action, performed_by, target_user_id, details FROM audit_logs
+       WHERE entity_type = 'assigned-programs' AND entity_id = $1 ORDER BY id`,
+      [programId],
+    )
+    return rows
+  }
+
+  describe('the audit trail', () => {
+    // ONE entry per change, complete — and no generic "POST
+    // /assigned-programs" beside it (the route is @AuditedByService()).
+    it('records the program as assigned, once', async () => {
+      const program = await createProgram({ startsIn: 3 })
+
+      const trail = await auditTrail(program.id)
+      expect(trail.map((r) => r.action)).toEqual(['ASSIGNED_PROGRAM_CREATED'])
+      const [entry] = trail
+      expect(entry.performed_by).toBe(practitionerAId)
+      expect(entry.target_user_id).toBe(patientId)
+      expect(entry.details).toMatchObject({
+        title: 'Schedules E2E Program',
+        startDate: addDays(today, 3),
+        endDate: null,
+        basedOnTemplateId: templateId,
+        schedule: {
+          type: 'weekdays',
+          weekdays: [1, 3, 5],
+          timesPerWeek: null,
+          effectiveFrom: addDays(today, 3),
+          createdBy: practitionerAId,
+        },
+      })
+      // The prescription itself, copied from the template.
+      expect(entry.details?.exercises).toEqual([
+        expect.objectContaining({
+          sets: 2,
+          reps: 10,
+          name: 'Schedules E2E Bridge',
+        }),
+      ])
+    })
+
+    // After a replace, the audit entry is the only place the replaced
+    // version still exists — so it must be there, whole.
+    it('records each schedule change with the versions it replaced', async () => {
+      const program = await createProgram()
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ ...THREE_A_WEEK, effectiveFrom: addDays(today, 7) })
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ type: 'weekdays', weekdays: [2, 4], effectiveFrom: today })
+
+      const trail = await auditTrail(program.id)
+      expect(trail.map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+        'ASSIGNED_PROGRAM_SCHEDULE_SET',
+        'ASSIGNED_PROGRAM_SCHEDULE_SET',
+      ])
+      expect(trail[2].details).toMatchObject({
+        effectiveFrom: today,
+        added: { type: 'weekdays', weekdays: [2, 4], effectiveFrom: today },
+        replaced: [
+          {
+            type: 'times_per_week',
+            timesPerWeek: 3,
+            effectiveFrom: addDays(today, 7),
+            createdBy: practitionerAId,
+          },
+        ],
+      })
+    })
+
+    // A refused change leaves no trace in the trail (it never happened).
+    it('records nothing for a refused change', async () => {
+      const program = await createProgram()
+      const res = await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ ...THREE_A_WEEK, effectiveFrom: addDays(today, -5) })
+      expect(res.status).toBe(400)
+
+      expect((await auditTrail(program.id)).map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+      ])
+    })
+
+    it('records a PATCH with what changed, and the schedule a start move replaced', async () => {
+      const program = await createProgram({ startsIn: 10 })
+      await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ startDate: addDays(today, 12), title: 'Schedules E2E Program' })
+
+      const trail = await auditTrail(program.id)
+      expect(trail.map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+        'ASSIGNED_PROGRAM_UPDATED',
+      ])
+      // The title was re-sent unchanged: not a change, not listed.
+      expect(trail[1].details).toMatchObject({
+        changes: {
+          startDate: { from: addDays(today, 10), to: addDays(today, 12) },
+        },
+        scheduleVersions: {
+          replaced: [
+            { effectiveFrom: addDays(today, 10), weekdays: [1, 3, 5] },
+          ],
+          added: { effectiveFrom: addDays(today, 12), weekdays: [1, 3, 5] },
+        },
+      })
+      expect(trail[1].details?.changes).not.toHaveProperty('title')
+    })
+  })
+
   // --- 4. The program's other writes -------------------------------------------
 
   describe('other writes on a program', () => {

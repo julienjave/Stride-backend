@@ -29,7 +29,7 @@ import type { CurrentUser } from '../common/decorators/current-user.decorator'
 
 // --- INTERFACES ---
 
-interface AuditEntry {
+export interface AuditEntry {
   performedBy: number
   action: string
   targetUserId?: number
@@ -66,6 +66,24 @@ export class AuditService {
   // insert.
   async log(entry: AuditEntry): Promise<void> {
     await this.db.insert(auditLogs).values(entry)
+  }
+
+  // The same insert, through the CALLER's transaction — for an entry that
+  // must commit or roll back with the change it describes (used by routes
+  // tagged @AuditedByService()).
+  //
+  // Why it matters: log() writes on its own connection. Called inside a
+  // transaction, it would record a change that a later failure then rolls
+  // back; called after the commit (what users.service.ts does today), the
+  // change can succeed while its entry fails and is lost. Through `tx`,
+  // neither can happen: no change without its entry, no entry without its
+  // change. The cost: a failed audit insert now fails the request — which
+  // is the point for clinical data (better refused than unrecorded).
+  //
+  // audit_logs' INSERT policy is WITH CHECK (true), so this works inside any
+  // RLS context the caller has set.
+  async logInTransaction(tx: DrizzleDb, entry: AuditEntry): Promise<void> {
+    await tx.insert(auditLogs).values(entry)
   }
 
   // --- GET ROUTES ---

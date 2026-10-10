@@ -24,10 +24,12 @@ import {
   Logger,
   NestInterceptor,
 } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
 import { Observable } from 'rxjs'
 import { tap } from 'rxjs/operators'
 import { AuditService } from '../../audit/audit.service'
 import { AuthenticatedRequest } from '../decorators/current-user.decorator'
+import { AUDITED_BY_SERVICE_KEY } from '../decorators/audited-by-service.decorator'
 import { errorMessage } from '../error-message'
 
 // --- INTERCEPTOR -------------------------------------------------------------------------------------------
@@ -36,7 +38,12 @@ import { errorMessage } from '../error-message'
 export class AuditLogInterceptor implements NestInterceptor {
   private readonly logger = new Logger(AuditLogInterceptor.name)
 
-  constructor(private readonly auditService: AuditService) {}
+  // Reflector reads the metadata decorators attach to routes — here,
+  // @AuditedByService(). Nest provides it to any provider that asks.
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly reflector: Reflector,
+  ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>()
@@ -50,9 +57,21 @@ export class AuditLogInterceptor implements NestInterceptor {
     // password" on a failed login) than this generic interceptor could
     // ever infer from the request alone.
     const isMutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)
+    //
+    // Routes tagged @AuditedByService() are skipped too: their service writes
+    // a complete entry (what changed, before and after) in the change's own
+    // transaction, and a generic one beside it would only be a vague
+    // duplicate. getAllAndOverride looks at the handler first, then its
+    // controller class, so a whole controller could be tagged at once. The
+    // two URL prefixes are the older way of saying the same thing, kept
+    // until the audit review moves them to the decorator.
     const isExplicitlyAudited =
       originalUrl.startsWith('/auth') ||
-      originalUrl.startsWith('/medical-files')
+      originalUrl.startsWith('/medical-files') ||
+      this.reflector.getAllAndOverride<boolean | undefined>(
+        AUDITED_BY_SERVICE_KEY,
+        [context.getHandler(), context.getClass()],
+      ) === true
 
     if (!isMutating || isExplicitlyAudited || !user) {
       return next.handle()

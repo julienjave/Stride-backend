@@ -46,6 +46,11 @@ import { AddScheduleVersionDto } from "./dto/add-schedule-version.dto";
 import { UserRole } from "../users/dto/create-user.dto";
 import { withRlsContext } from "../database/rls-context";
 import { addDays, utcToday } from "../common/calendar-date";
+import { AuditService } from "../audit/audit.service";
+import {
+  assertStartDateMovable,
+  planStartDateMove,
+} from "./start-date-move";
 import {
   isUniqueViolation,
   PROGRAM_SCHEDULES_ONE_PER_DAY,
@@ -107,6 +112,36 @@ function toScheduleColumns(schedule: ScheduleInputDto) {
   };
 }
 
+// A schedule version as an audit entry records it: everything needed to
+// know what the schedule was, from when, and who set it. (A plain object
+// copy, so the entry never depends on what the row type happens to carry.)
+function versionForAudit(version: typeof programSchedules.$inferSelect) {
+  return {
+    id: version.id,
+    type: version.type,
+    weekdays: version.weekdays,
+    timesPerWeek: version.timesPerWeek,
+    effectiveFrom: version.effectiveFrom,
+    createdBy: version.createdBy,
+    createdAt: version.createdAt,
+  };
+}
+
+// The fields a PATCH really changed, as { field: { from, to } } — a field
+// sent with the value it already had isn't a change, and isn't listed.
+function changedFields(
+  before: Record<string, unknown>,
+  dto: Record<string, unknown>,
+) {
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const [field, to] of Object.entries(dto)) {
+    if (to !== undefined && before[field] !== to) {
+      changes[field] = { from: before[field], to };
+    }
+  }
+  return changes;
+}
+
 // The end of a program can't come before its start (decisions §5: the
 // dates ARE the program's length). Checked here for a clear 400; the
 // database's assigned_programs_ends_after_start check is the guarantee
@@ -160,9 +195,14 @@ export class AssignedProgramsService {
   // needs Users' isPatientManagedBy/findPatientsForPractitioner; Users needs
   // nothing back), so there's no circularity risk, and it avoids duplicating
   // that clinic-scoping logic a third time.
+  //
+  // AuditService (from the global AuditModule) writes the detailed audit
+  // entries of the routes tagged @AuditedByService() — create, update and
+  // addScheduleVersion — inside the change's own transaction.
   constructor(
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
   ) {}
 
   // === ROUTES =============================================================
@@ -257,11 +297,45 @@ export class AssignedProgramsService {
       // neither does. That's what makes "every program has a schedule"
       // true — the database itself can't require a row in ANOTHER table
       // (a CHECK constraint only sees the row it's checking).
-      await tx.insert(programSchedules).values({
-        assignedProgramId: program.id,
-        ...toScheduleColumns(dto.schedule),
-        effectiveFrom: dto.startDate,
-        createdBy: currentUser.id,
+      const [firstVersion] = await tx
+        .insert(programSchedules)
+        .values({
+          assignedProgramId: program.id,
+          ...toScheduleColumns(dto.schedule),
+          effectiveFrom: dto.startDate,
+          createdBy: currentUser.id,
+        })
+        .returning();
+
+      // The audit entry, in the same transaction (see AuditService.
+      // logInTransaction): the whole prescription as it was assigned —
+      // dates, schedule, every exercise with its sets/reps/weight — so the
+      // trail shows exactly what the patient was given, and by whom, even
+      // after later edits.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_CREATED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: program.id,
+        details: {
+          title: program.title,
+          startDate: program.startDate,
+          endDate: program.endDate,
+          basedOnTemplateId: program.basedOnTemplateId,
+          schedule: versionForAudit(firstVersion),
+          exercises: sourceExercises.map((ex) => ({
+            exerciseId: ex.exerciseId,
+            name: ex.name,
+            sets: ex.sets ?? null,
+            reps: ex.reps ?? null,
+            durationInSeconds: ex.durationInSeconds ?? null,
+            weight: ex.weight ?? null,
+            weightUnit: ex.weightUnit ?? null,
+            sortOrder: ex.sortOrder,
+            notes: ex.notes ?? null,
+          })),
+        },
       });
 
       return program.id;
@@ -351,19 +425,38 @@ export class AssignedProgramsService {
 
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
-        await tx
+        // RETURNING: the deleted versions come back, so the audit entry can
+        // record exactly what was replaced — after this transaction, the
+        // audit log is the only place they still exist.
+        const replaced = await tx
           .delete(programSchedules)
           .where(
             and(
               eq(programSchedules.assignedProgramId, id),
               gte(programSchedules.effectiveFrom, dto.effectiveFrom),
             ),
-          );
-        await tx.insert(programSchedules).values({
-          assignedProgramId: id,
-          ...toScheduleColumns(dto),
-          effectiveFrom: dto.effectiveFrom,
-          createdBy: currentUser.id,
+          )
+          .returning();
+        const [added] = await tx
+          .insert(programSchedules)
+          .values({
+            assignedProgramId: id,
+            ...toScheduleColumns(dto),
+            effectiveFrom: dto.effectiveFrom,
+            createdBy: currentUser.id,
+          })
+          .returning();
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: "ASSIGNED_PROGRAM_SCHEDULE_SET",
+          targetUserId: program.patientId,
+          entityType: "assigned-programs",
+          entityId: id,
+          details: {
+            effectiveFrom: dto.effectiveFrom,
+            added: versionForAudit(added),
+            replaced: replaced.map(versionForAudit),
+          },
         });
       });
     } catch (error) {
@@ -536,6 +629,15 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    // Moving the start date: only while the program hasn't started (see
+    // start-date-move.ts) — and then its schedule moves with it, below.
+    const newStartDate =
+      dto.startDate !== undefined && dto.startDate !== program.startDate
+        ? dto.startDate
+        : null;
+    if (newStartDate !== null) {
+      assertStartDateMovable(program.startDate, newStartDate);
+    }
     // The dates as they WILL be: a PATCH may send only one of them, and the
     // check is about the pair. `undefined` = not sent (keep the stored
     // value); `null` = endDate cleared (open-ended), which is always fine.
@@ -543,12 +645,66 @@ export class AssignedProgramsService {
       dto.startDate ?? program.startDate,
       dto.endDate === undefined ? program.endDate : dto.endDate,
     );
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await tx
         .update(assignedPrograms)
         .set(dto)
-        .where(eq(assignedPrograms.id, id)),
-    );
+        .where(eq(assignedPrograms.id, id));
+
+      // The schedule follows the start: on the new start date, the version
+      // that would have been in force that day (planStartDateMove). Same
+      // transaction, so the program never exists with a start date its
+      // schedule doesn't cover.
+      let scheduleVersions:
+        | { replaced: ReturnType<typeof versionForAudit>[]; added: ReturnType<typeof versionForAudit> | null }
+        | undefined;
+      if (newStartDate !== null) {
+        const versions = await tx.query.programSchedules.findMany({
+          where: eq(programSchedules.assignedProgramId, id),
+          orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
+        });
+        const plan = planStartDateMove(versions, newStartDate);
+        const replaced =
+          plan.deleteIds.length > 0
+            ? await tx
+                .delete(programSchedules)
+                .where(inArray(programSchedules.id, plan.deleteIds))
+                .returning()
+            : [];
+        // The re-created version is recorded as set by whoever moved the
+        // start (it's a new row, created now); who set the ORIGINAL is kept
+        // in the audit entry's `replaced`.
+        const [added] = plan.insert
+          ? await tx
+              .insert(programSchedules)
+              .values({
+                assignedProgramId: id,
+                ...plan.insert,
+                effectiveFrom: newStartDate,
+                createdBy: currentUser.id,
+              })
+              .returning()
+          : [];
+        scheduleVersions = {
+          replaced: replaced.map(versionForAudit),
+          added: added ? versionForAudit(added) : null,
+        };
+      }
+
+      // Every field that really changed, before → after, plus the schedule
+      // versions a start-date move replaced.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_UPDATED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: id,
+        details: {
+          changes: changedFields(program, { ...dto }),
+          ...(scheduleVersions ? { scheduleVersions } : {}),
+        },
+      });
+    });
     // The full program, not the bare row — the same reason as
     // updateExercise below: the program page will write this response
     // into its cache, and a bare row has no exercises or schedules.

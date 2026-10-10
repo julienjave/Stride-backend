@@ -42,9 +42,10 @@ export const scheduleTypeEnum = pgEnum('schedule_type', [
 // point 5). Each row says "from effective_from on, the schedule is …". To
 // judge any day, take the latest version whose effective_from is on or
 // before that day — so changing Mon/Wed/Fri to Tue/Thu today never turns
-// last week's Mondays into misses. The FIRST version also covers any days
-// before its own date (the program's start can be moved earlier after the
-// fact); the schedule module (step 2) applies that rule.
+// last week's Mondays into misses. The first version starts on the
+// program's start date, and stays there: the start date can only move
+// before the program starts, and then the schedule moves with it
+// (start-date-move.ts) — so every day of a program has a version.
 //
 // History is protected by the database itself, not just by the API: the
 // table has no UPDATE policy at all, its DELETE policy only reaches

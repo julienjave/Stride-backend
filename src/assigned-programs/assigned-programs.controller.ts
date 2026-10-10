@@ -43,6 +43,7 @@ import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -62,8 +63,11 @@ export class AssignedProgramsController {
   // same authorship reasoning as exercises/templates staying
   // practitioner-only at creation. Service-level clinic-scope check (does
   // this practitioner actually manage this patient) happens on top.
+  // @AuditedByService: the service writes the audit entry (the whole
+  // prescription as assigned), in the same transaction as the program.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
   @Post()
   create(
     @CurrentUser() user: CurrentUser,
@@ -90,6 +94,7 @@ export class AssignedProgramsController {
   // (the earlier versions stay), rather than editing a field in place.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/schedules')
   addScheduleVersion(
     @Param('id', ParseIntPipe) id: number,
@@ -129,6 +134,7 @@ export class AssignedProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
