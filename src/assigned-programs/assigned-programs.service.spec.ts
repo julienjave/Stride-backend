@@ -1832,3 +1832,103 @@ describe("AssignedProgramsService.updateExercise", () => {
     });
   });
 });
+
+describe("AssignedProgramsService.summary", () => {
+  let service: AssignedProgramsService;
+  let usersService: { isPatientManagedBy: jest.Mock };
+  let sessionsWhere: jest.Mock;
+  let db: {
+    query: {
+      assignedPrograms: { findFirst: jest.Mock };
+      programSchedules: { findMany: jest.Mock };
+    };
+    select: jest.Mock;
+    execute: jest.Mock;
+    transaction: jest.Mock;
+  };
+
+  // A times-per-week program started 3 days ago, so "today" is inside its
+  // first week whatever day the tests run.
+  const today = utcToday();
+  const start = addDays(today, -3);
+
+  beforeEach(async () => {
+    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) };
+    sessionsWhere = jest.fn().mockResolvedValue([{ id: 31, localDate: start }]);
+    db = {
+      query: {
+        assignedPrograms: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 900,
+            patientId: 20,
+            startDate: start,
+            endDate: null,
+          }),
+        },
+        programSchedules: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              type: "times_per_week",
+              weekdays: null,
+              timesPerWeek: 2,
+              effectiveFrom: start,
+            },
+          ]),
+        },
+      },
+      select: jest.fn(() => ({ from: () => ({ where: sessionsWhere }) })),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AssignedProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile();
+
+    service = moduleRef.get(AssignedProgramsService);
+  });
+
+  const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER };
+
+  // The service only gathers data: the program's dates, its versions and
+  // its sessions reach the module, whose answer comes back as is.
+  it("summarizes the program from its dates, versions and sessions", async () => {
+    const result = await service.summary(900, practitioner, today);
+
+    expect(result.firstDay).toBe(start);
+    expect(result.today).toBe(today);
+    expect(result.totals).toEqual({
+      expected: null,
+      done: 1,
+      madeUp: 0,
+      missed: 0,
+      extra: 0,
+    });
+    expect(result.weeks[0].sessionIds).toEqual([31]);
+  });
+
+  it("refuses a today that can't be today anywhere, before reading anything", async () => {
+    await expect(
+      service.summary(900, practitioner, addDays(today, -2)),
+    ).rejects.toThrow(
+      new BadRequestException("today must be today's date in your time zone"),
+    );
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses someone who may not view the program, before reading sessions", async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(false);
+
+    await expect(service.summary(900, practitioner, today)).rejects.toThrow(
+      new ForbiddenException(
+        "You do not have permission to view this assigned program",
+      ),
+    );
+    expect(sessionsWhere).not.toHaveBeenCalled();
+  });
+});

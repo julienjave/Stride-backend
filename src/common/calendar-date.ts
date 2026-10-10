@@ -89,3 +89,33 @@ export function addDays(date: string, days: number): string {
   const start = Date.UTC(year, month - 1, day)
   return new Date(start + days * MS_PER_DAY).toISOString().slice(0, 10)
 }
+
+// The number of days from `from` to `to` (negative when `to` is earlier):
+// daysBetween('2026-10-09', '2026-10-12') is 3. Exact, for the same reason
+// as addDays: in UTC every day is 24 hours, so the division has no remainder.
+export function daysBetween(from: string, to: string): number {
+  const [fy, fm, fd] = from.split('-').map(Number)
+  const [ty, tm, td] = to.split('-').map(Number)
+  return (Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / MS_PER_DAY
+}
+
+// The ISO weekday of a calendar date: 1 = Monday … 7 = Sunday — the
+// numbering schedules use. getUTCDay() counts 0 = Sunday … 6 = Saturday, so
+// Sunday is moved from 0 to 7. In UTC, so the answer is the date's own
+// weekday whatever the machine's time zone.
+export function isoWeekday(date: string): number {
+  const [year, month, day] = date.split('-').map(Number)
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+  return weekday === 0 ? 7 : weekday
+}
+
+// Could `date` be "today" for someone, somewhere, at the moment `now`?
+// Every time zone's date is UTC's date, the day before or the day after
+// (UTC−12 to UTC+14), so those three days are the only possible answers.
+// Used where a client sends its own today (a session's local date, the
+// summary's ?today=) — the server can't know which of the three is right,
+// but it can refuse anything else.
+export function isPossibleToday(date: string, now: Date = new Date()): boolean {
+  const today = utcToday(now)
+  return date >= addDays(today, -1) && date <= addDays(today, 1)
+}

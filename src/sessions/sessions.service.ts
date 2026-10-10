@@ -38,7 +38,7 @@ import { UpdateSessionDto, SessionStatus } from './dto/update-session.dto'
 import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
-import { addDays, utcToday } from '../common/calendar-date'
+import { isPossibleToday } from '../common/calendar-date'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -58,8 +58,7 @@ export function assertLocalDateIsToday(
   localDate: string,
   now: Date = new Date(),
 ) {
-  const today = utcToday(now)
-  if (localDate < addDays(today, -1) || localDate > addDays(today, 1)) {
+  if (!isPossibleToday(localDate, now)) {
     throw new BadRequestException(
       "localDate must be today's date in the patient's time zone",
     )

@@ -15,6 +15,8 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
+import { addDays } from '../../src/common/calendar-date'
+import { seedSessionDays } from './session-history'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -124,6 +126,19 @@ describe('the seed dataset', () => {
       expect(patient).toBeDefined()
       const careTeam = [patient?.createdBy, ...(patient?.alsoOnCareTeam ?? [])]
       expect(careTeam).toContain(assignment.by)
+    }
+  })
+
+  // Every history fits its schedule (a weekdays history on a weekdays
+  // schedule, make-ups on unscheduled days) — checked with a fixed date so
+  // the test doesn't depend on the day it runs.
+  it('gives every program a history that fits its schedule', () => {
+    for (const assignment of ASSIGNED_PROGRAMS) {
+      const today = '2026-10-26'
+      const start = addDays(today, -assignment.startsDaysAgo)
+      expect(() =>
+        seedSessionDays(start, today, assignment.schedule, assignment.history),
+      ).not.toThrow()
     }
   })
 

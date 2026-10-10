@@ -38,6 +38,7 @@ import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
+import { ScheduleSummaryQueryDto } from './dto/schedule-summary-query.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -120,6 +121,18 @@ export class AssignedProgramsController {
       user,
       query.patientId,
     )
+  }
+
+  // Due / done / made up / missed for the whole program (the schedule
+  // module). Every role may ask; the service checks it's someone who may
+  // see this program.
+  @Get(':id/summary')
+  summary(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Query() query: ScheduleSummaryQueryDto,
+  ) {
+    return this.assignedProgramsService.summary(id, user, query.today)
   }
 
   @Get(':id')

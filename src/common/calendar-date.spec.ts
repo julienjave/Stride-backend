@@ -15,7 +15,14 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { addDays, isCalendarDate, utcToday } from './calendar-date'
+import {
+  addDays,
+  daysBetween,
+  isCalendarDate,
+  isoWeekday,
+  isPossibleToday,
+  utcToday,
+} from './calendar-date'
 
 describe('isCalendarDate', () => {
   it.each([
@@ -83,5 +90,44 @@ describe('addDays', () => {
     ['several weeks', '2026-10-09', 28, '2026-11-06'],
   ])('%s', (_label, date, days, expected) => {
     expect(addDays(date, days)).toBe(expected)
+  })
+})
+
+describe('daysBetween', () => {
+  it.each([
+    ['the same day', '2026-10-09', '2026-10-09', 0],
+    ['three days later', '2026-10-09', '2026-10-12', 3],
+    ['earlier (negative)', '2026-10-12', '2026-10-09', -3],
+    ['across a year', '2026-12-30', '2027-01-02', 3],
+    ['across a leap day', '2028-02-28', '2028-03-01', 2],
+    ['across a daylight-saving change', '2026-10-24', '2026-10-26', 2],
+  ])('%s', (_label, from, to, expected) => {
+    expect(daysBetween(from, to)).toBe(expected)
+  })
+})
+
+describe('isoWeekday', () => {
+  // 2026-10-12 is a Monday. Sunday is the case getUTCDay() numbers 0.
+  it.each([
+    ['2026-10-12', 1],
+    ['2026-10-14', 3],
+    ['2026-10-17', 6],
+    ['2026-10-18', 7],
+    ['2026-10-19', 1],
+  ])('%s is ISO weekday %d', (date, expected) => {
+    expect(isoWeekday(date)).toBe(expected)
+  })
+})
+
+describe('isPossibleToday', () => {
+  // UTC's today is the 15th: the 14th, 15th and 16th are someone's today.
+  const now = new Date('2031-06-15T12:00:00Z')
+
+  it.each(['2031-06-14', '2031-06-15', '2031-06-16'])('accepts %s', (date) => {
+    expect(isPossibleToday(date, now)).toBe(true)
+  })
+
+  it.each(['2031-06-13', '2031-06-17'])('refuses %s', (date) => {
+    expect(isPossibleToday(date, now)).toBe(false)
   })
 })

@@ -32,6 +32,7 @@ import {
   assignedProgramExercises,
   programSchedules,
   programTemplates,
+  sessions,
   templateExercises,
   exercises,
   users,
@@ -45,7 +46,8 @@ import { ScheduleInputDto, ScheduleType } from "./dto/schedule-input.dto";
 import { AddScheduleVersionDto } from "./dto/add-schedule-version.dto";
 import { UserRole } from "../users/dto/create-user.dto";
 import { withRlsContext } from "../database/rls-context";
-import { addDays, utcToday } from "../common/calendar-date";
+import { addDays, isPossibleToday, utcToday } from "../common/calendar-date";
+import { summarizeSchedule } from "./schedule/schedule-summary";
 import { AuditService } from "../audit/audit.service";
 import {
   assertStartDateMovable,
@@ -618,6 +620,57 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanView(program.patientId, currentUser);
     return this.findProgramWithExercises(id, currentUser);
+  }
+
+  // GET /assigned-programs/:id/summary?today= — what was due, done, made
+  // up and missed (decisions §5), computed by the schedule module from the
+  // program's dates, its schedule versions and its COMPLETED sessions.
+  //
+  // This method only gathers the data and checks who may see it; every rule
+  // lives in schedule-summary.ts (pure, tested with plain values).
+  //
+  // Same people as viewing the program (assertCanView): the care team, the
+  // patient, an admin. The reads run in their RLS context — sessions and
+  // schedule versions have policies of their own, which agree.
+  async summary(id: number, currentUser: CurrentUser, today: string) {
+    if (!isPossibleToday(today)) {
+      throw new BadRequestException(
+        "today must be today's date in your time zone",
+      );
+    }
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanView(program.patientId, currentUser);
+
+    const [versions, completed] = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => [
+        await tx.query.programSchedules.findMany({
+          where: eq(programSchedules.assignedProgramId, id),
+        }),
+        // Only what the module needs (id + the patient's day), and only
+        // completed sessions: "done" means completed (decided 2026-10-09) —
+        // a session started and abandoned isn't done. The index on
+        // (assigned_program_id, local_date) serves this read.
+        await tx
+          .select({ id: sessions.id, localDate: sessions.localDate })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.assignedProgramId, id),
+              eq(sessions.status, "completed"),
+            ),
+          ),
+      ] as const,
+    );
+
+    return summarizeSchedule({
+      startDate: program.startDate,
+      endDate: program.endDate,
+      versions,
+      sessions: completed,
+      today,
+    });
   }
 
   // --- PATCH ROUTES ---

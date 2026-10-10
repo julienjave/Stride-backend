@@ -806,6 +806,136 @@ describe('Program schedules (e2e)', () => {
     })
   })
 
+  // --- 3d. The summary ---------------------------------------------------------------
+
+  // The rules are tested in schedule-summary.spec.ts with plain values; here,
+  // that the endpoint feeds the module the right data (only COMPLETED
+  // sessions, by the patient's local date) and that only the right people
+  // may ask.
+  describe('the summary', () => {
+    const summaryOf = (
+      agent: ReturnType<typeof request.agent>,
+      programId: number,
+      day = today,
+    ) => agent.get(`/assigned-programs/${programId}/summary?today=${day}`)
+
+    it('covers the program from its start, with no total for an open-ended one', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: THREE_A_WEEK,
+      })
+
+      const res = await summaryOf(practitionerA, program.id)
+      expect(res.status).toBe(200)
+      expect(res.body.firstDay).toBe(program.startDate)
+      // Open-ended: up to the end of the current program week (7 days from
+      // a start 3 days ago).
+      expect(res.body.lastDay).toBe(addDays(program.startDate, 6))
+      expect(res.body.today).toBe(today)
+      expect(res.body.totals).toEqual({
+        expected: null,
+        done: 0,
+        madeUp: 0,
+        missed: 0,
+        extra: 0,
+      })
+      expect(res.body.weeks).toEqual([
+        {
+          programWeek: 1,
+          start: program.startDate,
+          end: addDays(program.startDate, 6),
+          timesPerWeek: 3,
+          target: 3,
+          done: 0,
+          state: 'in_progress',
+          sessionIds: [],
+        },
+      ])
+    })
+
+    // A real session through the real endpoints: started → not done;
+    // completed → done. (A started-and-abandoned session must never count.)
+    it('counts a session only once it is completed', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: THREE_A_WEEK,
+      })
+      const started = await patient
+        .post('/sessions')
+        .send({ assignedProgramId: program.id, localDate: today })
+      expect(started.status).toBe(201)
+      await patient
+        .patch(`/sessions/${started.body.id}`)
+        .send({ status: 'in_progress' })
+
+      const before = await summaryOf(practitionerA, program.id)
+      expect(before.body.totals.done).toBe(0)
+
+      await patient
+        .patch(`/sessions/${started.body.id}`)
+        .send({ status: 'completed' })
+      const after = await summaryOf(practitionerA, program.id)
+      expect(after.body.totals.done).toBe(1)
+      expect(after.body.weeks[0].sessionIds).toEqual([started.body.id])
+    })
+
+    // Specific days, judged against real dates: a program started 20 days
+    // ago on Mon/Wed/Fri, with no sessions, has missed days — and none of
+    // them is today or later.
+    it('judges specific days with nothing done as missed, never today', async () => {
+      const program = await createProgram({ startsIn: -20 })
+      const res = await summaryOf(practitionerA, program.id)
+
+      const days = res.body.days as { date: string; state: string }[]
+      expect(days.length).toBeGreaterThan(0)
+      for (const day of days) {
+        if (day.date > today) expect(day.state).toBe('upcoming')
+        else expect(['missed', 'due']).toContain(day.state)
+      }
+      // Missed only once the make-up window has closed — so never today.
+      expect(days.find((day) => day.date === today)?.state ?? 'due').toBe('due')
+      expect(res.body.totals.missed).toBe(
+        days.filter((day) => day.state === 'missed').length,
+      )
+    })
+
+    it('lets the patient and an admin see it; not a colleague off the care team', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: THREE_A_WEEK,
+      })
+      expect((await summaryOf(patient, program.id)).status).toBe(200)
+      expect((await summaryOf(admin, program.id)).status).toBe(200)
+      // RLS hides the program from them: 404, existence not confirmed.
+      expect((await summaryOf(practitionerC, program.id)).status).toBe(404)
+    })
+
+    it('requires a today that is a date, and possibly today', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: THREE_A_WEEK,
+      })
+
+      const missing = await practitionerA.get(
+        `/assigned-programs/${program.id}/summary`,
+      )
+      expect(missing.status).toBe(400)
+      expect(missing.body.message).toEqual([
+        'today must be a date written as YYYY-MM-DD',
+      ])
+
+      const tooEarly = await summaryOf(
+        practitionerA,
+        program.id,
+        addDays(today, -2),
+      )
+      expect(tooEarly.status).toBe(400)
+      expect(tooEarly.body.message).toEqual([
+        "today must be today's date in your time zone",
+      ])
+    })
+  })
+
   // --- 4. The program's other writes -------------------------------------------
 
   describe('other writes on a program', () => {

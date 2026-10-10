@@ -24,6 +24,8 @@
 // never receive mail, so even a misconfigured email transport can't write
 // to a stranger.
 
+import type { SeedHistory } from './session-history'
+
 // --- TYPES -------------------------------------------------------------------------------------------------
 
 export type ClinicKey = 'riverside' | 'harbour'
@@ -382,9 +384,13 @@ export type SeedSchedule =
 // One of each schedule type, so both can be looked at.
 //
 // startsDaysAgo: the program's start date, counted back from the day the
-// seed runs (0 = that day). Jo's started in the past, so its program
-// weeks don't line up with calendar weeks and the dates already passed
-// can be judged by the schedule (step 2).
+// seed runs (0 = that day). Both started in the past, so their summaries
+// already have days to judge — and Jo's program weeks don't line up with
+// calendar weeks.
+//
+// history: completed sessions on past days (session-history.ts turns the
+// plan into dates for the day the seed runs), so the program pages show
+// done, made-up and missed days at once.
 export const ASSIGNED_PROGRAMS: {
   patient: AccountKey
   by: AccountKey
@@ -392,15 +398,19 @@ export const ASSIGNED_PROGRAMS: {
   title: string
   startsDaysAgo: number
   schedule: SeedSchedule
+  history: SeedHistory
 }[] = [
   {
     patient: 'pat',
     by: 'alex',
     template: 'Knee Rehab — Phase 1',
     title: 'Knee Rehab — Pat',
-    startsDaysAgo: 0,
+    startsDaysAgo: 14,
     // ISO weekdays: Monday, Wednesday, Friday.
     schedule: { type: 'weekdays', weekdays: [1, 3, 5] },
+    // Every scheduled day done, except the 2nd (made up the next day) and
+    // the 4th (missed).
+    history: { kind: 'weekdays', madeUpIndex: 1, missedIndex: 3 },
   },
   {
     patient: 'jo',
@@ -411,5 +421,8 @@ export const ASSIGNED_PROGRAMS: {
     title: 'Lower Back Mobility — Jo',
     startsDaysAgo: 10,
     schedule: { type: 'times_per_week', timesPerWeek: 3 },
+    // First program week: 2 of 3 (one missed). Second week (today is its
+    // 4th day): 1 so far, in progress.
+    history: { kind: 'days-after-start', days: [0, 2, 8] },
   },
 ]
