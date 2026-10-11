@@ -402,13 +402,15 @@ export const TEMPLATES: {
 ]
 
 // A program's schedule, in the shape POST /assigned-programs takes
-// (ScheduleInputDto). Written as a union of the two kinds so a dataset
-// entry can't mix them up: a 'weekdays' schedule MUST list weekdays and
-// can't have a count, and the reverse. (The DTO checks the same at run
-// time; this makes a wrong entry fail to compile.)
+// (NewProgramScheduleDto): workouts named by POSITION in the template (0 =
+// A), since the program — and so its workout ids — doesn't exist yet.
+// Written as a union of the two kinds so a dataset entry can't mix them
+// up: a 'weekdays' schedule MUST list its days and can't have a count, and
+// the reverse. (The DTO checks the same at run time; this makes a wrong
+// entry fail to compile.) No rotation = every workout in order.
 export type SeedSchedule =
-  | { type: 'weekdays'; weekdays: number[] }
-  | { type: 'times_per_week'; timesPerWeek: number }
+  | { type: 'weekdays'; days: { weekday: number; workoutIndex: number }[] }
+  | { type: 'times_per_week'; timesPerWeek: number; rotation?: number[] }
 
 // Assigned programs: a copy of a template given to a patient (by a
 // practitioner on their care team), with its schedule (decisions §5).
@@ -421,13 +423,8 @@ export type SeedSchedule =
 //
 // history: completed sessions on past days (session-history.ts turns the
 // plan into dates for the day the seed runs), so the program pages show
-// done, made-up and missed days at once.
-//
-// workoutByWeekday: which workout (by position: 0 = A) each past session
-// did, by the weekday of the SCHEDULED day it counts for — a make-up does
-// the missed day's workout. Omitted = workout A. (The schedule itself will
-// say which workout each day uses in the next step; this records what the
-// sessions did.)
+// done, made-up and missed days at once. Each session does the workout
+// the schedule asks for (seedSessionWorkouts).
 export const ASSIGNED_PROGRAMS: {
   patient: AccountKey
   by: AccountKey
@@ -436,7 +433,6 @@ export const ASSIGNED_PROGRAMS: {
   startsDaysAgo: number
   schedule: SeedSchedule
   history: SeedHistory
-  workoutByWeekday?: Partial<Record<number, number>>
 }[] = [
   {
     patient: 'pat',
@@ -444,13 +440,19 @@ export const ASSIGNED_PROGRAMS: {
     template: 'Knee Rehab — Phase 1',
     title: 'Knee Rehab — Pat',
     startsDaysAgo: 14,
-    // ISO weekdays: Monday, Wednesday, Friday.
-    schedule: { type: 'weekdays', weekdays: [1, 3, 5] },
+    // ISO weekdays: Mobility (A) on Mondays and Fridays, Strength (B) on
+    // Wednesdays.
+    schedule: {
+      type: 'weekdays',
+      days: [
+        { weekday: 1, workoutIndex: 0 },
+        { weekday: 3, workoutIndex: 1 },
+        { weekday: 5, workoutIndex: 0 },
+      ],
+    },
     // Every scheduled day done, except the 2nd (made up the next day) and
     // the 4th (missed).
     history: { kind: 'weekdays', madeUpIndex: 1, missedIndex: 3 },
-    // Mobility (A) on Mondays and Fridays, Strength (B) on Wednesdays.
-    workoutByWeekday: { 1: 0, 3: 1, 5: 0 },
   },
   {
     patient: 'jo',
@@ -460,6 +462,8 @@ export const ASSIGNED_PROGRAMS: {
     template: 'Lower Back Mobility',
     title: 'Lower Back Mobility — Jo',
     startsDaysAgo: 10,
+    // No rotation given: every workout in order — this template has one,
+    // so every session is A.
     schedule: { type: 'times_per_week', timesPerWeek: 3 },
     // First program week: 2 of 3 (one missed). Second week (today is its
     // 4th day): 1 so far, in progress.

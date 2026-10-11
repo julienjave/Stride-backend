@@ -39,7 +39,16 @@ const PROGRAM_WORKOUTS = [
 
 // A schedule for the create() calls that aren't about schedules — the DTO
 // requires one. Deliberately NOT in order ([5, 1, 3]): create() must sort it.
-const MWF = { type: ScheduleType.WEEKDAYS, weekdays: [5, 1, 3] };
+// Days given by workout POSITION (0 = A), as when assigning — and
+// deliberately not in weekday order (Friday first): create() must sort them.
+const MWF = {
+  type: ScheduleType.WEEKDAYS,
+  days: [
+    { weekday: 5, workoutIndex: 0 },
+    { weekday: 1, workoutIndex: 0 },
+    { weekday: 3, workoutIndex: 0 },
+  ],
+};
 
 describe("AssignedProgramsService.create", () => {
   let service: AssignedProgramsService;
@@ -55,6 +64,8 @@ describe("AssignedProgramsService.create", () => {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -92,6 +103,8 @@ describe("AssignedProgramsService.create", () => {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
         // Used by fetchExerciseSnapshots, now called by BOTH branches of
         // resolveSourceExercises (copying from a template, and an inline
@@ -273,9 +286,10 @@ describe("AssignedProgramsService.create", () => {
 
     // One insert for the program itself, one for its copy of the template's
     // workout, one for the copied exercise row — this row is a brand-new
-    // record, never an FK back to templateExercises — and one for the
-    // program's first schedule version (tested below).
-    expect(inserted).toHaveLength(4);
+    // record, never an FK back to templateExercises — and two for the
+    // program's first schedule version: the version, then its days (tested
+    // below).
+    expect(inserted).toHaveLength(5);
     expect(inserted[1]).toEqual({
       assignedProgramId: 900,
       name: null,
@@ -414,10 +428,13 @@ describe("AssignedProgramsService.create", () => {
     ]);
   }
 
-  // toStrictEqual: the other column must be an explicit null (the
-  // database's fields-match-type check needs it NULL) and nothing extra may
-  // sneak in. MWF is sent as [5, 1, 3]: the sorting must happen here.
-  it("saves the schedule as the program's first version, from its start date, weekdays sorted", async () => {
+  // toStrictEqual: timesPerWeek must be an explicit null (the database's
+  // fields-match-type check needs it NULL) and nothing extra may sneak in.
+  // The inserts, in order: program, workout, exercise, the VERSION, then its
+  // days (one multi-row insert). MWF is sent Friday first: the days are
+  // written in weekday order, each with the program's new workout (every
+  // insert in these mocks answers with id 900).
+  it("saves the schedule as the program's first version with its days, in weekday order", async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true);
     knownExercise();
     const inserted = recordInserts();
@@ -427,31 +444,39 @@ describe("AssignedProgramsService.create", () => {
       { ...inlineProgram, schedule: MWF },
     );
 
-    expect(inserted[inserted.length - 1]).toStrictEqual({
+    expect(inserted[inserted.length - 2]).toStrictEqual({
       assignedProgramId: 900,
       type: "weekdays",
-      weekdays: [1, 3, 5],
       timesPerWeek: null,
       effectiveFrom: "2026-10-15",
       createdBy: 7,
     });
+    expect(inserted[inserted.length - 1]).toStrictEqual(
+      [1, 3, 5].map((weekday) => ({
+        scheduleId: 900,
+        assignedProgramId: 900,
+        weekday,
+        workoutId: 900,
+      })),
+    );
   });
 
-  it("doesn't reorder the caller's own weekdays array while sorting", async () => {
+  it("doesn't reorder the caller's own days while sorting", async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true);
     knownExercise();
     recordInserts();
-    const schedule = { type: ScheduleType.WEEKDAYS, weekdays: [5, 1, 3] };
+    const schedule = structuredClone(MWF);
 
     await service.create(
       { id: 7, activeRole: UserRole.PRACTITIONER },
       { ...inlineProgram, schedule },
     );
 
-    expect(schedule.weekdays).toEqual([5, 1, 3]);
+    expect(schedule.days.map((day) => day.weekday)).toEqual([5, 1, 3]);
   });
 
-  it("saves a times-per-week schedule with no weekdays", async () => {
+  // No rotation sent: every workout in order — here the inline list's one.
+  it("saves a times-per-week schedule with its rotation and no days", async () => {
     usersService.isPatientManagedBy.mockResolvedValue(true);
     knownExercise();
     const inserted = recordInserts();
@@ -464,14 +489,42 @@ describe("AssignedProgramsService.create", () => {
       },
     );
 
-    expect(inserted[inserted.length - 1]).toStrictEqual({
+    expect(inserted[inserted.length - 2]).toStrictEqual({
       assignedProgramId: 900,
       type: "times_per_week",
-      weekdays: null,
       timesPerWeek: 3,
       effectiveFrom: "2026-10-15",
       createdBy: 7,
     });
+    expect(inserted[inserted.length - 1]).toStrictEqual([
+      { scheduleId: 900, assignedProgramId: 900, position: 0, workoutId: 900 },
+    ]);
+  });
+
+  // The position is resolved once the workouts exist: one the inline list
+  // (one workout) doesn't have is refused — inside the transaction, so the
+  // program, workout and exercise already inserted roll back with it.
+  it("refuses a workout position the program doesn't have", async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(true);
+    knownExercise();
+    recordInserts();
+
+    await expect(
+      service.create(
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        {
+          ...inlineProgram,
+          schedule: {
+            type: ScheduleType.WEEKDAYS,
+            days: [{ weekday: 1, workoutIndex: 1 }],
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        "workoutIndex 1 doesn't exist: the program has 1 workout (A)",
+      ),
+    );
   });
 
   // The whole prescription as assigned, in ONE entry written in the
@@ -519,8 +572,9 @@ describe("AssignedProgramsService.create", () => {
         schedule: {
           id: 900,
           type: "weekdays",
-          weekdays: [1, 3, 5],
           timesPerWeek: null,
+          days: [1, 3, 5].map((weekday) => ({ weekday, workoutId: 900 })),
+          rotation: [],
           effectiveFrom: "2026-10-15",
           createdBy: 7,
           createdAt: undefined,
@@ -587,6 +641,8 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
   let db: {
     query: {
       assignedPrograms: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     select: jest.Mock;
@@ -606,6 +662,8 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
         assignedPrograms: {
           findMany: jest.fn().mockResolvedValue([{ id: 1, assignedBy: 7 }]),
         },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
       select: jest.fn(() => ({ from: () => ({ where: assignerWhere }) })),
@@ -778,6 +836,8 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     execute: jest.Mock;
@@ -795,6 +855,8 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
       execute: jest.fn().mockResolvedValue(undefined),
@@ -854,6 +916,8 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     update: jest.Mock;
@@ -883,6 +947,8 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
       update: jest.fn().mockReturnValue({ set: setValues }),
@@ -1106,6 +1172,8 @@ describe("AssignedProgramsService.reorderExercises", () => {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     update: jest.Mock;
@@ -1141,6 +1209,8 @@ describe("AssignedProgramsService.reorderExercises", () => {
             .fn()
             .mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]),
         },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
       update: txUpdate,
@@ -1289,13 +1359,13 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   let insertValues: jest.Mock;
   // What the insert's RETURNING answers (a test can make it fail).
   let insertReturning: jest.Mock;
-  // What the delete's RETURNING answers: the versions it "removed".
-  let replacedRows: Record<string, unknown>[];
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     delete: jest.Mock;
@@ -1313,7 +1383,6 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
     usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) };
     writes = [];
     currentTransaction = 0;
-    replacedRows = [];
     insertReturning = jest.fn();
     insertValues = jest.fn((values: Record<string, unknown>) => {
       writes.push(["insert", values, currentTransaction]);
@@ -1342,6 +1411,8 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: {
           findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
         },
@@ -1349,7 +1420,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       delete: jest.fn(() => ({
         where: jest.fn((condition: unknown) => {
           writes.push(["delete", condition, currentTransaction]);
-          return { returning: () => Promise.resolve(replacedRows) };
+          return Promise.resolve(undefined);
         }),
       })),
       insert: jest.fn(() => ({ values: insertValues })),
@@ -1378,27 +1449,90 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   // be deleted by its own "from that day on" clean-up (its effective_from
   // is that day). Which rows the delete reaches is tested against a real
   // database in the e2e suite; here, the order and the inserted values.
-  it("replaces the versions from that day on, then inserts the new one, sorted", async () => {
+  // …and the version's days come right after it (sent Thursday first,
+  // written in weekday order), naming the program's workout (950).
+  it("replaces the versions from that day on, then inserts the new one and its days", async () => {
     await service.addScheduleVersion(900, practitioner, {
       type: ScheduleType.WEEKDAYS,
-      weekdays: [4, 2],
+      days: [
+        { weekday: 4, workoutId: 950 },
+        { weekday: 2, workoutId: 950 },
+      ],
       effectiveFrom: today,
     });
 
-    expect(writes.map(([kind]) => kind)).toEqual(["delete", "insert", "audit"]);
+    expect(writes.map(([kind]) => kind)).toEqual([
+      "delete",
+      "insert",
+      "insert",
+      "audit",
+    ]);
     expect(writes[1][1]).toStrictEqual({
       assignedProgramId: 900,
       type: "weekdays",
-      weekdays: [2, 4],
       timesPerWeek: null,
       effectiveFrom: today,
       createdBy: 7,
     });
-    // All three in the SAME transaction: otherwise a failed insert would
-    // leave the program with its versions deleted and nothing in their place
-    // — and the audit entry could describe a change that never happened, or
+    expect(writes[2][1]).toStrictEqual(
+      [2, 4].map((weekday) => ({
+        scheduleId: 99,
+        assignedProgramId: 900,
+        weekday,
+        workoutId: 950,
+      })),
+    );
+    // All in the SAME transaction: otherwise a failed insert would leave
+    // the program with its versions deleted and nothing in their place —
+    // and the audit entry could describe a change that never happened, or
     // the change happen with no entry.
     expect(new Set(writes.map(([, , tx]) => tx)).size).toBe(1);
+  });
+
+  // Checked before anything is deleted: a workout of another program.
+  it("refuses another program's workout, before writing anything", async () => {
+    await expect(
+      service.addScheduleVersion(900, practitioner, {
+        type: ScheduleType.WEEKDAYS,
+        days: [{ weekday: 1, workoutId: 12345 }],
+        effectiveFrom: today,
+      }),
+    ).rejects.toThrow(
+      new NotFoundException("Workout 12345 not found in this program"),
+    );
+    expect(writes).toEqual([]);
+  });
+
+  // A pause on the start date would replace the first version: the program
+  // would begin paused (decided 2026-10-11).
+  it("refuses a pause from the program's first day", async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 900,
+      patientId: 20,
+      startDate: today,
+      endDate: null,
+    });
+    await expect(
+      service.addScheduleVersion(900, practitioner, {
+        type: ScheduleType.PAUSED,
+        effectiveFrom: today,
+      }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        "A program can't start paused: choose its start date for when it begins",
+      ),
+    );
+    expect(writes).toEqual([]);
+  });
+
+  // A pause is a version with nothing else: no days, no rotation.
+  it("writes a pause as a version alone", async () => {
+    await service.addScheduleVersion(900, practitioner, {
+      type: ScheduleType.PAUSED,
+      effectiveFrom: today,
+    });
+    expect(writes.map(([kind]) => kind)).toEqual(["delete", "insert", "audit"]);
+    expect(writes[1][1]).toMatchObject({ type: "paused", timesPerWeek: null });
   });
 
   it("answers with the full program: exercises and every schedule version", async () => {
@@ -1415,30 +1549,63 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       endDate: null,
       workouts: PROGRAM_WORKOUTS,
       exercises: [],
-      schedules: [{ id: 1 }, { id: 2 }],
+      schedules: [
+        { id: 1, days: [], rotation: [] },
+        { id: 2, days: [], rotation: [] },
+      ],
     });
   });
 
   // The audit entry: what was set, from when, and every version it
   // replaced — after this transaction the replaced versions exist nowhere
   // else, so the entry must carry them whole.
+  // The replaced versions are READ before the delete, with their content:
+  // here a times-per-week version planned for next week, whose rotation is
+  // the program's one workout. (The first read is the service's own; later
+  // reads — the full program it answers with — get the defaults.) An older
+  // version, before the day, is not replaced and not in the entry.
   it("audits the new version and every version it replaced", async () => {
-    replacedRows = [
+    db.query.programSchedules.findMany.mockResolvedValueOnce([
+      {
+        id: 3,
+        assignedProgramId: 900,
+        type: "weekdays",
+        timesPerWeek: null,
+        effectiveFrom: programStart,
+        createdBy: 4,
+        createdAt: new Date("2026-09-01T08:00:00Z"),
+      },
+      // Set earlier for today itself: replaced too — "from D on" includes
+      // D.
+      {
+        id: 6,
+        assignedProgramId: 900,
+        type: "paused",
+        timesPerWeek: null,
+        effectiveFrom: today,
+        createdBy: 4,
+        createdAt: new Date("2026-10-01T08:00:00Z"),
+      },
       {
         id: 7,
         assignedProgramId: 900,
         type: "times_per_week",
-        weekdays: null,
         timesPerWeek: 3,
         effectiveFrom: addDays(today, 7),
         createdBy: 4,
         createdAt: new Date("2026-10-02T08:00:00Z"),
       },
-    ];
+    ]);
+    db.query.programScheduleRotation.findMany.mockResolvedValueOnce([
+      { scheduleId: 7, assignedProgramId: 900, position: 0, workoutId: 950 },
+    ]);
 
     await service.addScheduleVersion(900, practitioner, {
       type: ScheduleType.WEEKDAYS,
-      weekdays: [5, 1],
+      days: [
+        { weekday: 5, workoutId: 950 },
+        { weekday: 1, workoutId: 950 },
+      ],
       effectiveFrom: today,
     });
 
@@ -1454,18 +1621,33 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
         added: {
           id: 99,
           type: "weekdays",
-          weekdays: [1, 5],
           timesPerWeek: null,
+          days: [
+            { weekday: 1, workoutId: 950 },
+            { weekday: 5, workoutId: 950 },
+          ],
+          rotation: [],
           effectiveFrom: today,
           createdBy: 7,
           createdAt: new Date("2026-10-10T10:00:00Z"),
         },
         replaced: [
           {
+            id: 6,
+            type: "paused",
+            timesPerWeek: null,
+            days: [],
+            rotation: [],
+            effectiveFrom: today,
+            createdBy: 4,
+            createdAt: new Date("2026-10-01T08:00:00Z"),
+          },
+          {
             id: 7,
             type: "times_per_week",
-            weekdays: null,
             timesPerWeek: 3,
+            days: [],
+            rotation: [950],
             effectiveFrom: addDays(today, 7),
             createdBy: 4,
             createdAt: new Date("2026-10-02T08:00:00Z"),
@@ -1584,6 +1766,8 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     update: jest.Mock;
@@ -1598,16 +1782,28 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
   const today = utcToday();
   const start = addDays(today, 10);
   const end = addDays(today, 90);
+  // Version 51: Monday, Wednesday, Friday — all workout 950, the program's
+  // only workout (its days are the programScheduleDays rows below).
   const firstVersion = {
     id: 51,
     assignedProgramId: 900,
     type: "weekdays",
-    weekdays: [1, 3, 5],
     timesPerWeek: null,
     effectiveFrom: start,
     createdBy: 3,
     createdAt: new Date("2026-10-01T09:00:00Z"),
   };
+  const firstVersionDays = [1, 3, 5].map((weekday) => ({
+    scheduleId: 51,
+    assignedProgramId: 900,
+    weekday,
+    workoutId: 950,
+  }));
+  const mwf = [
+    { weekday: 1, workoutId: 950 },
+    { weekday: 3, workoutId: 950 },
+    { weekday: 5, workoutId: 950 },
+  ];
 
   beforeEach(async () => {
     writes = [];
@@ -1634,25 +1830,35 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: {
+          findMany: jest.fn().mockResolvedValue(firstVersionDays),
+        },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([firstVersion]) },
       },
       update: jest.fn().mockReturnValue({ set: setValues }),
+      // The DELETE is awaited as is (its rows were read before it).
       delete: jest.fn(() => ({
-        where: jest.fn(() => ({
-          returning: jest.fn(() => {
-            writes.push(["delete", null]);
-            return Promise.resolve([firstVersion]);
-          }),
-        })),
+        where: jest.fn(() => {
+          writes.push(["delete", null]);
+          return Promise.resolve(undefined);
+        }),
       })),
+      // An INSERT is either awaited as is (days, rotation) or through
+      // .returning() (the version row, which gets id 52): a Promise with a
+      // `returning` method serves both.
       insert: jest.fn(() => ({
-        values: jest.fn((values: Record<string, unknown>) => {
+        values: jest.fn((values: unknown) => {
           writes.push(["insert", values]);
-          return {
+          return Object.assign(Promise.resolve(undefined), {
             returning: jest.fn().mockResolvedValue([
-              { id: 52, createdAt: new Date("2026-10-10T10:00:00Z"), ...values },
+              {
+                id: 52,
+                createdAt: new Date("2026-10-10T10:00:00Z"),
+                ...(values as Record<string, unknown>),
+              },
             ]),
-          };
+          });
         }),
       })),
       execute: jest.fn().mockResolvedValue(undefined),
@@ -1735,8 +1941,8 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
   });
 
   // The program row, then its schedule (via planStartDateMove: here the one
-  // version moves), then the audit entry — all in that order, in one
-  // transaction.
+  // version moves — its row AND its days), then the audit entry — all in
+  // that order, in one transaction.
   it("moves the schedule with the start date, and audits both", async () => {
     const newStart = addDays(today, 14);
 
@@ -1746,17 +1952,26 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
       "update",
       "delete",
       "insert",
+      "insert",
       "audit",
     ]);
     expect(writes[2][1]).toStrictEqual({
       assignedProgramId: 900,
       type: "weekdays",
-      weekdays: [1, 3, 5],
       timesPerWeek: null,
       effectiveFrom: newStart,
       createdBy: 1,
     });
-    expect(writes[3][1]).toStrictEqual({
+    // The same days, now belonging to the new version 52.
+    expect(writes[3][1]).toStrictEqual(
+      [1, 3, 5].map((weekday) => ({
+        scheduleId: 52,
+        assignedProgramId: 900,
+        weekday,
+        workoutId: 950,
+      })),
+    );
+    expect(writes[4][1]).toStrictEqual({
       performedBy: 1,
       action: "ASSIGNED_PROGRAM_UPDATED",
       targetUserId: 20,
@@ -1769,8 +1984,9 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
             {
               id: 51,
               type: "weekdays",
-              weekdays: [1, 3, 5],
               timesPerWeek: null,
+              days: mwf,
+              rotation: [],
               effectiveFrom: start,
               createdBy: 3,
               createdAt: new Date("2026-10-01T09:00:00Z"),
@@ -1779,8 +1995,9 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
           added: {
             id: 52,
             type: "weekdays",
-            weekdays: [1, 3, 5],
             timesPerWeek: null,
+            days: mwf,
+            rotation: [],
             effectiveFrom: newStart,
             createdBy: 1,
             createdAt: new Date("2026-10-10T10:00:00Z"),
@@ -1790,6 +2007,96 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     });
   });
 
+  // Moving the start EARLIER, with a change planned: the first version is
+  // brought forward (deleted, re-created on the new day) and the planned
+  // one stays — so the audit entry lists only the first as replaced.
+  it("records as replaced only the versions the move deleted", async () => {
+    db.query.programSchedules.findMany.mockResolvedValue([
+      firstVersion,
+      {
+        ...firstVersion,
+        id: 53,
+        type: "times_per_week",
+        timesPerWeek: 2,
+        effectiveFrom: addDays(start, 5),
+      },
+    ]);
+    db.query.programScheduleRotation.findMany.mockResolvedValue([
+      { scheduleId: 53, assignedProgramId: 900, position: 0, workoutId: 950 },
+    ]);
+    const newStart = addDays(start, -2);
+
+    await service.update(900, admin, { startDate: newStart });
+
+    const [, entry] = writes.find(([kind]) => kind === "audit")!;
+    const { scheduleVersions } = (
+      entry as {
+        details: {
+          scheduleVersions: {
+            replaced: { id: number }[];
+            added: { effectiveFrom: string };
+          };
+        };
+      }
+    ).details;
+    expect(scheduleVersions.replaced.map((v) => v.id)).toEqual([51]);
+    expect(scheduleVersions.added.effectiveFrom).toBe(newStart);
+  });
+
+  // A version is stored with its days or rotation; one read back without
+  // them (which the database can't prevent: the rule spans two tables)
+  // must not be copied as an empty version — the move fails instead, and
+  // the transaction undoes it.
+  it.each([
+    [
+      "a weekdays version with no days",
+      firstVersion,
+      "A 'weekdays' schedule version needs at least one day",
+    ],
+    [
+      "a rotation with no workouts",
+      { ...firstVersion, type: "times_per_week", timesPerWeek: 2 },
+      "A rotation needs at least one workout",
+    ],
+  ])("refuses to copy %s", async (_label, version, message) => {
+    db.query.programSchedules.findMany.mockResolvedValue([version]);
+    db.query.programScheduleDays.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.update(900, admin, { startDate: addDays(today, 14) }),
+    ).rejects.toThrow(new Error(message));
+    expect(writes.map(([kind]) => kind)).not.toContain("insert");
+  });
+
+  // A pause planned 5 days after the start. Moving the start INTO it — past
+  // its first day (the pause would be re-created on the new start), or onto
+  // its first day exactly (the pause is already there) — would make the
+  // program begin paused: refused. Nothing of the schedule is touched; the
+  // program row's UPDATE, already sent, is undone with the transaction.
+  it.each([
+    ["past the first day of a planned pause", 7],
+    ["onto the first day of a planned pause", 5],
+  ])("refuses moving the start %s", async (_label, offset) => {
+    db.query.programSchedules.findMany.mockResolvedValue([
+      firstVersion,
+      {
+        ...firstVersion,
+        id: 53,
+        type: "paused",
+        effectiveFrom: addDays(start, 5),
+      },
+    ]);
+
+    await expect(
+      service.update(900, admin, { startDate: addDays(start, offset) }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        "A program can't start paused: the new start date falls in a planned pause",
+      ),
+    );
+    expect(writes.map(([kind]) => kind)).toEqual(["update"]);
+  });
+
   // Only REAL changes are listed: the title sent unchanged isn't one.
   // (Without the comparison, every field a form re-sends would be logged as
   // changed.)
@@ -1797,7 +2104,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     await service.update(900, admin, {
       title: "Knee Rehab",
       endDate: null,
-      status: AssignedProgramStatus.ON_HOLD,
+      status: AssignedProgramStatus.COMPLETED,
       // A DTO instance can carry declared-but-unsent fields as undefined
       // keys: "not sent" is not a change to undefined.
       startDate: undefined,
@@ -1807,7 +2114,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     expect((entry as { details: unknown }).details).toStrictEqual({
       changes: {
         endDate: { from: end, to: null },
-        status: { from: undefined, to: "on_hold" },
+        status: { from: undefined, to: "completed" },
       },
     });
   });
@@ -1840,6 +2147,8 @@ describe("AssignedProgramsService.updateExercise", () => {
         findFirst: jest.Mock;
         findMany: jest.Mock;
       };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     update: jest.Mock;
@@ -1862,6 +2171,13 @@ describe("AssignedProgramsService.updateExercise", () => {
             .fn()
             .mockResolvedValue([{ id: 30, sets: 2 }, { id: 31, sets: 4 }]),
         },
+        // Version 5 is Tuesdays, workout 950.
+        programScheduleDays: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ scheduleId: 5, weekday: 2, workoutId: 950 }]),
+        },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: {
           findMany: jest.fn().mockResolvedValue([{ id: 5 }]),
         },
@@ -1903,7 +2219,9 @@ describe("AssignedProgramsService.updateExercise", () => {
       patientId: 20,
       workouts: PROGRAM_WORKOUTS,
       exercises: [{ id: 30, sets: 2 }, { id: 31, sets: 4 }],
-      schedules: [{ id: 5 }],
+      schedules: [
+        { id: 5, days: [{ weekday: 2, workoutId: 950 }], rotation: [] },
+      ],
     });
   });
 });
@@ -1915,6 +2233,8 @@ describe("AssignedProgramsService.summary", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
     select: jest.Mock;
@@ -1929,7 +2249,10 @@ describe("AssignedProgramsService.summary", () => {
 
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) };
-    sessionsWhere = jest.fn().mockResolvedValue([{ id: 31, localDate: start }]);
+    // One completed session, of workout 1 — the one the rotation asks for.
+    sessionsWhere = jest
+      .fn()
+      .mockResolvedValue([{ id: 31, localDate: start, workoutId: 1 }]);
     db = {
       query: {
         assignedPrograms: {
@@ -1940,11 +2263,19 @@ describe("AssignedProgramsService.summary", () => {
             endDate: null,
           }),
         },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        // Version 50's rotation: workout 1, over and over.
+        programScheduleRotation: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ scheduleId: 50, position: 0, workoutId: 1 }]),
+        },
         programSchedules: {
           findMany: jest.fn().mockResolvedValue([
             {
+              id: 50,
+              assignedProgramId: 900,
               type: "times_per_week",
-              weekdays: null,
               timesPerWeek: 2,
               effectiveFrom: start,
             },
@@ -1970,8 +2301,10 @@ describe("AssignedProgramsService.summary", () => {
 
   const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER };
 
-  // The service only gathers data: the program's dates, its versions and
-  // its sessions reach the module, whose answer comes back as is.
+  // The service only gathers data: the program's dates, its versions (with
+  // their rotation) and its sessions (with their workout) reach the module,
+  // whose answer comes back as is. Were the rotation or the session's
+  // workout lost on the way, the session would count as an extra, not done.
   it("summarizes the program from its dates, versions and sessions", async () => {
     const result = await service.summary(900, practitioner, today);
 
@@ -1985,6 +2318,7 @@ describe("AssignedProgramsService.summary", () => {
       extra: 0,
     });
     expect(result.weeks[0].sessionIds).toEqual([31]);
+    expect(result.nextWorkout?.workoutId).toBe(1);
   });
 
   it("refuses a today that can't be today anywhere, before reading anything", async () => {
@@ -2019,11 +2353,15 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
 
   beforeEach(async () => {
     deleteReturning = jest.fn();
-    // The row lock (.for) and the two counts share one select chain.
+    // The row lock (.for) and the four counts share one select chain: every
+    // count reads 0, so the checks pass and the DELETE is what fails.
     const where = () =>
-      Object.assign(Promise.resolve([{ exerciseCount: 0, sessionCount: 0 }]), {
-        for: jest.fn().mockResolvedValue([]),
-      });
+      Object.assign(
+        Promise.resolve([
+          { exerciseCount: 0, sessionCount: 0, dayUses: 0, rotationUses: 0 },
+        ]),
+        { for: jest.fn().mockResolvedValue([]) },
+      );
     const tx = {
       execute: jest.fn().mockResolvedValue(undefined),
       select: jest.fn(() => ({ from: () => ({ where }) })),
@@ -2063,6 +2401,8 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
   it.each([
     ["an exercise", "assigned_program_exercises_workout_fk"],
     ["a session", "sessions_workout_fk"],
+    ["a schedule day", "program_schedule_days_workout_fk"],
+    ["a rotation slot", "program_schedule_rotation_workout_fk"],
   ])(
     "answers 409 when %s's foreign key refuses the delete",
     async (_what, constraint) => {
@@ -2080,7 +2420,7 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
         }),
       ).rejects.toThrow(
         new ConflictException(
-          "This workout was just given exercises or a session: reload the program and try again",
+          "This workout was just given exercises, a session or a place in the schedule: reload the program and try again",
         ),
       );
       expect(auditService.logInTransaction).not.toHaveBeenCalled();

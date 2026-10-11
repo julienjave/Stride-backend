@@ -21,44 +21,60 @@ import { addDays, daysBetween, isoWeekday } from '../../common/calendar-date'
 
 // THE schedule module (decisions §5): given a program's dates, its schedule
 // versions, its completed sessions and "today", it says what was due, done,
-// made up and missed — for both kinds of schedule, across versions. Every
+// made up and missed — for every kind of schedule, across versions. Every
 // screen (the practitioner's program page now; the patient's home and
 // progress pages in Phase 4; practitioner alerts later) asks this module and
-// none of them branches on the schedule type itself — so a third kind of
-// schedule would change this file, not every screen.
+// none of them branches on the schedule type itself — so a new kind of
+// schedule (like 'paused', step 2b-ii) changes this file, not every screen.
 //
 // Pure: plain values in, plain values out — no database, no clock (today is
 // a parameter), no Nest. So every rule is tested with tables of plain cases
 // (schedule-summary.spec.ts), and the service only fetches and passes data.
 //
-// The rules, all decided with the person (decisions §5, 2026-10-09/10):
+// The rules, all decided with the person (decisions §5, 2026-10-09/10/11):
 //   - A day is judged by the schedule version in force that day: the latest
 //     one starting on or before it.
 //   - Only COMPLETED sessions count, at most ONE per day (more are "extra").
-//   - Specific days ('weekdays'): a scheduled day with a session is DONE. A
-//     missed scheduled day can be MADE UP by a session on an unscheduled day
-//     before the next scheduled day; a session on a scheduled day always
-//     counts for THAT day first. After that window it is MISSED.
+//     When a day has several, the one doing the workout the day expects
+//     counts — not merely the earliest.
+//   - Specific days ('weekdays'): each scheduled day expects ITS workout
+//     (Monday A, Wednesday B). A session of that workout on that day: DONE.
+//     Another workout on that day doesn't count for it ('wrong_workout').
+//     A day not done can be MADE UP by a session of THAT DAY'S WORKOUT on an
+//     unscheduled day before the next scheduled day; after that window it
+//     is MISSED.
 //   - N per week ('times_per_week'): counted in PROGRAM weeks, starting on
-//     the program's start date. A week cut short — by the end date, or by a
-//     change of schedule — has its target scaled to its length, rounded:
-//     round(N × days / 7). Each week stands alone: extra sessions don't
-//     carry over to another week.
+//     the program's start date. Each week needs the NEXT N positions of the
+//     version's rotation (A, B, C, A…), in any order within the week — the
+//     positions run on BY PLAN from the version's start, whatever was done.
+//     A week cut short — by the end date, a schedule change, a pause — has
+//     its target scaled to its length, rounded: round(N × days / 7), and
+//     needs that many positions. A workout done again when the week no
+//     longer needs it is 'repeated_workout'; one the week doesn't need at
+//     all is 'wrong_workout'. Each week stands alone: no carry-over.
+//   - Paused ('paused'): nothing is due. A pause ends any open make-up
+//     window, and a session during it is extra ('paused').
 //   - "Today" is never missed: the make-up window always runs past it.
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
 export interface SummaryScheduleVersion {
-  type: 'weekdays' | 'times_per_week'
-  weekdays: number[] | null
+  type: 'weekdays' | 'times_per_week' | 'paused'
   timesPerWeek: number | null
+  // 'weekdays' only: each scheduled weekday (ISO, 1 = Monday) and its
+  // workout. Empty for the other types.
+  days: { weekday: number; workoutId: number }[]
+  // 'times_per_week' only: workout ids, position 0 first. Empty otherwise.
+  rotation: number[]
   effectiveFrom: string
 }
 
-// A completed session: its id and the patient's own day (sessions.local_date).
+// A completed session: its id, the patient's own day (sessions.local_date)
+// and the workout it did.
 export interface SummarySession {
   id: number
   localDate: string
+  workoutId: number
 }
 
 export interface ScheduleSummaryInput {
@@ -77,6 +93,8 @@ export type DayState = 'done' | 'made_up' | 'missed' | 'due' | 'upcoming'
 // A scheduled day of a 'weekdays' schedule.
 export interface ScheduledDay {
   date: string
+  // The workout the day expects.
+  workoutId: number
   state: DayState
   // The session done ON that day (state 'done').
   sessionId: number | null
@@ -87,7 +105,8 @@ export interface ScheduledDay {
 export type WeekState = 'met' | 'missed' | 'in_progress' | 'upcoming'
 
 // A stretch of a program week under one 'times_per_week' version: the whole
-// week usually; a part of it when the end date or a schedule change cuts it.
+// week usually; a part of it when the end date, a schedule change or a
+// pause cuts it.
 export interface CountedWeek {
   // 1 = the program's first week (starting on the start date).
   programWeek: number
@@ -96,14 +115,17 @@ export interface CountedWeek {
   timesPerWeek: number
   // timesPerWeek, scaled when the stretch is shorter than 7 days.
   target: number
-  // Sessions that count, capped at the target.
+  // The rotation positions this stretch needs — `target` of them, in
+  // rotation order — and the session that did each (null = not yet).
+  workouts: { workoutId: number; sessionId: number | null }[]
+  // Positions done (the sessions that count).
   done: number
   state: WeekState
   sessionIds: number[]
 }
 
 export type ExtraReason =
-  // A second (third…) session on a day that already has one.
+  // A second (third…) session on a day that already has one that counts.
   | 'same_day'
   // Before the start date or after the end date.
   | 'outside_program'
@@ -111,11 +133,35 @@ export type ExtraReason =
   | 'no_missed_day'
   // In a counted week that had already reached its target.
   | 'beyond_target'
+  // Not the workout the day — or the missed day it could make up, or the
+  // week — expects.
+  | 'wrong_workout'
+  // A workout the week needed, but already done as often as it's needed.
+  | 'repeated_workout'
+  // During a pause.
+  | 'paused'
 
 export interface ExtraSession {
   sessionId: number
   date: string
   reason: ExtraReason
+}
+
+// A paused stretch of the program: from its first day to its last — null
+// when nothing ends it (no later version, no end date).
+export interface Pause {
+  from: string
+  to: string | null
+}
+
+// What the patient should do next — for a "Today" or "Up next" line. A
+// specific day: the workout and the day it's for (a make-up names the
+// MISSED day). A weekly count: the next workout the week still needs, and
+// the program week.
+export interface NextWorkout {
+  workoutId: number
+  forDay: string | null
+  programWeek: number | null
 }
 
 export interface ScheduleSummary {
@@ -137,6 +183,10 @@ export interface ScheduleSummary {
   days: ScheduledDay[]
   weeks: CountedWeek[]
   extraSessions: ExtraSession[]
+  pauses: Pause[]
+  // null when nothing is left to do (the program is over, or paused with
+  // nothing planned after the pause within the days covered).
+  nextWorkout: NextWorkout | null
 }
 
 // --- HELPERS -----------------------------------------------------------------------------------------------
@@ -168,6 +218,17 @@ function lastDayCovered(input: ScheduleSummaryInput): string {
   return addDays(input.startDate, weekIndex * 7 + 6)
 }
 
+// The session of one day that counts: the first (lowest id) that `wanted`
+// accepts — or, if none does, simply the first. The others are returned
+// too: they're that day's 'same_day' extras. `list` is in id order.
+function pickSession(
+  list: SummarySession[],
+  wanted: (session: SummarySession) => boolean,
+): { chosen: SummarySession; others: SummarySession[] } {
+  const chosen = list.find(wanted) ?? list[0]
+  return { chosen, others: list.filter((session) => session !== chosen) }
+}
+
 // --- THE SUMMARY -------------------------------------------------------------------------------------------
 
 export function summarizeSchedule(
@@ -183,14 +244,21 @@ export function summarizeSchedule(
         : 0,
   )
   const extraSessions: ExtraSession[] = []
+  const extra = (session: SummarySession, reason: ExtraReason) =>
+    extraSessions.push({
+      sessionId: session.id,
+      date: session.localDate,
+      reason,
+    })
 
-  // --- 1. One counted session per day ---
-  // Sorted by day, then id (the earlier-created session counts; the rest of
-  // that day are 'same_day' extras). Sessions outside the program's dates
-  // are extras too. (For an open-ended program, "after lastDay" can only be
-  // a session on a day past the current week — not possible for a session
-  // dated today, but not counted if it ever happened.)
-  const sessionOnDay = new Map<string, SummarySession>()
+  // --- 1. Sessions by day ---
+  // Sorted by day, then id. Sessions outside the program's dates are extras
+  // at once. (For an open-ended program, "after lastDay" can only be a
+  // session on a day past the current week — not possible for a session
+  // dated today, but not counted if it ever happened.) Which session of a
+  // day counts is decided during the walk, when the day's expectation is
+  // known.
+  const sessionsOnDay = new Map<string, SummarySession[]>()
   const sortedSessions = [...input.sessions].sort((a, b) =>
     a.localDate === b.localDate
       ? a.id - b.id
@@ -200,19 +268,12 @@ export function summarizeSchedule(
   )
   for (const session of sortedSessions) {
     if (session.localDate < startDate || session.localDate > lastDay) {
-      extraSessions.push({
-        sessionId: session.id,
-        date: session.localDate,
-        reason: 'outside_program',
-      })
-    } else if (sessionOnDay.has(session.localDate)) {
-      extraSessions.push({
-        sessionId: session.id,
-        date: session.localDate,
-        reason: 'same_day',
-      })
+      extra(session, 'outside_program')
     } else {
-      sessionOnDay.set(session.localDate, session)
+      sessionsOnDay.set(session.localDate, [
+        ...(sessionsOnDay.get(session.localDate) ?? []),
+        session,
+      ])
     }
   }
 
@@ -220,7 +281,8 @@ export function summarizeSchedule(
   // Specific days: judged as we go, with at most one missed day "open" for a
   // make-up at a time (the windows between consecutive scheduled days don't
   // overlap). N per week: days are grouped into stretches — one per program
-  // week AND version — counted at the end.
+  // week AND version — counted at the end, once each stretch's length (and
+  // so its target) is known.
   const days: ScheduledDay[] = []
   // For each scheduled day not done yet: the last day of its make-up window.
   const windowEnd = new Map<ScheduledDay, string>()
@@ -229,16 +291,16 @@ export function summarizeSchedule(
   interface Stretch {
     programWeek: number
     version: SummaryScheduleVersion
-    timesPerWeek: number
     start: string
     end: string
-    sessions: SummarySession[]
+    // The sessions of each day that has some, in day order.
+    sessionDays: SummarySession[][]
   }
   const stretches: Stretch[] = []
 
   // Closing the open window: the missed day's make-up window ends the day
-  // before `day` (a new scheduled day, or a change to another kind of
-  // schedule).
+  // before `day` (a new scheduled day, a change to another kind of
+  // schedule, or a pause).
   const closeWindow = (day: string) => {
     if (openMissed) windowEnd.set(openMissed, addDays(day, -1))
     openMissed = null
@@ -246,34 +308,59 @@ export function summarizeSchedule(
 
   for (let day = startDate; day <= lastDay; day = addDays(day, 1)) {
     const version = versionOn(versions, day)
-    const session = sessionOnDay.get(day)
+    const list = sessionsOnDay.get(day) ?? []
 
     if (version?.type === 'weekdays') {
-      if (version.weekdays!.includes(isoWeekday(day))) {
+      const scheduled = version.days.find((d) => d.weekday === isoWeekday(day))
+      if (scheduled) {
         // A scheduled day ends the previous missed day's window, then is
-        // judged itself: a session ON it counts for it first.
+        // judged itself: a session ON it counts for it — if it's the
+        // day's workout. (Even a session of the open missed day's workout
+        // can't make that day up here: a scheduled day's session never
+        // makes up an earlier one — decided 2026-10-10.)
         closeWindow(day)
         const entry: ScheduledDay = {
           date: day,
-          state: session ? 'done' : 'upcoming', // settled in step 3
-          sessionId: session?.id ?? null,
+          workoutId: scheduled.workoutId,
+          state: 'upcoming', // settled in step 3 unless done now
+          sessionId: null,
           madeUpBy: null,
         }
         days.push(entry)
-        if (!session) openMissed = entry
-      } else if (session) {
-        // An unscheduled day: a session makes up the open missed day, if
-        // there is one — otherwise it's extra.
-        if (openMissed) {
-          openMissed.state = 'made_up'
-          openMissed.madeUpBy = { sessionId: session.id, date: day }
-          openMissed = null
+        if (list.length > 0) {
+          const { chosen, others } = pickSession(
+            list,
+            (s) => s.workoutId === scheduled.workoutId,
+          )
+          others.forEach((s) => extra(s, 'same_day'))
+          if (chosen.workoutId === scheduled.workoutId) {
+            entry.state = 'done'
+            entry.sessionId = chosen.id
+          } else {
+            extra(chosen, 'wrong_workout')
+          }
+        }
+        if (entry.state !== 'done') openMissed = entry
+      } else if (list.length > 0) {
+        // An unscheduled day: a session of the open missed day's workout
+        // makes it up; any other session is extra.
+        const missed: ScheduledDay | null = openMissed
+        if (missed) {
+          const { chosen, others } = pickSession(
+            list,
+            (s) => s.workoutId === missed.workoutId,
+          )
+          others.forEach((s) => extra(s, 'same_day'))
+          if (chosen.workoutId === missed.workoutId) {
+            missed.state = 'made_up'
+            missed.madeUpBy = { sessionId: chosen.id, date: day }
+            openMissed = null
+          } else {
+            extra(chosen, 'wrong_workout')
+          }
         } else {
-          extraSessions.push({
-            sessionId: session.id,
-            date: day,
-            reason: 'no_missed_day',
-          })
+          extra(list[0], 'no_missed_day')
+          list.slice(1).forEach((s) => extra(s, 'same_day'))
         }
       }
       continue
@@ -289,30 +376,30 @@ export function summarizeSchedule(
       // are objects: "same version" is identity. Days of one version are
       // always consecutive — once a later version starts, an earlier one
       // never applies again — so no gap check is needed.)
-      if (
+      const stretch =
         current &&
         current.programWeek === programWeek &&
         current.version === version
-      ) {
-        current.end = day
-        if (session) current.sessions.push(session)
+          ? current
+          : undefined
+      if (stretch) {
+        stretch.end = day
+        if (list.length > 0) stretch.sessionDays.push(list)
       } else {
         stretches.push({
           programWeek,
           version,
-          timesPerWeek: version.timesPerWeek!,
           start: day,
           end: day,
-          sessions: session ? [session] : [],
+          sessionDays: list.length > 0 ? [list] : [],
         })
       }
-    } else if (session) {
-      // No version in force (not possible inside a program today).
-      extraSessions.push({
-        sessionId: session.id,
-        date: day,
-        reason: 'no_missed_day',
-      })
+    } else if (list.length > 0) {
+      // Paused — or no version in force (not possible inside a program).
+      const reason: ExtraReason =
+        version?.type === 'paused' ? 'paused' : 'no_missed_day'
+      extra(list[0], reason)
+      list.slice(1).forEach((s) => extra(s, 'same_day'))
     }
   }
   // A window still open at the end of the walk runs to the last day covered
@@ -328,20 +415,57 @@ export function summarizeSchedule(
   }
 
   // --- 4. Count the weeks ---
-  // round(N × days / 7): a full week keeps N; a 3-day week of "3 a week"
-  // gets round(1.29) = 1. No ties are possible (N × days = 3.5 × 7 would
-  // need 7 to divide N × days, i.e. N = 7 or days = 7, both exact).
+  // Rotation positions run on through a version's stretches: a stretch
+  // needs the next `target` positions after those its version's earlier
+  // stretches needed (by plan — whether or not they were done).
+  const positionsUsed = new Map<SummaryScheduleVersion, number>()
   const weeks: CountedWeek[] = stretches.map((stretch) => {
+    const { version } = stretch
     const length = daysBetween(stretch.start, stretch.end) + 1
-    const target = Math.round((stretch.timesPerWeek * length) / 7)
-    const counted = stretch.sessions.slice(0, target)
-    for (const session of stretch.sessions.slice(target)) {
-      extraSessions.push({
-        sessionId: session.id,
-        date: session.localDate,
-        reason: 'beyond_target',
-      })
+    // round(N × days / 7): a full week keeps N; a 3-day week of "3 a week"
+    // gets round(1.29) = 1. No ties are possible (N × days = 3.5 × 7 would
+    // need 7 to divide N × days, i.e. N = 7 or days = 7, both exact).
+    const timesPerWeek = version.timesPerWeek!
+    const target = Math.round((timesPerWeek * length) / 7)
+    const first = positionsUsed.get(version) ?? 0
+    positionsUsed.set(version, first + target)
+    // `% length`: the rotation repeats. (A rotation is never empty — the
+    // service refuses one — but an empty one must not divide by zero here:
+    // it simply needs nothing.)
+    const rotation = version.rotation
+    const slots: { workoutId: number; sessionId: number | null }[] =
+      rotation.length === 0
+        ? []
+        : Array.from({ length: target }, (_, i) => ({
+            workoutId: rotation[(first + i) % rotation.length],
+            sessionId: null,
+          }))
+
+    // Each day with sessions, in order: the session that fills the
+    // earliest open slot of its workout counts; a day's other sessions are
+    // 'same_day'. A session that fills nothing is beyond the target, a
+    // repeat, or a workout this week doesn't need.
+    const counted: SummarySession[] = []
+    for (const list of stretch.sessionDays) {
+      const openSlot = (s: SummarySession) =>
+        slots.find(
+          (slot) => slot.sessionId === null && slot.workoutId === s.workoutId,
+        )
+      const { chosen, others } = pickSession(list, (s) => !!openSlot(s))
+      others.forEach((s) => extra(s, 'same_day'))
+      const slot = openSlot(chosen)
+      if (slot) {
+        slot.sessionId = chosen.id
+        counted.push(chosen)
+      } else if (slots.every((s) => s.sessionId !== null)) {
+        extra(chosen, 'beyond_target')
+      } else if (slots.some((s) => s.workoutId === chosen.workoutId)) {
+        extra(chosen, 'repeated_workout')
+      } else {
+        extra(chosen, 'wrong_workout')
+      }
     }
+
     const done = counted.length
     let state: WeekState
     if (stretch.start > today) state = 'upcoming'
@@ -351,15 +475,69 @@ export function summarizeSchedule(
       programWeek: stretch.programWeek,
       start: stretch.start,
       end: stretch.end,
-      timesPerWeek: stretch.timesPerWeek,
+      timesPerWeek,
       target,
+      workouts: slots,
       done,
       state,
       sessionIds: counted.map((s) => s.id),
     }
   })
 
-  // --- 5. Totals ---
+  // --- 5. Pauses ---
+  // Each paused version, from the later of its own start and the program's,
+  // to the day before the next version starts — or the end date, or open
+  // (null) when nothing ends it.
+  const pauses: Pause[] = []
+  versions.forEach((version, i) => {
+    if (version.type !== 'paused') return
+    const from =
+      version.effectiveFrom < startDate ? startDate : version.effectiveFrom
+    // A pause starting after the program ends never applies.
+    if (endDate !== null && from > endDate) return
+    const next = versions[i + 1]
+    const resumesOn = next?.effectiveFrom ?? null
+    // Its last day: the day before the next version — but never past the
+    // end date; with neither, it runs on (null).
+    let to: string | null = resumesOn === null ? null : addDays(resumesOn, -1)
+    if (endDate !== null && (to === null || to > endDate)) to = endDate
+    pauses.push({ from, to })
+  })
+
+  // --- 6. What's next ---
+  // The earliest thing still to do: a scheduled day that is due (oldest
+  // first — a make-up names the missed day) or upcoming, or the next
+  // workout a current or coming week still needs. "When" for something due
+  // or in progress is today; for something upcoming, its day or week start.
+  // On a tie (can't happen today: one version is in force on a given day),
+  // the scheduled day wins.
+  const candidates: { when: string; next: NextWorkout }[] = []
+  for (const day of days) {
+    if (day.state === 'due' || day.state === 'upcoming') {
+      candidates.push({
+        when: day.state === 'due' ? today : day.date,
+        next: { workoutId: day.workoutId, forDay: day.date, programWeek: null },
+      })
+    }
+  }
+  for (const week of weeks) {
+    if (week.state !== 'in_progress' && week.state !== 'upcoming') continue
+    const open = week.workouts.find((slot) => slot.sessionId === null)
+    if (!open) continue
+    candidates.push({
+      when: week.state === 'in_progress' ? today : week.start,
+      next: {
+        workoutId: open.workoutId,
+        forDay: null,
+        programWeek: week.programWeek,
+      },
+    })
+  }
+  const [first] = candidates.sort((a, b) =>
+    a.when < b.when ? -1 : a.when > b.when ? 1 : 0,
+  )
+
+  // --- 7. Totals ---
   const count = (state: DayState) =>
     days.filter((d) => d.state === state).length
   const weeklyMissed = weeks
@@ -386,5 +564,7 @@ export function summarizeSchedule(
     days,
     weeks,
     extraSessions,
+    pauses,
+    nextWorkout: first?.next ?? null,
   }
 }

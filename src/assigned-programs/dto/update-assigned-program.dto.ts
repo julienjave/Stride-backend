@@ -29,10 +29,12 @@ import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
+// `on_hold` is gone (step 2b-ii): a pause is a schedule version — POST
+// /assigned-programs/:id/schedules with type 'paused' — which, unlike a
+// status, says since when.
 export enum AssignedProgramStatus {
   ACTIVE = 'active',
   COMPLETED = 'completed',
-  ON_HOLD = 'on_hold',
   CANCELLED = 'cancelled',
 }
 

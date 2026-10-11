@@ -39,28 +39,78 @@ function messages(errors: ValidationError[], prefix = ''): string[] {
   })
 }
 
-async function check<T extends object>(cls: new () => T, body: object) {
-  return messages(await validate(plainToInstance(cls, body)))
+// `strict`: also refuse unknown properties, as the app's ValidationPipe does
+// (whitelist + forbidNonWhitelisted) — for the cases where a property that
+// doesn't belong is the point.
+async function check<T extends object>(
+  cls: new () => T,
+  body: object,
+  strict = false,
+) {
+  return messages(
+    await validate(
+      plainToInstance(cls, body),
+      strict ? { whitelist: true, forbidNonWhitelisted: true } : {},
+    ),
+  )
 }
 
 const TODAY = '2026-10-09'
 
-// The schedule rules, through AddScheduleVersionDto (it IS a
-// ScheduleInputDto, plus a day).
-describe('schedule validation', () => {
+// The schedule rules of a LATER version, through AddScheduleVersionDto (a
+// ScheduleVersionInputDto plus a day): workouts by the program's ids, and
+// 'paused' allowed.
+const MON_A_WED_B = [
+  { weekday: 1, workoutId: 11 },
+  { weekday: 3, workoutId: 12 },
+]
+
+describe('schedule version validation', () => {
   it.each([
-    ['specific days', { type: 'weekdays', weekdays: [1, 3, 5] }],
-    ['days in any order', { type: 'weekdays', weekdays: [5, 1] }],
-    ['every day', { type: 'weekdays', weekdays: [1, 2, 3, 4, 5, 6, 7] }],
-    ['a weekly count', { type: 'times_per_week', timesPerWeek: 3 }],
-    // A form that always sends both keys: null = "not this one".
     [
-      'the other field as null',
-      { type: 'times_per_week', timesPerWeek: 2, weekdays: null },
+      'specific days with their workouts',
+      { type: 'weekdays', days: MON_A_WED_B },
     ],
     [
-      'the other field as null (weekdays)',
-      { type: 'weekdays', weekdays: [2], timesPerWeek: null },
+      'days in any order',
+      { type: 'weekdays', days: [...MON_A_WED_B].reverse() },
+    ],
+    [
+      'the same workout on several days',
+      {
+        type: 'weekdays',
+        days: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+          weekday,
+          workoutId: 11,
+        })),
+      },
+    ],
+    [
+      'a weekly count (rotation suggested)',
+      { type: 'times_per_week', timesPerWeek: 3 },
+    ],
+    [
+      'a weekly count with a rotation that repeats',
+      { type: 'times_per_week', timesPerWeek: 3, rotation: [11, 12, 11] },
+    ],
+    ['a pause', { type: 'paused' }],
+    // A form that always sends every key: null = "not this one".
+    [
+      'the other fields as null',
+      { type: 'times_per_week', timesPerWeek: 2, days: null, rotation: null },
+    ],
+    [
+      'the other fields as null (weekdays)',
+      {
+        type: 'weekdays',
+        days: MON_A_WED_B,
+        timesPerWeek: null,
+        rotation: null,
+      },
+    ],
+    [
+      'a pause with every field null',
+      { type: 'paused', days: null, timesPerWeek: null, rotation: null },
     ],
   ])('accepts %s', async (_label, schedule) => {
     expect(
@@ -70,9 +120,9 @@ describe('schedule validation', () => {
 
   it.each([
     [
-      'weekdays missing for a weekdays schedule',
+      'days missing for a weekdays schedule',
       { type: 'weekdays' },
-      'weekdays: weekdays must be an array',
+      'days: days must be an array',
     ],
     [
       'a count missing for a times-per-week schedule',
@@ -80,39 +130,62 @@ describe('schedule validation', () => {
       'timesPerWeek: timesPerWeek must be an integer number',
     ],
     [
-      'weekdays sent with a times-per-week schedule',
-      { type: 'times_per_week', timesPerWeek: 3, weekdays: [1] },
-      "weekdays: weekdays is only allowed when type is 'weekdays'",
+      'days sent with a times-per-week schedule',
+      { type: 'times_per_week', timesPerWeek: 3, days: MON_A_WED_B },
+      "days: days is only allowed when type is 'weekdays'",
     ],
     [
       'a count sent with a weekdays schedule',
-      { type: 'weekdays', weekdays: [1], timesPerWeek: 3 },
+      { type: 'weekdays', days: MON_A_WED_B, timesPerWeek: 3 },
+      "timesPerWeek: timesPerWeek is only allowed when type is 'times_per_week'",
+    ],
+    [
+      'a rotation sent with a weekdays schedule',
+      { type: 'weekdays', days: MON_A_WED_B, rotation: [11] },
+      "rotation: rotation is only allowed when type is 'times_per_week'",
+    ],
+    // A pause has nothing: days, a count or a rotation is a client bug.
+    [
+      'days sent with a pause',
+      { type: 'paused', days: MON_A_WED_B },
+      "days: days is only allowed when type is 'weekdays'",
+    ],
+    [
+      'a count sent with a pause',
+      { type: 'paused', timesPerWeek: 2 },
       "timesPerWeek: timesPerWeek is only allowed when type is 'times_per_week'",
     ],
     [
       'no days at all',
-      { type: 'weekdays', weekdays: [] },
-      'weekdays: weekdays must contain at least 1 elements',
+      { type: 'weekdays', days: [] },
+      'days: days must contain at least 1 elements',
     ],
+    // ArrayUnique compares WEEKDAYS: Monday twice, even with two workouts.
     [
-      'the same day twice',
-      { type: 'weekdays', weekdays: [1, 1] },
-      "weekdays: All weekdays's elements must be unique",
+      'the same weekday twice',
+      {
+        type: 'weekdays',
+        days: [
+          { weekday: 1, workoutId: 11 },
+          { weekday: 1, workoutId: 12 },
+        ],
+      },
+      'days: days must not list the same weekday twice',
     ],
     [
       'day 0 (ISO weekdays start at 1)',
-      { type: 'weekdays', weekdays: [0, 1] },
-      'weekdays: each value in weekdays must not be less than 1',
+      { type: 'weekdays', days: [{ weekday: 0, workoutId: 11 }] },
+      'days.0.weekday: weekday must not be less than 1',
     ],
     [
       'day 8',
-      { type: 'weekdays', weekdays: [8] },
-      'weekdays: each value in weekdays must not be greater than 7',
+      { type: 'weekdays', days: [{ weekday: 8, workoutId: 11 }] },
+      'days.0.weekday: weekday must not be greater than 7',
     ],
     [
-      'a fractional day',
-      { type: 'weekdays', weekdays: [1.5] },
-      'weekdays: each value in weekdays must be an integer number',
+      'a day without its workout',
+      { type: 'weekdays', days: [{ weekday: 1 }] },
+      'days.0.workoutId: workoutId must be an integer number',
     ],
     [
       'zero times a week',
@@ -125,9 +198,19 @@ describe('schedule validation', () => {
       'timesPerWeek: timesPerWeek must not be greater than 7',
     ],
     [
+      'an empty rotation',
+      { type: 'times_per_week', timesPerWeek: 2, rotation: [] },
+      'rotation: rotation must contain at least 1 elements',
+    ],
+    [
+      'a rotation of 15 positions',
+      { type: 'times_per_week', timesPerWeek: 2, rotation: Array(15).fill(11) },
+      'rotation: rotation must contain no more than 14 elements',
+    ],
+    [
       'an unknown type',
       { type: 'monthly' },
-      'type: type must be one of the following values: weekdays, times_per_week',
+      'type: type must be one of the following values: weekdays, times_per_week, paused',
     ],
   ])('refuses %s', async (_label, schedule, expected) => {
     expect(
@@ -158,11 +241,87 @@ describe('CreateAssignedProgramDto', () => {
     title: 'Knee Rehab',
     startDate: TODAY,
     basedOnTemplateId: 3,
-    schedule: { type: 'weekdays', weekdays: [1, 3, 5] },
+    schedule: {
+      type: 'weekdays',
+      days: [
+        { weekday: 1, workoutIndex: 0 },
+        { weekday: 3, workoutIndex: 1 },
+      ],
+    },
   }
 
   it('accepts a program with a schedule', async () => {
     expect(await check(CreateAssignedProgramDto, valid)).toEqual([])
+  })
+
+  it('accepts a weekly count with a rotation of positions', async () => {
+    expect(
+      await check(CreateAssignedProgramDto, {
+        ...valid,
+        schedule: {
+          type: 'times_per_week',
+          timesPerWeek: 3,
+          rotation: [0, 1, 0],
+        },
+      }),
+    ).toEqual([])
+  })
+
+  // A program starts with a real schedule; a pause comes later, as a
+  // version (decided 2026-10-11).
+  it('refuses a program that starts paused', async () => {
+    expect(
+      await check(CreateAssignedProgramDto, {
+        ...valid,
+        schedule: { type: 'paused' },
+      }),
+    ).toEqual(["schedule.type: type must be 'weekdays' or 'times_per_week'"])
+  })
+
+  // At creation, workouts are POSITIONS (the program's own don't exist
+  // yet): an id there is refused, not silently read as a position.
+  it.each([
+    [
+      'a workoutId instead of a workoutIndex',
+      { type: 'weekdays', days: [{ weekday: 1, workoutId: 11 }] },
+      [
+        'schedule.days.0.workoutId: property workoutId should not exist',
+        'schedule.days.0.workoutIndex: workoutIndex must not be less than 0',
+        'schedule.days.0.workoutIndex: workoutIndex must be an integer number',
+      ],
+    ],
+    [
+      'a negative position',
+      { type: 'weekdays', days: [{ weekday: 1, workoutIndex: -1 }] },
+      ['schedule.days.0.workoutIndex: workoutIndex must not be less than 0'],
+    ],
+    [
+      'a negative position in a rotation',
+      { type: 'times_per_week', timesPerWeek: 2, rotation: [0, -1] },
+      ['schedule.rotation: each value in rotation must not be less than 0'],
+    ],
+    // The same limits as a later version's (the two DTOs are separate
+    // classes, so each one's decorators need their own test).
+    [
+      'a rotation of 15 positions',
+      { type: 'times_per_week', timesPerWeek: 2, rotation: Array(15).fill(0) },
+      ['schedule.rotation: rotation must contain no more than 14 elements'],
+    ],
+    [
+      'a rotation sent with a weekdays schedule',
+      {
+        type: 'weekdays',
+        days: [{ weekday: 1, workoutIndex: 0 }],
+        rotation: [0],
+      },
+      [
+        "schedule.rotation: rotation is only allowed when type is 'times_per_week'",
+      ],
+    ],
+  ])('refuses %s', async (_label, schedule, expected) => {
+    expect(
+      await check(CreateAssignedProgramDto, { ...valid, schedule }, true),
+    ).toEqual(expected)
   })
 
   // @ValidateNested alone would let a missing schedule through: it checks
@@ -174,17 +333,16 @@ describe('CreateAssignedProgramDto', () => {
     ])
   })
 
-  // Proves the nested schedule is really validated (@Type builds a
-  // ScheduleInputDto, whose decorators then run), with its path.
+  // Proves the nested schedule — and each day inside it — is really
+  // validated (@Type builds a NewProgramScheduleDto, then each day a
+  // NewScheduleDayDto, whose decorators then run), with its path.
   it("checks the schedule's own rules, reported under schedule.", async () => {
     expect(
       await check(CreateAssignedProgramDto, {
         ...valid,
-        schedule: { type: 'weekdays', weekdays: [9] },
+        schedule: { type: 'weekdays', days: [{ weekday: 9, workoutIndex: 0 }] },
       }),
-    ).toEqual([
-      'schedule.weekdays: each value in weekdays must not be greater than 7',
-    ])
+    ).toEqual(['schedule.days.0.weekday: weekday must not be greater than 7'])
   })
 
   it.each([
@@ -205,7 +363,7 @@ describe('UpdateAssignedProgramDto', () => {
     ['startDate', 'startDate: startDate must be a date written as YYYY-MM-DD'],
     [
       'status',
-      'status: status must be one of the following values: active, completed, on_hold, cancelled',
+      'status: status must be one of the following values: active, completed, cancelled',
     ],
   ])('refuses null for %s', async (field, expected) => {
     // toContain: a null title also fails @MaxLength — any refusal will do,

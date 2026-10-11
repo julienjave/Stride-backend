@@ -68,6 +68,12 @@ export const TEMPLATE_EXERCISES_WORKOUT_FK = 'template_exercises_workout_fk'
 export const ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK =
   'assigned_program_exercises_workout_fk'
 export const SESSIONS_WORKOUT_FK = 'sessions_workout_fk'
+// …and from a schedule version's days and rotation (step 2b-ii, migration
+// 0028).
+export const PROGRAM_SCHEDULE_DAYS_WORKOUT_FK =
+  'program_schedule_days_workout_fk'
+export const PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK =
+  'program_schedule_rotation_workout_fk'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

@@ -61,8 +61,8 @@ import { AddTemplateExerciseDto } from '../src/programs/dto/add-template-exercis
 import { AddWorkoutDto } from '../src/programs/dto/add-workout.dto'
 import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
-import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
-import { seedSessionDays } from './seed/session-history'
+import { addDays, utcToday } from '../src/common/calendar-date'
+import { seedSessionDays, seedSessionWorkouts } from './seed/session-history'
 import { CreateAssignedProgramDto } from '../src/assigned-programs/dto/create-assigned-program.dto'
 import type { CurrentUser } from '../src/common/decorators/current-user.decorator'
 import {
@@ -461,22 +461,26 @@ async function run(): Promise<void> {
       // the database owner: the API only records a session dated TODAY
       // (POST /sessions refuses any other local date), and these are in the
       // past — the same reason the expired invitation is written by hand.
-      // Each session did one workout — the one for the weekday of the
-      // scheduled day it counts for (a make-up does the missed day's) — and
-      // gets that workout's checklist like a real one (every exercise,
-      // completed), so opening it shows something. 18:00 UTC on that day as
-      // the moment; the local date is what the schedule judges.
+      // Each session did one workout — the one the schedule, as create()
+      // stored it, asks for (seedSessionWorkouts) — and gets that workout's
+      // checklist like a real one (every exercise, completed), so opening
+      // it shows something. 18:00 UTC on that day as the moment; the local
+      // date is what the schedule judges.
       const sessions = seedSessionDays(
         startDate,
         today,
         assignment.schedule,
         assignment.history,
       )
-      for (const { day, forDay } of sessions) {
-        const workout =
-          program.workouts[
-            assignment.workoutByWeekday?.[isoWeekday(forDay)] ?? 0
-          ]
+      const workoutIds = seedSessionWorkouts(
+        startDate,
+        program.schedules[0],
+        sessions,
+      )
+      for (const [index, { day }] of sessions.entries()) {
+        const workout = program.workouts.find(
+          (w) => w.id === workoutIds[index],
+        )!
         const {
           rows: [session],
         } = await owner.query<{ id: number }>(

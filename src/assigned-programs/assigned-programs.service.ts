@@ -31,6 +31,8 @@ import {
   assignedPrograms,
   assignedProgramExercises,
   programSchedules,
+  programScheduleDays,
+  programScheduleRotation,
   programTemplates,
   programWorkouts,
   sessions,
@@ -44,7 +46,13 @@ import { CreateAssignedProgramDto } from "./dto/create-assigned-program.dto";
 import { UpdateAssignedProgramDto } from "./dto/update-assigned-program.dto";
 import { AddAssignedProgramExerciseDto } from "./dto/add-assigned-program-exercise.dto";
 import { UpdateAssignedProgramExerciseDto } from "./dto/update-assigned-program-exercise.dto";
-import { ScheduleInputDto, ScheduleType } from "./dto/schedule-input.dto";
+import { ScheduleType } from "./dto/schedule-input.dto";
+import {
+  contentFromNewSchedule,
+  contentFromVersionInput,
+  type ScheduleContent,
+  type ScheduleDay,
+} from "./schedule/schedule-content";
 import { AddScheduleVersionDto } from "./dto/add-schedule-version.dto";
 import { AddWorkoutDto } from "./dto/add-workout.dto";
 import { RenameWorkoutDto } from "./dto/rename-workout.dto";
@@ -61,6 +69,8 @@ import {
   ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
   isForeignKeyViolation,
   isUniqueViolation,
+  PROGRAM_SCHEDULE_DAYS_WORKOUT_FK,
+  PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK,
   PROGRAM_SCHEDULES_ONE_PER_DAY,
   SESSIONS_WORKOUT_FK,
 } from "../database/pg-errors";
@@ -119,44 +129,26 @@ function workoutForAudit(workout: typeof programWorkouts.$inferSelect) {
   return { id: workout.id, name: workout.name, sortOrder: workout.sortOrder };
 }
 
-// The two schedule columns for a schedule as the API received it: exactly
-// one of weekdays / timesPerWeek, the other explicitly null (the database's
-// program_schedules_fields_match_type check requires it). The DTO has
-// already guaranteed the right field is present for the type, which is
-// what the `!` assertions rely on.
-//
-// Weekdays are SORTED here: the database accepts one spelling per set
-// ({1,3,5}, never {5,1,3} — is_iso_weekday_set in migration 0025), and the
-// API accepts any order. `(a, b) => a - b` because sort() without a
-// comparator compares as TEXT ("10" before "9"). For 1–7 both orders are
-// the same — a mutation check confirmed no test can tell them apart, so
-// this is about saying what we mean, not about a bug. The spread copies
-// first: sort() reorders the array it's given, and the caller's DTO
-// shouldn't change under it.
-function toScheduleColumns(schedule: ScheduleInputDto) {
-  if (schedule.type === ScheduleType.WEEKDAYS) {
-    return {
-      type: schedule.type,
-      weekdays: [...schedule.weekdays!].sort((a, b) => a - b),
-      timesPerWeek: null,
-    };
-  }
-  return {
-    type: schedule.type,
-    weekdays: null,
-    timesPerWeek: schedule.timesPerWeek!,
-  };
-}
+// A schedule version as the API returns it and the schedule module reads
+// it: the program_schedules row plus its content from the two child tables
+// — `days` (weekday → workout, in weekday order) and `rotation` (workout
+// ids, position 0 first). Empty arrays when the type has none.
+export type ScheduleVersion = typeof programSchedules.$inferSelect & {
+  days: ScheduleDay[];
+  rotation: number[];
+};
 
 // A schedule version as an audit entry records it: everything needed to
-// know what the schedule was, from when, and who set it. (A plain object
-// copy, so the entry never depends on what the row type happens to carry.)
-function versionForAudit(version: typeof programSchedules.$inferSelect) {
+// know what the schedule was — its days or rotation included — from when,
+// and who set it. (A plain object copy, so the entry never depends on what
+// the row type happens to carry.)
+function versionForAudit(version: ScheduleVersion) {
   return {
     id: version.id,
     type: version.type,
-    weekdays: version.weekdays,
     timesPerWeek: version.timesPerWeek,
+    days: version.days,
+    rotation: version.rotation,
     effectiveFrom: version.effectiveFrom,
     createdBy: version.createdBy,
     createdAt: version.createdAt,
@@ -353,15 +345,20 @@ export class AssignedProgramsService {
       // neither does. That's what makes "every program has a schedule"
       // true — the database itself can't require a row in ANOTHER table
       // (a CHECK constraint only sees the row it's checking).
-      const [firstVersion] = await tx
-        .insert(programSchedules)
-        .values({
-          assignedProgramId: program.id,
-          ...toScheduleColumns(dto.schedule),
-          effectiveFrom: dto.startDate,
-          createdBy: currentUser.id,
-        })
-        .returning();
+      //
+      // Its days or rotation name workouts by POSITION (0 = A): only now
+      // that the workouts exist can positions become ids
+      // (contentFromNewSchedule). A position the template doesn't have is a
+      // 400 — thrown inside the transaction, so everything above rolls back.
+      const firstVersion = await this.insertScheduleVersion(tx, {
+        assignedProgramId: program.id,
+        effectiveFrom: dto.startDate,
+        createdBy: currentUser.id,
+        content: contentFromNewSchedule(
+          dto.schedule,
+          workouts.map((workout) => workout.id),
+        ),
+      });
 
       // The audit entry, in the same transaction (see AuditService.
       // logInTransaction): the whole prescription as it was assigned —
@@ -488,30 +485,48 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
     assertScheduleDayAllowed(dto.effectiveFrom, program);
+    // A pause is something that happens DURING a program (decided
+    // 2026-10-11): on the start date it would replace the first version and
+    // the program would begin paused — assign it later instead.
+    if (
+      dto.type === ScheduleType.PAUSED &&
+      dto.effectiveFrom === program.startDate
+    ) {
+      throw new BadRequestException(
+        "A program can't start paused: choose its start date for when it begins",
+      );
+    }
 
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
-        // RETURNING: the deleted versions come back, so the audit entry can
-        // record exactly what was replaced — after this transaction, the
-        // audit log is the only place they still exist.
-        const replaced = await tx
+        // The content first — every workout it names must be one of this
+        // program's (404 otherwise), checked before anything is deleted.
+        const content = contentFromVersionInput(
+          dto,
+          await this.findWorkouts(tx, id),
+        );
+        // The versions about to be replaced, read WITH their days and
+        // rotations, so the audit entry can record exactly what was
+        // replaced — after this transaction, the audit log is the only place
+        // they still exist. (A DELETE … RETURNING would return the version
+        // rows only; their children go by cascade.)
+        const replaced = (await this.readScheduleVersions(tx, [id])).filter(
+          (version) => version.effectiveFrom >= dto.effectiveFrom,
+        );
+        await tx
           .delete(programSchedules)
           .where(
             and(
               eq(programSchedules.assignedProgramId, id),
               gte(programSchedules.effectiveFrom, dto.effectiveFrom),
             ),
-          )
-          .returning();
-        const [added] = await tx
-          .insert(programSchedules)
-          .values({
-            assignedProgramId: id,
-            ...toScheduleColumns(dto),
-            effectiveFrom: dto.effectiveFrom,
-            createdBy: currentUser.id,
-          })
-          .returning();
+          );
+        const added = await this.insertScheduleVersion(tx, {
+          assignedProgramId: id,
+          effectiveFrom: dto.effectiveFrom,
+          createdBy: currentUser.id,
+          content,
+        });
         await this.auditService.logInTransaction(tx, {
           performedBy: currentUser.id,
           action: "ASSIGNED_PROGRAM_SCHEDULE_SET",
@@ -655,19 +670,18 @@ export class AssignedProgramsService {
   // Unlike `users`, program_schedules has row-level security, so this read
   // runs in the caller's RLS context: it can only ever return versions of
   // programs the caller may see — which are exactly the ones asked for.
+  // (Each version comes with its days and rotation — readScheduleVersions,
+  // batched the same way: three queries for the whole list.)
   private async withSchedules<T extends { id: number }>(
     currentUser: CurrentUser,
     programs: T[],
   ) {
     if (programs.length === 0) return [];
     const rows = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.query.programSchedules.findMany({
-        where: inArray(
-          programSchedules.assignedProgramId,
-          programs.map((p) => p.id),
-        ),
-        orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
-      }),
+      this.readScheduleVersions(
+        tx,
+        programs.map((p) => p.id),
+      ),
     );
     const byProgram = new Map<number, typeof rows>();
     for (const row of rows) {
@@ -709,15 +723,18 @@ export class AssignedProgramsService {
       this.db,
       currentUser,
       async (tx) => [
-        await tx.query.programSchedules.findMany({
-          where: eq(programSchedules.assignedProgramId, id),
-        }),
-        // Only what the module needs (id + the patient's day), and only
-        // completed sessions: "done" means completed (decided 2026-10-09) —
-        // a session started and abandoned isn't done. The index on
-        // (assigned_program_id, local_date) serves this read.
+        await this.readScheduleVersions(tx, [id]),
+        // Only what the module needs (id, the patient's day, the workout
+        // done), and only completed sessions: "done" means completed
+        // (decided 2026-10-09) — a session started and abandoned isn't
+        // done. The index on (assigned_program_id, local_date) serves this
+        // read.
         await tx
-          .select({ id: sessions.id, localDate: sessions.localDate })
+          .select({
+            id: sessions.id,
+            localDate: sessions.localDate,
+            workoutId: sessions.workoutId,
+          })
           .from(sessions)
           .where(
             and(
@@ -773,35 +790,49 @@ export class AssignedProgramsService {
       // transaction, so the program never exists with a start date its
       // schedule doesn't cover.
       let scheduleVersions:
-        | { replaced: ReturnType<typeof versionForAudit>[]; added: ReturnType<typeof versionForAudit> | null }
+        | {
+            replaced: ReturnType<typeof versionForAudit>[];
+            added: ReturnType<typeof versionForAudit> | null;
+          }
         | undefined;
       if (newStartDate !== null) {
-        const versions = await tx.query.programSchedules.findMany({
-          where: eq(programSchedules.assignedProgramId, id),
-          orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
-        });
+        const versions = await this.readScheduleVersions(tx, [id]);
         const plan = planStartDateMove(versions, newStartDate);
-        const replaced =
-          plan.deleteIds.length > 0
-            ? await tx
-                .delete(programSchedules)
-                .where(inArray(programSchedules.id, plan.deleteIds))
-                .returning()
-            : [];
-        // The re-created version is recorded as set by whoever moved the
-        // start (it's a new row, created now); who set the ORIGINAL is kept
-        // in the audit entry's `replaced`.
-        const [added] = plan.insert
-          ? await tx
-              .insert(programSchedules)
-              .values({
-                assignedProgramId: id,
-                ...plan.insert,
-                effectiveFrom: newStartDate,
-                createdBy: currentUser.id,
-              })
-              .returning()
-          : [];
+        // The version the program would START with: the one re-created on
+        // the new date, or the one already starting exactly there. A pause
+        // can't be it (the same rule as addScheduleVersion's) — moving the
+        // start past a planned pause's beginning would make the program
+        // begin paused.
+        const startsWith =
+          plan.insert ??
+          versions.find((version) => version.effectiveFrom === newStartDate);
+        if (startsWith?.type === "paused") {
+          throw new BadRequestException(
+            "A program can't start paused: the new start date falls in a planned pause",
+          );
+        }
+        // Read with their days / rotations before the DELETE (which takes
+        // them by cascade), for the audit entry.
+        const replaced = versions.filter((version) =>
+          plan.deleteIds.includes(version.id),
+        );
+        if (plan.deleteIds.length > 0) {
+          await tx
+            .delete(programSchedules)
+            .where(inArray(programSchedules.id, plan.deleteIds));
+        }
+        // The re-created version — the same content, on the new date — is
+        // recorded as set by whoever moved the start (it's a new row,
+        // created now); who set the ORIGINAL is kept in the audit entry's
+        // `replaced`.
+        const added = plan.insert
+          ? await this.insertScheduleVersion(tx, {
+              assignedProgramId: id,
+              effectiveFrom: newStartDate,
+              createdBy: currentUser.id,
+              content: plan.insert,
+            })
+          : undefined;
         scheduleVersions = {
           replaced: replaced.map(versionForAudit),
           added: added ? versionForAudit(added) : null,
@@ -1085,11 +1116,22 @@ export class AssignedProgramsService {
           .select({ sessionCount: count() })
           .from(sessions)
           .where(eq(sessions.workoutId, workoutId));
+        // Every schedule version that names it — current, planned or past
+        // (each table has an index on workout_id for exactly this).
+        const [{ dayUses }] = await tx
+          .select({ dayUses: count() })
+          .from(programScheduleDays)
+          .where(eq(programScheduleDays.workoutId, workoutId));
+        const [{ rotationUses }] = await tx
+          .select({ rotationUses: count() })
+          .from(programScheduleRotation)
+          .where(eq(programScheduleRotation.workoutId, workoutId));
         assertWorkoutRemovable({
           label: workoutLabel(workouts.findIndex((w) => w.id === workoutId)),
           workoutCount: workouts.length,
           exerciseCount,
           sessionCount,
+          scheduleUseCount: dayUses + rotationUses,
         });
         const [removed] = await tx
           .delete(programWorkouts)
@@ -1105,16 +1147,20 @@ export class AssignedProgramsService {
         });
       });
     } catch (error) {
-      // An exercise added, or a session started, between the counts above
-      // and the DELETE (neither takes the program's lock): the database
-      // refuses the delete through that row's foreign key. Same answer the
-      // counts would have given, a moment later.
+      // An exercise added, a session started or a schedule set between the
+      // counts above and the DELETE (none of them takes the program's
+      // lock): the database refuses the delete through that row's foreign
+      // key. Same answer the counts would have given, a moment later.
       if (
-        isForeignKeyViolation(error, ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK) ||
-        isForeignKeyViolation(error, SESSIONS_WORKOUT_FK)
+        [
+          ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
+          SESSIONS_WORKOUT_FK,
+          PROGRAM_SCHEDULE_DAYS_WORKOUT_FK,
+          PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK,
+        ].some((constraint) => isForeignKeyViolation(error, constraint))
       ) {
         throw new ConflictException(
-          "This workout was just given exercises or a session: reload the program and try again",
+          "This workout was just given exercises, a session or a place in the schedule: reload the program and try again",
         );
       }
       throw error;
@@ -1305,10 +1351,7 @@ export class AssignedProgramsService {
         await tx.query.assignedProgramExercises.findMany({
           where: eq(assignedProgramExercises.assignedProgramId, id),
         }),
-        await tx.query.programSchedules.findMany({
-          where: eq(programSchedules.assignedProgramId, id),
-          orderBy: (row, { asc }) => [asc(row.effectiveFrom)],
-        }),
+        await this.readScheduleVersions(tx, [id]),
       ] as const,
     );
     const workouts = orderWorkouts(workoutRows);
@@ -1318,6 +1361,115 @@ export class AssignedProgramsService {
       exercises: orderExercisesByWorkout(exerciseRows, workouts),
       schedules,
     };
+  }
+
+  // The schedule versions of these programs, each with its content: the
+  // version rows (oldest first within a program), then their days and
+  // rotation positions — THREE queries whatever the number of programs or
+  // versions (`IN (…)` lists, grouped in memory), not one per version.
+  // Always called with a transaction carrying the caller's RLS context: the
+  // children's policies show only rows of versions the caller may see.
+  private async readScheduleVersions(
+    tx: DrizzleDb,
+    programIds: number[],
+  ): Promise<ScheduleVersion[]> {
+    if (programIds.length === 0) return [];
+    const rows = await tx.query.programSchedules.findMany({
+      where: inArray(programSchedules.assignedProgramId, programIds),
+      orderBy: (row, { asc }) => [
+        asc(row.assignedProgramId),
+        asc(row.effectiveFrom),
+      ],
+    });
+    if (rows.length === 0) return [];
+    const versionIds = rows.map((row) => row.id);
+    const [dayRows, rotationRows] = [
+      await tx.query.programScheduleDays.findMany({
+        where: inArray(programScheduleDays.scheduleId, versionIds),
+        orderBy: (row, { asc }) => [asc(row.weekday)],
+      }),
+      await tx.query.programScheduleRotation.findMany({
+        where: inArray(programScheduleRotation.scheduleId, versionIds),
+        orderBy: (row, { asc }) => [asc(row.position)],
+      }),
+    ];
+    // Grouped by version; each list keeps the order it was read in.
+    const days = new Map<number, ScheduleDay[]>();
+    for (const row of dayRows) {
+      days.set(row.scheduleId, [
+        ...(days.get(row.scheduleId) ?? []),
+        { weekday: row.weekday, workoutId: row.workoutId },
+      ]);
+    }
+    const rotation = new Map<number, number[]>();
+    for (const row of rotationRows) {
+      rotation.set(row.scheduleId, [
+        ...(rotation.get(row.scheduleId) ?? []),
+        row.workoutId,
+      ]);
+    }
+    return rows.map((row) => ({
+      ...row,
+      days: days.get(row.id) ?? [],
+      rotation: rotation.get(row.id) ?? [],
+    }));
+  }
+
+  // Writes ONE schedule version with its content: the version row, then
+  // its days or rotation positions — in the caller's transaction, so the
+  // children's INSERT policy (migration 0029: only in the transaction that
+  // created their version) lets them in, and the whole is atomic. "A
+  // 'weekdays' version has at least one day" and "a rotation has at least
+  // one position" span two tables, which no constraint can say: the DTOs
+  // require a non-empty list, and this refuses one anyway, so no path —
+  // a start-date move copying a version, say — can store an empty one.
+  private async insertScheduleVersion(
+    tx: DrizzleDb,
+    version: {
+      assignedProgramId: number;
+      effectiveFrom: string;
+      createdBy: number;
+      content: ScheduleContent;
+    },
+  ): Promise<ScheduleVersion> {
+    const { content } = version;
+    if (content.type === "weekdays" && content.days.length === 0) {
+      throw new Error("A 'weekdays' schedule version needs at least one day");
+    }
+    if (content.type === "times_per_week" && content.rotation.length === 0) {
+      throw new Error("A rotation needs at least one workout");
+    }
+    const [row] = await tx
+      .insert(programSchedules)
+      .values({
+        assignedProgramId: version.assignedProgramId,
+        type: content.type,
+        timesPerWeek: content.timesPerWeek,
+        effectiveFrom: version.effectiveFrom,
+        createdBy: version.createdBy,
+      })
+      .returning();
+    if (content.days.length > 0) {
+      await tx.insert(programScheduleDays).values(
+        content.days.map((day) => ({
+          scheduleId: row.id,
+          assignedProgramId: row.assignedProgramId,
+          weekday: day.weekday,
+          workoutId: day.workoutId,
+        })),
+      );
+    }
+    if (content.rotation.length > 0) {
+      await tx.insert(programScheduleRotation).values(
+        content.rotation.map((workoutId, position) => ({
+          scheduleId: row.id,
+          assignedProgramId: row.assignedProgramId,
+          position,
+          workoutId,
+        })),
+      );
+    }
+    return { ...row, days: content.days, rotation: content.rotation };
   }
 
   // A program's workouts, in no particular order (orderWorkouts sorts).

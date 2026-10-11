@@ -189,6 +189,7 @@ describe('assertWorkoutRemovable', () => {
         workoutCount: 2,
         exerciseCount: 0,
         sessionCount: 0,
+        scheduleUseCount: 0,
       }),
     ).not.toThrow()
     // Templates have no sessions: the count is simply not given.
@@ -229,6 +230,24 @@ describe('assertWorkoutRemovable', () => {
     ).toThrow(
       new ConflictException(
         "Workout B has recorded sessions, so it is part of the patient's history and can't be deleted",
+      ),
+    )
+  })
+
+  // ONE schedule use is enough: a single Wednesday in one version, or one
+  // slot of a rotation (step 2b-ii).
+  it('refuses a workout a schedule version uses', () => {
+    expect(() =>
+      assertWorkoutRemovable({
+        label: 'B',
+        workoutCount: 2,
+        exerciseCount: 0,
+        sessionCount: 0,
+        scheduleUseCount: 1,
+      }),
+    ).toThrow(
+      new ConflictException(
+        "Workout B is part of the program's schedule (now, planned, or in its history), so it can't be deleted",
       ),
     )
   })

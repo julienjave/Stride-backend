@@ -161,11 +161,15 @@ export function assertCanAddWorkout(workoutCount: number) {
 //     deliberate act for each.
 //   - (Programs only) never one that sessions recorded: those sessions are
 //     the patient's history, and they say which workout they did.
+//   - (Programs only) never one that a schedule version uses — the current
+//     one, a planned one, or a past one: a past version says how past days
+//     were judged ("Monday = B"), and can't lose its workout.
 export function assertWorkoutRemovable(state: {
   label: string
   workoutCount: number
   exerciseCount: number
   sessionCount?: number
+  scheduleUseCount?: number
 }) {
   if (state.workoutCount <= 1) {
     throw new ConflictException(
@@ -180,6 +184,11 @@ export function assertWorkoutRemovable(state: {
   if ((state.sessionCount ?? 0) > 0) {
     throw new ConflictException(
       `Workout ${state.label} has recorded sessions, so it is part of the patient's history and can't be deleted`,
+    )
+  }
+  if ((state.scheduleUseCount ?? 0) > 0) {
+    throw new ConflictException(
+      `Workout ${state.label} is part of the program's schedule (now, planned, or in its history), so it can't be deleted`,
     )
   }
 }

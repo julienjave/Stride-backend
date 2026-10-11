@@ -33,30 +33,65 @@ import {
 
 const d = (day: string) => `2026-10-${day}`
 
-const weekdays = (days: number[], from: string): SummaryScheduleVersion => ({
+// Workouts by name: A = 1, B = 2, C = 3. Most cases have ONE workout (A)
+// — the rules that existed before workouts, unchanged; the cases about
+// workouts name them.
+const A = 1
+const B = 2
+const C = 3
+
+// A specific-days version: weekdays alone (every day doing A), or
+// [weekday, workout] pairs.
+const weekdays = (
+  days: (number | [number, number])[],
+  from: string,
+): SummaryScheduleVersion => ({
   type: 'weekdays',
-  weekdays: days,
   timesPerWeek: null,
+  days: days.map((day) =>
+    typeof day === 'number'
+      ? { weekday: day, workoutId: A }
+      : { weekday: day[0], workoutId: day[1] },
+  ),
+  rotation: [],
   effectiveFrom: d(from),
 })
-const perWeek = (n: number, from: string): SummaryScheduleVersion => ({
+// N per week, with a rotation (A alone unless given).
+const perWeek = (
+  n: number,
+  from: string,
+  rotation: number[] = [A],
+): SummaryScheduleVersion => ({
   type: 'times_per_week',
-  weekdays: null,
   timesPerWeek: n,
+  days: [],
+  rotation,
+  effectiveFrom: d(from),
+})
+const paused = (from: string): SummaryScheduleVersion => ({
+  type: 'paused',
+  timesPerWeek: null,
+  days: [],
+  rotation: [],
   effectiveFrom: d(from),
 })
 const MWF = [1, 3, 5]
 
-// Sessions as day numbers; ids are 1, 2, 3… in the order given.
-function sessions(...days: string[]) {
-  return days.map((day, i) => ({ id: i + 1, localDate: d(day) }))
+// Sessions as day numbers (each doing A), or [day, workout] pairs; ids are
+// 1, 2, 3… in the order given.
+function sessions(...days: (string | [string, number])[]) {
+  return days.map((day, i) =>
+    typeof day === 'string'
+      ? { id: i + 1, localDate: d(day), workoutId: A }
+      : { id: i + 1, localDate: d(day[0]), workoutId: day[1] },
+  )
 }
 
 function summarize(input: {
   start: string
   end?: string
   versions: SummaryScheduleVersion[]
-  sessions?: { id: number; localDate: string }[]
+  sessions?: { id: number; localDate: string; workoutId: number }[]
   today: string
 }): ScheduleSummary {
   const full: ScheduleSummaryInput = {
@@ -208,6 +243,7 @@ describe('specific days (weekdays)', () => {
     })
     expect(s.days[0]).toStrictEqual({
       date: d('12'),
+      workoutId: A,
       state: 'made_up',
       sessionId: null,
       madeUpBy: { sessionId: 1, date: d('13') },
@@ -279,8 +315,8 @@ describe('extra sessions', () => {
       end: '18',
       versions: [weekdays(MWF, '12')],
       sessions: [
-        { id: 9, localDate: d('12') },
-        { id: 4, localDate: d('12') },
+        { id: 9, localDate: d('12'), workoutId: A },
+        { id: 4, localDate: d('12'), workoutId: A },
       ],
       today: '19',
     })
@@ -697,5 +733,424 @@ describe('across schedule versions', () => {
       ['13', 'done'],
       ['15', 'missed'],
     ])
+  })
+})
+// --- Workouts (step 2b-ii) ------------------------------------------------------------------------------------
+
+// Specific days with a workout each: Monday A, Wednesday B, Friday A.
+const MON_A_WED_B_FRI_A: [number, number][] = [
+  [1, A],
+  [3, B],
+  [5, A],
+]
+
+describe('specific days with workouts', () => {
+  it("expects each day's own workout", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['14', B], ['16', A]),
+      today: '19',
+    })
+    expect(
+      s.days.map((day) => [day.date.slice(8), day.workoutId, day.state]),
+    ).toEqual([
+      ['12', A, 'done'],
+      ['14', B, 'done'],
+      ['16', A, 'done'],
+    ])
+  })
+
+  // Wednesday is B's day: doing A there doesn't count for it — the day
+  // stays open (a make-up of B is still possible on Thursday).
+  it("doesn't count another workout for a scheduled day", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['14', A]),
+      today: '15',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'done'],
+      ['14', 'due'],
+      ['16', 'upcoming'],
+    ])
+    expect(extraRows(s)).toEqual([['14', 'wrong_workout']])
+  })
+
+  // The naive "first session of the day counts" would take the wrong
+  // workout (id 1) and leave Wednesday undone.
+  it("counts the session doing the day's workout, even if another came first", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['14', A], ['14', B]),
+      today: '19',
+    })
+    expect(s.days[1]).toMatchObject({ state: 'done', sessionId: 2 })
+    expect(extraRows(s)).toEqual([['14', 'same_day']])
+  })
+
+  // Wednesday (B) missed: a Thursday session makes it up only if it's B.
+  it("makes a day up only with that day's workout", () => {
+    const withB = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['15', B]),
+      today: '19',
+    })
+    expect(dayRows(withB)[1]).toEqual(['14', 'made_up', '15'])
+
+    const withA = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['15', A]),
+      today: '19',
+    })
+    expect(dayRows(withA)[1]).toEqual(['14', 'missed'])
+    expect(extraRows(withA)).toEqual([['15', 'wrong_workout']])
+  })
+
+  // An unscheduled day with two sessions: the one doing the missed day's
+  // workout makes it up, even though another was recorded first.
+  it("makes a day up with the right workout of an unscheduled day's sessions", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['15', A], ['15', B]),
+      today: '19',
+    })
+    expect(s.days[1]).toMatchObject({
+      state: 'made_up',
+      madeUpBy: { sessionId: 3, date: d('15') },
+    })
+    expect(extraRows(s)).toEqual([['15', 'same_day']])
+  })
+})
+
+describe('N per week with a rotation', () => {
+  // A, B, C at 3 a week: the week needs one of each, in any order.
+  it('needs the next N positions of the rotation, in any order', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(3, '12', [A, B, C])],
+      sessions: sessions(['12', C], ['13', A], ['15', B]),
+      today: '19',
+    })
+    expect(weekRows(s)).toEqual([['12', '18', 3, 3, 'met']])
+    expect(s.weeks[0].workouts).toEqual([
+      { workoutId: A, sessionId: 2 },
+      { workoutId: B, sessionId: 3 },
+      { workoutId: C, sessionId: 1 },
+    ])
+  })
+
+  // The case from the decision: A, A, B = 2 of 3 — the second A is a
+  // repeat, and C is still owed.
+  it('counts a repeated workout as extra, not toward the week', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(3, '12', [A, B, C])],
+      sessions: sessions(['12', A], ['13', A], ['15', B]),
+      today: '19',
+    })
+    expect(weekRows(s)).toEqual([['12', '18', 3, 2, 'missed']])
+    expect(extraRows(s)).toEqual([['13', 'repeated_workout']])
+  })
+
+  // By PLAN: week 2 continues the rotation where week 1's NEEDS ended
+  // (positions 3, 4 → A, B with a 3-long rotation at 2 a week: week 1 needs
+  // A, B; week 2 needs C, A) — even though week 1 did nothing. "By what was
+  // done" would ask A, B again.
+  it('runs the rotation on by plan, week after week', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(2, '12', [A, B, C])],
+      sessions: sessions(['19', C], ['20', A]),
+      today: '26',
+    })
+    expect(
+      s.weeks.map((w) => w.workouts.map((slot) => slot.workoutId)),
+    ).toEqual([
+      [A, B],
+      [C, A],
+    ])
+    expect(weekRows(s)).toEqual([
+      ['12', '18', 2, 0, 'missed'],
+      ['19', '25', 2, 2, 'met'],
+    ])
+  })
+
+  // A workout the week doesn't need at all, while it still needs others.
+  it("counts a workout the week doesn't need as wrong", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(2, '12', [A, B, C])],
+      sessions: sessions(['12', C]),
+      today: '19',
+    })
+    expect(extraRows(s)).toEqual([['12', 'wrong_workout']])
+    expect(s.weeks[0].done).toBe(0)
+  })
+
+  // Once every needed position is done, any further session is beyond the
+  // target — whatever its workout.
+  it('counts a session after the week is met as beyond the target', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(1, '12', [A, B])],
+      sessions: sessions(['12', A], ['13', B]),
+      today: '19',
+    })
+    expect(extraRows(s)).toEqual([['13', 'beyond_target']])
+  })
+
+  // A scaled week needs its first k positions: 3 a week over a 3-day
+  // final week → round(1.29) = 1 → just the next position.
+  it('needs only as many positions as a scaled week targets', () => {
+    const s = summarize({
+      start: '12',
+      end: '21',
+      versions: [perWeek(3, '12', [A, B, C])],
+      today: '22',
+    })
+    expect(
+      s.weeks.map((w) => w.workouts.map((slot) => slot.workoutId)),
+    ).toEqual([[A, B, C], [A]])
+  })
+
+  // Each version counts its own positions from ITS start: a new version
+  // starts again at position 0.
+  it('starts a new version at the beginning of its rotation', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(2, '12', [A, B, C]), perWeek(2, '19', [B, C])],
+      today: '26',
+    })
+    expect(
+      s.weeks.map((w) => w.workouts.map((slot) => slot.workoutId)),
+    ).toEqual([
+      [A, B],
+      [B, C],
+    ])
+  })
+})
+
+describe('pauses', () => {
+  // Paused from Wednesday 14 to Sunday 18, Mon/Wed/Fri resuming on the 19th.
+  const versions = [weekdays(MWF, '12'), paused('14'), weekdays(MWF, '19')]
+
+  it('has nothing due while paused, and resumes after', () => {
+    const s = summarize({ start: '12', end: '25', versions, today: '26' })
+    expect(dayRows(s).map(([day]) => day)).toEqual(['12', '19', '21', '23'])
+    expect(s.pauses).toEqual([{ from: d('14'), to: d('18') }])
+  })
+
+  it('counts a session during a pause as extra', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions,
+      sessions: sessions('12', '15'),
+      today: '26',
+    })
+    expect(extraRows(s)).toEqual([['15', 'paused']])
+  })
+
+  // Monday 12 missed; its make-up window would run to Tuesday 13 anyway —
+  // here the pause starts on the 13th and closes it at once: a Tuesday
+  // session is a paused-day session, not a make-up.
+  it('closes an open make-up window', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [weekdays(MWF, '12'), paused('13'), weekdays(MWF, '19')],
+      sessions: sessions('13'),
+      today: '26',
+    })
+    expect(dayRows(s)[0]).toEqual(['12', 'missed'])
+    expect(extraRows(s)).toEqual([['13', 'paused']])
+  })
+
+  // N per week: the pause splits the program week, and the stretch before
+  // it is scaled (3 a week over Mon 12 – Tue 13 → round(0.86) = 1).
+  it('splits and scales a program week', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(3, '12'), paused('14')],
+      today: '19',
+    })
+    expect(weekRows(s)).toEqual([['12', '13', 1, 0, 'missed']])
+    expect(s.pauses).toEqual([{ from: d('14'), to: d('18') }])
+  })
+
+  it('reports an open-ended pause as running on', () => {
+    const s = summarize({
+      start: '12',
+      versions: [weekdays(MWF, '12'), paused('14')],
+      today: '15',
+    })
+    expect(s.pauses).toEqual([{ from: d('14'), to: null }])
+    expect(s.nextWorkout).toBeNull()
+  })
+
+  // A pause can't run past the program's end.
+  it('ends a pause on the end date at the latest', () => {
+    const s = summarize({
+      start: '12',
+      end: '16',
+      versions: [weekdays(MWF, '12'), paused('14')],
+      today: '17',
+    })
+    expect(s.pauses).toEqual([{ from: d('14'), to: d('16') }])
+  })
+
+  // The end date moved earlier after a pause was planned: a pause that
+  // would begin after the new end never happens, so it isn't reported.
+  it('leaves out a pause that starts after the program ends', () => {
+    const s = summarize({
+      start: '12',
+      end: '16',
+      versions: [weekdays(MWF, '12'), paused('19')],
+      today: '17',
+    })
+    expect(s.pauses).toEqual([])
+  })
+
+  // The service never stores a version before the start, but the module
+  // takes any versions: one from before the start counts from the start
+  // (the first day the program has).
+  it('starts a pause no earlier than the program', () => {
+    const s = summarize({
+      start: '14',
+      end: '25',
+      versions: [paused('12'), weekdays(MWF, '19')],
+      today: '26',
+    })
+    expect(s.pauses).toEqual([{ from: d('14'), to: d('18') }])
+  })
+})
+
+describe('next workout', () => {
+  it("is today's scheduled workout when it's not done yet", () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A]),
+      today: '14',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: B,
+      forDay: d('14'),
+      programWeek: null,
+    })
+  })
+
+  // Wednesday (B) missed, today Thursday: the make-up comes first — it
+  // names the MISSED day, and it's B, though Friday (A) is the next date.
+  it('is a make-up while one is possible', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A]),
+      today: '15',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: B,
+      forDay: d('14'),
+      programWeek: null,
+    })
+  })
+
+  it("is the next scheduled day's workout once today is done", () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [weekdays(MON_A_WED_B_FRI_A, '12')],
+      sessions: sessions(['12', A], ['14', B]),
+      today: '14',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: A,
+      forDay: d('16'),
+      programWeek: null,
+    })
+  })
+
+  // N per week: the first position the current week still needs.
+  it("is the week's first workout still needed", () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(3, '12', [A, B, C])],
+      sessions: sessions(['12', A]),
+      today: '13',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: B,
+      forDay: null,
+      programWeek: 1,
+    })
+  })
+
+  // The current week is met: the next week's first position.
+  it("is the next week's first workout once this week is met", () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(1, '12', [A, B])],
+      sessions: sessions(['12', A]),
+      today: '13',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: B,
+      forDay: null,
+      programWeek: 2,
+    })
+  })
+
+  // During a pause, the first thing after it.
+  it('is the first workout after a pause', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [
+        weekdays(MON_A_WED_B_FRI_A, '12'),
+        paused('13'),
+        weekdays(MON_A_WED_B_FRI_A, '20'),
+      ],
+      sessions: sessions(['12', A]),
+      today: '15',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: B,
+      forDay: d('21'),
+      programWeek: null,
+    })
+  })
+
+  it('is null once the program is over', () => {
+    const s = summarize({
+      start: '12',
+      end: '16',
+      versions: [weekdays(MWF, '12')],
+      today: '20',
+    })
+    expect(s.nextWorkout).toBeNull()
   })
 })

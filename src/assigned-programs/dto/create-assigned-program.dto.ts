@@ -29,7 +29,7 @@ import {
 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
-import { ScheduleInputDto } from './schedule-input.dto'
+import { NewProgramScheduleDto } from './schedule-input.dto'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
@@ -82,7 +82,9 @@ export class CreateAssignedProgramDto {
 
   // Every assigned program has a schedule (decided 2026-10-09), set while
   // assigning. It becomes the program's FIRST schedule version, applying
-  // from startDate.
+  // from startDate. Its days and rotation name workouts by POSITION
+  // (`workoutIndex`, 0 = A), since the program's own workouts are only
+  // created by this request — see NewProgramScheduleDto.
   //
   // @IsDefined() because @ValidateNested() alone does nothing for a missing
   // value: it validates an object's contents, and an absent object has
@@ -92,6 +94,6 @@ export class CreateAssignedProgramDto {
   // `exercises` above).
   @IsDefined()
   @ValidateNested()
-  @Type(() => ScheduleInputDto)
-  schedule!: ScheduleInputDto
+  @Type(() => NewProgramScheduleDto)
+  schedule!: NewProgramScheduleDto
 }

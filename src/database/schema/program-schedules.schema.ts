@@ -25,17 +25,27 @@ import {
   timestamp,
   check,
   unique,
+  primaryKey,
+  foreignKey,
+  index,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
-import { assignedPrograms } from './programs.schema'
+import { assignedPrograms, programWorkouts } from './programs.schema'
 
-// The two kinds of schedule (design decisions §5):
-//   - 'weekdays'       → specific days of the week (e.g. Mon/Wed/Fri);
-//   - 'times_per_week' → N sessions per program week, on any days.
+// The kinds of schedule (design decisions §5):
+//   - 'weekdays'       → specific days of the week, each with the workout it
+//                        uses (e.g. Mon A, Wed B, Fri A) — program_schedule_days;
+//   - 'times_per_week' → N sessions per program week, on any days, following
+//                        a rotation of workouts (A, B, C, A…) —
+//                        program_schedule_rotation;
+//   - 'paused'         → nothing is due ("paused from D"; a later version
+//                        resumes). Replaces the old `on_hold` status, which
+//                        couldn't say since when (decided 2026-10-10).
 export const scheduleTypeEnum = pgEnum('schedule_type', [
   'weekdays',
   'times_per_week',
+  'paused',
 ])
 
 // An assigned program's schedule, as a HISTORY of versions (decisions §5,
@@ -54,15 +64,13 @@ export const scheduleTypeEnum = pgEnum('schedule_type', [
 // program's start date. See migration 0025 (program_schedules_rls) for why
 // "yesterday", not "today".
 //
-// Weekdays use ISO numbering: 1 = Monday … 7 = Sunday (Postgres's `isodow`,
-// date-fns's `getISODay`), stored as a sorted array without duplicates
-// ({1,3,5} for Mon/Wed/Fri).
+// What each version says beyond its type lives in two child tables (step
+// 2b-ii): which workout each weekday uses, and the rotation. A version is
+// written ONCE, with its children, in one transaction — never edited
+// afterwards (see the children's INSERT policy, migration 0029).
 //
-// Not expressible in Drizzle, so added by the custom migration 0025:
-//   - the CHECK that `weekdays` is a valid weekday SET (values 1–7, sorted,
-//     no duplicates) — it needs a helper function, and a CHECK constraint
-//     can't contain a subquery;
-//   - the row-level security policies.
+// Not expressible in Drizzle, so added by custom migrations: the row-level
+// security policies (0025 for this table, 0029 for its children).
 export const programSchedules = pgTable(
   'program_schedules',
   {
@@ -74,8 +82,7 @@ export const programSchedules = pgTable(
       .notNull()
       .references(() => assignedPrograms.id, { onDelete: 'cascade' }),
     type: scheduleTypeEnum('type').notNull(),
-    // Exactly one of these two is set, matching `type` (CHECK below).
-    weekdays: smallint('weekdays').array(),
+    // Only for 'times_per_week' (CHECK below).
     timesPerWeek: smallint('times_per_week'),
     // A calendar DATE, not a moment: "from Monday 12 October" is a day in
     // the patient's life, the same kind of value as start_date/end_date.
@@ -90,14 +97,15 @@ export const programSchedules = pgTable(
       .defaultNow(),
   },
   (table) => ({
-    // "Exactly the right fields per type": weekdays for 'weekdays', a count
-    // for 'times_per_week', never both, never neither. Without it, a row
-    // could say type 'weekdays' and carry only a count — and every reader
-    // would have to decide what that means.
+    // "A count exactly when the type is 'times_per_week'": both sides of `=`
+    // are booleans, so the row passes only when they agree — a count with
+    // that type, no count with any other. Written without naming the other
+    // types on purpose: 'paused' is added to the enum by the same migration,
+    // and Postgres refuses to USE an enum value in the transaction that
+    // added it.
     fieldsMatchType: check(
       'program_schedules_fields_match_type',
-      sql`(${table.type} = 'weekdays' AND ${table.weekdays} IS NOT NULL AND ${table.timesPerWeek} IS NULL)
-        OR (${table.type} = 'times_per_week' AND ${table.timesPerWeek} IS NOT NULL AND ${table.weekdays} IS NULL)`,
+      sql`(${table.type} = 'times_per_week') = (${table.timesPerWeek} IS NOT NULL)`,
     ),
     // 1–7 sessions per week (7 = every day).
     timesPerWeekRange: check(
@@ -110,5 +118,130 @@ export const programSchedules = pgTable(
     oneVersionPerDay: unique(
       'program_schedules_program_effective_from_unique',
     ).on(table.assignedProgramId, table.effectiveFrom),
+    // The target of the children's composite foreign keys (id is unique on
+    // its own; a foreign key needs a constraint covering its columns
+    // EXACTLY). With `type` in it, a child row can state — and the database
+    // check — which kind of version it belongs to.
+    idProgramTypeUnique: unique('program_schedules_id_program_type_unique').on(
+      table.id,
+      table.assignedProgramId,
+      table.type,
+    ),
+  }),
+)
+
+// The days of a 'weekdays' version, each with the workout it uses: Monday A,
+// Wednesday B, Friday A. One row per day (primary key: version + weekday),
+// so a day can't appear twice. ISO weekdays: 1 = Monday … 7 = Sunday
+// (Postgres's `isodow`) — the set used to be a sorted array guarded by a
+// function (`is_iso_weekday_set`, dropped by 0028); as rows, the primary key
+// and a range CHECK say the same thing with plain constraints.
+//
+// Two composite foreign keys, each a rule of the database:
+//   - (schedule_id, assigned_program_id, schedule_type) → the version: the
+//     row belongs to THAT version of THAT program, and — with the CHECK on
+//     schedule_type — only a 'weekdays' version can have days;
+//   - (workout_id, assigned_program_id) → program_workouts: a workout of the
+//     SAME program (a NO ACTION key: a workout a schedule uses — even an old
+//     version — can't be deleted; it's part of the program's history).
+// assigned_program_id is repeated here (it's on the version too) because a
+// foreign key can only compare columns of the row itself: both keys need it.
+//
+// "A 'weekdays' version has at least one day" spans two tables, which no
+// constraint can express: the service writes a version and its days in one
+// transaction, and refuses an empty list.
+export const programScheduleDays = pgTable(
+  'program_schedule_days',
+  {
+    scheduleId: integer('schedule_id').notNull(),
+    assignedProgramId: integer('assigned_program_id').notNull(),
+    scheduleType: scheduleTypeEnum('schedule_type')
+      .notNull()
+      .default('weekdays'),
+    weekday: smallint('weekday').notNull(),
+    workoutId: integer('workout_id').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      name: 'program_schedule_days_pk',
+      columns: [table.scheduleId, table.weekday],
+    }),
+    weekdayRange: check(
+      'program_schedule_days_weekday_range',
+      sql`${table.weekday} BETWEEN 1 AND 7`,
+    ),
+    onlyForWeekdays: check(
+      'program_schedule_days_only_weekdays',
+      sql`${table.scheduleType} = 'weekdays'`,
+    ),
+    // 'cascade': replacing a version ("from D on") deletes it, and its days
+    // go with it — they mean nothing without it.
+    versionFk: foreignKey({
+      name: 'program_schedule_days_version_fk',
+      columns: [table.scheduleId, table.assignedProgramId, table.scheduleType],
+      foreignColumns: [
+        programSchedules.id,
+        programSchedules.assignedProgramId,
+        programSchedules.type,
+      ],
+    }).onDelete('cascade'),
+    workoutFk: foreignKey({
+      name: 'program_schedule_days_workout_fk',
+      columns: [table.workoutId, table.assignedProgramId],
+      foreignColumns: [programWorkouts.id, programWorkouts.assignedProgramId],
+    }),
+    // "Does any schedule use this workout?" — asked before deleting one.
+    workoutIdx: index('program_schedule_days_workout_id_idx').on(
+      table.workoutId,
+    ),
+  }),
+)
+
+// The rotation of a 'times_per_week' version: the workouts in the order the
+// patient goes through them — A, B, C, then A again. Position 0 is the first.
+// Each program week needs the NEXT N positions, counted from the version's
+// start (decisions §5, "Settled 2026-10-11", point 2) — by plan, not by what
+// was done. The same keys as the days, for the same reasons.
+export const programScheduleRotation = pgTable(
+  'program_schedule_rotation',
+  {
+    scheduleId: integer('schedule_id').notNull(),
+    assignedProgramId: integer('assigned_program_id').notNull(),
+    scheduleType: scheduleTypeEnum('schedule_type')
+      .notNull()
+      .default('times_per_week'),
+    position: smallint('position').notNull(),
+    workoutId: integer('workout_id').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      name: 'program_schedule_rotation_pk',
+      columns: [table.scheduleId, table.position],
+    }),
+    positionRange: check(
+      'program_schedule_rotation_position_range',
+      sql`${table.position} >= 0`,
+    ),
+    onlyForTimesPerWeek: check(
+      'program_schedule_rotation_only_times_per_week',
+      sql`${table.scheduleType} = 'times_per_week'`,
+    ),
+    versionFk: foreignKey({
+      name: 'program_schedule_rotation_version_fk',
+      columns: [table.scheduleId, table.assignedProgramId, table.scheduleType],
+      foreignColumns: [
+        programSchedules.id,
+        programSchedules.assignedProgramId,
+        programSchedules.type,
+      ],
+    }).onDelete('cascade'),
+    workoutFk: foreignKey({
+      name: 'program_schedule_rotation_workout_fk',
+      columns: [table.workoutId, table.assignedProgramId],
+      foreignColumns: [programWorkouts.id, programWorkouts.assignedProgramId],
+    }),
+    workoutIdx: index('program_schedule_rotation_workout_id_idx').on(
+      table.workoutId,
+    ),
   }),
 )

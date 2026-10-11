@@ -35,9 +35,10 @@ import { activateAccount } from './support/accounts'
 import { addDays, utcToday } from '../src/common/calendar-date'
 
 // Assigned programs' schedules (decisions §5, "Settled 2026-10-09"):
-//   1. creating a program stores its first schedule version;
+//   1. creating a program stores its first schedule version — its days
+//      (each with a workout) or its rotation of workouts (step 2b-ii);
 //   2. adding a version "from day D" replaces the versions from D on, and
-//      keeps the ones before;
+//      keeps the ones before; a version can also be a pause;
 //   3. which days are allowed, and who may change a schedule;
 //   4. the two gaps closed with this work (archived template, the full
 //      program from PATCH exercise) and the program's date order;
@@ -67,11 +68,20 @@ describe('Program schedules (e2e)', () => {
   let practitionerCId: number
   let patientId: number
   let templateId: number
+  // Two workouts: A and B, one exercise each.
+  let twoWorkoutTemplateId: number
   let emptyTemplateId: number
   let archivedTemplateId: number
 
   const today = utcToday()
-  const MWF = { type: 'weekdays', weekdays: [1, 3, 5] }
+  // When assigning, workouts are named by POSITION (0 = A): the program —
+  // and its workout ids — doesn't exist yet. Monday, Wednesday, Friday,
+  // all workout A (the usual template has only A).
+  const MWF = {
+    type: 'weekdays',
+    days: [1, 3, 5].map((weekday) => ({ weekday, workoutIndex: 0 })),
+  }
+  // No rotation: the suggestion, every workout in order.
   const THREE_A_WEEK = { type: 'times_per_week', timesPerWeek: 3 }
 
   beforeAll(async () => {
@@ -203,31 +213,60 @@ describe('Program schedules (e2e)', () => {
       return res.body.id as number
     }
     templateId = await template('Schedules Template', true)
+    twoWorkoutTemplateId = await template('Two Workouts Template', true)
+    const withB = await practitionerA
+      .post(`/programs/${twoWorkoutTemplateId}/workouts`)
+      .send({})
+    expect(withB.status).toBe(201)
+    await practitionerA
+      .post(`/programs/${twoWorkoutTemplateId}/exercises`)
+      .send({
+        exerciseId,
+        sets: 3,
+        reps: 8,
+        sortOrder: 0,
+        workoutId: withB.body.workouts[1].id,
+      })
     emptyTemplateId = await template('Empty Template', false)
     archivedTemplateId = await template('Archived Template', true)
     const archived = await practitionerA.delete(
       `/programs/${archivedTemplateId}`,
     )
     expect(archived.status).toBe(200)
+
+    sharedMwf = await createProgram({ startsIn: -30 })
+    sharedPerWeek = await createProgram({
+      startsIn: -30,
+      schedule: THREE_A_WEEK,
+    })
   })
+
+  // Two programs started 30 days ago — Monday/Wednesday/Friday = A, and
+  // three a week with the rotation [A] — for the tests that only read them,
+  // change them inside rolled-back transactions, or need "another
+  // program's workout". Created once: POST /assigned-programs allows 60
+  // requests a minute, and this file creates many programs.
+  let sharedMwf: Program
+  let sharedPerWeek: Program
 
   afterAll(async () => {
     await app.close()
     await sessionPool.end()
   })
 
-  // A program for the patient from the usual template. `startsIn` days from
-  // today (negative = started in the past).
+  // A program for the patient from the usual template (or another).
+  // `startsIn` days from today (negative = started in the past).
   async function createProgram(
     options: {
       startsIn?: number
       endsIn?: number
       schedule?: object
+      template?: number
     } = {},
   ) {
     const res = await practitionerA.post('/assigned-programs').send({
       patientId,
-      basedOnTemplateId: templateId,
+      basedOnTemplateId: options.template ?? templateId,
       title: 'Schedules E2E Program',
       startDate: addDays(today, options.startsIn ?? -20),
       ...(options.endsIn !== undefined
@@ -236,29 +275,49 @@ describe('Program schedules (e2e)', () => {
       schedule: options.schedule ?? MWF,
     })
     expect(res.status).toBe(201)
-    return res.body as {
-      id: number
-      startDate: string
-      schedules: ScheduleVersion[]
-    }
+    return res.body as Program
+  }
+
+  interface Program {
+    id: number
+    startDate: string
+    schedules: ScheduleVersion[]
+    workouts: { id: number; name: string | null; sortOrder: number }[]
+    exercises: { id: number; workoutId: number }[]
   }
 
   interface ScheduleVersion {
     id: number
     assignedProgramId: number
     type: string
-    weekdays: number[] | null
     timesPerWeek: number | null
+    days: { weekday: number; workoutId: number }[]
+    rotation: number[]
     effectiveFrom: string
     createdBy: number
     createdAt: string
   }
 
-  // Versions as [effectiveFrom, what] pairs — readable in a failing test.
+  // A LATER version's days: the program exists, so workouts are named by
+  // id — here every day is the program's first workout.
+  function onDays(program: Program, weekdays: number[]) {
+    const workoutId = program.workouts[0].id
+    return {
+      type: 'weekdays',
+      days: weekdays.map((weekday) => ({ weekday, workoutId })),
+    }
+  }
+
+  // Versions as [effectiveFrom, what] pairs — readable in a failing test:
+  // the weekdays, the count, or 'paused'.
   function summary(versions: ScheduleVersion[]) {
     return versions.map((v) => [
       v.effectiveFrom,
-      v.type === 'weekdays' ? v.weekdays : v.timesPerWeek,
+      v.type === 'weekdays'
+        ? v.days.map((day) => day.weekday)
+        : v.type === 'times_per_week'
+          ? v.timesPerWeek
+          : v.type,
     ])
   }
 
@@ -271,27 +330,96 @@ describe('Program schedules (e2e)', () => {
         basedOnTemplateId: templateId,
         title: 'First Version',
         startDate: addDays(today, 3),
-        schedule: { type: 'weekdays', weekdays: [5, 3, 1] },
+        schedule: { ...MWF, days: [...MWF.days].reverse() },
       })
       expect(res.status).toBe(201)
 
       // Read back separately: what the database holds, not just what the
-      // create response said.
+      // create response said. Position 0 became the program's OWN workout A
+      // (a new row, copied from the template's).
       const readBack = await practitionerA.get(
         `/assigned-programs/${res.body.id}`,
       )
+      const a = (readBack.body as Program).workouts[0].id
       expect(readBack.body.schedules).toHaveLength(1)
       const [version] = readBack.body.schedules as ScheduleVersion[]
       expect(version).toEqual({
         id: expect.any(Number),
         assignedProgramId: res.body.id,
         type: 'weekdays',
-        weekdays: [1, 3, 5],
         timesPerWeek: null,
+        days: [
+          { weekday: 1, workoutId: a },
+          { weekday: 3, workoutId: a },
+          { weekday: 5, workoutId: a },
+        ],
+        rotation: [],
         effectiveFrom: addDays(today, 3),
         createdBy: practitionerAId,
         createdAt: expect.any(String),
       })
+    })
+
+    // Each position becomes the NEW program's workout at that position.
+    it('gives each day the workout at its position', async () => {
+      const program = await createProgram({
+        template: twoWorkoutTemplateId,
+        schedule: {
+          type: 'weekdays',
+          days: [
+            { weekday: 1, workoutIndex: 1 },
+            { weekday: 4, workoutIndex: 0 },
+          ],
+        },
+      })
+      const [a, b] = program.workouts.map((w) => w.id)
+      expect(program.schedules[0].days).toEqual([
+        { weekday: 1, workoutId: b },
+        { weekday: 4, workoutId: a },
+      ])
+    })
+
+    // No rotation sent: the suggestion, every workout in order (A, B). A
+    // rotation sent: kept as given, repeats included.
+    it.each([
+      ['suggests every workout in order', undefined, [0, 1]],
+      ['keeps a rotation as given', [1, 1, 0], [1, 1, 0]],
+    ])(
+      '%s for a times-per-week schedule',
+      async (_label, rotation, positions) => {
+        const program = await createProgram({
+          template: twoWorkoutTemplateId,
+          schedule: { ...THREE_A_WEEK, ...(rotation ? { rotation } : {}) },
+        })
+        const ids = program.workouts.map((w) => w.id)
+        expect(program.schedules[0]).toMatchObject({
+          type: 'times_per_week',
+          timesPerWeek: 3,
+          days: [],
+          rotation: positions.map((position) => ids[position]),
+        })
+      },
+    )
+
+    // The position is checked against the copied workouts, inside the
+    // transaction that copied them: a refusal leaves no program behind.
+    it("refuses a workout position the template doesn't have, creating nothing", async () => {
+      const list = () =>
+        practitionerA.get(`/assigned-programs?patientId=${patientId}`)
+      const before = (await list()).body.length
+
+      const res = await practitionerA.post('/assigned-programs').send({
+        patientId,
+        basedOnTemplateId: templateId,
+        title: 'Too Far',
+        startDate: today,
+        schedule: { type: 'weekdays', days: [{ weekday: 1, workoutIndex: 1 }] },
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        "workoutIndex 1 doesn't exist: the program has 1 workout (A)",
+      ])
+      expect((await list()).body).toHaveLength(before)
     })
 
     // A program that began last week can be recorded: its first version
@@ -394,6 +522,16 @@ describe('Program schedules (e2e)', () => {
       expect(summary(byId.get(second.id)!.schedules)).toEqual([
         [second.startDate, 3],
       ])
+      // …and each version its own days and rotation (read in one query
+      // each, for every version of every program, then grouped).
+      expect(byId.get(first.id)!.schedules[0]).toMatchObject({
+        days: first.schedules[0].days,
+        rotation: [],
+      })
+      expect(byId.get(second.id)!.schedules[0]).toMatchObject({
+        days: [],
+        rotation: [second.workouts[0].id],
+      })
     })
   })
 
@@ -426,8 +564,7 @@ describe('Program schedules (e2e)', () => {
       await add(program.id, { ...THREE_A_WEEK, effectiveFrom: today })
 
       const res = await add(program.id, {
-        type: 'weekdays',
-        weekdays: [2, 4],
+        ...onDays(program, [2, 4]),
         effectiveFrom: today,
       })
       expect(res.status).toBe(201)
@@ -447,8 +584,7 @@ describe('Program schedules (e2e)', () => {
       })
 
       const res = await add(program.id, {
-        type: 'weekdays',
-        weekdays: [2],
+        ...onDays(program, [2]),
         effectiveFrom: today,
       })
       expect(summary(res.body.schedules)).toEqual([
@@ -467,8 +603,7 @@ describe('Program schedules (e2e)', () => {
       })
 
       const res = await add(program.id, {
-        type: 'weekdays',
-        weekdays: [6, 7],
+        ...onDays(program, [6, 7]),
         effectiveFrom: addDays(today, 7),
       })
       expect(summary(res.body.schedules)).toEqual([
@@ -487,8 +622,7 @@ describe('Program schedules (e2e)', () => {
       await add(other.id, { ...THREE_A_WEEK, effectiveFrom: addDays(today, 5) })
 
       await add(program.id, {
-        type: 'weekdays',
-        weekdays: [2],
+        ...onDays(program, [2]),
         effectiveFrom: today,
       })
 
@@ -564,14 +698,132 @@ describe('Program schedules (e2e)', () => {
     it('refuses an invalid schedule with a 400', async () => {
       const program = await createProgram()
       const res = await add(program.id, {
-        type: 'weekdays',
-        weekdays: [1, 1],
+        ...onDays(program, [1, 1]),
         effectiveFrom: today,
       })
       expect(res.status).toBe(400)
       expect(res.body.message).toEqual([
-        "All weekdays's elements must be unique",
+        'days must not list the same weekday twice',
       ])
+    })
+
+    // A later version names workouts by id — and only THIS program's: a
+    // workout of another program is "not found" from here, in a day or in
+    // a rotation, and nothing changes.
+    it.each([
+      [
+        'a day',
+        (workoutId: number) => ({
+          type: 'weekdays',
+          days: [{ weekday: 2, workoutId }],
+        }),
+      ],
+      [
+        'a rotation',
+        (workoutId: number) => ({
+          type: 'times_per_week',
+          timesPerWeek: 2,
+          rotation: [workoutId],
+        }),
+      ],
+    ])(
+      "refuses another program's workout in %s (404)",
+      async (_label, schedule) => {
+        const program = await createProgram()
+        const foreign = sharedPerWeek.workouts[0].id
+
+        const res = await add(program.id, {
+          ...schedule(foreign),
+          effectiveFrom: today,
+        })
+        expect(res.status).toBe(404)
+        expect(res.body.message).toEqual([
+          `Workout ${foreign} not found in this program`,
+        ])
+        const readBack = await practitionerA.get(
+          `/assigned-programs/${program.id}`,
+        )
+        expect(summary(readBack.body.schedules)).toEqual(
+          summary(program.schedules),
+        )
+      },
+    )
+
+    // A pause is a version like any other (decisions §5): from its day on,
+    // nothing is expected — until a later version resumes the program.
+    it('adds a pause, with neither days nor a rotation', async () => {
+      const program = await createProgram()
+
+      const paused = await add(program.id, {
+        type: 'paused',
+        effectiveFrom: today,
+      })
+      expect(paused.status).toBe(201)
+      const version = (paused.body.schedules as ScheduleVersion[])[1]
+      expect(version).toMatchObject({
+        type: 'paused',
+        timesPerWeek: null,
+        days: [],
+        rotation: [],
+        effectiveFrom: today,
+      })
+
+      // Resumed a week later, as a later version.
+      const resumed = await add(program.id, {
+        ...THREE_A_WEEK,
+        effectiveFrom: addDays(today, 7),
+      })
+      expect(summary(resumed.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [today, 'paused'],
+        [addDays(today, 7), 3],
+      ])
+    })
+
+    it('refuses a pause on the start date: a program begins with a schedule', async () => {
+      const program = await createProgram({ startsIn: 5 })
+      const res = await add(program.id, {
+        type: 'paused',
+        effectiveFrom: program.startDate,
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        "A program can't start paused: choose its start date for when it begins",
+      ])
+    })
+
+    // The old way of pausing — the `on_hold` status — is gone.
+    it("refuses the old 'on_hold' status", async () => {
+      const program = await createProgram()
+      const res = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ status: 'on_hold' })
+      expect(res.status).toBe(400)
+    })
+
+    // Replacing a version deletes its row — and, by the foreign key's
+    // ON DELETE CASCADE, its days. Child rows have no DELETE policy (nobody
+    // may delete them directly); the cascade runs as the system, past
+    // row-level security, so they still go. Checked as the owner: the app
+    // role couldn't see an orphan anyway.
+    it("takes a replaced version's days with it", async () => {
+      const program = await createProgram({ startsIn: 5 })
+      const planned = await add(program.id, {
+        ...onDays(program, [2, 4]),
+        effectiveFrom: addDays(today, 7),
+      })
+      const replacedId = (planned.body.schedules as ScheduleVersion[])[1].id
+
+      const res = await add(program.id, {
+        ...THREE_A_WEEK,
+        effectiveFrom: addDays(today, 7),
+      })
+      expect(res.status).toBe(201)
+      const { rows } = await sessionPool.query(
+        'SELECT weekday FROM program_schedule_days WHERE schedule_id = $1',
+        [replacedId],
+      )
+      expect(rows).toEqual([])
     })
   })
 
@@ -658,6 +910,31 @@ describe('Program schedules (e2e)', () => {
       )
     })
 
+    // A pause planned from day +15. Moving the start to +20 would make the
+    // program BEGIN paused: refused — and the program row's own UPDATE,
+    // already sent in the same transaction, is undone with it.
+    it('refuses moving the start into a planned pause, changing nothing', async () => {
+      const program = await createProgram({ startsIn: 10 })
+      const paused = await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ type: 'paused', effectiveFrom: addDays(today, 15) })
+      expect(paused.status).toBe(201)
+
+      const res = await patch(program.id, { startDate: addDays(today, 20) })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        "A program can't start paused: the new start date falls in a planned pause",
+      ])
+      const readBack = await practitionerA.get(
+        `/assigned-programs/${program.id}`,
+      )
+      expect(readBack.body.startDate).toBe(program.startDate)
+      expect(summary(readBack.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [addDays(today, 15), 'paused'],
+      ])
+    })
+
     it('refuses to move a future start into the past', async () => {
       const program = await createProgram({ startsIn: 10 })
       const res = await patch(program.id, { startDate: addDays(today, -5) })
@@ -712,6 +989,8 @@ describe('Program schedules (e2e)', () => {
       const [entry] = trail
       expect(entry.performed_by).toBe(practitionerAId)
       expect(entry.target_user_id).toBe(patientId)
+      // The schedule with its days — each with its workout's id.
+      const a = program.workouts[0].id
       expect(entry.details).toMatchObject({
         title: 'Schedules E2E Program',
         startDate: addDays(today, 3),
@@ -719,8 +998,9 @@ describe('Program schedules (e2e)', () => {
         basedOnTemplateId: templateId,
         schedule: {
           type: 'weekdays',
-          weekdays: [1, 3, 5],
           timesPerWeek: null,
+          days: [1, 3, 5].map((weekday) => ({ weekday, workoutId: a })),
+          rotation: [],
           effectiveFrom: addDays(today, 3),
           createdBy: practitionerAId,
         },
@@ -744,7 +1024,7 @@ describe('Program schedules (e2e)', () => {
         .send({ ...THREE_A_WEEK, effectiveFrom: addDays(today, 7) })
       await practitionerA
         .post(`/assigned-programs/${program.id}/schedules`)
-        .send({ type: 'weekdays', weekdays: [2, 4], effectiveFrom: today })
+        .send({ ...onDays(program, [2, 4]), effectiveFrom: today })
 
       const trail = await auditTrail(program.id)
       expect(trail.map((r) => r.action)).toEqual([
@@ -752,13 +1032,26 @@ describe('Program schedules (e2e)', () => {
         'ASSIGNED_PROGRAM_SCHEDULE_SET',
         'ASSIGNED_PROGRAM_SCHEDULE_SET',
       ])
+      // Both versions whole, content included: the replaced one's rotation
+      // exists nowhere else any more.
+      const a = program.workouts[0].id
       expect(trail[2].details).toMatchObject({
         effectiveFrom: today,
-        added: { type: 'weekdays', weekdays: [2, 4], effectiveFrom: today },
+        added: {
+          type: 'weekdays',
+          days: [
+            { weekday: 2, workoutId: a },
+            { weekday: 4, workoutId: a },
+          ],
+          rotation: [],
+          effectiveFrom: today,
+        },
         replaced: [
           {
             type: 'times_per_week',
             timesPerWeek: 3,
+            days: [],
+            rotation: [a],
             effectiveFrom: addDays(today, 7),
             createdBy: practitionerAId,
           },
@@ -790,16 +1083,16 @@ describe('Program schedules (e2e)', () => {
         'ASSIGNED_PROGRAM_CREATED',
         'ASSIGNED_PROGRAM_UPDATED',
       ])
-      // The title was re-sent unchanged: not a change, not listed.
+      // The title was re-sent unchanged: not a change, not listed. The
+      // re-created version has the same days as the one it replaced.
+      const days = program.schedules[0].days
       expect(trail[1].details).toMatchObject({
         changes: {
           startDate: { from: addDays(today, 10), to: addDays(today, 12) },
         },
         scheduleVersions: {
-          replaced: [
-            { effectiveFrom: addDays(today, 10), weekdays: [1, 3, 5] },
-          ],
-          added: { effectiveFrom: addDays(today, 12), weekdays: [1, 3, 5] },
+          replaced: [{ effectiveFrom: addDays(today, 10), days }],
+          added: { effectiveFrom: addDays(today, 12), days },
         },
       })
       expect(trail[1].details?.changes).not.toHaveProperty('title')
@@ -839,6 +1132,9 @@ describe('Program schedules (e2e)', () => {
         missed: 0,
         extra: 0,
       })
+      // Three slots, each for the rotation's next workout — A every time
+      // (one workout) — and A is what's next.
+      const a = program.workouts[0].id
       expect(res.body.weeks).toEqual([
         {
           programWeek: 1,
@@ -849,8 +1145,59 @@ describe('Program schedules (e2e)', () => {
           done: 0,
           state: 'in_progress',
           sessionIds: [],
+          workouts: [a, a, a].map((workoutId) => ({
+            workoutId,
+            sessionId: null,
+          })),
         },
       ])
+      expect(res.body.nextWorkout).toEqual({
+        workoutId: a,
+        forDay: null,
+        programWeek: 1,
+      })
+      expect(res.body.pauses).toEqual([])
+    })
+
+    // The sessions reach the module WITH their workout: a rotation of B
+    // only, and a session of A today — done, but not what the week needs.
+    it('judges a session by its workout', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        template: twoWorkoutTemplateId,
+        schedule: { ...THREE_A_WEEK, rotation: [1] },
+      })
+      const [a] = program.workouts.map((w) => w.id)
+      const started = await patient.post('/sessions').send({
+        assignedProgramId: program.id,
+        localDate: today,
+        workoutId: a,
+      })
+      expect(started.status).toBe(201)
+      await patient
+        .patch(`/sessions/${started.body.id}`)
+        .send({ status: 'completed' })
+
+      const res = await summaryOf(practitionerA, program.id)
+      expect(res.body.totals).toMatchObject({ done: 0, extra: 1 })
+      expect(res.body.extraSessions).toEqual([
+        { sessionId: started.body.id, date: today, reason: 'wrong_workout' },
+      ])
+    })
+
+    // The versions reach it with their type: a pause from today shows.
+    it('shows a pause', async () => {
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: THREE_A_WEEK,
+      })
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ type: 'paused', effectiveFrom: today })
+
+      const res = await summaryOf(practitionerA, program.id)
+      expect(res.status).toBe(200)
+      expect(res.body.pauses).toEqual([{ from: today, to: null }])
     })
 
     // A real session through the real endpoints: started → not done;
@@ -1003,14 +1350,17 @@ describe('Program schedules (e2e)', () => {
   }
 
   // Constraints hold for everyone, the owner included (who isn't subject to
-  // row-level security). Each statement runs in a transaction that is
-  // always rolled back.
+  // row-level security). The statements run in order in one transaction
+  // that is always rolled back; the result is the error that stopped them,
+  // or {} when none did.
   describe('constraints', () => {
-    async function asOwner(statement: string, params: unknown[]) {
+    async function asOwner(...steps: [string, unknown[]][]) {
       const client = await sessionPool.connect()
       try {
         await client.query('BEGIN')
-        await client.query(statement, params)
+        for (const [statement, params] of steps) {
+          await client.query(statement, params)
+        }
         return {}
       } catch (error) {
         return pgError(error)
@@ -1020,89 +1370,89 @@ describe('Program schedules (e2e)', () => {
       }
     }
 
-    let programId: number
-    beforeAll(async () => {
-      programId = (await createProgram()).id
+    // The Monday/Wednesday/Friday program (its version: 1, 3, 5 = A) and
+    // the three-a-week one (its rotation: A). Each is "another program"
+    // for the other. (Assigned in a beforeAll: they exist once the
+    // top-level beforeAll has run, not when this file is read.)
+    let weekdaysProgram: Program
+    let perWeekProgram: Program
+    beforeAll(() => {
+      weekdaysProgram = sharedMwf
+      perWeekProgram = sharedPerWeek
     })
 
     const insertVersion = `
       INSERT INTO program_schedules
-        (assigned_program_id, type, weekdays, times_per_week, effective_from, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6)`
+        (assigned_program_id, type, times_per_week, effective_from, created_by)
+      VALUES ($1, $2, $3, $4, $5)`
 
+    // "A count exactly when the type is times_per_week" — for each type.
     it.each([
       [
-        'weekdays type with only a count',
-        ['weekdays', null, 3],
+        "'weekdays' with a count",
+        ['weekdays', 3],
         'program_schedules_fields_match_type',
       ],
       [
-        'times-per-week type with weekdays as well',
-        ['times_per_week', [1], 3],
+        "'times_per_week' without one",
+        ['times_per_week', null],
         'program_schedules_fields_match_type',
       ],
       [
-        'days out of order',
-        ['weekdays', [3, 1], null],
-        'program_schedules_weekdays_valid',
-      ],
-      [
-        'the same day twice',
-        ['weekdays', [1, 1], null],
-        'program_schedules_weekdays_valid',
-      ],
-      ['day 0', ['weekdays', [0], null], 'program_schedules_weekdays_valid'],
-      [
-        'an empty set of days',
-        ['weekdays', [], null],
-        'program_schedules_weekdays_valid',
+        "'paused' with a count",
+        ['paused', 3],
+        'program_schedules_fields_match_type',
       ],
       [
         '8 times a week',
-        ['times_per_week', null, 8],
+        ['times_per_week', 8],
         'program_schedules_times_per_week_range',
       ],
     ])(
-      'refuses %s',
-      async (_label, [type, weekdays, timesPerWeek], constraint) => {
+      'refuses a version: %s',
+      async (_label, [type, timesPerWeek], constraint) => {
         expect(
-          await asOwner(insertVersion, [
-            programId,
-            type,
-            weekdays,
-            timesPerWeek,
-            addDays(today, 40),
-            practitionerAId,
+          await asOwner([
+            insertVersion,
+            [
+              weekdaysProgram.id,
+              type,
+              timesPerWeek,
+              addDays(today, 40),
+              practitionerAId,
+            ],
           ]),
         ).toEqual({ code: '23514', constraint })
       },
     )
 
-    // The control case: the same statement with a valid row succeeds, so
+    // The control cases: the same statement with valid rows succeeds, so
     // the refusals above are about their values, not the statement.
-    it('accepts a valid version', async () => {
+    it.each([
+      ['weekdays', null],
+      ['times_per_week', 7],
+      ['paused', null],
+    ])('accepts a valid %s version', async (type, timesPerWeek) => {
       expect(
-        await asOwner(insertVersion, [
-          programId,
-          'weekdays',
-          [1, 3, 5],
-          null,
-          addDays(today, 40),
-          practitionerAId,
+        await asOwner([
+          insertVersion,
+          [
+            weekdaysProgram.id,
+            type,
+            timesPerWeek,
+            addDays(today, 40),
+            practitionerAId,
+          ],
         ]),
       ).toEqual({})
     })
 
     it('refuses two versions of one program on the same day', async () => {
-      const program = await createProgram()
+      const program = weekdaysProgram
       expect(
-        await asOwner(insertVersion, [
-          program.id,
-          'times_per_week',
-          null,
-          2,
-          program.startDate,
-          practitionerAId,
+        await asOwner([
+          insertVersion,
+          [program.id, 'times_per_week', 2, program.startDate, practitionerAId],
         ]),
       ).toEqual({
         code: '23505',
@@ -1112,15 +1462,213 @@ describe('Program schedules (e2e)', () => {
 
     it('refuses a program that ends before it starts', async () => {
       expect(
-        await asOwner(
+        await asOwner([
           'UPDATE assigned_programs SET end_date = start_date - 1 WHERE id = $1',
-          [programId],
-        ),
+          [weekdaysProgram.id],
+        ]),
       ).toEqual({
         code: '23514',
         constraint: 'assigned_programs_ends_after_start',
       })
     })
+
+    // --- A version's days ---
+    // (version, program, weekday, workout) — the type column left to its
+    // default, 'weekdays', unless a case sets it.
+    const insertDay = `
+      INSERT INTO program_schedule_days
+        (schedule_id, assigned_program_id, weekday, workout_id)
+      VALUES ($1, $2, $3, $4)`
+    const day = (
+      program: Program,
+      weekday: number,
+      workoutId = program.workouts[0].id,
+      versionId = program.schedules[0].id,
+    ): [string, unknown[]] => [
+      insertDay,
+      [versionId, program.id, weekday, workoutId],
+    ]
+
+    it.each([
+      [
+        'weekday 0',
+        () => day(weekdaysProgram, 0),
+        '23514',
+        'program_schedule_days_weekday_range',
+      ],
+      [
+        'weekday 8',
+        () => day(weekdaysProgram, 8),
+        '23514',
+        'program_schedule_days_weekday_range',
+      ],
+      // Monday is already in the version.
+      [
+        'the same weekday twice',
+        () => day(weekdaysProgram, 1),
+        '23505',
+        'program_schedule_days_pk',
+      ],
+      [
+        "another program's workout",
+        () => day(weekdaysProgram, 2, perWeekProgram.workouts[0].id),
+        '23503',
+        'program_schedule_days_workout_fk',
+      ],
+      // The composite key (version, program, type): a day can't belong to
+      // a times-per-week version…
+      [
+        'a day of a times-per-week version',
+        () => day(perWeekProgram, 2),
+        '23503',
+        'program_schedule_days_version_fk',
+      ],
+      // …nor claim another program than its version's.
+      [
+        "a day claiming another program than its version's",
+        (): [string, unknown[]] => [
+          insertDay,
+          [
+            weekdaysProgram.schedules[0].id,
+            perWeekProgram.id,
+            2,
+            perWeekProgram.workouts[0].id,
+          ],
+        ],
+        '23503',
+        'program_schedule_days_version_fk',
+      ],
+      // And its type column can't be set to anything but 'weekdays'.
+      [
+        "a day whose type says 'times_per_week'",
+        (): [string, unknown[]] => [
+          `INSERT INTO program_schedule_days
+             (schedule_id, assigned_program_id, schedule_type, weekday, workout_id)
+           VALUES ($1, $2, 'times_per_week', 2, $3)`,
+          [
+            perWeekProgram.schedules[0].id,
+            perWeekProgram.id,
+            perWeekProgram.workouts[0].id,
+          ],
+        ],
+        '23514',
+        'program_schedule_days_only_weekdays',
+      ],
+    ])('refuses %s', async (_label, step, code, constraint) => {
+      expect(await asOwner(step())).toEqual({ code, constraint })
+    })
+
+    it('accepts a new day of a weekdays version (the control case)', async () => {
+      expect(await asOwner(day(weekdaysProgram, 2))).toEqual({})
+    })
+
+    // --- A version's rotation ---
+    const insertPosition = `
+      INSERT INTO program_schedule_rotation
+        (schedule_id, assigned_program_id, position, workout_id)
+      VALUES ($1, $2, $3, $4)`
+    const position = (
+      program: Program,
+      at: number,
+      workoutId = program.workouts[0].id,
+    ): [string, unknown[]] => [
+      insertPosition,
+      [program.schedules[0].id, program.id, at, workoutId],
+    ]
+
+    it.each([
+      [
+        'position -1',
+        () => position(perWeekProgram, -1),
+        '23514',
+        'program_schedule_rotation_position_range',
+      ],
+      // Position 0 is already in the rotation.
+      [
+        'the same position twice',
+        () => position(perWeekProgram, 0),
+        '23505',
+        'program_schedule_rotation_pk',
+      ],
+      [
+        "another program's workout",
+        () => position(perWeekProgram, 1, weekdaysProgram.workouts[0].id),
+        '23503',
+        'program_schedule_rotation_workout_fk',
+      ],
+      [
+        'a rotation of a weekdays version',
+        () => position(weekdaysProgram, 1),
+        '23503',
+        'program_schedule_rotation_version_fk',
+      ],
+      [
+        "a position whose type says 'weekdays'",
+        (): [string, unknown[]] => [
+          `INSERT INTO program_schedule_rotation
+             (schedule_id, assigned_program_id, schedule_type, position, workout_id)
+           VALUES ($1, $2, 'weekdays', 1, $3)`,
+          [
+            weekdaysProgram.schedules[0].id,
+            weekdaysProgram.id,
+            weekdaysProgram.workouts[0].id,
+          ],
+        ],
+        '23514',
+        'program_schedule_rotation_only_times_per_week',
+      ],
+    ])('refuses %s', async (_label, step, code, constraint) => {
+      expect(await asOwner(step())).toEqual({ code, constraint })
+    })
+
+    it('accepts a next position of a rotation (the control case)', async () => {
+      expect(await asOwner(position(perWeekProgram, 1))).toEqual({})
+    })
+
+    // A version's type can't change under its children: the composite
+    // keys point at (id, program, type), and nothing cascades an update.
+    it('refuses changing the type of a version that has days', async () => {
+      expect(
+        await asOwner([
+          `UPDATE program_schedules SET type = 'times_per_week', times_per_week = 2
+           WHERE id = $1`,
+          [weekdaysProgram.schedules[0].id],
+        ]),
+      ).toEqual({
+        code: '23503',
+        constraint: 'program_schedule_days_version_fk',
+      })
+    })
+
+    // A workout a schedule names can't be deleted, even by the owner: the
+    // foreign keys are NO ACTION, behind the service's own 409.
+    it.each([
+      ['a day', () => weekdaysProgram, 'program_schedule_days_workout_fk'],
+      [
+        'a rotation',
+        () => perWeekProgram,
+        'program_schedule_rotation_workout_fk',
+      ],
+    ])(
+      'refuses deleting a workout %s uses',
+      async (_label, program, constraint) => {
+        // Its exercise first (moved away is simplest: deleted, in the same
+        // rolled-back transaction), so only the schedule stands in the way.
+        const { id, workouts } = program()
+        expect(
+          await asOwner(
+            [
+              'DELETE FROM assigned_program_exercises WHERE workout_id = $1',
+              [workouts[0].id],
+            ],
+            [
+              'DELETE FROM program_workouts WHERE id = $1 AND assigned_program_id = $2',
+              [workouts[0].id, id],
+            ],
+          ),
+        ).toEqual({ code: '23503', constraint })
+      },
+    )
   })
 
   // Row-level security, as the app's own database role (the restricted
@@ -1164,9 +1712,9 @@ describe('Program schedules (e2e)', () => {
     const asPatient = (): Actor => ({ userId: patientId, role: 'patient' })
 
     // A program started 30 days ago: its first version is well in the past.
-    let program: { id: number; startDate: string }
-    beforeAll(async () => {
-      program = await createProgram({ startsIn: -30 })
+    let program: Program
+    beforeAll(() => {
+      program = sharedMwf
     })
 
     const insert = (day: string, createdBy: number) => sql`
@@ -1279,6 +1827,209 @@ describe('Program schedules (e2e)', () => {
         )
         client.release()
       }
+    })
+
+    // --- A version's days and rotation (migration 0029) ---
+    // They're part of their version: visible with it, written with it —
+    // in the transaction that creates it, by whoever creates it — and
+    // never changed or removed on their own (a change is a new version).
+
+    // The two kinds of child row, each with the shared program whose
+    // first version is of its kind (Monday/Wednesday/Friday; three a week)
+    // and how to add one to a version (a SQL expression for its id). Each
+    // INSERT returns what it added, as `added`. (Functions throughout: the
+    // programs only exist once beforeAll has run.)
+    const kinds = {
+      day: {
+        type: 'weekdays',
+        program: () => sharedMwf,
+        add: (p: Program, version: SQL | number) => sql`
+          INSERT INTO program_schedule_days
+            (schedule_id, assigned_program_id, weekday, workout_id)
+          VALUES (${version}, ${p.id}, 2, ${p.workouts[0].id})
+          RETURNING weekday AS added`,
+      },
+      position: {
+        type: 'times_per_week',
+        program: () => sharedPerWeek,
+        add: (p: Program, version: SQL | number) => sql`
+          INSERT INTO program_schedule_rotation
+            (schedule_id, assigned_program_id, position, workout_id)
+          VALUES (${version}, ${p.id}, 1, ${p.workouts[0].id})
+          RETURNING position AS added`,
+      },
+    }
+    type Kind = keyof typeof kinds
+    // A version of `p` from today, created by `createdBy`…
+    const newVersion = (
+      p: Program,
+      type: string,
+      createdBy = practitionerAId,
+    ) => sql`
+      INSERT INTO program_schedules
+        (assigned_program_id, type, times_per_week, effective_from, created_by)
+      VALUES (${p.id}, ${type}, ${type === 'times_per_week' ? 2 : null},
+              ${today}, ${createdBy})`
+    // …and the id of p's NEWEST version (the one just created, in the same
+    // transaction).
+    const newest = (p: Program) =>
+      sql`(SELECT max(id) FROM program_schedules WHERE assigned_program_id = ${p.id})`
+    // Switches who is acting, mid-transaction (the same set_config calls
+    // run() starts with).
+    const actAs = (actor: Actor) => sql`
+      SELECT set_config('app.current_user_id', ${String(actor.userId)}, true),
+             set_config('app.current_role', ${actor.role}, true)`
+
+    it.each([
+      ['days', 'program_schedule_days', 'weekday', () => sharedMwf, [1, 3, 5]],
+      [
+        'rotation',
+        'program_schedule_rotation',
+        'position',
+        () => sharedPerWeek,
+        [0],
+      ],
+    ])(
+      'lets those who see the version see its %s; not a colleague off the team',
+      async (_label, table, column, p, values) => {
+        const read = sql`
+          SELECT ${sql.identifier(column)} AS value FROM ${sql.identifier(table)}
+          WHERE assigned_program_id = ${p().id} ORDER BY 1`
+        const expected = values.map((value) => ({ value }))
+        expect((await run(asA(), read)).rows).toEqual(expected)
+        expect((await run(asPatient(), read)).rows).toEqual(expected)
+        expect(
+          (await run({ userId: adminId, role: 'admin' }, read)).rows,
+        ).toEqual(expected)
+        expect((await run(asC(), read)).rows).toEqual([])
+      },
+    )
+
+    it.each(Object.keys(kinds) as Kind[])(
+      "lets the version's creator add a %s in the same transaction",
+      async (kind) => {
+        const { type, program: p, add } = kinds[kind]
+        const result = await run(
+          asA(),
+          newVersion(p(), type),
+          add(p(), newest(p())),
+        )
+        expect(result).toEqual({ rows: [{ added: kind === 'day' ? 2 : 1 }] })
+      },
+    )
+
+    // Each clause of the INSERT policy, alone in the way — for each kind.
+    const refusals: [string, (kind: Kind) => SQL[]][] = [
+      // created_at = now(): a version from an earlier transaction is
+      // finished — even its own creator can't add to it (each shared
+      // program's first version was created by A, with the program).
+      [
+        'to a version from an earlier transaction',
+        (kind) => {
+          const { program: p, add } = kinds[kind]
+          return [add(p(), p().schedules[0].id)]
+        },
+      ],
+      // created_by = the current user: someone else's new version.
+      [
+        "to someone else's new version",
+        (kind) => {
+          const { type, program: p, add } = kinds[kind]
+          return [
+            newVersion(p(), type),
+            actAs({ userId: adminId, role: 'admin' }),
+            add(p(), newest(p())),
+          ]
+        },
+      ],
+      // Admin or care team: an account holding both the admin role and
+      // the patient's own (contrived, but each clause needs a case where
+      // only it refuses) creates a version as admin, then adds to it as
+      // the patient — who can SEE the version, created it, in this
+      // transaction, but is neither an admin nor on a care team now.
+      [
+        "by the version's creator, now acting as the program's patient",
+        (kind) => {
+          const { type, program: p, add } = kinds[kind]
+          return [
+            actAs({ userId: patientId, role: 'admin' }),
+            newVersion(p(), type, patientId),
+            actAs(asPatient()),
+            add(p(), newest(p())),
+          ]
+        },
+      ],
+    ]
+    it.each(
+      refusals.flatMap(([label, statements]) =>
+        (Object.keys(kinds) as Kind[]).map(
+          (kind) => [`a ${kind} added ${label}`, kind, statements] as const,
+        ),
+      ),
+    )('refuses %s', async (_label, kind, statements) => {
+      expect(await run(asA(), ...statements(kind))).toEqual({
+        error: { code: '42501' },
+      })
+    })
+
+    // The control for the last case: the same steps, still acting as
+    // admin, succeed — so the refusal above comes from the role switch,
+    // not from the setup (the version's own INSERT, say).
+    it.each(Object.keys(kinds) as Kind[])(
+      'lets that account add a %s while still acting as admin',
+      async (kind) => {
+        const { type, program: p, add } = kinds[kind]
+        const result = await run(
+          asA(),
+          actAs({ userId: patientId, role: 'admin' }),
+          newVersion(p(), type, patientId),
+          add(p(), newest(p())),
+        )
+        expect(result).toEqual({ rows: [{ added: kind === 'day' ? 2 : 1 }] })
+      },
+    )
+
+    // No UPDATE or DELETE policy: nothing reachable, for anyone — zero
+    // rows, no error. (A replaced version's children go by cascade, which
+    // isn't subject to row-level security: see "takes a replaced
+    // version's days with it".)
+    it.each([
+      [
+        'edited',
+        () => sql`UPDATE program_schedule_days SET workout_id = workout_id
+            WHERE assigned_program_id = ${program.id} RETURNING weekday`,
+      ],
+      [
+        'deleted',
+        () => sql`DELETE FROM program_schedule_days
+            WHERE assigned_program_id = ${program.id} RETURNING weekday`,
+      ],
+    ])('never lets a day be %s on its own', async (_label, statement) => {
+      expect(await run(asA(), statement())).toEqual({ rows: [] })
+      expect(
+        await run({ userId: adminId, role: 'admin' }, statement()),
+      ).toEqual({ rows: [] })
+    })
+
+    it('never lets a rotation position be edited or deleted on its own', async () => {
+      const perWeek = sharedPerWeek
+      for (const statement of [
+        sql`UPDATE program_schedule_rotation SET position = position
+            WHERE assigned_program_id = ${perWeek.id} RETURNING position`,
+        sql`DELETE FROM program_schedule_rotation
+            WHERE assigned_program_id = ${perWeek.id} RETURNING position`,
+      ]) {
+        expect(await run(asA(), statement)).toEqual({ rows: [] })
+      }
+      // …while they can be read: the zero rows above are the policies'.
+      expect(
+        (
+          await run(
+            asA(),
+            sql`SELECT position FROM program_schedule_rotation WHERE assigned_program_id = ${perWeek.id}`,
+          )
+        ).rows,
+      ).toEqual([{ position: 0 }])
     })
   })
 })

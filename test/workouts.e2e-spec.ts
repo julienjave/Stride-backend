@@ -32,7 +32,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
-import { utcToday } from '../src/common/calendar-date'
+import { addDays, utcToday } from '../src/common/calendar-date'
 
 // Workouts (decisions §5, "Settled 2026-10-10", point 1): a template — and
 // an assigned program — has one or more named workouts, and each exercise
@@ -72,7 +72,11 @@ describe('Workouts (e2e)', () => {
   let sharedTemplate: WithWorkouts
 
   const today = utcToday()
-  const MWF = { type: 'weekdays', weekdays: [1, 3, 5] }
+  // Monday, Wednesday, Friday, all workout A (position 0 when assigning).
+  const MWF = {
+    type: 'weekdays',
+    days: [1, 3, 5].map((weekday) => ({ weekday, workoutIndex: 0 })),
+  }
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -253,13 +257,13 @@ describe('Workouts (e2e)', () => {
     })
   }
 
-  async function assign(templateId: number) {
+  async function assign(templateId: number, schedule: object = MWF) {
     const res = await practitionerA.post('/assigned-programs').send({
       patientId,
       basedOnTemplateId: templateId,
       title: 'Workouts Program',
       startDate: today,
-      schedule: MWF,
+      schedule,
     })
     expect(res.status).toBe(201)
     return res.body as WithWorkouts
@@ -929,33 +933,28 @@ describe('Workouts (e2e)', () => {
       expect(await changeEntries()).toEqual([])
     })
 
-    // The program's row lock: two simultaneous deletes of its only two
-    // workouts, both emptied. One goes through; the other waits, counts
-    // again, finds one left — and refuses.
-    it('lets only one of two simultaneous deletes through', async () => {
+    // The last workout stays. (Since step 2b-ii a program's last workout is
+    // always in its schedule too — every program starts with a schedule
+    // naming at least one workout — so the old race, two simultaneous
+    // deletes of a program's only two workouts, can't be set up any more:
+    // one of the two is always scheduled. The lock itself is proven by
+    // "locks the program while adding or deleting a workout" below.)
+    it('refuses to delete the last workout', async () => {
       const inline = await practitionerA.post('/assigned-programs').send({
         patientId,
-        title: 'Race Program',
+        title: 'One Workout',
         startDate: today,
         schedule: MWF,
         exercises: [{ exerciseId, sortOrder: 0 }],
       })
-      const id = (inline.body as WithWorkouts).id
-      const withB = await practitionerA
-        .post(`/assigned-programs/${id}/workouts`)
-        .send({})
-      const [a, b] = (withB.body as WithWorkouts).workouts
-      // Empty A too: remove its one exercise.
-      await practitionerA.delete(
-        `/assigned-programs/${id}/exercises/${(inline.body as WithWorkouts).exercises[0].id}`,
+      const { id, workouts } = inline.body as WithWorkouts
+      const res = await practitionerA.delete(
+        `/assigned-programs/${id}/workouts/${workouts[0].id}`,
       )
-      const results = await Promise.all([
-        practitionerA.delete(`/assigned-programs/${id}/workouts/${a.id}`),
-        practitionerA.delete(`/assigned-programs/${id}/workouts/${b.id}`),
-      ])
-      expect(results.map((r) => r.status).sort()).toEqual([200, 409])
-      const after = await practitionerA.get(`/assigned-programs/${id}`)
-      expect((after.body as WithWorkouts).workouts).toHaveLength(1)
+      expect(res.status).toBe(409)
+      expect(res.body.message).toContain(
+        'This is the last workout, and there must always be at least one',
+      )
     })
 
     it('deletes an empty workout, keeping the whole row in the audit entry', async () => {
@@ -1019,6 +1018,71 @@ describe('Workouts (e2e)', () => {
       expect(res.body.message).toContain(
         "Workout B has recorded sessions, so it is part of the patient's history and can't be deleted",
       )
+    })
+
+    // The schedule is the plan the patient follows, and past versions say
+    // how past days were judged ("Wednesday = B"): a workout any version
+    // names — in force now, or only PLANNED — stays, even emptied.
+    // `program` (Monday, Wednesday, Friday = A) never names B, which is why
+    // the other tests can delete it once empty.
+    describe('a workout in the schedule', () => {
+      // B emptied: its one exercise moved to A, so only the schedule can
+      // stand in the way.
+      async function emptyB(target: WithWorkouts) {
+        const b1 = target.exercises.find(
+          (e) => e.workoutId === target.workouts[1].id,
+        )!
+        const moved = await practitionerA
+          .patch(`/assigned-programs/${target.id}/exercises/${b1.id}`)
+          .send({ workoutId: target.workouts[0].id })
+        expect(moved.status).toBe(200)
+      }
+
+      it('refuses to delete a workout the current schedule uses, writing nothing', async () => {
+        // Monday A, Wednesday B.
+        const scheduled = await assign(sharedTemplate.id, {
+          type: 'weekdays',
+          days: [
+            { weekday: 1, workoutIndex: 0 },
+            { weekday: 3, workoutIndex: 1 },
+          ],
+        })
+        await emptyB(scheduled)
+
+        const res = await practitionerA.delete(
+          `/assigned-programs/${scheduled.id}/workouts/${scheduled.workouts[1].id}`,
+        )
+        expect(res.status).toBe(409)
+        expect(res.body.message).toContain(
+          "Workout B is part of the program's schedule (now, planned, or in its history), so it can't be deleted",
+        )
+        const trail = await auditTrail(scheduled.id)
+        expect(trail.map((entry) => entry.action)).not.toContain(
+          'ASSIGNED_PROGRAM_WORKOUT_REMOVED',
+        )
+      })
+
+      // A rotation counts too — and a version planned for next week does.
+      it('refuses to delete a workout a planned rotation uses', async () => {
+        await emptyB(program)
+        const planned = await practitionerA
+          .post(`/assigned-programs/${program.id}/schedules`)
+          .send({
+            type: 'times_per_week',
+            timesPerWeek: 2,
+            rotation: [program.workouts[1].id],
+            effectiveFrom: addDays(today, 7),
+          })
+        expect(planned.status).toBe(201)
+
+        const res = await practitionerA.delete(
+          `/assigned-programs/${program.id}/workouts/${program.workouts[1].id}`,
+        )
+        expect(res.status).toBe(409)
+        expect(res.body.message).toContain(
+          "Workout B is part of the program's schedule (now, planned, or in its history), so it can't be deleted",
+        )
+      })
     })
 
     it('locks the program while adding or deleting a workout', async () => {

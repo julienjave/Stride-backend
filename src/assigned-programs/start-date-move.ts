@@ -27,22 +27,24 @@ import { addDays, utcToday } from '../common/calendar-date'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
-// What the plan needs from a schedule version (a program_schedules row has
-// more; any row fits this shape).
+// What the plan needs from a schedule version: which one it is, and from
+// when. Nothing about its CONTENT (days, rotation…): the plan only decides
+// which version's content goes on the new start date — the caller copies it.
+// So when versions gained their days and rotations (step 2b-ii), this file
+// didn't have to change its rules, only become generic.
 export interface ScheduleVersionLike {
   id: number
-  type: 'weekdays' | 'times_per_week'
-  weekdays: number[] | null
-  timesPerWeek: number | null
   effectiveFrom: string
 }
 
-export interface StartDateMovePlan {
+// Generic over the version's full type, so `insert` hands back the caller's
+// own object — content included — rather than a narrowed copy.
+export interface StartDateMovePlan<T extends ScheduleVersionLike> {
   // Versions to delete.
   deleteIds: number[]
-  // The schedule to re-create ON the new start date, or null when a version
-  // already starts exactly there.
-  insert: Pick<ScheduleVersionLike, 'type' | 'weekdays' | 'timesPerWeek'> | null
+  // The version whose schedule is re-created ON the new start date, or null
+  // when a version already starts exactly there.
+  insert: T | null
 }
 
 // --- RULE --------------------------------------------------------------------------------------------------
@@ -101,10 +103,10 @@ export function assertStartDateMovable(
 // program hasn't started (assertStartDateMovable), so every version starts
 // on or after yesterday (UTC) — which is also what the database's DELETE
 // and INSERT policies on program_schedules allow.
-export function planStartDateMove(
-  versions: ScheduleVersionLike[],
+export function planStartDateMove<T extends ScheduleVersionLike>(
+  versions: T[],
   newStart: string,
-): StartDateMovePlan {
+): StartDateMovePlan<T> {
   if (versions.length === 0) {
     throw new Error('A program always has at least one schedule version')
   }
@@ -123,12 +125,5 @@ export function planStartDateMove(
   const deleteIds = [
     ...new Set([...startingBefore.map((v) => v.id), inForce.id]),
   ]
-  return {
-    deleteIds,
-    insert: {
-      type: inForce.type,
-      weekdays: inForce.weekdays,
-      timesPerWeek: inForce.timesPerWeek,
-    },
-  }
+  return { deleteIds, insert: inForce }
 }

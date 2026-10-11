@@ -16,11 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { BadRequestException } from '@nestjs/common'
-import {
-  assertStartDateMovable,
-  planStartDateMove,
-  type ScheduleVersionLike,
-} from './start-date-move'
+import { assertStartDateMovable, planStartDateMove } from './start-date-move'
 
 // Pinned far from the day this was written (a clock pinned to "today" once
 // hid a function ignoring it — see sessions.service.spec.ts). UTC's today is
@@ -62,52 +58,27 @@ describe('assertStartDateMovable', () => {
 describe('planStartDateMove', () => {
   // Versions with readable ids: A from the 20th (the first, on the old
   // start), B a change planned from the 25th.
-  const A: ScheduleVersionLike = {
-    id: 1,
-    type: 'weekdays',
-    weekdays: [1, 3, 5],
-    timesPerWeek: null,
-    effectiveFrom: '2031-06-20',
-  }
-  const B: ScheduleVersionLike = {
-    id: 2,
-    type: 'times_per_week',
-    weekdays: null,
-    timesPerWeek: 2,
-    effectiveFrom: '2031-06-25',
-  }
-  const schedule = (v: ScheduleVersionLike) => ({
-    type: v.type,
-    weekdays: v.weekdays,
-    timesPerWeek: v.timesPerWeek,
-  })
+  // Each carries some content (any shape — the plan doesn't look at it):
+  // the plan must hand back the very version whose content is copied.
+  const A = { id: 1, effectiveFrom: '2031-06-20', content: 'Mon/Wed/Fri' }
+  const B = { id: 2, effectiveFrom: '2031-06-25', content: '2 a week' }
 
   it.each([
     // Single version: it simply moves (deleted, re-created on the new day).
-    [
-      'earlier, one version',
-      [A],
-      '2031-06-16',
-      { deleteIds: [1], insert: schedule(A) },
-    ],
-    [
-      'later, one version',
-      [A],
-      '2031-06-22',
-      { deleteIds: [1], insert: schedule(A) },
-    ],
+    ['earlier, one version', [A], '2031-06-16', { deleteIds: [1], insert: A }],
+    ['later, one version', [A], '2031-06-22', { deleteIds: [1], insert: A }],
     // A planned change after the new start stays where it is.
     [
       'earlier, with a planned change',
       [A, B],
       '2031-06-16',
-      { deleteIds: [1], insert: schedule(A) },
+      { deleteIds: [1], insert: A },
     ],
     [
       'later, before the planned change',
       [A, B],
       '2031-06-22',
-      { deleteIds: [1], insert: schedule(A) },
+      { deleteIds: [1], insert: A },
     ],
     // The cases a naive "move the first version" gets wrong:
     // - past the planned change: B was meant to be in force by the 28th, so
@@ -116,7 +87,7 @@ describe('planStartDateMove', () => {
       'later, past the planned change',
       [A, B],
       '2031-06-28',
-      { deleteIds: [1, 2], insert: schedule(B) },
+      { deleteIds: [1, 2], insert: B },
     ],
     // - exactly onto it: B already starts there — nothing to re-create (a
     //   moved A would collide with B: one version per day).

@@ -38,10 +38,12 @@ import { exercises } from "./exercises.schema";
 // other.
 import { weightUnitEnum } from "./weight-unit.schema";
 
+// `on_hold` was removed in step 2b-ii (migration 0028): a pause is a schedule
+// version ("paused from D" — program-schedules.schema.ts), because a status
+// can't say since when, and the schedule module needs exactly that.
 export const programStatusEnum = pgEnum("program_status", [
   "active",
   "completed",
-  "on_hold",
   "cancelled",
 ]);
 

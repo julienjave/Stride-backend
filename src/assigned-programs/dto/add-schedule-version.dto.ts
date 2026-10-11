@@ -18,7 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
-import { ScheduleInputDto } from './schedule-input.dto'
+import { ScheduleVersionInputDto } from './schedule-input.dto'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -26,13 +26,13 @@ import { ScheduleInputDto } from './schedule-input.dto'
 // schedule is …". A schedule plus the day it applies from.
 //
 // `extends` works for validation too: class-validator reads the decorators
-// of the parent class as well, so every rule of ScheduleInputDto applies
-// here without being repeated.
+// of the parent class as well, so every rule of ScheduleVersionInputDto
+// applies here without being repeated.
 //
 // The rules about WHICH days are allowed (not before the program starts,
 // not after it ends, not in the past) need the program and the clock, so
 // they're checked in AssignedProgramsService.addScheduleVersion, not here.
-export class AddScheduleVersionDto extends ScheduleInputDto {
+export class AddScheduleVersionDto extends ScheduleVersionInputDto {
   @IsCalendarDate()
   effectiveFrom!: string
 }

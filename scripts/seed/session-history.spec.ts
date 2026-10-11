@@ -15,10 +15,18 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { seedSessionDays } from './session-history'
+import { seedSessionDays, seedSessionWorkouts } from './session-history'
 
 // October 2026: Mon 12, Wed 14, Fri 16, Mon 19, Wed 21, Fri 23, Mon 26.
-const MWF = { type: 'weekdays' as const, weekdays: [1, 3, 5] }
+// Monday A, Wednesday B, Friday A (workout positions, as in the dataset).
+const MWF = {
+  type: 'weekdays' as const,
+  days: [
+    { weekday: 1, workoutIndex: 0 },
+    { weekday: 3, workoutIndex: 1 },
+    { weekday: 5, workoutIndex: 0 },
+  ],
+}
 const d = (day: string) => `2026-10-${day}`
 // Just the days the sessions were done on.
 const days = (sessions: { day: string }[]) => sessions.map((s) => s.day)
@@ -111,7 +119,13 @@ describe('seedSessionDays', () => {
       seedSessionDays(
         d('12'),
         d('26'),
-        { type: 'weekdays', weekdays: [2, 3] },
+        {
+          type: 'weekdays',
+          days: [
+            { weekday: 2, workoutIndex: 0 },
+            { weekday: 3, workoutIndex: 0 },
+          ],
+        },
         {
           kind: 'weekdays',
           madeUpIndex: 0,
@@ -121,5 +135,80 @@ describe('seedSessionDays', () => {
     ).toThrow(
       'A make-up the day after 2026-10-13 would fall on a scheduled day',
     )
+  })
+})
+
+describe('seedSessionWorkouts', () => {
+  // The schedules as STORED (workout ids): A = 101, B = 102.
+  const storedMwf = {
+    type: 'weekdays' as const,
+    timesPerWeek: null,
+    days: [
+      { weekday: 1, workoutId: 101 },
+      { weekday: 3, workoutId: 102 },
+      { weekday: 5, workoutId: 101 },
+    ],
+    rotation: [],
+  }
+  const perWeek = (timesPerWeek: number, rotation: number[]) => ({
+    type: 'times_per_week' as const,
+    timesPerWeek,
+    days: [],
+    rotation,
+  })
+  const on = (day: string, forDay = day) => ({ day: d(day), forDay: d(forDay) })
+
+  // The make-up done on Thursday 15 counts for Wednesday 14: B, not A.
+  it('gives each session the workout of the day it counts for', () => {
+    expect(
+      seedSessionWorkouts(d('12'), storedMwf, [
+        on('12'),
+        on('15', '14'),
+        on('16'),
+      ]),
+    ).toEqual([101, 102, 101])
+  })
+
+  it("refuses a session for a day the schedule doesn't have", () => {
+    expect(() => seedSessionWorkouts(d('12'), storedMwf, [on('13')])).toThrow(
+      "2026-10-13 isn't a scheduled day",
+    )
+  })
+
+  // [A, B], 3 a week, from Thu 15: week 1 (15–21) needs positions 0, 1, 2
+  // = A B A; week 2 (22–28) needs 3, 4, 5 = B A B — its first session is B,
+  // not A again: positions go by plan, not by what was done (week 1 did
+  // only two).
+  it('follows the rotation by plan, week by week', () => {
+    expect(
+      seedSessionWorkouts(d('15'), perWeek(3, [101, 102]), [
+        on('15'),
+        on('17'),
+        on('22'),
+        on('24'),
+      ]),
+    ).toEqual([101, 102, 102, 101])
+  })
+
+  // The program week counts from the start (Thu 15), not from Monday: Wed
+  // 21 is still week 1, so with 2 a week a third session there is too many.
+  it('refuses more sessions in a program week than the schedule asks for', () => {
+    expect(() =>
+      seedSessionWorkouts(d('15'), perWeek(2, [101]), [
+        on('15'),
+        on('19'),
+        on('21'),
+      ]),
+    ).toThrow('Program week 1 would get more than 2 sessions')
+  })
+
+  it('refuses a paused schedule', () => {
+    expect(() =>
+      seedSessionWorkouts(
+        d('15'),
+        { type: 'paused', timesPerWeek: null, days: [], rotation: [] },
+        [on('15')],
+      ),
+    ).toThrow('A paused schedule has no sessions to seed')
   })
 })

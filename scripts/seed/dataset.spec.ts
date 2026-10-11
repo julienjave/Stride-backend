@@ -124,26 +124,33 @@ describe('the seed dataset', () => {
     expect(counts).toContain(1)
   })
 
-  // Which workout each past session did: the map must name only scheduled
-  // weekdays (a weekdays schedule), cover all of them, and point at
-  // workouts the template has.
-  it("maps every scheduled weekday to one of the template's workouts", () => {
+  // Every workout a schedule names (a day's, or a rotation position's) is
+  // one the template has — the API would refuse the assignment otherwise
+  // (400), and the seed would stop halfway.
+  it('schedules only workouts the template has', () => {
     for (const assignment of ASSIGNED_PROGRAMS) {
-      if (assignment.workoutByWeekday === undefined) continue
-      expect(assignment.schedule.type).toBe('weekdays')
-      const weekdays =
-        assignment.schedule.type === 'weekdays'
-          ? assignment.schedule.weekdays
-          : []
-      expect(Object.keys(assignment.workoutByWeekday).map(Number)).toEqual(
-        weekdays,
-      )
+      const { schedule } = assignment
+      const positions =
+        schedule.type === 'weekdays'
+          ? schedule.days.map((day) => day.workoutIndex)
+          : (schedule.rotation ?? [])
       const template = TEMPLATES.find((t) => t.title === assignment.template)
-      for (const position of Object.values(assignment.workoutByWeekday)) {
+      for (const position of positions) {
         expect(position).toBeGreaterThanOrEqual(0)
         expect(position).toBeLessThan(template?.workouts.length ?? 0)
       }
     }
+  })
+
+  // The several-workout template is scheduled with more than one workout,
+  // so the seeded program shows days of different workouts.
+  it('schedules a program with different workouts on different days', () => {
+    const workoutsUsed = ASSIGNED_PROGRAMS.map(({ schedule }) =>
+      schedule.type === 'weekdays'
+        ? new Set(schedule.days.map((day) => day.workoutIndex)).size
+        : 0,
+    )
+    expect(Math.max(...workoutsUsed)).toBeGreaterThan(1)
   })
 
   // AssignedProgramsService.create requires the assigning practitioner to
