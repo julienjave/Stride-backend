@@ -20,12 +20,26 @@
 import {
   ArgumentsHost,
   Catch,
+  ConflictException,
   ExceptionFilter,
   HttpException,
   HttpStatus,
   Logger,
 } from '@nestjs/common'
 import { Request, Response } from 'express'
+import {
+  ASSIGNED_PROGRAM_CLOSED,
+  isCheckViolation,
+} from '../../database/pg-errors'
+
+// The closed-program guard's refusal (migration 0031) — reached only when
+// the service's own check (assertProgramOpen) didn't catch it first: a
+// request that raced a cancel, say. Translated HERE, once, rather than in
+// every service method that writes to a program: whichever route hits the
+// database's refusal, the client gets the same 409 the service would have
+// given, never a 500.
+export const CLOSED_PROGRAM_MESSAGE =
+  'This program is closed, so it can no longer change'
 
 // --- FILTER ------------------------------------------------------------------------------------------------
 
@@ -37,7 +51,10 @@ import { Request, Response } from 'express'
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter')
 
-  catch(exception: unknown, host: ArgumentsHost) {
+  catch(caught: unknown, host: ArgumentsHost) {
+    const exception = isCheckViolation(caught, ASSIGNED_PROGRAM_CLOSED)
+      ? new ConflictException(CLOSED_PROGRAM_MESSAGE)
+      : caught
     const ctx = host.switchToHttp()
     const response = ctx.getResponse<Response>()
     const request = ctx.getRequest<Request>()

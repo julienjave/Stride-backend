@@ -25,13 +25,14 @@ import session from 'express-session'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
-import { sql } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import { AppModule } from '../src/app.module'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { CLOSED_PROGRAM_MESSAGE } from '../src/common/filters/http-exception.filter'
 import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
 
 // A program's life after it's assigned (step 2b-iii, decisions §5, "Settled
@@ -63,6 +64,7 @@ describe('Program lifecycle (e2e)', () => {
   let patient: ReturnType<typeof request.agent>
 
   let patientId: number
+  let practitionerAId: number
   // A second patient of A's, never logged in: "another patient's program".
   let otherPatientId: number
   // Two workouts: A ("Upper", one exercise) and B ("Lower", one exercise).
@@ -157,7 +159,7 @@ describe('Program lifecycle (e2e)', () => {
       return res.body.id
     }
 
-    await createUser(
+    practitionerAId = await createUser(
       {
         email: `pa-${stamp}@example.com`,
         role: 'practitioner',
@@ -861,6 +863,267 @@ describe('Program lifecycle (e2e)', () => {
           [source.id, copy.body.id],
         ]),
       ).toEqual({})
+    })
+  })
+
+  // --- 6. The closed-program guard (migration 0031) ---------------------------------------------------------
+  //
+  // The database refuses what the service already refuses — for the app's
+  // own role, whatever route (or direct query) tries. Statements run as the
+  // app's role with an actor's context, the way withRlsContext sets it, in a
+  // transaction always rolled back.
+  describe('the closed-program guard', () => {
+    class RolledBack extends Error {
+      constructor(readonly rows: Record<string, unknown>[]) {
+        super('rolled back on purpose')
+      }
+    }
+    type Actor = { userId: number; role: string }
+    const asA = (): Actor => ({ userId: practitionerAId, role: 'practitioner' })
+    const asPatient = (): Actor => ({ userId: patientId, role: 'patient' })
+
+    // The LAST statement's rows, or the error (code + constraint) that
+    // stopped them.
+    async function run(actor: Actor, statement: SQL) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`SELECT set_config('app.current_user_id', ${String(actor.userId)}, true),
+                       set_config('app.current_role', ${actor.role}, true)`,
+          )
+          const { rows } = await tx.execute<Record<string, unknown>>(statement)
+          throw new RolledBack(rows)
+        })
+      } catch (error) {
+        if (error instanceof RolledBack) return { rows: error.rows }
+        let current: unknown = error
+        while (current && typeof current === 'object') {
+          const { code, constraint, cause } = current as {
+            code?: unknown
+            constraint?: unknown
+            cause?: unknown
+          }
+          if (typeof code === 'string') return { error: { code, constraint } }
+          current = cause
+        }
+        throw error
+      }
+      throw new Error('unreachable: run() always rolls back')
+    }
+    const refused = {
+      error: { code: '23514', constraint: 'assigned_program_closed' },
+    }
+
+    // A CANCELLED program (with an unfinished session, so it isn't merely
+    // archived) and an ACTIVE one, the control: the same statement must
+    // succeed there, so a refusal is the guard's, not the statement's.
+    let cancelled: Program
+    // Archived (deleted with no session): closed too, whatever its status.
+    let archived: Program
+    let open: Program
+    let unfinishedSessionId: number
+    let unfinishedExerciseRowId: number
+    beforeAll(async () => {
+      cancelled = await createProgram({ startsIn: -3 })
+      const started = await startSession(cancelled.id, {
+        workoutId: cancelled.workouts[0].id,
+      })
+      unfinishedSessionId = started.body.id
+      unfinishedExerciseRowId = started.body.exercises[0].id
+      expect((await close(practitionerA, cancelled.id, 'cancel')).status).toBe(
+        200,
+      )
+      archived = await createProgram({ startsIn: 3 })
+      expect(
+        (await practitionerA.delete(`/assigned-programs/${archived.id}`))
+          .status,
+      ).toBe(200)
+      open = await createProgram({ startsIn: -3 })
+    })
+
+    // Workout B's exercise: the unfinished session (workout A) doesn't use
+    // it, so deleting it meets no foreign key.
+    const bExercise = (p: Program) =>
+      p.exercises.find((e) => e.workoutId === p.workouts[1].id)!.id
+
+    it.each<[string, (p: Program) => SQL]>([
+      [
+        'add a workout',
+        (p) =>
+          sql`INSERT INTO program_workouts (assigned_program_id, sort_order) VALUES (${p.id}, 9)`,
+      ],
+      [
+        'change an exercise',
+        (p) =>
+          sql`UPDATE assigned_program_exercises SET sets = 9 WHERE assigned_program_id = ${p.id}`,
+      ],
+      [
+        'remove an exercise',
+        (p) =>
+          sql`DELETE FROM assigned_program_exercises WHERE id = ${bExercise(p)}`,
+      ],
+      [
+        'add a schedule version',
+        (p) => sql`
+          INSERT INTO program_schedules
+            (assigned_program_id, type, times_per_week, effective_from, created_by)
+          VALUES (${p.id}, 'paused', NULL, ${today}, ${practitionerAId})`,
+      ],
+      [
+        'rename the program',
+        (p) =>
+          sql`UPDATE assigned_programs SET title = 'Renamed' WHERE id = ${p.id}`,
+      ],
+    ])(
+      "refuses the care team's attempt to %s on a closed program",
+      async (_label, statement) => {
+        expect(await run(asA(), statement(cancelled))).toEqual(refused)
+        expect(await run(asA(), statement(archived))).toEqual(refused)
+        expect(await run(asA(), statement(open))).toHaveProperty('rows')
+      },
+    )
+
+    it("refuses the patient's new session on a closed program", async () => {
+      const insert = (p: Program) => sql`
+        INSERT INTO sessions
+          (assigned_program_id, workout_id, patient_id, scheduled_date, local_date, status)
+        VALUES (${p.id}, ${p.workouts[0].id}, ${patientId}, now(), ${today}, 'pending')`
+      expect(await run(asPatient(), insert(cancelled))).toEqual(refused)
+      expect(await run(asPatient(), insert(open))).toHaveProperty('rows')
+    })
+
+    // Decided with the person: the work really happened — a session started
+    // before the cancel can still be finished, its exercises ticked.
+    it('lets the patient finish a session that was in progress', async () => {
+      const tick = await patient
+        .patch(
+          `/sessions/${unfinishedSessionId}/exercises/${unfinishedExerciseRowId}`,
+        )
+        .send({ completed: true })
+      expect(tick.status).toBe(200)
+      for (const status of ['in_progress', 'completed']) {
+        const res = await patient
+          .patch(`/sessions/${unfinishedSessionId}`)
+          .send({ status })
+        expect(res.status).toBe(200)
+      }
+    })
+
+    // The program row: no way back to active; archiving a completed program
+    // (is_archived and nothing else) is the one change left; an archived
+    // program changes no more.
+    it('keeps a closed program final, allowing only archiving', async () => {
+      expect(
+        await run(
+          asA(),
+          sql`UPDATE assigned_programs SET status = 'active' WHERE id = ${cancelled.id}`,
+        ),
+      ).toEqual(refused)
+
+      const completed = await createProgram({ startsIn: 3 })
+      expect(
+        (await close(practitionerA, completed.id, 'complete')).status,
+      ).toBe(200)
+      // Archiving means is_archived TRUE: "false" (here, no change at all)
+      // isn't the one change allowed.
+      expect(
+        await run(
+          asA(),
+          sql`UPDATE assigned_programs SET is_archived = false WHERE id = ${completed.id}`,
+        ),
+      ).toEqual(refused)
+      expect(
+        await run(
+          asA(),
+          sql`UPDATE assigned_programs SET is_archived = true WHERE id = ${completed.id} RETURNING id`,
+        ),
+      ).toEqual({ rows: [{ id: completed.id }] })
+      expect(
+        await run(
+          asA(),
+          sql`UPDATE assigned_programs SET is_archived = true, title = 'x' WHERE id = ${completed.id}`,
+        ),
+      ).toEqual(refused)
+
+      const archived = await createProgram({ startsIn: 3 })
+      expect(
+        (await practitionerA.delete(`/assigned-programs/${archived.id}`))
+          .status,
+      ).toBe(200)
+      expect(
+        await run(
+          asA(),
+          sql`UPDATE assigned_programs SET is_archived = false WHERE id = ${archived.id}`,
+        ),
+      ).toEqual(refused)
+    })
+
+    // The tables' owner — migrations, the seed's reset — isn't guarded.
+    it("doesn't guard the tables' owner", async () => {
+      const client = await sessionPool.connect()
+      try {
+        await client.query('BEGIN')
+        const { rowCount } = await client.query(
+          "UPDATE assigned_programs SET title = 'Owner' WHERE id = $1",
+          [cancelled.id],
+        )
+        expect(rowCount).toBe(1)
+        // …nor on the program's children: the seed's reset deletes them,
+        // closed programs included.
+        const exercises = await client.query(
+          'DELETE FROM assigned_program_exercises WHERE id = $1',
+          [bExercise(cancelled)],
+        )
+        expect(exercises.rowCount).toBe(1)
+      } finally {
+        await client.query('ROLLBACK')
+        client.release()
+      }
+    })
+
+    // The race the service alone couldn't close: the patient's request
+    // passes the service's check (the program is still active), and its
+    // INSERT reaches the database while a cancel holds the program's row
+    // lock — as close() does (SELECT … FOR UPDATE). The insert's foreign-key
+    // check waits for that lock; once the cancel commits, the guard, which
+    // runs after that check, sees the program cancelled: 409, no session.
+    it('refuses a session racing a cancel — once the cancel commits', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      const canceller = await sessionPool.connect()
+      try {
+        await canceller.query('BEGIN')
+        await canceller.query(
+          'SELECT id FROM assigned_programs WHERE id = $1 FOR UPDATE',
+          [program.id],
+        )
+        await canceller.query(
+          "UPDATE assigned_programs SET status = 'cancelled', end_date = $2 WHERE id = $1",
+          [program.id, yesterday],
+        )
+
+        let settled = false
+        const pending = startSession(program.id, {
+          workoutId: program.workouts[0].id,
+        }).then((res) => {
+          settled = true
+          return res
+        })
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        // Still waiting for the cancel's lock.
+        expect(settled).toBe(false)
+
+        await canceller.query('COMMIT')
+        const res = await pending
+        expect(res.status).toBe(409)
+        expect(res.body.message).toEqual([CLOSED_PROGRAM_MESSAGE])
+      } finally {
+        canceller.release()
+      }
+      const { rows } = await sessionPool.query(
+        'SELECT 1 FROM sessions WHERE assigned_program_id = $1',
+        [program.id],
+      )
+      expect(rows).toEqual([])
     })
   })
 

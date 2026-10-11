@@ -35,6 +35,11 @@ export const PG_EXCLUSION_VIOLATION = '23P01'
 // RESTRICT foreign keys, as the workout keys are).
 export const PG_FOREIGN_KEY_VIOLATION = '23503'
 
+// 23514 is "check_violation": a row breaks a CHECK constraint. Also what the
+// closed-program guard raises (migration 0031), with its own constraint name
+// below, so it reads like any other constraint refusal.
+export const PG_CHECK_VIOLATION = '23514'
+
 // Constraint names this app translates into a 409. Drizzle names a column's
 // .unique() constraint `<table>_<column>_unique` (see migration 0000).
 // Kept as named constants so the service and its tests can't disagree on
@@ -74,6 +79,12 @@ export const PROGRAM_SCHEDULE_DAYS_WORKOUT_FK =
   'program_schedule_days_workout_fk'
 export const PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK =
   'program_schedule_rotation_workout_fk'
+
+// Not a real CHECK: the name the closed-program triggers (migration 0031)
+// give their refusal — a completed, cancelled or archived program can no
+// longer change. HttpExceptionFilter turns it into a 409, whichever route
+// hit it.
+export const ASSIGNED_PROGRAM_CLOSED = 'assigned_program_closed'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -143,4 +154,9 @@ export function isForeignKeyViolation(
   constraint?: string,
 ): boolean {
   return isPgError(error, PG_FOREIGN_KEY_VIOLATION, constraint)
+}
+
+// A check violation (23514), optionally on one named constraint.
+export function isCheckViolation(error: unknown, constraint?: string): boolean {
+  return isPgError(error, PG_CHECK_VIOLATION, constraint)
 }

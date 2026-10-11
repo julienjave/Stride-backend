@@ -1,6 +1,9 @@
 import { DrizzleQueryError } from 'drizzle-orm'
 import {
+  ASSIGNED_PROGRAM_CLOSED,
   CARE_TEAM_NO_OVERLAP,
+  isCheckViolation,
+  PG_CHECK_VIOLATION,
   isExclusionViolation,
   isForeignKeyViolation,
   PG_FOREIGN_KEY_VIOLATION,
@@ -123,5 +126,32 @@ describe('isForeignKeyViolation', () => {
 
   it('does not match a unique violation', () => {
     expect(isForeignKeyViolation(pgError(PG_UNIQUE_VIOLATION))).toBe(false)
+  })
+})
+
+describe('isCheckViolation', () => {
+  // The closed-program guard (migration 0031) raises a 23514 with its own
+  // constraint name: matched like a CHECK, through drizzle's wrapper.
+  it('matches the closed-program refusal, wrapped by drizzle', () => {
+    const wrapped = new DrizzleQueryError(
+      'insert into "sessions" ...',
+      [],
+      pgError(PG_CHECK_VIOLATION, ASSIGNED_PROGRAM_CLOSED),
+    )
+    expect(isCheckViolation(wrapped, ASSIGNED_PROGRAM_CLOSED)).toBe(true)
+  })
+
+  it('is 23514 — the SQLSTATE Postgres uses for check_violation', () => {
+    expect(PG_CHECK_VIOLATION).toBe('23514')
+  })
+
+  it('does not match a check violation on a DIFFERENT constraint, nor a foreign-key one', () => {
+    expect(
+      isCheckViolation(
+        pgError(PG_CHECK_VIOLATION, 'assigned_programs_ends_after_start'),
+        ASSIGNED_PROGRAM_CLOSED,
+      ),
+    ).toBe(false)
+    expect(isCheckViolation(pgError(PG_FOREIGN_KEY_VIOLATION))).toBe(false)
   })
 })

@@ -218,6 +218,13 @@
       "when": 1791736306471,
       "tag": "0030_swaps_and_status",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791739872774,
+      "tag": "0031_closed_program_guard",
+      "breakpoints": true
     }
   ]
 }
