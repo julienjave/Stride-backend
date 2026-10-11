@@ -33,12 +33,15 @@ import { ApiTags } from '@nestjs/swagger'
 import { AssignedProgramsService } from './assigned-programs.service'
 import { CreateAssignedProgramDto } from './dto/create-assigned-program.dto'
 import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
-import { AssignedExerciseInputDto } from './dto/assigned-exercise-input.dto'
+import { AddAssignedProgramExerciseDto } from './dto/add-assigned-program-exercise.dto'
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
 import { ScheduleSummaryQueryDto } from './dto/schedule-summary-query.dto'
+import { AddWorkoutDto } from './dto/add-workout.dto'
+import { RenameWorkoutDto } from './dto/rename-workout.dto'
+import { ReorderWorkoutsDto } from './dto/reorder-workouts.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -83,7 +86,7 @@ export class AssignedProgramsController {
   addExercise(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: CurrentUser,
-    @Body() dto: AssignedExerciseInputDto,
+    @Body() dto: AddAssignedProgramExerciseDto,
   ) {
     return this.assignedProgramsService.addExercise(id, user, dto)
   }
@@ -182,7 +185,70 @@ export class AssignedProgramsController {
     @CurrentUser() user: CurrentUser,
     @Body() dto: ReorderAssignedProgramExercisesDto,
   ) {
-    return this.assignedProgramsService.reorderExercises(id, user, dto.order)
+    return this.assignedProgramsService.reorderExercises(
+      id,
+      user,
+      dto.order,
+      dto.workoutId,
+    )
+  }
+
+  // --- WORKOUTS ---
+  //
+  // The program's workouts: add, reorder, rename, delete an empty one. Same
+  // roles as every other change to a program; the service checks the care
+  // team on top. NEW routes that change a patient's prescription, so they
+  // follow the audit convention: @AuditedByService() — the service writes
+  // one complete entry in the change's own transaction, and the generic
+  // interceptor stays out of the way.
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Post(':id/workouts')
+  addWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: AddWorkoutDto,
+  ) {
+    return this.assignedProgramsService.addWorkout(id, user, dto)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Patch(':id/workouts')
+  reorderWorkouts(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: ReorderWorkoutsDto,
+  ) {
+    return this.assignedProgramsService.reorderWorkouts(id, user, dto.order)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Patch(':id/workouts/:workoutId')
+  renameWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('workoutId', ParseIntPipe) workoutId: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: RenameWorkoutDto,
+  ) {
+    return this.assignedProgramsService.renameWorkout(id, workoutId, user, dto)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Delete(':id/workouts/:workoutId')
+  removeWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('workoutId', ParseIntPipe) workoutId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.assignedProgramsService.removeWorkout(id, workoutId, user)
   }
 
   // --- DELETE ROUTES ---

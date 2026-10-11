@@ -2,6 +2,9 @@ import { DrizzleQueryError } from 'drizzle-orm'
 import {
   CARE_TEAM_NO_OVERLAP,
   isExclusionViolation,
+  isForeignKeyViolation,
+  PG_FOREIGN_KEY_VIOLATION,
+  SESSIONS_WORKOUT_FK,
   isUniqueViolation,
   PG_EXCLUSION_VIOLATION,
   PG_UNIQUE_VIOLATION,
@@ -92,5 +95,33 @@ describe('isExclusionViolation', () => {
   it('does not match a unique violation, and isUniqueViolation does not match it', () => {
     expect(isExclusionViolation(pgError(PG_UNIQUE_VIOLATION))).toBe(false)
     expect(isUniqueViolation(pgError(PG_EXCLUSION_VIOLATION))).toBe(false)
+  })
+})
+
+describe('isForeignKeyViolation', () => {
+  it('matches a foreign-key violation on the named constraint, wrapped by drizzle', () => {
+    const wrapped = new DrizzleQueryError(
+      'delete from "program_workouts" ...',
+      [],
+      pgError(PG_FOREIGN_KEY_VIOLATION, SESSIONS_WORKOUT_FK),
+    )
+    expect(isForeignKeyViolation(wrapped, SESSIONS_WORKOUT_FK)).toBe(true)
+  })
+
+  it('is 23503 — the SQLSTATE Postgres uses for foreign_key_violation', () => {
+    expect(PG_FOREIGN_KEY_VIOLATION).toBe('23503')
+  })
+
+  it('does not match a foreign-key violation on a DIFFERENT constraint', () => {
+    expect(
+      isForeignKeyViolation(
+        pgError(PG_FOREIGN_KEY_VIOLATION, 'other_fk'),
+        SESSIONS_WORKOUT_FK,
+      ),
+    ).toBe(false)
+  })
+
+  it('does not match a unique violation', () => {
+    expect(isForeignKeyViolation(pgError(PG_UNIQUE_VIOLATION))).toBe(false)
   })
 })

@@ -1,19 +1,32 @@
 import { Test } from "@nestjs/testing";
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
+import { DrizzleQueryError } from "drizzle-orm";
 import { ProgramsService } from "./programs.service";
 import { DRIZZLE } from "../database/drizzle.provider";
 import { UserRole } from "../users/dto/create-user.dto";
-import { programTemplates, templateExercises } from "../database/schema";
+import {
+  programTemplates,
+  templateExercises,
+  templateWorkouts,
+} from "../database/schema";
+
+// Every template has at least one workout, and findOne() reads them. Most
+// tests here use a one-workout template; their exercise rows predate
+// workouts (no workoutId), which orderExercisesByWorkout handles by keeping
+// their own order.
+const ONE_WORKOUT = [{ id: 900, templateId: 1, name: null, sortOrder: 0 }];
 
 describe("ProgramsService.update (and assertCanModify through it)", () => {
   let programsService: ProgramsService;
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -35,6 +48,9 @@ describe("ProgramsService.update (and assertCanModify through it)", () => {
       query: {
         programTemplates: { findFirst: jest.fn() },
         // findOne()'s own reads, called at the END of update() now.
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+        },
         templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
         exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
@@ -95,6 +111,7 @@ describe("ProgramsService.update (and assertCanModify through it)", () => {
       id: 1,
       practitionerId: 7,
       title: "Updated",
+      workouts: ONE_WORKOUT,
       exercises: [
         {
           id: 50,
@@ -144,6 +161,7 @@ describe("ProgramsService.archive", () => {
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -162,6 +180,9 @@ describe("ProgramsService.archive", () => {
     db = {
       query: {
         programTemplates: { findFirst: jest.fn() },
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+        },
         templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
         exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
@@ -192,6 +213,7 @@ describe("ProgramsService.archive", () => {
       id: 1,
       practitionerId: 7,
       isArchived: true,
+      workouts: ONE_WORKOUT,
       exercises: [],
     });
   });
@@ -218,6 +240,7 @@ describe("ProgramsService.duplicate", () => {
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -230,11 +253,22 @@ describe("ProgramsService.duplicate", () => {
   // both inserts go through it.
   let tx: {
     insert: jest.Mock;
-    query: { templateExercises: { findMany: jest.Mock } };
+    query: {
+      templateWorkouts: { findMany: jest.Mock };
+      templateExercises: { findMany: jest.Mock };
+    };
     execute: jest.Mock;
   };
   let templateValues: jest.Mock;
+  let workoutValues: jest.Mock;
   let rowValues: jest.Mock;
+
+  // The source's two workouts, returned by the database OUT of order on
+  // purpose: the copy must follow their positions, not the read order.
+  const sourceWorkouts = [
+    { id: 902, templateId: 1, name: "Lower body", sortOrder: 1 },
+    { id: 901, templateId: 1, name: null, sortOrder: 0 },
+  ];
 
   // A full row, every column populated — so a toEqual on what reaches
   // the INSERT genuinely proves nothing was dropped along the way.
@@ -242,6 +276,7 @@ describe("ProgramsService.duplicate", () => {
     {
       id: 100,
       templateId: 1,
+      workoutId: 901,
       exerciseId: 5,
       sets: 3,
       reps: 10,
@@ -254,6 +289,7 @@ describe("ProgramsService.duplicate", () => {
     {
       id: 101,
       templateId: 1,
+      workoutId: 902,
       exerciseId: 6,
       sets: null,
       reps: null,
@@ -270,15 +306,25 @@ describe("ProgramsService.duplicate", () => {
       returning: jest.fn().mockResolvedValue([{ id: 42 }]),
     });
     rowValues = jest.fn().mockResolvedValue(undefined);
+    // Each copied workout gets a new id: 951 for the first INSERT, 952 for
+    // the second.
+    let nextWorkoutId = 951;
+    workoutValues = jest.fn().mockImplementation(() => ({
+      returning: jest.fn().mockResolvedValue([{ id: nextWorkoutId++ }]),
+    }));
     tx = {
       // Routes by WHICH table is passed in, so the tests also prove each
       // insert targets the right table, not just that "an insert happened."
       insert: jest.fn((table: unknown) => {
         if (table === programTemplates) return { values: templateValues };
+        if (table === templateWorkouts) return { values: workoutValues };
         if (table === templateExercises) return { values: rowValues };
         throw new Error("Unexpected table passed to insert()");
       }),
       query: {
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(sourceWorkouts),
+        },
         templateExercises: {
           findMany: jest.fn().mockResolvedValue(sourceRows),
         },
@@ -291,6 +337,9 @@ describe("ProgramsService.duplicate", () => {
         programTemplates: { findFirst: jest.fn() },
         // findOne()'s reads, AFTER the transaction — deliberately return
         // nothing useful by default; the main test overrides them.
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+        },
         templateExercises: { findMany: jest.fn().mockResolvedValue([]) },
         exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
@@ -333,13 +382,30 @@ describe("ProgramsService.duplicate", () => {
       title: "Copy of Knee Rehab",
       description: "Phase 1",
     });
+    // The workouts, copied in their order (A, then B), names included.
+    // (toHaveBeenNthCalledWith rather than reading mock.calls, whose
+    // untyped `any` the strict lint config flags.)
+    expect(workoutValues).toHaveBeenCalledTimes(2);
+    expect(workoutValues).toHaveBeenNthCalledWith(1, {
+      templateId: 42,
+      name: null,
+      sortOrder: 0,
+    });
+    expect(workoutValues).toHaveBeenNthCalledWith(2, {
+      templateId: 42,
+      name: "Lower body",
+      sortOrder: 1,
+    });
     // Full toEqual on the real INSERT argument — the regression guard
     // for the "copy silently drops a column" bug class this codebase has
     // hit three times. Every column comes across except id (the DB
     // assigns a new one) and templateId (re-pointed at the copy, 42).
+    // ...and each exercise re-pointed at the COPY's workout: 901 (A) became
+    // 951, 902 (B) became 952.
     expect(rowValues).toHaveBeenCalledWith([
       {
         templateId: 42,
+        workoutId: 951,
         exerciseId: 5,
         sets: 3,
         reps: 10,
@@ -351,6 +417,7 @@ describe("ProgramsService.duplicate", () => {
       },
       {
         templateId: 42,
+        workoutId: 952,
         exerciseId: 6,
         sets: null,
         reps: null,
@@ -481,6 +548,7 @@ describe("ProgramsService.addExercise", () => {
     query: {
       programTemplates: { findFirst: jest.Mock };
       exercises: { findFirst: jest.Mock; findMany: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
     };
     insert: jest.Mock;
@@ -504,6 +572,9 @@ describe("ProgramsService.addExercise", () => {
         // Used by findOne(), called at the END of addExercise now (see
         // that method's own comment on why it matches reorderExercises'
         // existing convention).
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+        },
         templateExercises: {
           findMany: jest.fn().mockResolvedValue([]),
         },
@@ -594,6 +665,8 @@ describe("ProgramsService.addExercise", () => {
     // be there before weight/weightUnit were added.
     expect(valuesMock).toHaveBeenCalledWith({
       templateId: 1,
+      // No workoutId in the request: the template's first workout.
+      workoutId: 900,
       exerciseId: 5,
       sets: 3,
       reps: 10,
@@ -607,6 +680,7 @@ describe("ProgramsService.addExercise", () => {
     expect(result).toEqual({
       id: 1,
       practitionerId: 7,
+      workouts: ONE_WORKOUT,
       exercises: [
         {
           id: 10,
@@ -625,6 +699,7 @@ describe("ProgramsService.reorderExercises", () => {
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findFirst: jest.Mock; findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -643,6 +718,9 @@ describe("ProgramsService.reorderExercises", () => {
       query: {
         programTemplates: {
           findFirst: jest.fn().mockResolvedValue({ id: 1, practitionerId: 7 }),
+        },
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
         },
         templateExercises: {
           findFirst: jest.fn(),
@@ -668,6 +746,9 @@ describe("ProgramsService.reorderExercises", () => {
       transaction: jest.fn().mockImplementation((cb: any) =>
         cb({
           query: {
+            templateWorkouts: {
+              findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+            },
             templateExercises: {
               findMany: jest.fn().mockResolvedValue([
                 { id: 100, exerciseId: 50 },
@@ -760,6 +841,7 @@ describe("ProgramsService.findOne", () => {
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -769,6 +851,9 @@ describe("ProgramsService.findOne", () => {
     db = {
       query: {
         programTemplates: { findFirst: jest.fn() },
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+        },
         templateExercises: { findMany: jest.fn() },
         exercises: { findMany: jest.fn() },
       },
@@ -868,6 +953,7 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
   let db: {
     query: {
       programTemplates: { findFirst: jest.Mock };
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findFirst: jest.Mock; findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
     };
@@ -882,6 +968,9 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
       query: {
         programTemplates: {
           findFirst: jest.fn().mockResolvedValue({ id: 1, practitionerId: 7 }),
+        },
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
         },
         templateExercises: {
           findFirst: jest.fn(),
@@ -968,6 +1057,7 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
     expect(result).toEqual({
       id: 1,
       practitionerId: 7,
+      workouts: ONE_WORKOUT,
       exercises: [
         {
           id: 50,
@@ -1005,6 +1095,7 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
     expect(result).toEqual({
       id: 1,
       practitionerId: 7,
+      workouts: ONE_WORKOUT,
       exercises: [
         {
           id: 51,
@@ -1015,5 +1106,87 @@ describe("ProgramsService IDOR checks (updateExercise / removeExercise)", () => 
         },
       ],
     });
+  });
+});
+
+// The one case the e2e tests can't produce on demand: an exercise added to
+// the workout between removeWorkout's count ("empty") and its DELETE. The
+// database then refuses the DELETE through the exercise's foreign key, and
+// the service must answer with the same 409 the count would have given —
+// not a 500. The database's error is mocked here, wrapped the way Drizzle
+// wraps it.
+describe("ProgramsService.removeWorkout — losing the race to an added exercise", () => {
+  let programsService: ProgramsService;
+  let deleteWhere: jest.Mock;
+
+  beforeEach(async () => {
+    deleteWhere = jest.fn();
+    // The template's row lock (select … .for) and the exercise count
+    // (select … where) share one chain: `where` answers the count AND
+    // offers `.for` for the lock.
+    const where = () =>
+      Object.assign(Promise.resolve([{ exerciseCount: 0 }]), {
+        for: jest.fn().mockResolvedValue([]),
+      });
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      select: jest.fn(() => ({ from: () => ({ where }) })),
+      query: {
+        templateWorkouts: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 1, name: null, sortOrder: 0 },
+            { id: 2, name: null, sortOrder: 1 },
+          ]),
+        },
+      },
+      delete: jest.fn(() => ({ where: deleteWhere })),
+    };
+    const db = {
+      query: {
+        programTemplates: {
+          findFirst: jest.fn().mockResolvedValue({ id: 1, practitionerId: 7 }),
+        },
+      },
+      transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+    }).compile();
+    programsService = moduleRef.get(ProgramsService);
+  });
+
+  it("answers 409 when the exercises' foreign key refuses the delete", async () => {
+    deleteWhere.mockRejectedValue(
+      new DrizzleQueryError(
+        'delete from "template_workouts" ...',
+        [],
+        Object.assign(new Error("fk"), {
+          code: "23503",
+          constraint: "template_exercises_workout_fk",
+        }),
+      ),
+    );
+    await expect(
+      programsService.removeWorkout(1, 2, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toThrow(
+      new ConflictException(
+        "This workout still has exercises: move or remove them first",
+      ),
+    );
+  });
+
+  // Any other failure is not this race, and stays what it is.
+  it("lets any other error through unchanged", async () => {
+    const other = new Error("connection lost");
+    deleteWhere.mockRejectedValue(other);
+    await expect(
+      programsService.removeWorkout(1, 2, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toBe(other);
   });
 });

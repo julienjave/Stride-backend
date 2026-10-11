@@ -4,7 +4,11 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common'
-import { SessionsService, assertLocalDateIsToday } from './sessions.service'
+import {
+  SessionsService,
+  assertLocalDateIsToday,
+  chooseSessionWorkout,
+} from './sessions.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { SessionStatus } from './dto/update-session.dto'
@@ -16,6 +20,7 @@ describe('SessionsService.create', () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock }
+      programWorkouts: { findMany: jest.Mock }
       assignedProgramExercises: { findMany: jest.Mock }
       sessions: { findFirst: jest.Mock }
       sessionExercises: { findMany: jest.Mock }
@@ -29,7 +34,16 @@ describe('SessionsService.create', () => {
     db = {
       query: {
         assignedPrograms: { findFirst: jest.fn() },
-        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        // A one-workout program (workout 950) with one exercise, unless a
+        // test says otherwise.
+        programWorkouts: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ id: 950, name: null, sortOrder: 0 }]),
+        },
+        assignedProgramExercises: {
+          findMany: jest.fn().mockResolvedValue([{ id: 30, sortOrder: 0 }]),
+        },
         sessions: {
           findFirst: jest.fn().mockResolvedValue({ id: 500, patientId: 20 }),
         },
@@ -121,6 +135,57 @@ describe('SessionsService.create', () => {
     expect(result).toEqual(expect.objectContaining({ id: 500 }))
   })
 
+  // No workoutId sent, one workout: the session records that one.
+  it("records the program's only workout on the session", async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 5,
+      patientId: 20,
+    })
+    const sessionInserts: Record<string, unknown>[] = []
+    db.insert.mockImplementation(() => ({
+      values: jest
+        .fn()
+        .mockImplementation((values: Record<string, unknown>) => {
+          if (values.status === 'pending') {
+            sessionInserts.push(values)
+            return {
+              returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+            }
+          }
+          return Promise.resolve(undefined)
+        }),
+    }))
+
+    await service.create(
+      { id: 20, activeRole: UserRole.PATIENT },
+      { assignedProgramId: 5, localDate: utcToday() },
+    )
+
+    expect(sessionInserts).toHaveLength(1)
+    expect(sessionInserts[0].workoutId).toBe(950)
+  })
+
+  // A workout emptied by its practitioner: no session with nothing in it.
+  it('refuses a workout with no exercises, before writing', async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue({
+      id: 5,
+      patientId: 20,
+    })
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([])
+
+    await expect(
+      service.create(
+        { id: 20, activeRole: UserRole.PATIENT },
+        { assignedProgramId: 5, localDate: utcToday() },
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'This workout has no exercises yet: ask your practitioner',
+      ),
+    )
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
   // The session row carries the patient's own day, exactly as sent.
   it("stores the patient's local date on the session", async () => {
     db.query.assignedPrograms.findFirst.mockResolvedValue({
@@ -129,15 +194,17 @@ describe('SessionsService.create', () => {
     })
     const sessionInserts: Record<string, unknown>[] = []
     db.insert.mockImplementation(() => ({
-      values: jest.fn().mockImplementation((values: Record<string, unknown>) => {
-        if (values.status === 'pending') {
-          sessionInserts.push(values)
-          return {
-            returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+      values: jest
+        .fn()
+        .mockImplementation((values: Record<string, unknown>) => {
+          if (values.status === 'pending') {
+            sessionInserts.push(values)
+            return {
+              returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+            }
           }
-        }
-        return Promise.resolve(undefined)
-      }),
+          return Promise.resolve(undefined)
+        }),
     }))
     // Tomorrow in UTC: today for someone east of UTC late in the evening —
     // allowed, and stored as sent (not replaced by the server's own day).
@@ -169,6 +236,41 @@ describe('SessionsService.create', () => {
       ),
     )
     expect(db.insert).not.toHaveBeenCalled()
+  })
+})
+
+// Which workout a new session does. Pure, so every case is a plain call.
+describe('chooseSessionWorkout', () => {
+  // Read back out of position order (B's row first), as a database may.
+  const twoWorkouts = [
+    { id: 12, name: 'Lower body', sortOrder: 1 },
+    { id: 11, name: null, sortOrder: 0 },
+  ]
+
+  it("takes the workout asked for, when it is one of the program's", () => {
+    expect(chooseSessionWorkout(12, twoWorkouts)).toBe(12)
+  })
+
+  it('refuses a workout of another program', () => {
+    expect(() => chooseSessionWorkout(99, twoWorkouts)).toThrow(
+      new BadRequestException('Workout 99 is not part of this program'),
+    )
+  })
+
+  it('takes the only workout when none is asked for — absent or null', () => {
+    const one = [{ id: 11, name: null, sortOrder: 0 }]
+    expect(chooseSessionWorkout(undefined, one)).toBe(11)
+    expect(chooseSessionWorkout(null, one)).toBe(11)
+  })
+
+  // Guessing would file the session under the wrong workout — and the
+  // schedule would judge the wrong day by it.
+  it('refuses to guess between several workouts', () => {
+    expect(() => chooseSessionWorkout(undefined, twoWorkouts)).toThrow(
+      new BadRequestException(
+        'This program has 2 workouts (A, B): say which one this session is (workoutId)',
+      ),
+    )
   })
 })
 

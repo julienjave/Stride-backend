@@ -35,6 +35,14 @@ export class AddTemplateExerciseDto {
   @IsInt()
   exerciseId!: number;
 
+  // Which of the template's workouts the exercise goes into. Optional:
+  // without it, the FIRST workout (resolveWorkoutId) — so the current
+  // screens, which don't know about workouts yet, keep working unchanged.
+  // The service checks it's a workout of THIS template (404 otherwise).
+  @IsOptional()
+  @IsInt()
+  workoutId?: number | null;
+
   // Deliberately all nullable — a timed hold has no reps; a rep-based
   // exercise has no duration. Same reasoning as the schema's own columns.
   @IsOptional()

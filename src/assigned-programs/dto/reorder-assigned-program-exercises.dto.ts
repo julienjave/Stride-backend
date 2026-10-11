@@ -17,11 +17,24 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, ArrayMaxSize, IsInt } from 'class-validator'
+import {
+  IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
+  IsInt,
+  IsOptional,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
+// The exercises of ONE workout in their new order: `workoutId`, or the
+// program's first workout when it's omitted (what today's screens send —
+// for a one-workout program, every exercise).
 export class ReorderAssignedProgramExercisesDto {
+  @IsOptional()
+  @IsInt()
+  workoutId?: number | null
+
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(100)

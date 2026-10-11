@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { DrizzleQueryError } from "drizzle-orm";
 import {
   BadRequestException,
   ConflictException,
@@ -28,6 +29,14 @@ import { DRIZZLE } from "../database/drizzle.provider";
 import { UserRole } from "../users/dto/create-user.dto";
 import { ScheduleType } from "./dto/schedule-input.dto";
 
+// Every program has at least one workout, and the full program (what most
+// writes answer with) includes them. Most tests here use a one-workout
+// program; their exercise rows predate workouts (no workoutId), which
+// orderExercisesByWorkout handles by keeping their own order.
+const PROGRAM_WORKOUTS = [
+  { id: 950, assignedProgramId: 900, name: null, sortOrder: 0 },
+];
+
 // A schedule for the create() calls that aren't about schedules — the DTO
 // requires one. Deliberately NOT in order ([5, 1, 3]): create() must sort it.
 const MWF = { type: ScheduleType.WEEKDAYS, weekdays: [5, 1, 3] };
@@ -40,9 +49,11 @@ describe("AssignedProgramsService.create", () => {
   };
   let db: {
     query: {
+      templateWorkouts: { findMany: jest.Mock };
       templateExercises: { findMany: jest.Mock };
       programTemplates: { findFirst: jest.Mock };
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
       exercises: { findMany: jest.Mock };
@@ -59,6 +70,14 @@ describe("AssignedProgramsService.create", () => {
     };
     db = {
       query: {
+        // The template's workouts: one (id 70), like most templates.
+        templateWorkouts: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 70, templateId: 55, name: null, sortOrder: 0 },
+            ]),
+        },
         templateExercises: { findMany: jest.fn() },
         // The template row, read before its exercises (archived check).
         programTemplates: {
@@ -68,6 +87,9 @@ describe("AssignedProgramsService.create", () => {
           findFirst: jest
             .fn()
             .mockResolvedValue({ id: 900, patientId: 20, isArchived: false }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
@@ -205,6 +227,7 @@ describe("AssignedProgramsService.create", () => {
     db.query.templateExercises.findMany.mockResolvedValue([
       {
         exerciseId: 1,
+        workoutId: 70,
         sets: 3,
         reps: 10,
         durationInSeconds: null,
@@ -248,18 +271,27 @@ describe("AssignedProgramsService.create", () => {
       },
     );
 
-    // One insert for the program itself, one for the copied exercise row —
-    // this row is a brand-new record, never an FK back to templateExercises
-    // — and one for the program's first schedule version (tested below).
-    expect(inserted).toHaveLength(3);
+    // One insert for the program itself, one for its copy of the template's
+    // workout, one for the copied exercise row — this row is a brand-new
+    // record, never an FK back to templateExercises — and one for the
+    // program's first schedule version (tested below).
+    expect(inserted).toHaveLength(4);
+    expect(inserted[1]).toEqual({
+      assignedProgramId: 900,
+      name: null,
+      sortOrder: 0,
+    });
     // Full equality, not objectContaining — a partial match is exactly
     // what let weight/weightUnit go silently missing from this copy the
     // first time (objectContaining only checks the properties you
     // remember to list, so a field the copy logic drops just never gets
     // caught). Every field the source row and the referenced exercise
     // carried must survive the copy.
-    expect(inserted[1]).toEqual({
+    expect(inserted[2]).toEqual({
       assignedProgramId: 900,
+      // The PROGRAM's copy of the workout (every insert in these mocks
+      // answers with id 900), never the template's workout 70.
+      workoutId: 900,
       exerciseId: 1,
       name: "Squat",
       primaryMuscles: ["legs"],
@@ -318,8 +350,15 @@ describe("AssignedProgramsService.create", () => {
     );
 
     expect(db.query.templateExercises.findMany).not.toHaveBeenCalled();
-    expect(inserted[1]).toEqual(
-      expect.objectContaining({ exerciseId: 3, name: "Lunge" }),
+    // An inline list is one unnamed workout...
+    expect(inserted[1]).toEqual({
+      assignedProgramId: 901,
+      name: null,
+      sortOrder: 0,
+    });
+    // ...holding the exercise.
+    expect(inserted[2]).toEqual(
+      expect.objectContaining({ exerciseId: 3, name: "Lunge", workoutId: 901 }),
     );
   });
 
@@ -486,8 +525,10 @@ describe("AssignedProgramsService.create", () => {
           createdBy: 7,
           createdAt: undefined,
         },
+        workouts: [{ id: 900, name: null, sortOrder: 0 }],
         exercises: [
           {
+            workoutId: 900,
             exerciseId: 3,
             name: "Lunge",
             sets: 3,
@@ -735,6 +776,7 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
@@ -748,6 +790,9 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
@@ -807,6 +852,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
@@ -833,6 +879,9 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
           }),
         },
         // update() answers with the full program (exercises, schedules).
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
+        },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
@@ -878,6 +927,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       patientId: 20,
       startDate: "2026-10-01",
       endDate: "2026-12-31",
+      workouts: PROGRAM_WORKOUTS,
       exercises: [],
       schedules: [],
     });
@@ -906,6 +956,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       patientId: 20,
       startDate: "2026-10-01",
       endDate: "2026-12-31",
+      workouts: PROGRAM_WORKOUTS,
       exercises: [],
       schedules: [],
     });
@@ -918,6 +969,7 @@ describe("AssignedProgramsService.addExercise", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       exercises: { findFirst: jest.Mock };
     };
     insert: jest.Mock;
@@ -933,6 +985,9 @@ describe("AssignedProgramsService.addExercise", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         exercises: {
           findFirst: jest.fn().mockResolvedValue({ id: 5, name: "Squat" }),
@@ -1023,6 +1078,8 @@ describe("AssignedProgramsService.addExercise", () => {
 
     expect(valuesMock).toHaveBeenCalledWith({
       assignedProgramId: 900,
+      // No workoutId in the request: the program's first workout.
+      workoutId: 950,
       exerciseId: 5,
       name: "Squat",
       primaryMuscles: ["legs"],
@@ -1047,6 +1104,7 @@ describe("AssignedProgramsService.reorderExercises", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
@@ -1075,6 +1133,9 @@ describe("AssignedProgramsService.reorderExercises", () => {
         // that transaction has committed. Both default to the same three
         // rows unless a test targets the first call specifically via
         // mockResolvedValueOnce.
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
+        },
         assignedProgramExercises: {
           findMany: jest
             .fn()
@@ -1233,6 +1294,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
@@ -1275,6 +1337,9 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
             startDate: programStart,
             endDate: null,
           }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: {
@@ -1348,6 +1413,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       patientId: 20,
       startDate: programStart,
       endDate: null,
+      workouts: PROGRAM_WORKOUTS,
       exercises: [],
       schedules: [{ id: 1 }, { id: 2 }],
     });
@@ -1516,6 +1582,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
     };
@@ -1562,6 +1629,9 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
             startDate: start,
             endDate: end,
           }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([firstVersion]) },
@@ -1765,6 +1835,7 @@ describe("AssignedProgramsService.updateExercise", () => {
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
       assignedProgramExercises: {
         findFirst: jest.Mock;
         findMany: jest.Mock;
@@ -1781,6 +1852,9 @@ describe("AssignedProgramsService.updateExercise", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: {
           findFirst: jest.fn().mockResolvedValue({ id: 31, assignedProgramId: 900 }),
@@ -1827,6 +1901,7 @@ describe("AssignedProgramsService.updateExercise", () => {
     expect(result).toEqual({
       id: 900,
       patientId: 20,
+      workouts: PROGRAM_WORKOUTS,
       exercises: [{ id: 30, sets: 2 }, { id: 31, sets: 4 }],
       schedules: [{ id: 5 }],
     });
@@ -1930,5 +2005,96 @@ describe("AssignedProgramsService.summary", () => {
       ),
     );
     expect(sessionsWhere).not.toHaveBeenCalled();
+  });
+});
+
+// The race the e2e tests can't produce on demand: an exercise added — or a
+// session started — on the workout between removeWorkout's counts and its
+// DELETE. The database refuses the DELETE through that row's foreign key;
+// the service answers 409, not a 500. The error is mocked, wrapped the way
+// Drizzle wraps it.
+describe("AssignedProgramsService.removeWorkout — losing the race", () => {
+  let service: AssignedProgramsService;
+  let deleteReturning: jest.Mock;
+
+  beforeEach(async () => {
+    deleteReturning = jest.fn();
+    // The row lock (.for) and the two counts share one select chain.
+    const where = () =>
+      Object.assign(Promise.resolve([{ exerciseCount: 0, sessionCount: 0 }]), {
+        for: jest.fn().mockResolvedValue([]),
+      });
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      select: jest.fn(() => ({ from: () => ({ where }) })),
+      query: {
+        assignedPrograms: {
+          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 1, name: null, sortOrder: 0 },
+            { id: 2, name: null, sortOrder: 1 },
+          ]),
+        },
+      },
+      delete: jest.fn(() => ({
+        where: () => ({ returning: deleteReturning }),
+      })),
+    };
+    const db = {
+      ...tx,
+      transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AssignedProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        {
+          provide: UsersService,
+          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+        },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile();
+    service = moduleRef.get(AssignedProgramsService);
+  });
+
+  it.each([
+    ["an exercise", "assigned_program_exercises_workout_fk"],
+    ["a session", "sessions_workout_fk"],
+  ])(
+    "answers 409 when %s's foreign key refuses the delete",
+    async (_what, constraint) => {
+      deleteReturning.mockRejectedValue(
+        new DrizzleQueryError(
+          'delete from "program_workouts" ...',
+          [],
+          Object.assign(new Error("fk"), { code: "23503", constraint }),
+        ),
+      );
+      await expect(
+        service.removeWorkout(900, 2, {
+          id: 7,
+          activeRole: UserRole.PRACTITIONER,
+        }),
+      ).rejects.toThrow(
+        new ConflictException(
+          "This workout was just given exercises or a session: reload the program and try again",
+        ),
+      );
+      expect(auditService.logInTransaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lets any other error through unchanged", async () => {
+    const other = new Error("connection lost");
+    deleteReturning.mockRejectedValue(other);
+    await expect(
+      service.removeWorkout(900, 2, {
+        id: 7,
+        activeRole: UserRole.PRACTITIONER,
+      }),
+    ).rejects.toBe(other);
   });
 });

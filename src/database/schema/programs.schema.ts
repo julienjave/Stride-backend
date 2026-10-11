@@ -27,6 +27,8 @@ import {
   index,
   real,
   check,
+  unique,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users.schema";
@@ -53,6 +55,54 @@ export const programTemplates = pgTable("program_templates", {
   isArchived: boolean("is_archived").notNull().default(false),
 });
 
+// A WORKOUT is one set of exercises done together in a session — "upper
+// body", "lower body" (decisions §5, "Settled 2026-10-10", point 1). A
+// template has one or more; every exercise belongs to exactly one. A
+// one-workout template behaves exactly as templates did before workouts
+// existed. The screens label workouts by their ORDER (A, B, C — see
+// workoutLabel in common/workout-rules.ts) plus this optional name ("A ·
+// Upper body"), so the label is never stored: reordering would make a
+// stored letter wrong.
+//
+// Not expressible in Drizzle, so added by the custom migration
+// 0027_workouts_rls: the row-level security policies (the same people as
+// the template's exercises).
+export const templateWorkouts = pgTable(
+  "template_workouts",
+  {
+    id: serial("id").primaryKey(),
+    // 'cascade', like template_exercises: a workout is part of its template.
+    // (Templates are archived, never deleted, by the app.)
+    templateId: integer("template_id")
+      .notNull()
+      .references(() => programTemplates.id, { onDelete: "cascade" }),
+    // Optional: "A" alone is a valid workout. NULL rather than '' for "no
+    // name" — one spelling for "absent" (the service trims, and turns an
+    // empty name into NULL; the CHECK below is the guarantee behind it).
+    name: varchar("name", { length: 100 }),
+    // The workout's position: A is the lowest. Gaps are fine (deleting B
+    // leaves A=0, C=2, which read as A, B) — only the ORDER means anything.
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => ({
+    templateIdIdx: index("template_workouts_template_id_idx").on(
+      table.templateId,
+    ),
+    nameNotBlank: check(
+      "template_workouts_name_not_blank",
+      sql`${table.name} IS NULL OR length(btrim(${table.name})) > 0`,
+    ),
+    // (id, template_id) is unique anyway — id alone already is — but a
+    // foreign key can only point at columns that a unique constraint
+    // covers EXACTLY. This one exists so template_exercises can reference
+    // the PAIR: see templateExercises' workout foreign key below.
+    idTemplateUnique: unique("template_workouts_id_template_id_unique").on(
+      table.id,
+      table.templateId,
+    ),
+  }),
+);
+
 export const templateExercises = pgTable(
   "template_exercises",
   {
@@ -60,6 +110,10 @@ export const templateExercises = pgTable(
     templateId: integer("template_id")
       .notNull()
       .references(() => programTemplates.id, { onDelete: "cascade" }),
+    // Which workout of the template this exercise belongs to. See the
+    // composite foreign key below for why the database, not only the
+    // service, guarantees it's a workout of the SAME template.
+    workoutId: integer("workout_id").notNull(),
     exerciseId: integer("exercise_id")
       .notNull()
       .references(() => exercises.id, { onDelete: "restrict" }),
@@ -87,6 +141,25 @@ export const templateExercises = pgTable(
     templateIdIdx: index("template_exercises_template_id_idx").on(
       table.templateId,
     ),
+    // A COMPOSITE foreign key: (workout_id, template_id) must be a
+    // (id, template_id) pair of template_workouts. A plain foreign key on
+    // workout_id alone would only say "some workout exists" — an exercise of
+    // template 1 could then point at a workout of template 2, and nothing
+    // would notice. Pairing it with template_id makes "a workout of THIS
+    // template" a rule of the database itself.
+    //
+    // No onDelete: the default, NO ACTION. The app only deletes EMPTY
+    // workouts, so a delete that still has exercises is a bug and must fail.
+    // NO ACTION rather than RESTRICT for one case: deleting a whole template
+    // (only the seed's --reset does) cascades to BOTH its workouts and its
+    // exercises in one statement — RESTRICT checks immediately, mid-cascade,
+    // and would fail; NO ACTION checks at the end of the statement, when
+    // the exercises are gone too.
+    workoutFk: foreignKey({
+      name: "template_exercises_workout_fk",
+      columns: [table.workoutId, table.templateId],
+      foreignColumns: [templateWorkouts.id, templateWorkouts.templateId],
+    }),
   }),
 );
 
@@ -127,6 +200,41 @@ export const assignedPrograms = pgTable(
   }),
 );
 
+// An assigned program's workouts: COPIED from the template's when the
+// program is assigned (copy, not reference — the same rule as its
+// exercises), then tailored per patient. Same shape and rules as
+// template_workouts above. A program assigned from an inline exercise list
+// gets one workout.
+//
+// Sessions record which workout they did (sessions.workout_id), so a
+// workout that has sessions can't be deleted — its foreign key refuses, and
+// the service says why first.
+export const programWorkouts = pgTable(
+  "program_workouts",
+  {
+    id: serial("id").primaryKey(),
+    assignedProgramId: integer("assigned_program_id")
+      .notNull()
+      .references(() => assignedPrograms.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 100 }),
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => ({
+    assignedProgramIdIdx: index("program_workouts_assigned_program_id_idx").on(
+      table.assignedProgramId,
+    ),
+    nameNotBlank: check(
+      "program_workouts_name_not_blank",
+      sql`${table.name} IS NULL OR length(btrim(${table.name})) > 0`,
+    ),
+    // The target of the composite foreign keys from
+    // assigned_program_exercises and sessions — see templateWorkouts.
+    idProgramUnique: unique(
+      "program_workouts_id_assigned_program_id_unique",
+    ).on(table.id, table.assignedProgramId),
+  }),
+);
+
 // A COPY of template_exercises, not a reference to it — same shape,
 // independent rows. Originally this only meant the PRESCRIPTION fields
 // (sets/reps/weight/duration/notes); exerciseId itself, and therefore
@@ -153,6 +261,9 @@ export const assignedProgramExercises = pgTable(
     assignedProgramId: integer("assigned_program_id")
       .notNull()
       .references(() => assignedPrograms.id, { onDelete: "cascade" }),
+    // A workout of THIS program — composite foreign key below, same reasoning
+    // as template_exercises'.
+    workoutId: integer("workout_id").notNull(),
     exerciseId: integer("exercise_id")
       .notNull()
       .references(() => exercises.id, { onDelete: "restrict" }),
@@ -184,5 +295,12 @@ export const assignedProgramExercises = pgTable(
     assignedProgramIdIdx: index(
       "assigned_program_exercises_assigned_program_id_idx",
     ).on(table.assignedProgramId),
+    // Same as template_exercises_workout_fk: the workout must belong to the
+    // same program; NO ACTION for the same cascade reason.
+    workoutFk: foreignKey({
+      name: "assigned_program_exercises_workout_fk",
+      columns: [table.workoutId, table.assignedProgramId],
+      foreignColumns: [programWorkouts.id, programWorkouts.assignedProgramId],
+    }),
   }),
 );

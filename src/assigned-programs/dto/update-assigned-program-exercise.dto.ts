@@ -31,6 +31,7 @@ import {
   ValidateIf,
 } from "class-validator";
 import { hasStartedWeight } from "../../common/validators/has-started-weight";
+import { isPresent } from "../../common/validators/is-present";
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
 
@@ -123,4 +124,14 @@ export class UpdateAssignedProgramExerciseDto {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  // --- Which workout ------------------------------------------------------
+  // Moves the exercise to another workout of the program (it goes to the
+  // end of that workout's list). @ValidateIf(isPresent), not @IsOptional():
+  // workout_id is NOT NULL, so an explicit `null` must be a 400 here rather
+  // than a NOT NULL violation (a 500) at the database — the null trap,
+  // is-present.ts.
+  @ValidateIf(isPresent)
+  @IsInt()
+  workoutId?: number;
 }

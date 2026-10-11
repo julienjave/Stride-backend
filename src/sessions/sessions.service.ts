@@ -31,6 +31,7 @@ import {
   sessionExercises,
   assignedPrograms,
   assignedProgramExercises,
+  programWorkouts,
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateSessionDto } from './dto/create-session.dto'
@@ -39,6 +40,7 @@ import { UpdateSessionExerciseDto } from './dto/update-session-exercise.dto'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import { isPossibleToday } from '../common/calendar-date'
+import { workoutLabel, type WorkoutRow } from '../common/workout-rules'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -63,6 +65,41 @@ export function assertLocalDateIsToday(
       "localDate must be today's date in the patient's time zone",
     )
   }
+}
+
+// Which of the program's workouts a new session does (decisions §5,
+// "Settled 2026-10-10": sessions record their workout). Exported for its
+// unit tests — pure: the request's workoutId and the program's workouts in,
+// a workout id (or an exception) out.
+//   - Asked for: it must be one of THIS program's workouts. 400, not 404:
+//     the program exists and was found; it's the request that names a
+//     workout the program doesn't have.
+//   - Not asked for, one workout: that one — a one-workout program works
+//     exactly as before workouts existed.
+//   - Not asked for, several: refused. Unlike adding an exercise (where
+//     "the first workout" is a harmless default), a session done as the
+//     wrong workout would be judged against the wrong day by the schedule —
+//     guessing here would quietly corrupt the patient's adherence.
+export function chooseSessionWorkout(
+  requested: number | null | undefined,
+  workouts: WorkoutRow[],
+): number {
+  // null counts as "not asked for" (the DTO's @IsOptional lets it through).
+  if (requested != null) {
+    if (!workouts.some((workout) => workout.id === requested)) {
+      throw new BadRequestException(
+        `Workout ${requested} is not part of this program`,
+      )
+    }
+    return requested
+  }
+  if (workouts.length === 1) return workouts[0].id
+  // A, B, … — one per workout (the labels depend only on how many there
+  // are, so the workouts' order doesn't matter here).
+  const labels = workouts.map((_, index) => workoutLabel(index))
+  throw new BadRequestException(
+    `This program has ${workouts.length} workouts (${labels.join(', ')}): say which one this session is (workoutId)`,
+  )
 }
 
 @Injectable()
@@ -103,10 +140,48 @@ export class SessionsService {
     assertLocalDateIsToday(dto.localDate)
 
     const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
+      // The patient can read their own program's workouts (program_workouts'
+      // SELECT policy follows the program's).
+      const workouts = await tx.query.programWorkouts.findMany({
+        where: eq(programWorkouts.assignedProgramId, dto.assignedProgramId),
+      })
+      const workoutId = chooseSessionWorkout(dto.workoutId, workouts)
+
+      // Today's checklist: the exercises of THAT workout, in their order.
+      // Each row REFERENCES its assignedProgramExerciseId, it doesn't
+      // duplicate sets/reps. The prescription lives on the assigned
+      // program; the session just tracks actual performance against it.
+      // assigned_program_exercises, sessions, and session_exercises all
+      // have RLS, so this whole insert running through withRlsContext isn't
+      // just harmless, it's required — sessions_insert /
+      // session_exercises_insert only pass WITH CHECK for the owning
+      // patient, which currentUser genuinely is here (see the patientId
+      // check above).
+      const programExerciseRows =
+        await tx.query.assignedProgramExercises.findMany({
+          where: and(
+            eq(
+              assignedProgramExercises.assignedProgramId,
+              dto.assignedProgramId,
+            ),
+            eq(assignedProgramExercises.workoutId, workoutId),
+          ),
+          orderBy: (row, { asc }) => [asc(row.sortOrder)],
+        })
+      // A session with an empty checklist would be "completed" with nothing
+      // done in it. Assigning refuses a template with an empty workout, but
+      // a program's workout can be emptied later by its practitioner.
+      if (programExerciseRows.length === 0) {
+        throw new BadRequestException(
+          'This workout has no exercises yet: ask your practitioner',
+        )
+      }
+
       const [session] = await tx
         .insert(sessions)
         .values({
           assignedProgramId: dto.assignedProgramId,
+          workoutId,
           patientId: currentUser.id,
           scheduledDate: dto.scheduledDate
             ? new Date(dto.scheduledDate)
@@ -115,25 +190,6 @@ export class SessionsService {
           status: 'pending',
         })
         .returning()
-
-      // Pre-populates today's checklist from the program's CURRENT
-      // prescribed exercises — each row REFERENCES its
-      // assignedProgramExerciseId, it doesn't duplicate sets/reps. The
-      // prescription lives on the assigned program; this just tracks
-      // actual performance against it. assigned_program_exercises,
-      // sessions, and session_exercises all have RLS now, so this whole
-      // insert running through withRlsContext isn't just harmless, it's
-      // required — sessions_insert/session_exercises_insert only pass
-      // WITH CHECK for the owning patient, which currentUser genuinely is
-      // here (see the patientId check above).
-      const programExerciseRows =
-        await tx.query.assignedProgramExercises.findMany({
-          where: eq(
-            assignedProgramExercises.assignedProgramId,
-            dto.assignedProgramId,
-          ),
-          orderBy: (row, { asc }) => [asc(row.sortOrder)],
-        })
 
       for (const pe of programExerciseRows) {
         await tx.insert(sessionExercises).values({

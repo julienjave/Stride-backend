@@ -333,39 +333,70 @@ export interface TemplateLine {
   notes?: string
 }
 
+// A workout of a template (decisions §5, "Settled 2026-10-10"): an optional
+// name and its exercises, in order. The first one is A, the next B, …
+export interface TemplateWorkout {
+  name?: string
+  lines: TemplateLine[]
+}
+
+// One template of each shape: the knee template has TWO named workouts
+// (mobility on some days, strength on others); the back template is a
+// single, unnamed workout — the shape every template had before workouts.
+// Each knee workout starts with one of Alex's own exercises, so neither ends
+// up empty when the library isn't imported (assigning refuses a template
+// with an empty workout).
 export const TEMPLATES: {
   title: string
   description: string
-  lines: TemplateLine[]
+  workouts: TemplateWorkout[]
 }[] = [
   {
     title: 'Knee Rehab — Phase 1',
     description:
       'First weeks after a knee injury: range of motion and quadriceps activation.',
-    lines: [
-      { exercise: { custom: 'Heel Slides' }, sets: 3, reps: 10 },
+    workouts: [
       {
-        exercise: { custom: 'Terminal Knee Extension (band)' },
-        sets: 3,
-        reps: 12,
+        name: 'Mobility',
+        lines: [
+          { exercise: { custom: 'Heel Slides' }, sets: 3, reps: 10 },
+          { exercise: { library: 'Knee Circles' }, sets: 2, reps: 10 },
+        ],
       },
-      { exercise: { library: 'Knee Circles' }, sets: 2, reps: 10 },
       {
-        exercise: { library: 'Single Leg Glute Bridge' },
-        sets: 3,
-        reps: 8,
-        notes: 'Keep the pelvis level.',
+        name: 'Strength',
+        lines: [
+          {
+            exercise: { custom: 'Terminal Knee Extension (band)' },
+            sets: 3,
+            reps: 12,
+          },
+          {
+            exercise: { library: 'Single Leg Glute Bridge' },
+            sets: 3,
+            reps: 8,
+            notes: 'Keep the pelvis level.',
+          },
+        ],
       },
     ],
   },
   {
     title: 'Lower Back Mobility',
     description: 'Gentle daily mobility for non-specific lower back pain.',
-    lines: [
-      { exercise: { library: 'Pelvic Tilt Into Bridge' }, sets: 2, reps: 10 },
-      { exercise: { library: 'Cat Stretch' }, sets: 2, reps: 8 },
-      { exercise: { library: "Child's Pose" }, durationInSeconds: 30 },
-      { exercise: { library: 'Plank' }, sets: 3, durationInSeconds: 20 },
+    workouts: [
+      {
+        lines: [
+          {
+            exercise: { library: 'Pelvic Tilt Into Bridge' },
+            sets: 2,
+            reps: 10,
+          },
+          { exercise: { library: 'Cat Stretch' }, sets: 2, reps: 8 },
+          { exercise: { library: "Child's Pose" }, durationInSeconds: 30 },
+          { exercise: { library: 'Plank' }, sets: 3, durationInSeconds: 20 },
+        ],
+      },
     ],
   },
 ]
@@ -391,6 +422,12 @@ export type SeedSchedule =
 // history: completed sessions on past days (session-history.ts turns the
 // plan into dates for the day the seed runs), so the program pages show
 // done, made-up and missed days at once.
+//
+// workoutByWeekday: which workout (by position: 0 = A) each past session
+// did, by the weekday of the SCHEDULED day it counts for — a make-up does
+// the missed day's workout. Omitted = workout A. (The schedule itself will
+// say which workout each day uses in the next step; this records what the
+// sessions did.)
 export const ASSIGNED_PROGRAMS: {
   patient: AccountKey
   by: AccountKey
@@ -399,6 +436,7 @@ export const ASSIGNED_PROGRAMS: {
   startsDaysAgo: number
   schedule: SeedSchedule
   history: SeedHistory
+  workoutByWeekday?: Partial<Record<number, number>>
 }[] = [
   {
     patient: 'pat',
@@ -411,6 +449,8 @@ export const ASSIGNED_PROGRAMS: {
     // Every scheduled day done, except the 2nd (made up the next day) and
     // the 4th (missed).
     history: { kind: 'weekdays', madeUpIndex: 1, missedIndex: 3 },
+    // Mobility (A) on Mondays and Fridays, Strength (B) on Wednesdays.
+    workoutByWeekday: { 1: 0, 3: 1, 5: 0 },
   },
   {
     patient: 'jo',

@@ -37,16 +37,25 @@ export type SeedHistory =
   // Any schedule: sessions on these days after the start (0 = the start).
   | { kind: 'days-after-start'; days: number[] }
 
+// One seeded session: the day it was done, and the scheduled day it counts
+// for — the same day, except for a make-up, which counts for the missed
+// day before it (and so does that day's workout).
+export interface SeedSession {
+  day: string
+  forDay: string
+}
+
 export function seedSessionDays(
   startDate: string,
   today: string,
   schedule: SeedSchedule,
   history: SeedHistory,
-): string[] {
+): SeedSession[] {
   if (history.kind === 'days-after-start') {
     return history.days
       .map((offset) => addDays(startDate, offset))
       .filter((day) => day < today)
+      .map((day) => ({ day, forDay: day }))
   }
 
   if (schedule.type !== 'weekdays') {
@@ -56,7 +65,7 @@ export function seedSessionDays(
   for (let day = startDate; day < today; day = addDays(day, 1)) {
     if (schedule.weekdays.includes(isoWeekday(day))) scheduled.push(day)
   }
-  const result: string[] = []
+  const result: SeedSession[] = []
   scheduled.forEach((day, index) => {
     if (index === history.missedIndex) return
     if (index === history.madeUpIndex) {
@@ -66,10 +75,10 @@ export function seedSessionDays(
           `A make-up the day after ${day} would fall on a scheduled day`,
         )
       }
-      if (nextDay < today) result.push(nextDay)
+      if (nextDay < today) result.push({ day: nextDay, forDay: day })
       return
     }
-    result.push(day)
+    result.push({ day, forDay: day })
   })
   return result
 }

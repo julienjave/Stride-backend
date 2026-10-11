@@ -507,15 +507,28 @@ describe("Programs (e2e)", () => {
         notes: "Go slow",
         sortOrder: 0,
       });
-      await practitionerA
-        .post(`/programs/${templateId}/exercises`)
-        .send({ exerciseId, durationInSeconds: 30, sortOrder: 1 });
+      // A second, named workout (B), holding the second exercise — so the
+      // copy has to recreate the workouts AND put each exercise in the
+      // right one.
+      const withB = await practitionerA
+        .post(`/programs/${templateId}/workouts`)
+        .send({ name: "Holds" });
+      await practitionerA.post(`/programs/${templateId}/exercises`).send({
+        exerciseId,
+        durationInSeconds: 30,
+        sortOrder: 0,
+        workoutId: withB.body.workouts[1].id,
+      });
       return templateId;
     }
 
-    // Strips exactly the two columns a copy is SUPPOSED to change, so the
-    // rest can be compared field-for-field with toEqual.
+    // Strips exactly the columns a copy is SUPPOSED to change, so the rest
+    // can be compared field-for-field with toEqual: the row's own id, and
+    // the ids it points at (its template, its workout) — re-pointed at the
+    // copy's. That the workout is the RIGHT one is checked separately.
     const withoutIdentity = (rows: any[]) =>
+      rows.map(({ id, templateId, workoutId, ...rest }) => rest);
+    const withoutWorkoutIdentity = (rows: any[]) =>
       rows.map(({ id, templateId, ...rest }) => rest);
 
     it("lets a practitioner duplicate a colleague's template into their own copy, with every exercise field intact", async () => {
@@ -532,9 +545,22 @@ describe("Programs (e2e)", () => {
       expect(dupRes.body.description).toBe("Source description");
       expect(dupRes.body.isArchived).toBe(false);
 
-      // Every column except id/templateId matches the source, in order.
+      // Every column except the ids matches the source, in order.
       expect(withoutIdentity(dupRes.body.exercises)).toEqual(
         withoutIdentity(sourceBefore.body.exercises),
+      );
+      // The workouts too: same names, same order — new rows of the copy.
+      expect(withoutWorkoutIdentity(dupRes.body.workouts)).toEqual([
+        { name: null, sortOrder: 0 },
+        { name: "Holds", sortOrder: 1 },
+      ]);
+      for (const workout of dupRes.body.workouts) {
+        expect(workout.templateId).toBe(copyId);
+      }
+      // Each copied exercise is in the copy's workout at the SAME position
+      // as its source's: the first in A, the second in B.
+      expect(dupRes.body.exercises.map((e: any) => e.workoutId)).toEqual(
+        dupRes.body.workouts.map((w: any) => w.id),
       );
       // Genuinely NEW rows, pointing at the copy — not the source's rows.
       for (const row of dupRes.body.exercises) {

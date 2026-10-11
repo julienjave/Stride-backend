@@ -20,10 +20,15 @@ import { seedSessionDays } from './session-history'
 // October 2026: Mon 12, Wed 14, Fri 16, Mon 19, Wed 21, Fri 23, Mon 26.
 const MWF = { type: 'weekdays' as const, weekdays: [1, 3, 5] }
 const d = (day: string) => `2026-10-${day}`
+// Just the days the sessions were done on.
+const days = (sessions: { day: string }[]) => sessions.map((s) => s.day)
 
 describe('seedSessionDays', () => {
   // Scheduled days before Mon 26: 12, 14, 16, 19, 21, 23. Index 1 (Wed 14)
   // made up on Thu 15; index 3 (Mon 19) missed.
+  // Each session also says which scheduled day it counts for: its own day,
+  // except the make-up (Thu 15), which counts for Wed 14 — the seed gives it
+  // Wednesday's workout.
   it('gives a weekdays history: all done, one made up the next day, one missed', () => {
     expect(
       seedSessionDays(d('12'), d('26'), MWF, {
@@ -31,30 +36,41 @@ describe('seedSessionDays', () => {
         madeUpIndex: 1,
         missedIndex: 3,
       }),
-    ).toEqual([d('12'), d('15'), d('16'), d('21'), d('23')])
+    ).toEqual([
+      { day: d('12'), forDay: d('12') },
+      { day: d('15'), forDay: d('14') },
+      { day: d('16'), forDay: d('16') },
+      { day: d('21'), forDay: d('21') },
+      { day: d('23'), forDay: d('23') },
+    ])
   })
 
   // Only days before today: today's session is left to try.
   it('stops before today', () => {
     expect(
-      seedSessionDays(d('12'), d('16'), MWF, {
-        kind: 'weekdays',
-        madeUpIndex: 1,
-        missedIndex: 3,
-      }),
+      days(
+        seedSessionDays(d('12'), d('16'), MWF, {
+          kind: 'weekdays',
+          madeUpIndex: 1,
+          missedIndex: 3,
+        }),
+      ),
     ).toEqual([d('12'), d('15')])
   })
 
   it('skips a make-up that would fall on today', () => {
     expect(
-      seedSessionDays(d('12'), d('15'), MWF, {
-        kind: 'weekdays',
-        madeUpIndex: 1,
-        missedIndex: 3,
-      }),
+      days(
+        seedSessionDays(d('12'), d('15'), MWF, {
+          kind: 'weekdays',
+          madeUpIndex: 1,
+          missedIndex: 3,
+        }),
+      ),
     ).toEqual([d('12')])
   })
 
+  // Each counts for its own day: these histories have no make-ups.
   it('gives sessions on days after the start, before today', () => {
     expect(
       seedSessionDays(
@@ -66,7 +82,11 @@ describe('seedSessionDays', () => {
           days: [0, 2, 8, 10],
         },
       ),
-    ).toEqual([d('15'), d('17'), d('23')])
+    ).toEqual([
+      { day: d('15'), forDay: d('15') },
+      { day: d('17'), forDay: d('17') },
+      { day: d('23'), forDay: d('23') },
+    ])
   })
 
   it('refuses a weekdays history on a times-per-week schedule', () => {

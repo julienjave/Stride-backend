@@ -58,8 +58,10 @@ import { CreateExerciseDto } from '../src/exercises/dto/create-exercise.dto'
 import { ProgramsService } from '../src/programs/programs.service'
 import { CreateTemplateDto } from '../src/programs/dto/create-template.dto'
 import { AddTemplateExerciseDto } from '../src/programs/dto/add-template-exercise.dto'
+import { AddWorkoutDto } from '../src/programs/dto/add-workout.dto'
+import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
-import { addDays, utcToday } from '../src/common/calendar-date'
+import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
 import { seedSessionDays } from './seed/session-history'
 import { CreateAssignedProgramDto } from '../src/assigned-programs/dto/create-assigned-program.dto'
 import type { CurrentUser } from '../src/common/decorators/current-user.decorator'
@@ -351,7 +353,8 @@ async function run(): Promise<void> {
     }
 
     // The library, by name — present only if `npm run seed:exercises` ran.
-    const libraryNames = TEMPLATES.flatMap((t) => t.lines)
+    const libraryNames = TEMPLATES.flatMap((t) => t.workouts)
+      .flatMap((w) => w.lines)
       .map((line) =>
         'library' in line.exercise ? line.exercise.library : null,
       )
@@ -367,9 +370,11 @@ async function run(): Promise<void> {
     const missingLibrary = libraryNames.filter((name) => !libraryIds.has(name))
 
     const templateIds = new Map<string, number>()
-    // How many exercises each template really got — fewer than listed when
-    // the library isn't imported (its exercises are skipped below).
-    const templateSizes = new Map<string, number>()
+    // Templates with a workout left EMPTY — when the library isn't imported,
+    // its exercises are skipped below. Assigning refuses such a template (a
+    // patient can't be given an empty workout), so their assignments are
+    // skipped and reported at the end.
+    const incompleteTemplates = new Set<string>()
     for (const template of TEMPLATES) {
       const created = await programs.create(
         alex,
@@ -379,36 +384,64 @@ async function run(): Promise<void> {
         }),
       )
       templateIds.set(template.title, created.id)
-      let sortOrder = 0
-      for (const { exercise, ...prescription } of template.lines) {
-        const exerciseId =
-          'custom' in exercise
-            ? customIds.get(exercise.custom)
-            : libraryIds.get(exercise.library)
-        if (exerciseId === undefined) continue // library not imported: skipped, reported below
-        await programs.addExercise(
-          created.id,
-          alex,
-          await validated(AddTemplateExerciseDto, {
-            exerciseId,
-            sortOrder,
-            ...prescription,
-          }),
-        )
-        sortOrder += 1
+      // A new template has one unnamed workout (A). The dataset's first
+      // workout IS that one — named if the dataset names it; every further
+      // one is added after it. Through the real routes' service methods, as
+      // Alex, like everything else here.
+      let workoutIds = (await programs.findOne(created.id)).workouts.map(
+        (w) => w.id,
+      )
+      for (const [index, workout] of template.workouts.entries()) {
+        if (index === 0) {
+          if (workout.name !== undefined) {
+            await programs.renameWorkout(
+              created.id,
+              workoutIds[0],
+              alex,
+              await validated(RenameWorkoutDto, { name: workout.name }),
+            )
+          }
+        } else {
+          const updated = await programs.addWorkout(
+            created.id,
+            alex,
+            await validated(AddWorkoutDto, { name: workout.name }),
+          )
+          workoutIds = updated.workouts.map((w) => w.id)
+        }
+
+        let sortOrder = 0
+        for (const { exercise, ...prescription } of workout.lines) {
+          const exerciseId =
+            'custom' in exercise
+              ? customIds.get(exercise.custom)
+              : libraryIds.get(exercise.library)
+          if (exerciseId === undefined) continue // library not imported: skipped, reported below
+          await programs.addExercise(
+            created.id,
+            alex,
+            await validated(AddTemplateExerciseDto, {
+              exerciseId,
+              workoutId: workoutIds[index],
+              sortOrder,
+              ...prescription,
+            }),
+          )
+          sortOrder += 1
+        }
+        if (sortOrder === 0) incompleteTemplates.add(template.title)
       }
-      templateSizes.set(template.title, sortOrder)
     }
 
     // UTC's today: the seed has no user, hence no time zone to prefer.
     const today = utcToday()
-    // A template left EMPTY (all of its exercises come from the library,
-    // which isn't imported) can't be assigned: the service refuses a
-    // template with nothing to copy (400). Skip it and say so at the end,
-    // like the skipped library exercises, instead of failing the whole seed.
+    // A template with an EMPTY workout (all of its exercises come from the
+    // library, which isn't imported) can't be assigned: the service refuses
+    // it (400). Skip it and say so at the end, like the skipped library
+    // exercises, instead of failing the whole seed.
     const skippedAssignments: string[] = []
     for (const assignment of ASSIGNED_PROGRAMS) {
-      if (templateSizes.get(assignment.template) === 0) {
+      if (incompleteTemplates.has(assignment.template)) {
         skippedAssignments.push(assignment.title)
         continue
       }
@@ -428,30 +461,37 @@ async function run(): Promise<void> {
       // the database owner: the API only records a session dated TODAY
       // (POST /sessions refuses any other local date), and these are in the
       // past — the same reason the expired invitation is written by hand.
-      // Each session gets its checklist like a real one (every exercise of
-      // the program, completed), so opening it shows something. 18:00 UTC
-      // on that day as the moment; the local date is what the schedule
-      // judges.
-      const sessionDays = seedSessionDays(
+      // Each session did one workout — the one for the weekday of the
+      // scheduled day it counts for (a make-up does the missed day's) — and
+      // gets that workout's checklist like a real one (every exercise,
+      // completed), so opening it shows something. 18:00 UTC on that day as
+      // the moment; the local date is what the schedule judges.
+      const sessions = seedSessionDays(
         startDate,
         today,
         assignment.schedule,
         assignment.history,
       )
-      for (const day of sessionDays) {
+      for (const { day, forDay } of sessions) {
+        const workout =
+          program.workouts[
+            assignment.workoutByWeekday?.[isoWeekday(forDay)] ?? 0
+          ]
         const {
           rows: [session],
         } = await owner.query<{ id: number }>(
           `INSERT INTO sessions
-             (assigned_program_id, patient_id, scheduled_date, local_date,
+             (assigned_program_id, workout_id, patient_id, scheduled_date, local_date,
               started_at, completed_at, total_duration_in_seconds, status)
-           VALUES ($1, $2, $3::date + time '17:30' AT TIME ZONE 'UTC', $3,
-                   $3::date + time '17:30' AT TIME ZONE 'UTC',
-                   $3::date + time '18:00' AT TIME ZONE 'UTC', 1800, 'completed')
+           VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4,
+                   $4::date + time '17:30' AT TIME ZONE 'UTC',
+                   $4::date + time '18:00' AT TIME ZONE 'UTC', 1800, 'completed')
            RETURNING id`,
-          [program.id, program.patientId, day],
+          [program.id, workout.id, program.patientId, day],
         )
-        for (const exercise of program.exercises) {
+        for (const exercise of program.exercises.filter(
+          (e) => e.workoutId === workout.id,
+        )) {
           await owner.query(
             `INSERT INTO session_exercises
                (session_id, assigned_program_exercise_id, completed, sort_order)
@@ -493,7 +533,7 @@ async function run(): Promise<void> {
       console.log(
         `\nNote: the exercise library isn't imported, so the templates skip: ${missingLibrary.join(', ')}.` +
           (skippedAssignments.length > 0
-            ? `\nThese programs weren't assigned (their template ended up empty): ${skippedAssignments.join(', ')}.`
+            ? `\nThese programs weren't assigned (their template has an empty workout): ${skippedAssignments.join(', ')}.`
             : '') +
           '\nRun `npm run seed:exercises`, then `npm run seed:dev -- --reset` (or `npm run seed -- --reset`).',
       )

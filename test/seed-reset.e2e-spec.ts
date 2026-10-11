@@ -75,10 +75,21 @@ describe('Seed reset (e2e)', () => {
       `INSERT INTO program_templates (practitioner_id, title) VALUES ($1, 'Reset Template') RETURNING id`,
       [userId],
     )
+    // Every exercise belongs to one of its template's workouts — another
+    // foreign key the reset's deletion order has to respect.
+    const workout = await pool.query<{ id: number }>(
+      `INSERT INTO template_workouts (template_id, sort_order) VALUES ($1, 0) RETURNING id`,
+      [template.rows[0].id],
+    )
     await pool.query(
-      `INSERT INTO template_exercises (template_id, exercise_id, sort_order)
-       VALUES ($1, $2, 0), ($1, $3, 1)`,
-      [template.rows[0].id, libraryExerciseId, custom.rows[0].id],
+      `INSERT INTO template_exercises (template_id, workout_id, exercise_id, sort_order)
+       VALUES ($1, $2, $3, 0), ($1, $2, $4, 1)`,
+      [
+        template.rows[0].id,
+        workout.rows[0].id,
+        libraryExerciseId,
+        custom.rows[0].id,
+      ],
     )
     // A login session: after a reset nobody should stay logged in as a
     // user who no longer exists.

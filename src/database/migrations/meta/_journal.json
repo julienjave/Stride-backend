@@ -183,6 +183,20 @@
       "when": 1791622875445,
       "tag": "0025_program_schedules_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791711562012,
+      "tag": "0026_workouts",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791711624716,
+      "tag": "0027_workouts_rls",
+      "breakpoints": true
     }
   ]
 }

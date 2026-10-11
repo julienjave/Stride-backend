@@ -35,6 +35,9 @@ import { UpdateTemplateDto } from './dto/update-template.dto'
 import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
 import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
 import { ReorderTemplateExercisesDto } from './dto/reorder-template-exercises.dto'
+import { AddWorkoutDto } from './dto/add-workout.dto'
+import { RenameWorkoutDto } from './dto/rename-workout.dto'
+import { ReorderWorkoutsDto } from './dto/reorder-workouts.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -148,7 +151,69 @@ export class ProgramsController {
     @CurrentUser() user: CurrentUser,
     @Body() dto: ReorderTemplateExercisesDto,
   ) {
-    return this.programsService.reorderExercises(id, user, dto.order)
+    return this.programsService.reorderExercises(
+      id,
+      user,
+      dto.order,
+      dto.workoutId,
+    )
+  }
+
+  // --- WORKOUTS ---
+  //
+  // A template's workouts (decisions §5, "Settled 2026-10-10"): add one,
+  // rename it, reorder them, delete an empty one. Same roles as the
+  // template's other edits; the service checks it's the owner (or an
+  // admin). Each answers with the full template, like every write here.
+  // No @AuditedByService(): a template holds no patient data, so the generic
+  // interceptor's entry is enough (the audit convention covers clinical and
+  // account data — decided 2026-10-10).
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Post(':id/workouts')
+  addWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: AddWorkoutDto,
+  ) {
+    return this.programsService.addWorkout(id, user, dto)
+  }
+
+  // The collection path: the complete new order (same shape as reordering
+  // exercises).
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Patch(':id/workouts')
+  reorderWorkouts(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: ReorderWorkoutsDto,
+  ) {
+    return this.programsService.reorderWorkouts(id, user, dto.order)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Patch(':id/workouts/:workoutId')
+  renameWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('workoutId', ParseIntPipe) workoutId: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: RenameWorkoutDto,
+  ) {
+    return this.programsService.renameWorkout(id, workoutId, user, dto)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Delete(':id/workouts/:workoutId')
+  removeWorkout(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('workoutId', ParseIntPipe) workoutId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.programsService.removeWorkout(id, workoutId, user)
   }
 
   // --- DELETE ROUTES ---

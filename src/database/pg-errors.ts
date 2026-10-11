@@ -30,6 +30,11 @@ export const PG_UNIQUE_VIOLATION = '23505'
 // practitioner (migration 0019).
 export const PG_EXCLUSION_VIOLATION = '23P01'
 
+// 23503 is "foreign_key_violation": a row points at a row that doesn't exist
+// — or a DELETE would leave rows pointing at nothing (with NO ACTION /
+// RESTRICT foreign keys, as the workout keys are).
+export const PG_FOREIGN_KEY_VIOLATION = '23503'
+
 // Constraint names this app translates into a 409. Drizzle names a column's
 // .unique() constraint `<table>_<column>_unique` (see migration 0000).
 // Kept as named constants so the service and its tests can't disagree on
@@ -52,6 +57,17 @@ export const INVITATIONS_ONE_OPEN = 'invitations_one_open_per_user'
 // day race. AssignedProgramsService.addScheduleVersion turns it into a 409.
 export const PROGRAM_SCHEDULES_ONE_PER_DAY =
   'program_schedules_program_effective_from_unique'
+
+// The composite foreign keys from exercises and sessions to their workout
+// (programs.schema.ts, sessions.schema.ts, migration 0026). Deleting a
+// workout checks it's empty first; these catch the rare request that adds
+// an exercise (or starts a session) between that check and the delete — the
+// database refuses the delete, and the service turns that into the same 409
+// the check gives.
+export const TEMPLATE_EXERCISES_WORKOUT_FK = 'template_exercises_workout_fk'
+export const ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK =
+  'assigned_program_exercises_workout_fk'
+export const SESSIONS_WORKOUT_FK = 'sessions_workout_fk'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -111,4 +127,14 @@ export function isExclusionViolation(
   constraint?: string,
 ): boolean {
   return isPgError(error, PG_EXCLUSION_VIOLATION, constraint)
+}
+
+// A foreign-key violation (23503), optionally on one named constraint. Same
+// reasoning again: when a check and a write can be separated by another
+// request, the constraint's verdict is the reliable one.
+export function isForeignKeyViolation(
+  error: unknown,
+  constraint?: string,
+): boolean {
+  return isPgError(error, PG_FOREIGN_KEY_VIOLATION, constraint)
 }

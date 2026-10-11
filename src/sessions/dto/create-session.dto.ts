@@ -26,6 +26,14 @@ export class CreateSessionDto {
   @IsInt()
   assignedProgramId!: number
 
+  // Which of the program's workouts this session is. Required when the
+  // program has several (the service refuses to guess — see
+  // chooseSessionWorkout); optional for a one-workout program, which then
+  // works exactly as before workouts existed.
+  @IsOptional()
+  @IsInt()
+  workoutId?: number | null
+
   // Defaults to now if omitted
   @IsOptional()
   @IsDateString()

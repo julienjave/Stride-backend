@@ -25,25 +25,29 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, eq, gte, inArray } from "drizzle-orm";
+import { and, count, eq, gte, inArray } from "drizzle-orm";
 import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   assignedPrograms,
   assignedProgramExercises,
   programSchedules,
   programTemplates,
+  programWorkouts,
   sessions,
   templateExercises,
+  templateWorkouts,
   exercises,
   users,
 } from "../database/schema";
 import { UsersService } from "../users/users.service";
 import { CreateAssignedProgramDto } from "./dto/create-assigned-program.dto";
 import { UpdateAssignedProgramDto } from "./dto/update-assigned-program.dto";
-import { AssignedExerciseInputDto } from "./dto/assigned-exercise-input.dto";
+import { AddAssignedProgramExerciseDto } from "./dto/add-assigned-program-exercise.dto";
 import { UpdateAssignedProgramExerciseDto } from "./dto/update-assigned-program-exercise.dto";
 import { ScheduleInputDto, ScheduleType } from "./dto/schedule-input.dto";
 import { AddScheduleVersionDto } from "./dto/add-schedule-version.dto";
+import { AddWorkoutDto } from "./dto/add-workout.dto";
+import { RenameWorkoutDto } from "./dto/rename-workout.dto";
 import { UserRole } from "../users/dto/create-user.dto";
 import { withRlsContext } from "../database/rls-context";
 import { addDays, isPossibleToday, utcToday } from "../common/calendar-date";
@@ -54,9 +58,22 @@ import {
   planStartDateMove,
 } from "./start-date-move";
 import {
+  ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
+  isForeignKeyViolation,
   isUniqueViolation,
   PROGRAM_SCHEDULES_ONE_PER_DAY,
+  SESSIONS_WORKOUT_FK,
 } from "../database/pg-errors";
+import {
+  assertCanAddWorkout,
+  assertWorkoutRemovable,
+  isPermutationOf,
+  normalizeWorkoutName,
+  orderExercisesByWorkout,
+  orderWorkouts,
+  resolveWorkoutId,
+  workoutLabel,
+} from "../common/workout-rules";
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -83,6 +100,23 @@ interface ResolvedSourceExercise {
   weightUnit?: "kg" | "lbs";
   sortOrder: number;
   notes?: string;
+  // Which of the resolved workouts (below) it goes into, by POSITION in
+  // that list: the program's own workouts don't exist yet when this is
+  // resolved — create() inserts them, then maps positions to their new ids.
+  workoutIndex: number;
+}
+
+// What the new program will contain: its workouts (in order, A first) and
+// its exercises, each pointing at one of those workouts by position.
+interface ResolvedSource {
+  workouts: { name: string | null }[];
+  exercises: ResolvedSourceExercise[];
+}
+
+// A workout as an audit entry records it (a plain copy, like
+// versionForAudit below).
+function workoutForAudit(workout: typeof programWorkouts.$inferSelect) {
+  return { id: workout.id, name: workout.name, sortOrder: workout.sortOrder };
 }
 
 // The two schedule columns for a schedule as the API received it: exactly
@@ -255,7 +289,8 @@ export class AssignedProgramsService {
 
     assertDatesInOrder(dto.startDate, dto.endDate);
 
-    const sourceExercises = await this.resolveSourceExercises(dto);
+    const source = await this.resolveSourceExercises(dto);
+    const sourceExercises = source.exercises;
 
     const programId = await withRlsContext(this.db, currentUser, async (tx) => {
       const [program] = await tx
@@ -270,6 +305,24 @@ export class AssignedProgramsService {
         })
         .returning();
 
+      // The program's own workouts, copied in order (positions 0, 1, 2…).
+      // One INSERT each, keeping the new ids in the same order: a
+      // multi-row INSERT … RETURNING doesn't promise its rows come back in
+      // the order they were given, and the exercises below find their
+      // workout by position.
+      const workouts: (typeof programWorkouts.$inferSelect)[] = [];
+      for (const [index, workout] of source.workouts.entries()) {
+        const [inserted] = await tx
+          .insert(programWorkouts)
+          .values({
+            assignedProgramId: program.id,
+            name: workout.name,
+            sortOrder: index,
+          })
+          .returning();
+        workouts.push(inserted);
+      }
+
       // The actual "copy, not reference" moment. From here on these rows
       // are entirely independent of template_exercises AND of the
       // exercise's own current data — editing or deleting the source
@@ -278,6 +331,7 @@ export class AssignedProgramsService {
       for (const ex of sourceExercises) {
         await tx.insert(assignedProgramExercises).values({
           assignedProgramId: program.id,
+          workoutId: workouts[ex.workoutIndex].id,
           exerciseId: ex.exerciseId,
           name: ex.name,
           primaryMuscles: ex.primaryMuscles,
@@ -326,7 +380,9 @@ export class AssignedProgramsService {
           endDate: program.endDate,
           basedOnTemplateId: program.basedOnTemplateId,
           schedule: versionForAudit(firstVersion),
+          workouts: workouts.map(workoutForAudit),
           exercises: sourceExercises.map((ex) => ({
+            workoutId: workouts[ex.workoutIndex].id,
             exerciseId: ex.exerciseId,
             name: ex.name,
             sets: ex.sets ?? null,
@@ -352,7 +408,7 @@ export class AssignedProgramsService {
   async addExercise(
     assignedProgramId: number,
     currentUser: CurrentUser,
-    dto: AssignedExerciseInputDto,
+    dto: AddAssignedProgramExerciseDto,
   ) {
     const program = await this.findProgramOrThrow(
       assignedProgramId,
@@ -370,11 +426,19 @@ export class AssignedProgramsService {
       throw new NotFoundException(`Exercise ${dto.exerciseId} not found`);
     }
 
-    const [row] = await withRlsContext(this.db, currentUser, (tx) =>
+    const [row] = await withRlsContext(this.db, currentUser, async (tx) =>
       tx
         .insert(assignedProgramExercises)
         .values({
           assignedProgramId,
+          // The workout asked for (one of THIS program's — 404 otherwise),
+          // or the first. Read inside the transaction: program_workouts has
+          // row-level security, like everything about a patient's program.
+          workoutId: resolveWorkoutId(
+            dto.workoutId,
+            await this.findWorkouts(tx, assignedProgramId),
+            "program",
+          ),
           exerciseId: dto.exerciseId,
           // Snapshotted from the SAME already-fetched `exercise` above —
           // no extra query needed, since the existence check already
@@ -775,18 +839,36 @@ export class AssignedProgramsService {
       currentUser,
     );
     await this.assertCanManage(program.patientId, currentUser);
-    await this.findProgramExerciseOrThrow(
+    const row = await this.findProgramExerciseOrThrow(
       assignedProgramId,
       rowId,
       currentUser,
     );
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const changes: UpdateAssignedProgramExerciseDto & { sortOrder?: number } =
+        { ...dto };
+      // Moving to another workout of the program (404 if it isn't one):
+      // the exercise goes to the END of that workout's list — its old
+      // position only meant something in its old workout.
+      if (dto.workoutId !== undefined && dto.workoutId !== row.workoutId) {
+        resolveWorkoutId(
+          dto.workoutId,
+          await this.findWorkouts(tx, assignedProgramId),
+          "program",
+        );
+        const positions = await tx
+          .select({ sortOrder: assignedProgramExercises.sortOrder })
+          .from(assignedProgramExercises)
+          .where(eq(assignedProgramExercises.workoutId, dto.workoutId));
+        changes.sortOrder =
+          Math.max(-1, ...positions.map((p) => p.sortOrder)) + 1;
+      }
+      await tx
         .update(assignedProgramExercises)
-        .set(dto)
-        .where(eq(assignedProgramExercises.id, rowId)),
-    );
+        .set(changes)
+        .where(eq(assignedProgramExercises.id, rowId));
+    });
     // The FULL program (exercises in order, schedules), not the bare
     // updated row — closes the gap recorded in deferred-improvements.md,
     // the same fix the template side got (ProgramsService.updateExercise):
@@ -796,10 +878,14 @@ export class AssignedProgramsService {
     return this.findProgramWithExercises(assignedProgramId, currentUser);
   }
 
+  // Reorders the exercises of ONE workout — `workoutId`, or the first when
+  // it's omitted (every exercise of a one-workout program). Same rule as
+  // ProgramsService.reorderExercises.
   async reorderExercises(
     assignedProgramId: number,
     currentUser: CurrentUser,
     newOrder: number[],
+    requestedWorkoutId?: number | null,
   ) {
     const program = await this.findProgramOrThrow(
       assignedProgramId,
@@ -821,25 +907,30 @@ export class AssignedProgramsService {
     // currentUser, rather than a separate set_config step around a plain
     // this.db.transaction(...).
     await withRlsContext(this.db, currentUser, async (tx) => {
+      const workoutId = resolveWorkoutId(
+        requestedWorkoutId,
+        await this.findWorkouts(tx, assignedProgramId),
+        "program",
+      );
       const currentRows = await tx.query.assignedProgramExercises.findMany({
-        where: eq(
-          assignedProgramExercises.assignedProgramId,
-          assignedProgramId,
+        where: and(
+          eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
+          eq(assignedProgramExercises.workoutId, workoutId),
         ),
       });
-      const currentIds = new Set(currentRows.map((r) => r.id));
       // Same fix as ProgramsService.reorderExercises — a genuine permutation
       // check needs length + no-internal-duplicates + valid-membership
       // together, not just a comparison of deduplicated Set sizes. See that
-      // method's comment for the full exploit trace.
-      const isSamePermutation =
-        newOrder.length === currentRows.length &&
-        new Set(newOrder).size === newOrder.length &&
-        newOrder.every((id) => currentIds.has(id));
-
-      if (!isSamePermutation) {
+      // method's comment for the full exploit trace. (Now isPermutationOf,
+      // in common/workout-rules.ts.)
+      if (
+        !isPermutationOf(
+          newOrder,
+          currentRows.map((r) => r.id),
+        )
+      ) {
         throw new BadRequestException(
-          "The new order must contain exactly the exercises currently in this program, just reordered",
+          "The new order must contain exactly the exercises currently in this workout, just reordered",
         );
       }
 
@@ -852,6 +943,183 @@ export class AssignedProgramsService {
     });
 
     return this.findProgramWithExercises(assignedProgramId, currentUser);
+  }
+
+  // --- WORKOUTS ---
+  //
+  // Add, rename, reorder and delete a program's workouts — the same rules as
+  // a template's (common/workout-rules.ts), plus one: a workout that
+  // sessions recorded is the patient's history and can't be deleted.
+  //
+  // These are NEW routes that change a patient's prescription, so they
+  // follow the audit convention (decided 2026-10-10): tagged
+  // @AuditedByService() in the controller, and each writes ONE complete
+  // entry inside its own transaction — no change without its entry, no
+  // entry without its change. A request that changes nothing (renaming to
+  // the same name, the same order) changes no row and writes no entry.
+  //
+  // Each answers with the full program. Adding and deleting lock the
+  // program's row first (lockProgram), for the same reason as templates:
+  // both decide from a count.
+  //
+  // assertCanManage on these routes is the service layer of "every rule
+  // exists twice": a mutation check showed no request can reach it and
+  // fail — the patient is stopped by the controller's @Roles, and a
+  // practitioner off the care team can't even see the program (row-level
+  // security, which applies the same care-team rule, makes it a 404 in
+  // findProgramOrThrow). It stays, like on every other route here, so the
+  // service is correct on its own, whatever the layers around it.
+
+  async addWorkout(id: number, currentUser: CurrentUser, dto: AddWorkoutDto) {
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await this.lockProgram(tx, id);
+      const workouts = await this.findWorkouts(tx, id);
+      assertCanAddWorkout(workouts.length);
+      const [added] = await tx
+        .insert(programWorkouts)
+        .values({
+          assignedProgramId: id,
+          name: normalizeWorkoutName(dto.name),
+          // After the last one (max + 1: positions can have gaps).
+          sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
+        })
+        .returning();
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_WORKOUT_ADDED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: id,
+        details: { workout: workoutForAudit(added) },
+      });
+    });
+    return this.findProgramWithExercises(id, currentUser);
+  }
+
+  async renameWorkout(
+    id: number,
+    workoutId: number,
+    currentUser: CurrentUser,
+    dto: RenameWorkoutDto,
+  ) {
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const workouts = await this.findWorkouts(tx, id);
+      resolveWorkoutId(workoutId, workouts, "program");
+      const before = workouts.find((w) => w.id === workoutId)!;
+      const name = normalizeWorkoutName(dto.name);
+      if (name === before.name) return;
+      await tx
+        .update(programWorkouts)
+        .set({ name })
+        .where(eq(programWorkouts.id, workoutId));
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_WORKOUT_RENAMED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: id,
+        details: { workoutId, name: { from: before.name, to: name } },
+      });
+    });
+    return this.findProgramWithExercises(id, currentUser);
+  }
+
+  async reorderWorkouts(
+    id: number,
+    currentUser: CurrentUser,
+    newOrder: number[],
+  ) {
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const workouts = orderWorkouts(await this.findWorkouts(tx, id));
+      const currentOrder = workouts.map((w) => w.id);
+      if (!isPermutationOf(newOrder, currentOrder)) {
+        throw new BadRequestException(
+          "The new order must contain exactly the workouts currently in this program, just reordered",
+        );
+      }
+      if (newOrder.every((workoutId, i) => workoutId === currentOrder[i])) {
+        return;
+      }
+      for (const [index, workoutId] of newOrder.entries()) {
+        await tx
+          .update(programWorkouts)
+          .set({ sortOrder: index })
+          .where(eq(programWorkouts.id, workoutId));
+      }
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_WORKOUTS_REORDERED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: id,
+        // Ids, first = A: enough to say which workout became which letter.
+        details: { order: { from: currentOrder, to: newOrder } },
+      });
+    });
+    return this.findProgramWithExercises(id, currentUser);
+  }
+
+  // Only an empty workout, never the last, never one with recorded sessions
+  // (assertWorkoutRemovable). The audit entry keeps the deleted row whole —
+  // after this, the audit log is the only place it still exists.
+  async removeWorkout(id: number, workoutId: number, currentUser: CurrentUser) {
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    try {
+      await withRlsContext(this.db, currentUser, async (tx) => {
+        await this.lockProgram(tx, id);
+        const workouts = orderWorkouts(await this.findWorkouts(tx, id));
+        resolveWorkoutId(workoutId, workouts, "program");
+        const [{ exerciseCount }] = await tx
+          .select({ exerciseCount: count() })
+          .from(assignedProgramExercises)
+          .where(eq(assignedProgramExercises.workoutId, workoutId));
+        // Every session, whatever its status: a started one is history too.
+        const [{ sessionCount }] = await tx
+          .select({ sessionCount: count() })
+          .from(sessions)
+          .where(eq(sessions.workoutId, workoutId));
+        assertWorkoutRemovable({
+          label: workoutLabel(workouts.findIndex((w) => w.id === workoutId)),
+          workoutCount: workouts.length,
+          exerciseCount,
+          sessionCount,
+        });
+        const [removed] = await tx
+          .delete(programWorkouts)
+          .where(eq(programWorkouts.id, workoutId))
+          .returning();
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: "ASSIGNED_PROGRAM_WORKOUT_REMOVED",
+          targetUserId: program.patientId,
+          entityType: "assigned-programs",
+          entityId: id,
+          details: { workout: workoutForAudit(removed) },
+        });
+      });
+    } catch (error) {
+      // An exercise added, or a session started, between the counts above
+      // and the DELETE (neither takes the program's lock): the database
+      // refuses the delete through that row's foreign key. Same answer the
+      // counts would have given, a moment later.
+      if (
+        isForeignKeyViolation(error, ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK) ||
+        isForeignKeyViolation(error, SESSIONS_WORKOUT_FK)
+      ) {
+        throw new ConflictException(
+          "This workout was just given exercises or a session: reload the program and try again",
+        );
+      }
+      throw error;
+    }
+    return this.findProgramWithExercises(id, currentUser);
   }
 
   // --- DELETE ROUTES ---
@@ -896,7 +1164,7 @@ export class AssignedProgramsService {
 
   private async resolveSourceExercises(
     dto: CreateAssignedProgramDto,
-  ): Promise<ResolvedSourceExercise[]> {
+  ): Promise<ResolvedSource> {
     if (dto.basedOnTemplateId) {
       // The template ROW first (closes the gap in deferred-improvements.md:
       // this used to read only template_exercises, so an ARCHIVED — i.e.
@@ -928,10 +1196,35 @@ export class AssignedProgramsService {
           `Program template ${dto.basedOnTemplateId} has no exercises to copy`,
         );
       }
+      // The template's workouts, in order — copied with the exercises.
+      // Every one must have exercises: a patient given an empty workout B
+      // would be scheduled sessions with nothing in them. (An empty workout
+      // in a TEMPLATE is fine — it's being written; assigning is the moment
+      // it has to be complete.)
+      const workouts = orderWorkouts(
+        await this.db.query.templateWorkouts.findMany({
+          where: eq(templateWorkouts.templateId, dto.basedOnTemplateId),
+        }),
+      );
+      const indexOfWorkout = new Map(
+        workouts.map((workout, index) => [workout.id, index]),
+      );
+      workouts.forEach((workout, index) => {
+        if (!rows.some((row) => row.workoutId === workout.id)) {
+          throw new BadRequestException(
+            `Workout ${workoutLabel(index)} of program template ${dto.basedOnTemplateId} has no exercises`,
+          );
+        }
+      });
       const snapshots = await this.fetchExerciseSnapshots(
         rows.map((row) => row.exerciseId),
       );
-      return rows.map((row) => {
+      // Copied in display order — A's exercises, then B's — rather than by
+      // their positions alone (which restart at 0 in every workout, so A's
+      // and B's would interleave): the rows are inserted, and the audit
+      // entry lists them, in the order the program will show them.
+      const inDisplayOrder = orderExercisesByWorkout(rows, workouts);
+      const exercisesToCopy = inDisplayOrder.map((row) => {
         // Guaranteed present — a templateExercises row's exerciseId is
         // enforced valid by its own foreign key (onDelete: "restrict"),
         // so fetchExerciseSnapshots can never actually throw for this
@@ -951,8 +1244,15 @@ export class AssignedProgramsService {
           weightUnit: row.weightUnit ?? undefined,
           sortOrder: row.sortOrder,
           notes: row.notes ?? undefined,
+          // The `!` holds: an exercise's workout is one of its template's
+          // (composite foreign key), and all of them are in the map.
+          workoutIndex: indexOfWorkout.get(row.workoutId)!,
         };
       });
+      return {
+        workouts: workouts.map((workout) => ({ name: workout.name })),
+        exercises: exercisesToCopy,
+      };
     }
 
     if (!dto.exercises || dto.exercises.length === 0) {
@@ -968,7 +1268,9 @@ export class AssignedProgramsService {
     const snapshots = await this.fetchExerciseSnapshots(
       dto.exercises.map((ex) => ex.exerciseId),
     );
-    return dto.exercises.map((ex) => {
+    // An inline list is one workout (unnamed, "A"): the list has no way to
+    // say otherwise, and workouts can be added on the program afterwards.
+    const exercisesToCopy = dto.exercises.map((ex) => {
       const snapshot = snapshots.get(ex.exerciseId)!;
       return {
         exerciseId: ex.exerciseId,
@@ -984,21 +1286,24 @@ export class AssignedProgramsService {
         weightUnit: ex.weightUnit,
         sortOrder: ex.sortOrder,
         notes: ex.notes,
+        workoutIndex: 0,
       };
     });
+    return { workouts: [{ name: null }], exercises: exercisesToCopy };
   }
 
-  // The program with its exercises (in their order) and its schedule
-  // versions (oldest first — the order they took effect in).
+  // The program with its workouts (A first), its exercises (one flat list,
+  // workout by workout — see ProgramsService.findOne for why flat) and its
+  // schedule versions (oldest first — the order they took effect in).
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
-    const [exerciseRows, schedules] = await withRlsContext(
+    const [workoutRows, exerciseRows, schedules] = await withRlsContext(
       this.db,
       currentUser,
       async (tx) => [
+        await this.findWorkouts(tx, id),
         await tx.query.assignedProgramExercises.findMany({
           where: eq(assignedProgramExercises.assignedProgramId, id),
-          orderBy: (row, { asc }) => [asc(row.sortOrder)],
         }),
         await tx.query.programSchedules.findMany({
           where: eq(programSchedules.assignedProgramId, id),
@@ -1006,7 +1311,35 @@ export class AssignedProgramsService {
         }),
       ] as const,
     );
-    return { ...program, exercises: exerciseRows, schedules };
+    const workouts = orderWorkouts(workoutRows);
+    return {
+      ...program,
+      workouts,
+      exercises: orderExercisesByWorkout(exerciseRows, workouts),
+      schedules,
+    };
+  }
+
+  // A program's workouts, in no particular order (orderWorkouts sorts).
+  // Always called with a transaction carrying the caller's RLS context:
+  // program_workouts' policies show only workouts of programs the caller
+  // may see.
+  private async findWorkouts(tx: DrizzleDb, assignedProgramId: number) {
+    return tx.query.programWorkouts.findMany({
+      where: eq(programWorkouts.assignedProgramId, assignedProgramId),
+    });
+  }
+
+  // SELECT … FOR UPDATE on the program's row, so the workout changes of one
+  // program happen one at a time — see ProgramsService.lockTemplate for the
+  // race it prevents. Row-level security asks the UPDATE policy too: an
+  // admin or the care team, the people allowed to change the program.
+  private async lockProgram(tx: DrizzleDb, assignedProgramId: number) {
+    await tx
+      .select({ id: assignedPrograms.id })
+      .from(assignedPrograms)
+      .where(eq(assignedPrograms.id, assignedProgramId))
+      .for("update");
   }
 
   private async findProgramOrThrow(id: number, currentUser: CurrentUser) {

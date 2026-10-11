@@ -27,10 +27,15 @@ import {
   pgEnum,
   check,
   index,
+  foreignKey,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
-import { assignedPrograms, assignedProgramExercises } from './programs.schema'
+import {
+  assignedPrograms,
+  assignedProgramExercises,
+  programWorkouts,
+} from './programs.schema'
 
 export const sessionStatusEnum = pgEnum('session_status', [
   'pending',
@@ -46,6 +51,12 @@ export const sessions = pgTable(
     assignedProgramId: integer('assigned_program_id')
       .notNull()
       .references(() => assignedPrograms.id, { onDelete: 'restrict' }),
+    // Which of the program's workouts this session did (decisions §5,
+    // "Settled 2026-10-10"): the schedule asks "was Monday's upper body
+    // done?", not just "was something done on Monday?". The session's
+    // checklist is that workout's exercises. A workout of THIS program —
+    // composite foreign key below.
+    workoutId: integer('workout_id').notNull(),
     patientId: integer('patient_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -75,6 +86,20 @@ export const sessions = pgTable(
     programLocalDateIdx: index(
       'sessions_assigned_program_id_local_date_idx',
     ).on(table.assignedProgramId, table.localDate),
+    // (workout_id, assigned_program_id) must be one of the program's own
+    // workouts — the same composite-key idea as the exercise tables. NO
+    // ACTION on delete: a workout with sessions is history and can't be
+    // deleted (the service refuses first, with a clear message).
+    //
+    // No index of its own on workout_id: the only query that needs one is
+    // the check Postgres runs when a workout is deleted ("does any session
+    // use it?") — rare, and it filters on assigned_program_id too, which the
+    // index above already serves.
+    workoutFk: foreignKey({
+      name: 'sessions_workout_fk',
+      columns: [table.workoutId, table.assignedProgramId],
+      foreignColumns: [programWorkouts.id, programWorkouts.assignedProgramId],
+    }),
   }),
 )
 

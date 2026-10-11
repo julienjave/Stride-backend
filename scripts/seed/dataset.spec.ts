@@ -108,10 +108,40 @@ describe('the seed dataset', () => {
   it('builds templates only from known custom exercises', () => {
     const customNames = new Set(CUSTOM_EXERCISES.map((e) => e.name))
     for (const template of TEMPLATES) {
-      for (const line of template.lines) {
+      for (const line of template.workouts.flatMap((w) => w.lines)) {
         if ('custom' in line.exercise) {
           expect(customNames).toContain(line.exercise.custom)
         }
+      }
+    }
+  })
+
+  // The seed shows both shapes: a template with several workouts, and one
+  // with a single workout (the shape every template had before workouts).
+  it('includes a several-workout template and a one-workout template', () => {
+    const counts = TEMPLATES.map((t) => t.workouts.length)
+    expect(counts.some((n) => n > 1)).toBe(true)
+    expect(counts).toContain(1)
+  })
+
+  // Which workout each past session did: the map must name only scheduled
+  // weekdays (a weekdays schedule), cover all of them, and point at
+  // workouts the template has.
+  it("maps every scheduled weekday to one of the template's workouts", () => {
+    for (const assignment of ASSIGNED_PROGRAMS) {
+      if (assignment.workoutByWeekday === undefined) continue
+      expect(assignment.schedule.type).toBe('weekdays')
+      const weekdays =
+        assignment.schedule.type === 'weekdays'
+          ? assignment.schedule.weekdays
+          : []
+      expect(Object.keys(assignment.workoutByWeekday).map(Number)).toEqual(
+        weekdays,
+      )
+      const template = TEMPLATES.find((t) => t.title === assignment.template)
+      for (const position of Object.values(assignment.workoutByWeekday)) {
+        expect(position).toBeGreaterThanOrEqual(0)
+        expect(position).toBeLessThan(template?.workouts.length ?? 0)
       }
     }
   })

@@ -17,7 +17,13 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsArray, ArrayMinSize, ArrayMaxSize, IsInt } from 'class-validator'
+import {
+  IsArray,
+  ArrayMinSize,
+  ArrayMaxSize,
+  IsInt,
+  IsOptional,
+} from 'class-validator'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -25,7 +31,15 @@ import { IsArray, ArrayMinSize, ArrayMaxSize, IsInt } from 'class-validator'
 // ReorderImagesDto, but template exercises track order via an explicit
 // sortOrder column rather than array position, since they're real rows
 // with their own id, not plain strings in an array.
+//
+// Exercises are ordered WITHIN a workout: `order` lists exactly the
+// exercises of `workoutId` (or of the first workout when it's omitted — what
+// today's screens send, for a one-workout template that's every exercise).
 export class ReorderTemplateExercisesDto {
+  @IsOptional()
+  @IsInt()
+  workoutId?: number | null
+
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(200) // no realistic template needs more exercise slots than this

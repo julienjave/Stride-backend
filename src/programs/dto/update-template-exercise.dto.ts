@@ -18,9 +18,10 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { PartialType, OmitType } from '@nestjs/mapped-types'
-import { IsIn, IsNumber, Min, ValidateIf } from 'class-validator'
+import { IsIn, IsInt, IsNumber, Min, ValidateIf } from 'class-validator'
 import { AddTemplateExerciseDto } from './add-template-exercise.dto'
 import { hasStartedWeight } from '../../common/validators/has-started-weight'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -49,10 +50,20 @@ import { hasStartedWeight } from '../../common/validators/has-started-weight'
 export class UpdateTemplateExerciseDto extends PartialType(
   OmitType(AddTemplateExerciseDto, [
     'exerciseId',
+    'workoutId',
     'weight',
     'weightUnit',
   ] as const),
 ) {
+  // Moving the exercise to another workout of the template. Omitted from
+  // the PartialType derivation for the same reason as weight below:
+  // PartialType's @IsOptional() would let `null` through, and workout_id is
+  // NOT NULL — a 500 at the database instead of a 400 here (the null trap,
+  // is-present.ts). @ValidateIf(isPresent) skips only an ABSENT key.
+  @ValidateIf(isPresent)
+  @IsInt()
+  workoutId?: number
+
   @ValidateIf(hasStartedWeight)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)

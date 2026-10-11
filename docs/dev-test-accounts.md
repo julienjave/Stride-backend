@@ -75,14 +75,19 @@ made, through the app's own code); the seed announces it just before.
 
 - **Alex's exercises:** *Terminal Knee Extension (band)* and *Heel Slides*.
 - **Alex's templates:** *Knee Rehab — Phase 1* and *Lower Back Mobility*,
-  mixing Alex's exercises with library ones.
+  mixing Alex's exercises with library ones. The knee template has **two
+  workouts** — *A · Mobility* and *B · Strength* — each exercise in one of
+  them; the back template is a single workout, the shape every template had
+  before workouts existed.
 - **Assigned programs**, one of each schedule type, each with a history of
   completed sessions (on past days, so their summaries have something to
   show — today's session is left for you):
-  - *Knee Rehab — Pat*, a copy of the knee template by Alex, started **14 days
-    before** the seed ran, on **Monday, Wednesday and Friday**. Every scheduled
-    day so far is done, except the 2nd — **made up** the next day — and the
-    4th — **missed**.
+  - *Knee Rehab — Pat*, a copy of the knee template by Alex (both workouts
+    copied with it), started **14 days before** the seed ran, on **Monday,
+    Wednesday and Friday**. Every scheduled day so far is done, except the
+    2nd — **made up** the next day — and the 4th — **missed**. Each past
+    session records its workout: *Mobility* on Mondays and Fridays,
+    *Strength* on Wednesdays (the make-up does the missed day's workout).
   - *Lower Back Mobility — Jo*, a copy of the back template assigned by **Sam**
     (Jo's other practitioner), started **10 days before** the seed ran,
     **3 times a week** — its program weeks start on that day's weekday, not
