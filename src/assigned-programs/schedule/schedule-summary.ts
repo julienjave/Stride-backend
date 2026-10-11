@@ -55,6 +55,16 @@ import { addDays, daysBetween, isoWeekday } from '../../common/calendar-date'
 //   - Paused ('paused'): nothing is due. A pause ends any open make-up
 //     window, and a session during it is extra ('paused').
 //   - "Today" is never missed: the make-up window always runs past it.
+//   - SWAPS (step 2b-iii): a session with `countsFor` = D explicitly fulfils
+//     the scheduled day D ("Wednesday's lower body, done on Monday") —
+//     never its own day, never a make-up. D is then 'swapped'. It counts
+//     only if D is a scheduled day expecting that workout and D isn't
+//     already fulfilled when the swap happens: the EARLIER of the two wins
+//     (D's own session or make-up, or the swap). A swap that can't count
+//     is extra ('swap_not_counted') — it is never reinterpreted as
+//     something else; and D's own session after an early swap is extra
+//     ('already_done'). (The service checks, when the session starts, the
+//     rest of what was decided: the same program week, swaps allowed.)
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -75,6 +85,9 @@ export interface SummarySession {
   id: number
   localDate: string
   workoutId: number
+  // A swap: the scheduled day this session fulfils (sessions.counts_for).
+  // Absent or null = an ordinary session.
+  countsFor?: string | null
 }
 
 export interface ScheduleSummaryInput {
@@ -88,7 +101,8 @@ export interface ScheduleSummaryInput {
   today: string
 }
 
-export type DayState = 'done' | 'made_up' | 'missed' | 'due' | 'upcoming'
+export type DayState =
+  'done' | 'made_up' | 'swapped' | 'missed' | 'due' | 'upcoming'
 
 // A scheduled day of a 'weekdays' schedule.
 export interface ScheduledDay {
@@ -100,6 +114,9 @@ export interface ScheduledDay {
   sessionId: number | null
   // The session that made it up (state 'made_up'), and its day.
   madeUpBy: { sessionId: number; date: string } | null
+  // The session that fulfilled it on another day by a swap (state
+  // 'swapped') — before the day (done early) or after it (done late).
+  swappedBy: { sessionId: number; date: string } | null
 }
 
 export type WeekState = 'met' | 'missed' | 'in_progress' | 'upcoming'
@@ -140,6 +157,11 @@ export type ExtraReason =
   | 'repeated_workout'
   // During a pause.
   | 'paused'
+  // A swap that couldn't count: its day was already fulfilled, or isn't a
+  // scheduled day expecting that workout (any more).
+  | 'swap_not_counted'
+  // On a scheduled day already fulfilled — earlier — by a swap.
+  | 'already_done'
 
 export interface ExtraSession {
   sessionId: number
@@ -175,8 +197,11 @@ export interface ScheduleSummary {
     // for an open-ended program, which has no total (decisions §5: show a
     // count instead of a progress bar).
     expected: number | null
+    // `done` counts days done on the day (and weekly positions); made-up
+    // and swapped days are counted apart, so a screen can tell them apart.
     done: number
     madeUp: number
+    swapped: number
     missed: number
     extra: number
   }
@@ -266,12 +291,16 @@ export function summarizeSchedule(
         ? -1
         : 1,
   )
+  // Swaps are kept apart, by the day they were DONE on: they never count for
+  // that day, and are applied as the walk reaches that day (step 2).
+  const swapsOnDay = new Map<string, SummarySession[]>()
   for (const session of sortedSessions) {
     if (session.localDate < startDate || session.localDate > lastDay) {
       extra(session, 'outside_program')
     } else {
-      sessionsOnDay.set(session.localDate, [
-        ...(sessionsOnDay.get(session.localDate) ?? []),
+      const byDay = session.countsFor ? swapsOnDay : sessionsOnDay
+      byDay.set(session.localDate, [
+        ...(byDay.get(session.localDate) ?? []),
         session,
       ])
     }
@@ -306,9 +335,43 @@ export function summarizeSchedule(
     openMissed = null
   }
 
+  // Swaps done BEFORE their day (D later than the session): waiting for the
+  // walk to reach D, which then starts out 'swapped' — the swap came first.
+  const earlySwaps = new Map<string, SummarySession>()
+  const fulfilled = (entry: ScheduledDay) =>
+    entry.state === 'done' ||
+    entry.state === 'made_up' ||
+    entry.state === 'swapped'
+  // The swaps done on `day`. One for a day already walked (done late) is
+  // applied now if that day is still unfulfilled; one for a later day
+  // waits in `earlySwaps` (only the first for a given day: a second one
+  // can't count).
+  const applySwaps = (day: string) => {
+    for (const swap of swapsOnDay.get(day) ?? []) {
+      const target = swap.countsFor!
+      if (target > day) {
+        if (earlySwaps.has(target)) extra(swap, 'swap_not_counted')
+        else earlySwaps.set(target, swap)
+        continue
+      }
+      const entry = days.find((d) => d.date === target)
+      if (!entry || entry.workoutId !== swap.workoutId || fulfilled(entry)) {
+        extra(swap, 'swap_not_counted')
+        continue
+      }
+      entry.state = 'swapped'
+      entry.swappedBy = { sessionId: swap.id, date: day }
+      // Fulfilled now: no longer waiting for a make-up.
+      if (openMissed === entry) openMissed = null
+    }
+  }
+
   for (let day = startDate; day <= lastDay; day = addDays(day, 1)) {
     const version = versionOn(versions, day)
     const list = sessionsOnDay.get(day) ?? []
+    // The day's swaps first: on the same day, an explicit swap takes
+    // precedence over an inferred make-up.
+    applySwaps(day)
 
     if (version?.type === 'weekdays') {
       const scheduled = version.days.find((d) => d.weekday === isoWeekday(day))
@@ -325,22 +388,44 @@ export function summarizeSchedule(
           state: 'upcoming', // settled in step 3 unless done now
           sessionId: null,
           madeUpBy: null,
+          swappedBy: null,
         }
         days.push(entry)
+        // A swap done earlier for this day: it came first, so the day is
+        // already fulfilled — if the swap did this day's workout.
+        const early = earlySwaps.get(day)
+        if (early) {
+          earlySwaps.delete(day)
+          if (early.workoutId === scheduled.workoutId) {
+            entry.state = 'swapped'
+            entry.swappedBy = { sessionId: early.id, date: early.localDate }
+          } else {
+            extra(early, 'swap_not_counted')
+          }
+        }
         if (list.length > 0) {
           const { chosen, others } = pickSession(
             list,
             (s) => s.workoutId === scheduled.workoutId,
           )
           others.forEach((s) => extra(s, 'same_day'))
-          if (chosen.workoutId === scheduled.workoutId) {
+          if (entry.state === 'swapped') {
+            // Fulfilled by the earlier swap: today's own session — even of
+            // the right workout — comes second.
+            extra(
+              chosen,
+              chosen.workoutId === scheduled.workoutId
+                ? 'already_done'
+                : 'wrong_workout',
+            )
+          } else if (chosen.workoutId === scheduled.workoutId) {
             entry.state = 'done'
             entry.sessionId = chosen.id
           } else {
             extra(chosen, 'wrong_workout')
           }
         }
-        if (entry.state !== 'done') openMissed = entry
+        if (!fulfilled(entry)) openMissed = entry
       } else if (list.length > 0) {
         // An unscheduled day: a session of the open missed day's workout
         // makes it up; any other session is extra.
@@ -406,10 +491,14 @@ export function summarizeSchedule(
   // (the end date). For an open-ended program the next scheduled day lies
   // beyond lastDay, which is never before today — so it's still open.
   if (openMissed) windowEnd.set(openMissed, lastDay)
+  // An early swap still waiting: the walk reached its day and found no
+  // scheduled day there (the schedule changed since), or never reached it
+  // (past the end date). Either way it couldn't count.
+  for (const swap of earlySwaps.values()) extra(swap, 'swap_not_counted')
 
-  // --- 3. Settle the specific days that weren't done or made up ---
+  // --- 3. Settle the specific days that weren't fulfilled ---
   for (const entry of days) {
-    if (entry.state === 'done' || entry.state === 'made_up') continue
+    if (fulfilled(entry)) continue
     if (entry.date > today) entry.state = 'upcoming'
     else entry.state = windowEnd.get(entry)! >= today ? 'due' : 'missed'
   }
@@ -558,6 +647,7 @@ export function summarizeSchedule(
           : days.length + weeks.reduce((sum, w) => sum + w.target, 0),
       done: count('done') + weeks.reduce((sum, w) => sum + w.done, 0),
       madeUp: count('made_up'),
+      swapped: count('swapped'),
       missed: count('missed') + weeklyMissed,
       extra: extraSessions.length,
     },

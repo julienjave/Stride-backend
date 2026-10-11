@@ -71,6 +71,14 @@ export const sessions = pgTable(
     // app, which does, sends the day itself. The schedule module matches
     // sessions to scheduled days on THIS column, never on scheduled_date.
     localDate: date('local_date').notNull(),
+    // A SWAP (step 2b-iii): "this session fulfils the workout scheduled on
+    // that day" — Wednesday's lower body done on Monday says counts_for =
+    // that Wednesday. NULL = the usual rules (the session counts for its
+    // own day, or makes up a missed one). Set only when the session starts;
+    // the service checks what can be checked then (a scheduled day of the
+    // same program week, its workout), and the schedule module judges the
+    // rest (was that day already done by then?).
+    countsFor: date('counts_for'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     totalDurationInSeconds: integer('total_duration_in_seconds'),
@@ -100,6 +108,11 @@ export const sessions = pgTable(
       columns: [table.workoutId, table.assignedProgramId],
       foreignColumns: [programWorkouts.id, programWorkouts.assignedProgramId],
     }),
+    // A swap is with ANOTHER day: a session already counts for its own.
+    countsForOtherDay: check(
+      'sessions_counts_for_other_day',
+      sql`${table.countsFor} IS NULL OR ${table.countsFor} <> ${table.localDate}`,
+    ),
   }),
 )
 

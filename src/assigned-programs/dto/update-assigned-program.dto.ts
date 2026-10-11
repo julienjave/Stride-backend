@@ -18,10 +18,10 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  IsBoolean,
   IsOptional,
   IsString,
   MaxLength,
-  IsEnum,
   ValidateIf,
 } from 'class-validator'
 import { isPresent } from '../../common/validators/is-present'
@@ -29,16 +29,15 @@ import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
-// `on_hold` is gone (step 2b-ii): a pause is a schedule version — POST
-// /assigned-programs/:id/schedules with type 'paused' — which, unlike a
-// status, says since when.
-export enum AssignedProgramStatus {
-  ACTIVE = 'active',
-  COMPLETED = 'completed',
-  CANCELLED = 'cancelled',
-}
-
-// title, startDate and status are NOT NULL columns: @ValidateIf(isPresent)
+// No `status` here any more (step 2b-iii): a program is completed or
+// cancelled through its own routes — POST /assigned-programs/:id/complete
+// and …/cancel — which apply the rules (the end date, archiving a program
+// with no sessions); a PATCH could only skip them. Sending `status` is now a
+// 400 (the global pipe's forbidNonWhitelisted), so an old client fails
+// loudly. (`on_hold` was already gone, step 2b-ii: a pause is a schedule
+// version.)
+//
+// title, startDate and allowSwaps are NOT NULL columns: @ValidateIf(isPresent)
 // rather than @IsOptional(), so an explicit null gets a 400 instead of
 // reaching the database as a NOT NULL violation (a 500) — the null trap
 // described in is-present.ts. endDate is nullable, and null is meaningful
@@ -58,7 +57,9 @@ export class UpdateAssignedProgramDto {
   @IsCalendarDate()
   endDate?: string | null
 
+  // May the patient swap two days' workouts within a week (sessions'
+  // `countsFor`)? Turning it off stops NEW swaps; recorded ones still count.
   @ValidateIf(isPresent)
-  @IsEnum(AssignedProgramStatus)
-  status?: AssignedProgramStatus
+  @IsBoolean()
+  allowSwaps?: boolean
 }

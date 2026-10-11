@@ -152,6 +152,7 @@ describe('specific days (weekdays)', () => {
       expected: 3,
       done: 3,
       madeUp: 0,
+      swapped: 0,
       missed: 0,
       extra: 0,
     })
@@ -247,6 +248,7 @@ describe('specific days (weekdays)', () => {
       state: 'made_up',
       sessionId: null,
       madeUpBy: { sessionId: 1, date: d('13') },
+      swappedBy: null,
     })
     expect(s.totals.madeUp).toBe(1)
   })
@@ -507,6 +509,7 @@ describe('N per week (times_per_week)', () => {
       expected: 6,
       done: 4,
       madeUp: 0,
+      swapped: 0,
       missed: 2,
       extra: 0,
     })
@@ -664,6 +667,7 @@ describe('across schedule versions', () => {
       expected: 5,
       done: 2,
       madeUp: 0,
+      swapped: 0,
       missed: 3,
       extra: 0,
     })
@@ -1152,5 +1156,244 @@ describe('next workout', () => {
       today: '20',
     })
     expect(s.nextWorkout).toBeNull()
+  })
+})
+
+// --- Swaps (step 2b-iii) -------------------------------------------------------------------------------------
+
+describe('swaps', () => {
+  // Monday 12 = A (upper body), Wednesday 14 = B (lower body).
+  const AB = [
+    weekdays(
+      [
+        [1, A],
+        [3, B],
+      ],
+      '12',
+    ),
+  ]
+  // A session as [id, day done, workout, the day it counts for].
+  const swaps = (...rows: [number, string, number, string | null][]) =>
+    rows.map(([id, day, workoutId, countsFor]) => ({
+      id,
+      localDate: d(day),
+      workoutId,
+      countsFor: countsFor === null ? null : d(countsFor),
+    }))
+  // [day, state, the day the swap was done on] for swapped days.
+  const swapRows = (summary: ScheduleSummary) =>
+    summary.days.map((day) =>
+      day.swappedBy
+        ? [day.date.slice(8), day.state, day.swappedBy.date.slice(8)]
+        : [day.date.slice(8), day.state],
+    )
+
+  // The case from the decision: Wednesday's B done on Monday, Monday's A
+  // done on Wednesday — both days 'swapped', nothing extra, nothing missed.
+  it('swaps two days both ways', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', B, '14'], [2, '14', A, '12']),
+      today: '19',
+    })
+    expect(swapRows(s)).toEqual([
+      ['12', 'swapped', '14'],
+      ['14', 'swapped', '12'],
+    ])
+    expect(s.days[0].swappedBy).toEqual({ sessionId: 2, date: d('14') })
+    expect(s.totals).toMatchObject({ done: 0, swapped: 2, missed: 0, extra: 0 })
+  })
+
+  // A swap names its day AND does that day's workout: A for Wednesday (which
+  // expects B) doesn't count — and isn't quietly used for Monday instead,
+  // though Monday expects A.
+  it("doesn't count a swap that did another workout than the day's", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', A, '14']),
+      today: '19',
+    })
+    expect(swapRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['12', 'swap_not_counted']])
+  })
+
+  // A swap done LATE must do the day's workout too: B on Wednesday "for"
+  // Monday (which expects A) doesn't count — Monday stays missed.
+  it("doesn't count a late swap that did another workout than the day's", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '14', B, '12']),
+      today: '19',
+    })
+    expect(swapRows(s)[0]).toEqual(['12', 'missed'])
+    expect(extraRows(s)).toEqual([['14', 'swap_not_counted']])
+  })
+
+  // A swapped day isn't waiting for a make-up: after Wednesday's B was done
+  // early (on Monday), a B on Thursday doesn't turn Wednesday into "made
+  // up" — it has no missed day to make up.
+  it('never lets a make-up replace a swap', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', B, '14'], [2, '15', B, null]),
+      today: '19',
+    })
+    expect(swapRows(s)[1]).toEqual(['14', 'swapped', '12'])
+    expect(extraRows(s)).toEqual([['15', 'no_missed_day']])
+  })
+
+  // The database refuses a swap for the session's own day
+  // (sessions_counts_for_other_day); the module, which takes any input,
+  // doesn't count one either — it never fulfils a day "by swap" on that
+  // very day.
+  it("doesn't count a swap for its own day", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', A, '12']),
+      today: '19',
+    })
+    expect(swapRows(s)[0]).toEqual(['12', 'missed'])
+    expect(extraRows(s)).toEqual([['12', 'swap_not_counted']])
+  })
+
+  // The earlier wins. Monday done on Monday; a swap for Monday on Wednesday
+  // comes second and can't count.
+  it("doesn't count a late swap for a day already done", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', A, null], [2, '14', A, '12']),
+      today: '19',
+    })
+    expect(swapRows(s)).toEqual([
+      ['12', 'done'],
+      ['14', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['14', 'swap_not_counted']])
+  })
+
+  // …and the other way round: Wednesday's B done early, on Monday; Wednesday's
+  // own B session comes second.
+  it("makes the day's own session extra after an early swap", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', B, '14'], [2, '14', B, null]),
+      today: '19',
+    })
+    expect(swapRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'swapped', '12'],
+    ])
+    expect(extraRows(s)).toEqual([['14', 'already_done']])
+  })
+
+  // On the swapped day, a session of ANOTHER workout is what it always is: a
+  // wrong workout, not "already done".
+  it("keeps 'wrong_workout' for another workout on a swapped day", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '12', B, '14'], [2, '14', C, null]),
+      today: '19',
+    })
+    expect(extraRows(s)).toEqual([['14', 'wrong_workout']])
+  })
+
+  // A late swap ends the wait for a make-up: on Tuesday, a swap for Monday
+  // and an ordinary A session — the explicit swap counts, the other session
+  // has no missed day left to make up.
+  it('lets an explicit swap take precedence over a make-up on the same day', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps([1, '13', A, null], [2, '13', A, '12']),
+      today: '19',
+    })
+    expect(swapRows(s)[0]).toEqual(['12', 'swapped', '13'])
+    expect(extraRows(s)).toEqual([['13', 'no_missed_day']])
+  })
+
+  // Only the first swap for a day can count; and a swap for a day that isn't
+  // scheduled (Tuesday) — or that the walk never reaches (past the end) —
+  // never counts.
+  it.each<[string, [number, string, number, string | null][], string]>([
+    [
+      'the second swap for one day',
+      [
+        [1, '12', B, '14'],
+        [2, '13', B, '14'],
+      ],
+      '13',
+    ],
+    ['a swap for an unscheduled day', [[1, '12', A, '13']], '12'],
+    ['a swap for a day after the end', [[1, '16', A, '19']], '16'],
+  ])("doesn't count %s", (_label, rows, day) => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: AB,
+      sessions: swaps(...rows),
+      today: '19',
+    })
+    expect(extraRows(s)).toContainEqual([day, 'swap_not_counted'])
+    expect(s.totals.swapped).toBe(rows.length === 2 ? 1 : 0)
+  })
+
+  // A swap never counts in a weekly count (that schedule has no days to
+  // swap — the service refuses it; the module still keeps it out).
+  it('keeps a swap out of a weekly count', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(2, '12')],
+      sessions: swaps([1, '12', A, '13']),
+      today: '19',
+    })
+    expect(weekRows(s)).toEqual([['12', '18', 2, 0, 'missed']])
+    expect(extraRows(s)).toEqual([['12', 'swap_not_counted']])
+  })
+
+  // What's next skips a day already fulfilled by an early swap: Wednesday's B
+  // was done on Tuesday, so after Monday the next thing is Friday.
+  it('skips a swapped day in what comes next', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [
+        weekdays(
+          [
+            [1, A],
+            [3, B],
+            [5, A],
+          ],
+          '12',
+        ),
+      ],
+      sessions: swaps([1, '12', A, null], [2, '13', B, '14']),
+      today: '13',
+    })
+    expect(s.nextWorkout).toEqual({
+      workoutId: A,
+      forDay: d('16'),
+      programWeek: null,
+    })
   })
 })

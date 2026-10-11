@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { addDays } from '../../src/common/calendar-date'
-import { seedSessionDays } from './session-history'
+import { seedSessionDays, seedSessionWorkouts } from './session-history'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -167,19 +167,72 @@ describe('the seed dataset', () => {
   })
 
   // Every history fits its schedule (a weekdays history on a weekdays
-  // schedule, make-ups on unscheduled days) — checked with a fixed date so
-  // the test doesn't depend on the day it runs.
-  it('gives every program a history that fits its schedule', () => {
+  // schedule, make-ups and swaps on unscheduled days, no week with more
+  // sessions than it asks for) — whatever day the seed runs: the dates are
+  // relative, so the weekdays they land on change with the day. Checked for
+  // seven consecutive fixed days (every weekday once), so the test doesn't
+  // depend on the day it runs either. The workouts are checked with the
+  // POSITIONS standing in for ids (any distinct numbers would do).
+  it.each([20, 21, 22, 23, 24, 25, 26])(
+    'gives every program a history that fits its schedule (seed run on Oct %i)',
+    (dayOfMonth) => {
+      const today = `2026-10-${dayOfMonth}`
+      for (const assignment of ASSIGNED_PROGRAMS) {
+        const start = addDays(today, -assignment.startsDaysAgo)
+        const sessions = seedSessionDays(
+          start,
+          today,
+          assignment.schedule,
+          assignment.history,
+        )
+        const { schedule } = assignment
+        const content =
+          schedule.type === 'weekdays'
+            ? {
+                type: 'weekdays' as const,
+                timesPerWeek: null,
+                days: schedule.days.map((d) => ({
+                  weekday: d.weekday,
+                  workoutId: d.workoutIndex,
+                })),
+                rotation: [],
+              }
+            : {
+                type: 'times_per_week' as const,
+                timesPerWeek: schedule.timesPerWeek,
+                days: [],
+                rotation: schedule.rotation ?? [0],
+              }
+        expect(() =>
+          seedSessionWorkouts(start, content, sessions),
+        ).not.toThrow()
+      }
+    },
+  )
+
+  // Step 2b-iii: only a closed program can be assigned again (the service
+  // refuses an active one, and the seed would stop halfway) — and the demo
+  // has one of each new thing for the screens: a swap, a cancelled program
+  // that is continued.
+  it('assigns again only a program it closes', () => {
     for (const assignment of ASSIGNED_PROGRAMS) {
-      const today = '2026-10-26'
-      const start = addDays(today, -assignment.startsDaysAgo)
-      expect(() =>
-        seedSessionDays(start, today, assignment.schedule, assignment.history),
-      ).not.toThrow()
+      if (assignment.assignAgain) expect(assignment.close).toBeDefined()
     }
   })
 
-  // The point of having two programs: dev data shows both kinds of
+  it('includes a swap, and a cancelled program continued by another', () => {
+    expect(
+      ASSIGNED_PROGRAMS.some(
+        (a) =>
+          a.history.kind === 'weekdays' && a.history.swappedIndex !== undefined,
+      ),
+    ).toBe(true)
+    expect(
+      ASSIGNED_PROGRAMS.some((a) => a.close === 'cancel' && a.assignAgain),
+    ).toBe(true)
+  })
+
+  // The point of having several programs: dev data shows both kinds of
   // schedule (decisions §5) for the screens to be tried on.
   it('includes a program of each schedule type', () => {
     const types = new Set(ASSIGNED_PROGRAMS.map((a) => a.schedule.type))

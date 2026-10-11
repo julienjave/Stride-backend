@@ -29,6 +29,7 @@ import {
   check,
   unique,
   foreignKey,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users.schema";
@@ -179,11 +180,34 @@ export const assignedPrograms = pgTable(
       () => programTemplates.id,
       { onDelete: "set null" },
     ),
+    // "Assign again" (step 2b-iii): the cancelled or completed program this
+    // one continues — its tailored workouts and exercises were copied from
+    // there. A program pointing at another row of its OWN table, hence the
+    // `AnyPgColumn` annotation: TypeScript can't infer the type of a
+    // variable from an expression that refers to that same variable, so the
+    // callback's return type is spelled out. NO ACTION: a program others
+    // continue can't be deleted on its own (the app never deletes programs
+    // — it archives them — so this guards against direct queries); it is
+    // checked at the END of the statement, so deleting a program together
+    // with its continuation (the seed's reset deletes every program in one
+    // statement) works. Same choice as step 2b-i's workout keys. (A mutation
+    // check showed RESTRICT behaves the same HERE — no cascade ever deletes
+    // programs; the two differ when rows go mid-cascade, as 2b-i's did.)
+    basedOnProgramId: integer("based_on_program_id").references(
+      (): AnyPgColumn => assignedPrograms.id,
+      { onDelete: "no action" },
+    ),
     title: varchar("title", { length: 255 }).notNull(),
     startDate: date("start_date").notNull(),
     endDate: date("end_date"),
+    // active → completed | cancelled, and those two are FINAL (decisions §5,
+    // "Settled 2026-10-11"): changed only by POST …/complete and …/cancel.
     status: programStatusEnum("status").notNull().default("active"),
     isArchived: boolean("is_archived").notNull().default(false),
+    // May the patient swap two days' workouts within a program week
+    // (sessions.counts_for)? On by default; the practitioner can turn it off.
+    // It governs NEW swaps only — swaps already recorded keep counting.
+    allowSwaps: boolean("allow_swaps").notNull().default(true),
   },
   (table) => ({
     // findAllForCurrentUser() filters on this directly (patient) or via
@@ -198,6 +222,11 @@ export const assignedPrograms = pgTable(
     endsAfterStart: check(
       "assigned_programs_ends_after_start",
       sql`${table.endDate} IS NULL OR ${table.endDate} >= ${table.startDate}`,
+    ),
+    // A program can't continue itself.
+    notBasedOnItself: check(
+      "assigned_programs_not_based_on_itself",
+      sql`${table.basedOnProgramId} IS NULL OR ${table.basedOnProgramId} <> ${table.id}`,
     ),
   }),
 );

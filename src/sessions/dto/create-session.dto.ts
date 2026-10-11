@@ -47,4 +47,12 @@ export class CreateSessionDto {
   // under last month.
   @IsCalendarDate()
   localDate!: string
+
+  // A SWAP (step 2b-iii): the scheduled day — of the same program week —
+  // whose workout this session does ("Wednesday's lower body, today").
+  // Optional: absent or null = an ordinary session, counting for today.
+  // With it, `workoutId` may be left out: the day says which workout.
+  @IsOptional()
+  @IsCalendarDate()
+  countsFor?: string | null
 }

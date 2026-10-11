@@ -211,6 +211,13 @@
       "when": 1791730427644,
       "tag": "0029_schedule_workouts_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791736306471,
+      "tag": "0030_swaps_and_status",
+      "breakpoints": true
     }
   ]
 }

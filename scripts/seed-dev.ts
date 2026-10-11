@@ -477,21 +477,22 @@ async function run(): Promise<void> {
         program.schedules[0],
         sessions,
       )
-      for (const [index, { day }] of sessions.entries()) {
+      for (const [index, { day, countsFor }] of sessions.entries()) {
         const workout = program.workouts.find(
           (w) => w.id === workoutIds[index],
         )!
+        // counts_for: set for a swap only (the day it fulfils).
         const {
           rows: [session],
         } = await owner.query<{ id: number }>(
           `INSERT INTO sessions
              (assigned_program_id, workout_id, patient_id, scheduled_date, local_date,
-              started_at, completed_at, total_duration_in_seconds, status)
-           VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4,
+              counts_for, started_at, completed_at, total_duration_in_seconds, status)
+           VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4, $5,
                    $4::date + time '17:30' AT TIME ZONE 'UTC',
                    $4::date + time '18:00' AT TIME ZONE 'UTC', 1800, 'completed')
            RETURNING id`,
-          [program.id, workout.id, program.patientId, day],
+          [program.id, workout.id, program.patientId, day, countsFor],
         )
         for (const exercise of program.exercises.filter(
           (e) => e.workoutId === workout.id,
@@ -503,6 +504,30 @@ async function run(): Promise<void> {
             [session.id, exercise.id, exercise.sortOrder],
           )
         }
+      }
+
+      // Closing and continuing (step 2b-iii), through the real service and
+      // as the same practitioner — the end date (yesterday), the read-only
+      // rule and the audit entries are the app's own.
+      if (assignment.close) {
+        await assignedPrograms.close(
+          program.id,
+          await as(assignment.by, UserRole.PRACTITIONER),
+          assignment.close,
+          today,
+        )
+      }
+      if (assignment.assignAgain) {
+        await assignedPrograms.create(
+          await as(assignment.by, UserRole.PRACTITIONER),
+          await validated(CreateAssignedProgramDto, {
+            patientId: idOf(assignment.patient),
+            basedOnProgramId: program.id,
+            title: assignment.assignAgain.title,
+            startDate: today,
+            schedule: assignment.assignAgain.schedule,
+          }),
+        )
       }
     }
 

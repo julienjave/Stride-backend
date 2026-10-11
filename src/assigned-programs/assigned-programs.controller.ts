@@ -22,6 +22,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
@@ -42,6 +44,7 @@ import { ScheduleSummaryQueryDto } from './dto/schedule-summary-query.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
 import { ReorderWorkoutsDto } from './dto/reorder-workouts.dto'
+import { CloseAssignedProgramDto } from './dto/close-assigned-program.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -106,6 +109,39 @@ export class AssignedProgramsController {
     @Body() dto: AddScheduleVersionDto,
   ) {
     return this.assignedProgramsService.addScheduleVersion(id, user, dto)
+  }
+
+  // Closing a program (step 2b-iii): ACTIONS, not a PATCH of `status`,
+  // because each applies rules a field update would skip — the end date,
+  // archiving a program cancelled before any session. POST, since they
+  // change state and aren't idempotent (a second call finds the program
+  // closed: 409). 200, not POST's default 201: nothing new is created, the
+  // answer is the program as it now is. Audited by the service, in the
+  // change's own transaction.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/cancel')
+  cancel(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: CloseAssignedProgramDto,
+  ) {
+    return this.assignedProgramsService.close(id, user, 'cancel', dto.today)
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/complete')
+  complete(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: CloseAssignedProgramDto,
+  ) {
+    return this.assignedProgramsService.close(id, user, 'complete', dto.today)
   }
 
   // --- GET ROUTES ---
@@ -253,8 +289,11 @@ export class AssignedProgramsController {
 
   // --- DELETE ROUTES ---
 
+  // Archiving = deleting, for the app. Refused (409) for a program with
+  // sessions: cancel it instead. Audited by the service since step 2b-iii.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,

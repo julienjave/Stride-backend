@@ -87,13 +87,15 @@ made, through the app's own code); the seed announces it just before.
     names a workout for each day: **Monday and Friday = A · Mobility,
     Wednesday = B · Strength**. Every scheduled day so far is done — each
     session with that day's workout — except the 2nd, **made up** the next
-    day (with the missed Wednesday's workout, *Strength*), and the 4th,
-    **missed**.
-  - *Lower Back Mobility — Jo*, a copy of the back template assigned by **Sam**
-    (Jo's other practitioner), started **10 days before** the seed ran,
-    **3 times a week** — its program weeks start on that day's weekday, not
-    on Monday. Its rotation is the suggested one, every workout in order:
-    with a single workout, that's A every time. First week: 2 of 3 (one
-    missed); second week: 1 so far.
-  - Neither program is paused; to try a pause, add a schedule version of
-    type `paused` from today (and another one later to resume).
+    day (with the missed day's workout), the 4th, **missed**, and the 5th,
+    done by a **swap**: on the unscheduled day next to it, a session saying
+    it counts for that day (`countsFor`).
+  - *Lower Back Mobility — Jo*, …(unchanged)…
+  - *Knee Rehab — Robin*, assigned by **Sam**, started **21 days before**
+    the seed ran, **twice a week** (A, then B): two weeks done, then
+    nothing — and **cancelled** on the day the seed ran. It had sessions, so
+    it stays, read-only, ending the day before. *Knee Rehab — Robin, block
+    2* **continues it** ("Assign again"): its workouts and exercises copied
+    from the cancelled one, starting the day the seed ran.
+  - No program is paused; to try a pause, add a schedule version of type
+    `paused` from today (and another one later to resume).

@@ -26,6 +26,7 @@ import { plainToInstance } from 'class-transformer'
 import { AddScheduleVersionDto } from './add-schedule-version.dto'
 import { CreateAssignedProgramDto } from './create-assigned-program.dto'
 import { UpdateAssignedProgramDto } from './update-assigned-program.dto'
+import { CloseAssignedProgramDto } from './close-assigned-program.dto'
 
 // Every message, flattened to "path: message" — nested errors (inside
 // `schedule`) included, the way the ValidationPipe reports them.
@@ -353,6 +354,24 @@ describe('CreateAssignedProgramDto', () => {
       await check(CreateAssignedProgramDto, { ...valid, ...change }),
     ).toEqual([`${field}: ${field} must be a date written as YYYY-MM-DD`])
   })
+
+  // "Assign again": a program id. (One source at a time is the service's
+  // rule — it needs both fields' values together.)
+  it('accepts basedOnProgramId as a whole number, nothing else', async () => {
+    const { basedOnTemplateId: _template, ...withoutTemplate } = valid
+    expect(
+      await check(CreateAssignedProgramDto, {
+        ...withoutTemplate,
+        basedOnProgramId: 12,
+      }),
+    ).toEqual([])
+    expect(
+      await check(CreateAssignedProgramDto, {
+        ...withoutTemplate,
+        basedOnProgramId: '12',
+      }),
+    ).toEqual(['basedOnProgramId: basedOnProgramId must be an integer number'])
+  })
 })
 
 describe('UpdateAssignedProgramDto', () => {
@@ -361,10 +380,7 @@ describe('UpdateAssignedProgramDto', () => {
   it.each([
     ['title', 'title: title must be a string'],
     ['startDate', 'startDate: startDate must be a date written as YYYY-MM-DD'],
-    [
-      'status',
-      'status: status must be one of the following values: active, completed, cancelled',
-    ],
+    ['allowSwaps', 'allowSwaps: allowSwaps must be a boolean value'],
   ])('refuses null for %s', async (field, expected) => {
     // toContain: a null title also fails @MaxLength — any refusal will do,
     // as long as null never reaches the database.
@@ -380,5 +396,44 @@ describe('UpdateAssignedProgramDto', () => {
 
   it('accepts a PATCH that sends nothing', async () => {
     expect(await check(UpdateAssignedProgramDto, {})).toEqual([])
+  })
+
+  // Step 2b-iii: the status changes only through …/cancel and …/complete,
+  // so a PATCH carrying one is refused (with the app's whitelist on), not
+  // silently applied — an old client fails loudly.
+  it('refuses a status', async () => {
+    expect(
+      await check(UpdateAssignedProgramDto, { status: 'completed' }, true),
+    ).toEqual(['status: property status should not exist'])
+  })
+
+  it.each([true, false])('accepts allowSwaps %p', async (allowSwaps) => {
+    expect(await check(UpdateAssignedProgramDto, { allowSwaps })).toEqual([])
+  })
+
+  // "false" as a string is truthy — never read as a boolean.
+  it('refuses allowSwaps as a string', async () => {
+    expect(
+      await check(UpdateAssignedProgramDto, { allowSwaps: 'false' }),
+    ).toEqual(['allowSwaps: allowSwaps must be a boolean value'])
+  })
+})
+
+describe('CloseAssignedProgramDto', () => {
+  it('accepts a calendar date', async () => {
+    expect(
+      await check(CloseAssignedProgramDto, { today: '2026-10-11' }),
+    ).toEqual([])
+  })
+
+  // Required: a server-side default would be UTC's day, wrong for half the
+  // world every evening.
+  it.each([
+    ['nothing', {}],
+    ['a timestamp', { today: '2026-10-11T08:00:00Z' }],
+  ])('refuses %s', async (_label, body) => {
+    expect(await check(CloseAssignedProgramDto, body)).toEqual([
+      'today: today must be a date written as YYYY-MM-DD',
+    ])
   })
 })

@@ -24,7 +24,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, lte } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   sessions,
@@ -32,6 +32,8 @@ import {
   assignedPrograms,
   assignedProgramExercises,
   programWorkouts,
+  programSchedules,
+  programScheduleDays,
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { CreateSessionDto } from './dto/create-session.dto'
@@ -41,6 +43,8 @@ import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import { isPossibleToday } from '../common/calendar-date'
 import { workoutLabel, type WorkoutRow } from '../common/workout-rules'
+import { assertProgramOpen } from '../assigned-programs/program-state'
+import { swapWorkoutId } from '../assigned-programs/schedule/swap-rules'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -137,6 +141,9 @@ export class SessionsService {
         'You can only create sessions for your own assigned programs',
       )
     }
+    // A completed, cancelled or archived program takes no new session
+    // (409): it is closed, part of the record (step 2b-iii).
+    assertProgramOpen(program)
     assertLocalDateIsToday(dto.localDate)
 
     const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
@@ -145,7 +152,45 @@ export class SessionsService {
       const workouts = await tx.query.programWorkouts.findMany({
         where: eq(programWorkouts.assignedProgramId, dto.assignedProgramId),
       })
-      const workoutId = chooseSessionWorkout(dto.workoutId, workouts)
+      // A swap: the workout is the one scheduled on `countsFor`, after the
+      // swap rules (swap-rules.ts — 400 if any fails). That day is judged
+      // by the schedule version in force ON IT: the latest starting on or
+      // before it — read with its days. (The patient may read both: their
+      // policies follow the program's.)
+      let requested = dto.workoutId
+      if (dto.countsFor != null) {
+        const [version] = await tx
+          .select({
+            id: programSchedules.id,
+            type: programSchedules.type,
+          })
+          .from(programSchedules)
+          .where(
+            and(
+              eq(programSchedules.assignedProgramId, dto.assignedProgramId),
+              lte(programSchedules.effectiveFrom, dto.countsFor),
+            ),
+          )
+          .orderBy(desc(programSchedules.effectiveFrom))
+          .limit(1)
+        const days = version
+          ? await tx
+              .select({
+                weekday: programScheduleDays.weekday,
+                workoutId: programScheduleDays.workoutId,
+              })
+              .from(programScheduleDays)
+              .where(eq(programScheduleDays.scheduleId, version.id))
+          : []
+        requested = swapWorkoutId({
+          program,
+          version: version ? { type: version.type, days } : null,
+          localDate: dto.localDate,
+          countsFor: dto.countsFor,
+          requestedWorkoutId: dto.workoutId,
+        })
+      }
+      const workoutId = chooseSessionWorkout(requested, workouts)
 
       // Today's checklist: the exercises of THAT workout, in their order.
       // Each row REFERENCES its assignedProgramExerciseId, it doesn't
@@ -187,6 +232,7 @@ export class SessionsService {
             ? new Date(dto.scheduledDate)
             : new Date(),
           localDate: dto.localDate,
+          countsFor: dto.countsFor ?? null,
           status: 'pending',
         })
         .returning()

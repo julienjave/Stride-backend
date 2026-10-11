@@ -38,16 +38,30 @@ export type SeedHistory =
   // first): every one done, except one MADE UP the next day and one MISSED.
   // (The next day must be unscheduled for a make-up — true for Mon/Wed/Fri,
   // which this is used with; the dataset test checks the pairing.)
-  | { kind: 'weekdays'; madeUpIndex: number; missedIndex: number }
+  //
+  // `swappedIndex` (optional, step 2b-iii): that scheduled day is done by a
+  // SWAP instead — a session on the day before it, saying it counts for it
+  // (`countsFor`); or the day after, when the day before falls in the
+  // previous program week (a swap stays within one). Both neighbours are
+  // unscheduled for the Mon/Wed/Fri schedule this is used with (checked).
+  | {
+      kind: 'weekdays'
+      madeUpIndex: number
+      missedIndex: number
+      swappedIndex?: number
+    }
   // Any schedule: sessions on these days after the start (0 = the start).
   | { kind: 'days-after-start'; days: number[] }
 
 // One seeded session: the day it was done, and the scheduled day it counts
 // for — the same day, except for a make-up, which counts for the missed
-// day before it (and so does that day's workout).
+// day before it, and a swap (and each does that day's workout).
+// `countsFor` is what's stored in sessions.counts_for: the day, for a swap
+// only (a make-up is inferred by the schedule module, never stored).
 export interface SeedSession {
   day: string
   forDay: string
+  countsFor: string | null
 }
 
 export function seedSessionDays(
@@ -60,7 +74,7 @@ export function seedSessionDays(
     return history.days
       .map((offset) => addDays(startDate, offset))
       .filter((day) => day < today)
-      .map((day) => ({ day, forDay: day }))
+      .map((day) => ({ day, forDay: day, countsFor: null }))
   }
 
   if (schedule.type !== 'weekdays') {
@@ -81,11 +95,34 @@ export function seedSessionDays(
           `A make-up the day after ${day} would fall on a scheduled day`,
         )
       }
-      if (nextDay < today) result.push({ day: nextDay, forDay: day })
+      if (nextDay < today) {
+        result.push({ day: nextDay, forDay: day, countsFor: null })
+      }
       return
     }
-    result.push({ day, forDay: day })
+    if (index === history.swappedIndex) {
+      // Program weeks start on the start date: the day before is in the
+      // same week unless `day` is a week's first day — then the day after
+      // (a day can't be both its week's first and last).
+      const weekOf = (d: string) => Math.floor(daysBetween(startDate, d) / 7)
+      const before = addDays(day, -1)
+      const swapDay =
+        before >= startDate && weekOf(before) === weekOf(day)
+          ? before
+          : addDays(day, 1)
+      if (weekdays.includes(isoWeekday(swapDay))) {
+        throw new Error(`A swap on ${swapDay} would fall on a scheduled day`)
+      }
+      if (swapDay < today) {
+        result.push({ day: swapDay, forDay: day, countsFor: day })
+      }
+      return
+    }
+    result.push({ day, forDay: day, countsFor: null })
   })
+  // Already in day order: a make-up or swap lands on an UNSCHEDULED day
+  // between its neighbours (both checked above), so it never jumps ahead of
+  // another scheduled day's session.
   return result
 }
 

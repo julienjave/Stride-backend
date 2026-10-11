@@ -45,12 +45,74 @@ describe('seedSessionDays', () => {
         missedIndex: 3,
       }),
     ).toEqual([
-      { day: d('12'), forDay: d('12') },
-      { day: d('15'), forDay: d('14') },
-      { day: d('16'), forDay: d('16') },
-      { day: d('21'), forDay: d('21') },
-      { day: d('23'), forDay: d('23') },
+      { day: d('12'), forDay: d('12'), countsFor: null },
+      { day: d('15'), forDay: d('14'), countsFor: null },
+      { day: d('16'), forDay: d('16'), countsFor: null },
+      { day: d('21'), forDay: d('21'), countsFor: null },
+      { day: d('23'), forDay: d('23'), countsFor: null },
     ])
+  })
+
+  // A swap of the FIRST scheduled day (index 0; 9 = no make-up, no miss).
+  // Started on Thursday 15, so program weeks run Thursday to Wednesday and
+  // the scheduled days are Fri 16, Mon 19, Wed 21, Fri 23: Fri 16's day
+  // before (Thu 15) is in the same week → the swap is done early, on
+  // Thursday, counting for Friday.
+  it('gives a swap the day before its day, in the same program week', () => {
+    expect(
+      seedSessionDays(d('15'), d('26'), MWF, {
+        kind: 'weekdays',
+        madeUpIndex: 9,
+        missedIndex: 9,
+        swappedIndex: 0,
+      }),
+    ).toEqual([
+      { day: d('15'), forDay: d('16'), countsFor: d('16') },
+      { day: d('19'), forDay: d('19'), countsFor: null },
+      { day: d('21'), forDay: d('21'), countsFor: null },
+      { day: d('23'), forDay: d('23'), countsFor: null },
+    ])
+  })
+
+  // Started on Monday 12: Mon 19 starts the second program week, so the day
+  // before it (Sun 18) is in the FIRST — the swap is done the day after.
+  it('gives a swap the day after when the day before is in another week', () => {
+    const sessions = seedSessionDays(d('12'), d('26'), MWF, {
+      kind: 'weekdays',
+      madeUpIndex: 9,
+      missedIndex: 9,
+      swappedIndex: 3,
+    })
+    expect(sessions).toContainEqual({
+      day: d('20'),
+      forDay: d('19'),
+      countsFor: d('19'),
+    })
+    expect(sessions.map((s) => s.day)).toEqual([
+      d('12'),
+      d('14'),
+      d('16'),
+      d('20'),
+      d('21'),
+      d('23'),
+    ])
+  })
+
+  it('refuses a swap that would land on a scheduled day', () => {
+    expect(() =>
+      seedSessionDays(
+        d('12'),
+        d('26'),
+        {
+          type: 'weekdays',
+          days: [
+            { weekday: 2, workoutIndex: 0 },
+            { weekday: 3, workoutIndex: 0 },
+          ],
+        },
+        { kind: 'weekdays', madeUpIndex: 9, missedIndex: 9, swappedIndex: 1 },
+      ),
+    ).toThrow('A swap on 2026-10-13 would fall on a scheduled day')
   })
 
   // Only days before today: today's session is left to try.
@@ -91,9 +153,9 @@ describe('seedSessionDays', () => {
         },
       ),
     ).toEqual([
-      { day: d('15'), forDay: d('15') },
-      { day: d('17'), forDay: d('17') },
-      { day: d('23'), forDay: d('23') },
+      { day: d('15'), forDay: d('15'), countsFor: null },
+      { day: d('17'), forDay: d('17'), countsFor: null },
+      { day: d('23'), forDay: d('23'), countsFor: null },
     ])
   })
 
@@ -156,7 +218,11 @@ describe('seedSessionWorkouts', () => {
     days: [],
     rotation,
   })
-  const on = (day: string, forDay = day) => ({ day: d(day), forDay: d(forDay) })
+  const on = (day: string, forDay = day) => ({
+    day: d(day),
+    forDay: d(forDay),
+    countsFor: null,
+  })
 
   // The make-up done on Thursday 15 counts for Wednesday 14: B, not A.
   it('gives each session the workout of the day it counts for', () => {

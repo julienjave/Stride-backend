@@ -12,7 +12,6 @@ import {
 } from "./assigned-programs.service";
 import { addDays, utcToday } from "../common/calendar-date";
 import { AuditService } from "../audit/audit.service";
-import { AssignedProgramStatus } from "./dto/update-assigned-program.dto";
 
 // The audit entries written by create / update / addScheduleVersion
 // (AuditService.logInTransaction) — shared by every test module below, and
@@ -33,6 +32,10 @@ import { ScheduleType } from "./dto/schedule-input.dto";
 // writes answer with) includes them. Most tests here use a one-workout
 // program; their exercise rows predate workouts (no workoutId), which
 // orderExercisesByWorkout handles by keeping their own order.
+// What every program mock carries unless a test says otherwise: an active,
+// not archived program — the only kind that may change (program-state.ts).
+const OPEN_STATE = { status: "active", isArchived: false } as const;
+
 const PROGRAM_WORKOUTS = [
   { id: 950, assignedProgramId: 900, name: null, sortOrder: 0 },
 ];
@@ -567,6 +570,7 @@ describe("AssignedProgramsService.create", () => {
         startDate: "2026-10-15",
         endDate: "2026-12-15",
         basedOnTemplateId: null,
+        basedOnProgramId: null,
         // What .returning() gave back for the schedule row (the mock
         // answers every insert with id 900 and no createdAt).
         schedule: {
@@ -849,7 +853,9 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
     db = {
       query: {
         assignedPrograms: {
-          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
         programWorkouts: {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
@@ -936,6 +942,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({
+            ...OPEN_STATE,
             id: 900,
             patientId: 20,
             startDate: "2026-10-01",
@@ -989,6 +996,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
         { title: "New Title" },
       ),
     ).resolves.toEqual({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       startDate: "2026-10-01",
@@ -1018,6 +1026,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
         { title: "New Title" },
       ),
     ).resolves.toEqual({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       startDate: "2026-10-01",
@@ -1050,7 +1059,9 @@ describe("AssignedProgramsService.addExercise", () => {
     db = {
       query: {
         assignedPrograms: {
-          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
         programWorkouts: {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
@@ -1193,7 +1204,9 @@ describe("AssignedProgramsService.reorderExercises", () => {
     db = {
       query: {
         assignedPrograms: {
-          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
         // Two calls happen per successful reorder: reorderExercises' own
         // transaction (the permutation-check read), then
@@ -1401,6 +1414,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({
+            ...OPEN_STATE,
             id: 900,
             patientId: 20,
             startDate: programStart,
@@ -1507,6 +1521,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
   // would begin paused (decided 2026-10-11).
   it("refuses a pause from the program's first day", async () => {
     db.query.assignedPrograms.findFirst.mockResolvedValue({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       startDate: today,
@@ -1543,6 +1558,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
     });
 
     expect(result).toEqual({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       startDate: programStart,
@@ -1819,6 +1835,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({
+            ...OPEN_STATE,
             id: 900,
             patientId: 20,
             title: "Knee Rehab",
@@ -1906,6 +1923,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
   it("refuses moving the start of a program that has started, without writing", async () => {
     const started = addDays(today, -5);
     db.query.assignedPrograms.findFirst.mockResolvedValue({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       startDate: started,
@@ -1928,6 +1946,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
   it("treats the same start date as no move", async () => {
     const started = addDays(today, -5);
     db.query.assignedPrograms.findFirst.mockResolvedValue({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       title: "Knee Rehab",
@@ -2104,7 +2123,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     await service.update(900, admin, {
       title: "Knee Rehab",
       endDate: null,
-      status: AssignedProgramStatus.COMPLETED,
+      allowSwaps: false,
       // A DTO instance can carry declared-but-unsent fields as undefined
       // keys: "not sent" is not a change to undefined.
       startDate: undefined,
@@ -2114,7 +2133,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     expect((entry as { details: unknown }).details).toStrictEqual({
       changes: {
         endDate: { from: end, to: null },
-        status: { from: undefined, to: "completed" },
+        allowSwaps: { from: undefined, to: false },
       },
     });
   });
@@ -2160,16 +2179,21 @@ describe("AssignedProgramsService.updateExercise", () => {
     db = {
       query: {
         assignedPrograms: {
-          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
         programWorkouts: {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: {
-          findFirst: jest.fn().mockResolvedValue({ id: 31, assignedProgramId: 900 }),
-          findMany: jest
+          findFirst: jest
             .fn()
-            .mockResolvedValue([{ id: 30, sets: 2 }, { id: 31, sets: 4 }]),
+            .mockResolvedValue({ id: 31, assignedProgramId: 900 }),
+          findMany: jest.fn().mockResolvedValue([
+            { id: 30, sets: 2 },
+            { id: 31, sets: 4 },
+          ]),
         },
         // Version 5 is Tuesdays, workout 950.
         programScheduleDays: {
@@ -2215,6 +2239,7 @@ describe("AssignedProgramsService.updateExercise", () => {
     );
 
     expect(result).toEqual({
+      ...OPEN_STATE,
       id: 900,
       patientId: 20,
       workouts: PROGRAM_WORKOUTS,
@@ -2257,6 +2282,7 @@ describe("AssignedProgramsService.summary", () => {
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue({
+            ...OPEN_STATE,
             id: 900,
             patientId: 20,
             startDate: start,
@@ -2314,6 +2340,7 @@ describe("AssignedProgramsService.summary", () => {
       expected: null,
       done: 1,
       madeUp: 0,
+      swapped: 0,
       missed: 0,
       extra: 0,
     });
@@ -2367,7 +2394,9 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
       select: jest.fn(() => ({ from: () => ({ where }) })),
       query: {
         assignedPrograms: {
-          findFirst: jest.fn().mockResolvedValue({ id: 900, patientId: 20 }),
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
         programWorkouts: {
           findMany: jest.fn().mockResolvedValue([
@@ -2436,5 +2465,452 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
         activeRole: UserRole.PRACTITIONER,
       }),
     ).rejects.toBe(other);
+  });
+});
+
+// Step 2b-iii — closing a program (cancel / complete), archiving, and the
+// rule that a closed program no longer changes. One flexible mock database:
+// `program` is what the program row reads as (before AND after the lock),
+// `sessionRows` the program's sessions; `calls` records the order of the
+// steps that matter (the lock, the reads, the writes).
+describe("AssignedProgramsService — closing and archiving (step 2b-iii)", () => {
+  let service: AssignedProgramsService;
+  let program: Record<string, unknown>;
+  let sessionRows: { localDate: string; status: string }[];
+  let calls: string[];
+  let setValues: jest.Mock;
+  let db: Record<string, unknown> & { transaction: jest.Mock };
+
+  const admin = { id: 1, activeRole: UserRole.ADMIN };
+  const today = utcToday();
+
+  beforeEach(async () => {
+    calls = [];
+    program = {
+      id: 900,
+      patientId: 20,
+      title: "Knee Rehab",
+      status: "active",
+      isArchived: false,
+      startDate: addDays(today, -20),
+      endDate: null,
+      basedOnTemplateId: 3,
+      basedOnProgramId: null,
+    };
+    sessionRows = [];
+    setValues = jest.fn((values: unknown) => {
+      calls.push(`update ${JSON.stringify(values)}`);
+      return {
+        where: () =>
+          Object.assign(Promise.resolve(undefined), {
+            returning: jest
+              .fn()
+              .mockResolvedValue([{ id: 900, ...(values as object) }]),
+          }),
+      };
+    });
+    db = {
+      query: {
+        assignedPrograms: {
+          findFirst: jest.fn(() => {
+            calls.push("read program");
+            return Promise.resolve({ ...program });
+          }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
+        },
+        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      // One select chain for the lock (.for) and the sessions read (awaited).
+      select: jest.fn(() => ({
+        from: () => ({
+          // A "thenable": awaiting it runs `then` — so "read sessions" is
+          // recorded only when the chain is really awaited, not when .for()
+          // takes it elsewhere (a Promise would run its callback either way).
+          where: () => ({
+            then: (
+              resolve: (rows: unknown) => unknown,
+              reject: (error: unknown) => unknown,
+            ) => {
+              calls.push("read sessions");
+              return Promise.resolve(sessionRows).then(resolve, reject);
+            },
+            for: jest.fn(() => {
+              calls.push("lock");
+              return Promise.resolve([]);
+            }),
+          }),
+        }),
+      })),
+      update: jest.fn(() => ({ set: setValues })),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    };
+    auditService.logInTransaction.mockImplementation(
+      (_tx: unknown, entry: { action: string }) => {
+        calls.push(`audit ${entry.action}`);
+        return Promise.resolve(undefined);
+      },
+    );
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AssignedProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        {
+          provide: UsersService,
+          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+        },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile();
+    service = moduleRef.get(AssignedProgramsService);
+  });
+
+  // The steps after the access checks: lock, read the program AGAIN, read
+  // its sessions, write, audit — the state used is the one read under the
+  // lock.
+  const afterChecks = () => calls.slice(calls.indexOf("lock"));
+
+  describe("close", () => {
+    it("archives a program cancelled before any session — and answers no program", async () => {
+      const result = await service.close(900, admin, "cancel", today);
+
+      expect(result).toEqual({ outcome: "archived", program: null });
+      expect(afterChecks()).toEqual([
+        "lock",
+        "read program",
+        "read sessions",
+        'update {"isArchived":true}',
+        "audit ASSIGNED_PROGRAM_ARCHIVED",
+      ]);
+      expect(auditService.logInTransaction).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          targetUserId: 20,
+          details: {
+            reason: "cancelled before any session",
+            program: {
+              title: "Knee Rehab",
+              status: "active",
+              startDate: addDays(today, -20),
+              endDate: null,
+              basedOnTemplateId: 3,
+              basedOnProgramId: null,
+            },
+          },
+        }),
+      );
+    });
+
+    // Any session counts — even one started and never completed: it is a
+    // record of something that happened.
+    it("cancels — not archives — a program with only an unfinished session", async () => {
+      sessionRows = [{ localDate: addDays(today, -3), status: "in_progress" }];
+
+      const result = await service.close(900, admin, "cancel", today);
+
+      expect(result.outcome).toBe("cancelled");
+      expect(setValues).toHaveBeenCalledWith({
+        status: "cancelled",
+        endDate: addDays(today, -1),
+      });
+      expect(result.program).toMatchObject({ id: 900 });
+    });
+
+    // Completing with no session at all is still completing (only CANCEL
+    // archives).
+    it("completes a program even with no session", async () => {
+      const result = await service.close(900, admin, "complete", today);
+
+      expect(result.outcome).toBe("completed");
+      expect(setValues).toHaveBeenCalledWith({
+        status: "completed",
+        endDate: addDays(today, -1),
+      });
+    });
+
+    // TODAY's end only for a session COMPLETED today: one started today and
+    // abandoned doesn't make today part of the program; one completed
+    // yesterday doesn't either.
+    it.each([
+      ["completed today", today, "completed", 0],
+      ["started today, not completed", today, "in_progress", -1],
+      ["completed yesterday", addDays(today, -1), "completed", -1],
+    ])(
+      "ends the program by the session %s",
+      async (_label, day, status, offset) => {
+        sessionRows = [{ localDate: day, status }];
+
+        await service.close(900, admin, "complete", today);
+
+        expect(setValues).toHaveBeenCalledWith({
+          status: "completed",
+          endDate: addDays(today, offset),
+        });
+      },
+    );
+
+    it("audits the status and end date, before → after, with the day it was decided", async () => {
+      sessionRows = [{ localDate: today, status: "completed" }];
+
+      await service.close(900, admin, "cancel", today);
+
+      // …then the full program is read for the answer.
+      expect(afterChecks().slice(0, 5)).toEqual([
+        "lock",
+        "read program",
+        "read sessions",
+        `update ${JSON.stringify({ status: "cancelled", endDate: today })}`,
+        "audit ASSIGNED_PROGRAM_CANCELLED",
+      ]);
+      expect(auditService.logInTransaction).toHaveBeenCalledWith(db, {
+        performedBy: 1,
+        action: "ASSIGNED_PROGRAM_CANCELLED",
+        targetUserId: 20,
+        entityType: "assigned-programs",
+        entityId: 900,
+        details: {
+          today,
+          changes: {
+            status: { from: "active", to: "cancelled" },
+            endDate: { from: null, to: today },
+          },
+        },
+      });
+    });
+
+    // The state that counts is the one read UNDER the lock: here the first
+    // read (the access check) sees an active program, the second — after
+    // the lock — a completed one, as when another request closed it while
+    // this one waited.
+    it("refuses a program closed while it waited for the lock, writing nothing", async () => {
+      (
+        db.query as { assignedPrograms: { findFirst: jest.Mock } }
+      ).assignedPrograms.findFirst
+        .mockImplementationOnce(() => Promise.resolve({ ...program }))
+        .mockImplementationOnce(() =>
+          Promise.resolve({ ...program, status: "completed" }),
+        );
+
+      await expect(service.close(900, admin, "cancel", today)).rejects.toThrow(
+        new ConflictException(
+          "This program is completed, so it can no longer change. To continue it, assign it again",
+        ),
+      );
+      expect(setValues).not.toHaveBeenCalled();
+      expect(auditService.logInTransaction).not.toHaveBeenCalled();
+    });
+
+    it("refuses a today that can't be today anywhere, before reading anything", async () => {
+      await expect(
+        service.close(900, admin, "complete", addDays(today, -2)),
+      ).rejects.toThrow(
+        new BadRequestException("today must be today's date in your time zone"),
+      );
+      expect(calls).toEqual([]);
+    });
+  });
+
+  describe("archive", () => {
+    it("archives a program with no session, audited with what it was", async () => {
+      await service.archive(900, admin);
+
+      expect(afterChecks()).toEqual([
+        "lock",
+        "read program",
+        "read sessions",
+        'update {"isArchived":true}',
+        "audit ASSIGNED_PROGRAM_ARCHIVED",
+      ]);
+    });
+
+    it("refuses a program with sessions: cancel it instead", async () => {
+      sessionRows = [{ localDate: today, status: "completed" }];
+
+      await expect(service.archive(900, admin)).rejects.toThrow(
+        new ConflictException(
+          "This program has sessions, so it is part of the patient's record and can't be deleted: cancel it instead",
+        ),
+      );
+      expect(setValues).not.toHaveBeenCalled();
+    });
+
+    // A completed program with no session may still be archived; an
+    // archived one can't be archived again.
+    it("archives a completed program with no session, not an archived one", async () => {
+      program = { ...program, status: "completed" };
+      await service.archive(900, admin);
+      expect(setValues).toHaveBeenCalledTimes(1);
+
+      program = { ...program, isArchived: true };
+      await expect(service.archive(900, admin)).rejects.toThrow(
+        new ConflictException(
+          "This program was deleted, so it can no longer change",
+        ),
+      );
+      expect(setValues).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Every write on a program refuses a closed one, before its transaction
+  // (the program read + the access check run first: 404 / 403 win).
+  describe("writes on a closed program", () => {
+    const writes: [string, (s: AssignedProgramsService) => Promise<unknown>][] =
+      [
+        ["update", (s) => s.update(900, admin, { title: "New" })],
+        [
+          "addExercise",
+          (s) => s.addExercise(900, admin, { exerciseId: 1, sortOrder: 0 }),
+        ],
+        [
+          "updateExercise",
+          (s) => s.updateExercise(900, 31, admin, { sets: 3 }),
+        ],
+        ["reorderExercises", (s) => s.reorderExercises(900, admin, [31])],
+        ["removeExercise", (s) => s.removeExercise(900, 31, admin)],
+        [
+          "addScheduleVersion",
+          (s) =>
+            s.addScheduleVersion(900, admin, {
+              type: ScheduleType.PAUSED,
+              effectiveFrom: today,
+            }),
+        ],
+        ["addWorkout", (s) => s.addWorkout(900, admin, {})],
+        [
+          "renameWorkout",
+          (s) => s.renameWorkout(900, 950, admin, { name: "A" }),
+        ],
+        ["reorderWorkouts", (s) => s.reorderWorkouts(900, admin, [950])],
+        ["removeWorkout", (s) => s.removeWorkout(900, 950, admin)],
+      ];
+
+    it.each(writes)("%s refuses a cancelled program", async (_name, write) => {
+      program = { ...program, status: "cancelled" };
+
+      await expect(write(service)).rejects.toThrow(ConflictException);
+      expect(db.transaction).toHaveBeenCalledTimes(1); // the program read only
+      expect(setValues).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// "Assign again": the source program's checks, all before anything is
+// written. (The copy itself — workouts and tailored exercises, in order — is
+// checked end to end in test/program-schedules.e2e-spec.ts.)
+describe("AssignedProgramsService.create — assigning again (step 2b-iii)", () => {
+  let service: AssignedProgramsService;
+  let source: Record<string, unknown>;
+  let db: {
+    query: Record<string, unknown>;
+    insert: jest.Mock;
+    execute: jest.Mock;
+    transaction: jest.Mock;
+  };
+
+  const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER };
+  const dto = {
+    patientId: 20,
+    basedOnProgramId: 800,
+    title: "Knee Rehab — block 2",
+    startDate: utcToday(),
+    schedule: { type: ScheduleType.TIMES_PER_WEEK, timesPerWeek: 2 },
+  };
+
+  beforeEach(async () => {
+    source = {
+      id: 800,
+      patientId: 20,
+      status: "cancelled",
+      isArchived: false,
+      basedOnTemplateId: 3,
+    };
+    db = {
+      query: {
+        assignedPrograms: { findFirst: jest.fn(() => Promise.resolve(source)) },
+        programWorkouts: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ id: 850, name: "Upper", sortOrder: 0 }]),
+        },
+        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      insert: jest.fn(),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AssignedProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        {
+          provide: UsersService,
+          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+        },
+        { provide: AuditService, useValue: auditService },
+      ],
+    }).compile();
+    service = moduleRef.get(AssignedProgramsService);
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, Error]>([
+    [
+      "an active program",
+      { status: "active" },
+      {},
+      new ConflictException(
+        "Only a completed or cancelled program can be assigned again: this one is still active",
+      ),
+    ],
+    [
+      "a deleted (archived) program",
+      { isArchived: true },
+      {},
+      new BadRequestException("Deleted programs cannot be assigned again"),
+    ],
+    [
+      "another patient's program",
+      { patientId: 21 },
+      {},
+      new BadRequestException(
+        "Program 800 belongs to another patient: a program is assigned again to the same patient",
+      ),
+    ],
+    [
+      "a program with an emptied workout",
+      {},
+      {},
+      new BadRequestException("Workout A of program 800 has no exercises"),
+    ],
+    [
+      "two sources at once",
+      {},
+      { basedOnTemplateId: 3 },
+      new BadRequestException(
+        "Give one source: basedOnTemplateId, basedOnProgramId or exercises",
+      ),
+    ],
+  ])("refuses %s, writing nothing", async (_label, change, extra, error) => {
+    source = { ...source, ...change };
+
+    await expect(
+      service.create(practitioner, { ...dto, ...extra }),
+    ).rejects.toThrow(error);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a program the caller can't see (404)", async () => {
+    (
+      db.query.assignedPrograms as { findFirst: jest.Mock }
+    ).findFirst.mockImplementation(() => Promise.resolve(undefined));
+
+    await expect(service.create(practitioner, dto)).rejects.toThrow(
+      new NotFoundException("Assigned program 800 not found"),
+    );
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });

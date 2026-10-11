@@ -423,8 +423,14 @@ export type SeedSchedule =
 //
 // history: completed sessions on past days (session-history.ts turns the
 // plan into dates for the day the seed runs), so the program pages show
-// done, made-up and missed days at once. Each session does the workout
-// the schedule asks for (seedSessionWorkouts).
+// done, made-up, swapped and missed days at once. Each session does the
+// workout the schedule asks for (seedSessionWorkouts).
+//
+// close (step 2b-iii): the program is then cancelled or completed, on the
+// day the seed runs, through the real service (so its end date follows the
+// rules: yesterday). assignAgain: then continued as a new program ("Assign
+// again"), starting that day — its workouts and exercises copied from the
+// closed one.
 export const ASSIGNED_PROGRAMS: {
   patient: AccountKey
   by: AccountKey
@@ -433,6 +439,8 @@ export const ASSIGNED_PROGRAMS: {
   startsDaysAgo: number
   schedule: SeedSchedule
   history: SeedHistory
+  close?: 'cancel' | 'complete'
+  assignAgain?: { title: string; schedule: SeedSchedule }
 }[] = [
   {
     patient: 'pat',
@@ -450,9 +458,15 @@ export const ASSIGNED_PROGRAMS: {
         { weekday: 5, workoutIndex: 0 },
       ],
     },
-    // Every scheduled day done, except the 2nd (made up the next day) and
-    // the 4th (missed).
-    history: { kind: 'weekdays', madeUpIndex: 1, missedIndex: 3 },
+    // Every scheduled day done, except the 2nd (made up the next day), the
+    // 4th (missed) and the 5th (a SWAP: done on the unscheduled day next to
+    // it, saying it counts for it).
+    history: {
+      kind: 'weekdays',
+      madeUpIndex: 1,
+      missedIndex: 3,
+      swappedIndex: 4,
+    },
   },
   {
     patient: 'jo',
@@ -468,5 +482,23 @@ export const ASSIGNED_PROGRAMS: {
     // First program week: 2 of 3 (one missed). Second week (today is its
     // 4th day): 1 so far, in progress.
     history: { kind: 'days-after-start', days: [0, 2, 8] },
+  },
+  {
+    patient: 'robin',
+    // Sam (Riverside) — Robin's other practitioner, Blake, is at Harbour.
+    by: 'sam',
+    template: 'Knee Rehab — Phase 1',
+    title: 'Knee Rehab — Robin',
+    startsDaysAgo: 21,
+    // Twice a week, the suggested rotation: A, B, A, B…
+    schedule: { type: 'times_per_week', timesPerWeek: 2 },
+    // Two weeks done (A and B each), then nothing: the third week missed.
+    history: { kind: 'days-after-start', days: [0, 3, 8, 10] },
+    // Cancelled (it has sessions, so it stays, read-only) and continued.
+    close: 'cancel',
+    assignAgain: {
+      title: 'Knee Rehab — Robin, block 2',
+      schedule: { type: 'times_per_week', timesPerWeek: 2 },
+    },
   },
 ]

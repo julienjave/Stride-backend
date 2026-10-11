@@ -65,6 +65,7 @@ import {
   assertStartDateMovable,
   planStartDateMove,
 } from "./start-date-move";
+import { assertProgramOpen, closingEndDate } from "./program-state";
 import {
   ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
   isForeignKeyViolation,
@@ -121,6 +122,11 @@ interface ResolvedSourceExercise {
 interface ResolvedSource {
   workouts: { name: string | null }[];
   exercises: ResolvedSourceExercise[];
+  // Where it came from: the template (also when assigning AGAIN — the
+  // source program's own template, so the line back to it isn't lost),
+  // and the program it continues ("Assign again"), or null.
+  basedOnTemplateId: number | null;
+  basedOnProgramId: number | null;
 }
 
 // A workout as an audit entry records it (a plain copy, like
@@ -142,6 +148,19 @@ export type ScheduleVersion = typeof programSchedules.$inferSelect & {
 // know what the schedule was — its days or rotation included — from when,
 // and who set it. (A plain object copy, so the entry never depends on what
 // the row type happens to carry.)
+// What an archived program WAS, for its audit entry — after archiving, no
+// list shows it.
+function programForAudit(program: typeof assignedPrograms.$inferSelect) {
+  return {
+    title: program.title,
+    status: program.status,
+    startDate: program.startDate,
+    endDate: program.endDate,
+    basedOnTemplateId: program.basedOnTemplateId,
+    basedOnProgramId: program.basedOnProgramId,
+  };
+}
+
 function versionForAudit(version: ScheduleVersion) {
   return {
     id: version.id,
@@ -281,7 +300,7 @@ export class AssignedProgramsService {
 
     assertDatesInOrder(dto.startDate, dto.endDate);
 
-    const source = await this.resolveSourceExercises(dto);
+    const source = await this.resolveSourceExercises(dto, currentUser);
     const sourceExercises = source.exercises;
 
     const programId = await withRlsContext(this.db, currentUser, async (tx) => {
@@ -290,7 +309,8 @@ export class AssignedProgramsService {
         .values({
           patientId: dto.patientId,
           assignedBy: currentUser.id,
-          basedOnTemplateId: dto.basedOnTemplateId ?? null,
+          basedOnTemplateId: source.basedOnTemplateId,
+          basedOnProgramId: source.basedOnProgramId,
           title: dto.title,
           startDate: dto.startDate,
           endDate: dto.endDate,
@@ -376,6 +396,7 @@ export class AssignedProgramsService {
           startDate: program.startDate,
           endDate: program.endDate,
           basedOnTemplateId: program.basedOnTemplateId,
+          basedOnProgramId: program.basedOnProgramId,
           schedule: versionForAudit(firstVersion),
           workouts: workouts.map(workoutForAudit),
           exercises: sourceExercises.map((ex) => ({
@@ -412,6 +433,7 @@ export class AssignedProgramsService {
       currentUser,
     );
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
 
     // exercises' SELECT policy is unconditional (USING (true)), so this
     // needs no RLS context — reading it on the normal connection is
@@ -484,6 +506,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     assertScheduleDayAllowed(dto.effectiveFrom, program);
     // A pause is something that happens DURING a program (decided
     // 2026-10-11): on the start date it would replace the first version and
@@ -734,6 +757,8 @@ export class AssignedProgramsService {
             id: sessions.id,
             localDate: sessions.localDate,
             workoutId: sessions.workoutId,
+            // A swap's day (null for an ordinary session).
+            countsFor: sessions.countsFor,
           })
           .from(sessions)
           .where(
@@ -763,6 +788,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     // Moving the start date: only while the program hasn't started (see
     // start-date-move.ts) — and then its schedule moves with it, below.
     const newStartDate =
@@ -870,6 +896,7 @@ export class AssignedProgramsService {
       currentUser,
     );
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     const row = await this.findProgramExerciseOrThrow(
       assignedProgramId,
       rowId,
@@ -923,6 +950,7 @@ export class AssignedProgramsService {
       currentUser,
     );
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
 
     // Read, permutation-check, and write all happen inside ONE transaction
     // (tx.query instead of this.db.query) — same fix as
@@ -1004,6 +1032,7 @@ export class AssignedProgramsService {
   async addWorkout(id: number, currentUser: CurrentUser, dto: AddWorkoutDto) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     await withRlsContext(this.db, currentUser, async (tx) => {
       await this.lockProgram(tx, id);
       const workouts = await this.findWorkouts(tx, id);
@@ -1037,6 +1066,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     await withRlsContext(this.db, currentUser, async (tx) => {
       const workouts = await this.findWorkouts(tx, id);
       resolveWorkoutId(workoutId, workouts, "program");
@@ -1066,6 +1096,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     await withRlsContext(this.db, currentUser, async (tx) => {
       const workouts = orderWorkouts(await this.findWorkouts(tx, id));
       const currentOrder = workouts.map((w) => w.id);
@@ -1102,6 +1133,7 @@ export class AssignedProgramsService {
   async removeWorkout(id: number, workoutId: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
         await this.lockProgram(tx, id);
@@ -1170,17 +1202,137 @@ export class AssignedProgramsService {
 
   // --- DELETE ROUTES ---
 
+  // DELETE /assigned-programs/:id — archiving, which the app treats as
+  // deleting: the program disappears from every list. Only for a program
+  // with NO session (step 2b-iii): one with sessions is part of the
+  // patient's clinical record, and hiding it would hide that history — it is
+  // CANCELLED instead (it stays visible, read-only). Decided from the
+  // current state, under the program's row lock, like close().
   async archive(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
-    const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const current = await this.lockAndReadProgram(tx, id);
+      // Already archived: nothing left to delete (the same 409 as any write
+      // on it). A completed program with no session may still be archived.
+      if (current.isArchived) assertProgramOpen(current);
+      if ((await this.readSessionDays(tx, id)).length > 0) {
+        throw new ConflictException(
+          "This program has sessions, so it is part of the patient's record and can't be deleted: cancel it instead",
+        );
+      }
+      const [archived] = await tx
         .update(assignedPrograms)
         .set({ isArchived: true })
         .where(eq(assignedPrograms.id, id))
-        .returning(),
+        .returning();
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_ARCHIVED",
+        targetUserId: current.patientId,
+        entityType: "assigned-programs",
+        entityId: id,
+        details: { program: programForAudit(current) },
+      });
+      return archived;
+    });
+  }
+
+  // POST /assigned-programs/:id/cancel and …/complete (decisions §5,
+  // "Settled 2026-10-11", point 3). `today` is the practitioner's date.
+  //   - CANCEL with no session at all: nothing happened clinically, so the
+  //     program is simply ARCHIVED (hidden) — outcome 'archived'.
+  //   - Otherwise the status becomes 'cancelled' or 'completed' — FINAL:
+  //     every later write is refused (assertProgramOpen) — and the end date
+  //     closingEndDate()'s: yesterday, or today if a session was completed
+  //     today; never later than the end it had, never before its start.
+  // "Any session" counts a started-and-abandoned one too: it is a record of
+  // something that happened. Everything is decided under the program's row
+  // lock, from the state read AFTER taking it: two requests at once (a
+  // cancel and a complete, say) are taken one after the other, and the
+  // second finds the program closed (409). The answer has one shape,
+  // { outcome, program } — `program` null when archived (it's gone).
+  async close(
+    id: number,
+    currentUser: CurrentUser,
+    action: "cancel" | "complete",
+    today: string,
+  ) {
+    if (!isPossibleToday(today)) {
+      throw new BadRequestException(
+        "today must be today's date in your time zone",
+      );
+    }
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+
+    const outcome = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx): Promise<"archived" | "cancelled" | "completed"> => {
+        const current = await this.lockAndReadProgram(tx, id);
+        assertProgramOpen(current);
+        const sessionDays = await this.readSessionDays(tx, id);
+
+        if (action === "cancel" && sessionDays.length === 0) {
+          await tx
+            .update(assignedPrograms)
+            .set({ isArchived: true })
+            .where(eq(assignedPrograms.id, id));
+          await this.auditService.logInTransaction(tx, {
+            performedBy: currentUser.id,
+            action: "ASSIGNED_PROGRAM_ARCHIVED",
+            targetUserId: current.patientId,
+            entityType: "assigned-programs",
+            entityId: id,
+            details: {
+              reason: "cancelled before any session",
+              program: programForAudit(current),
+            },
+          });
+          return "archived";
+        }
+
+        const status = action === "cancel" ? "cancelled" : "completed";
+        const endDate = closingEndDate({
+          startDate: current.startDate,
+          endDate: current.endDate,
+          today,
+          completedToday: sessionDays.some(
+            (s) => s.status === "completed" && s.localDate === today,
+          ),
+        });
+        await tx
+          .update(assignedPrograms)
+          .set({ status, endDate })
+          .where(eq(assignedPrograms.id, id));
+        // The same `changes` shape as a PATCH's entry: only what really
+        // changed (the end date may stay).
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action:
+            status === "cancelled"
+              ? "ASSIGNED_PROGRAM_CANCELLED"
+              : "ASSIGNED_PROGRAM_COMPLETED",
+          targetUserId: current.patientId,
+          entityType: "assigned-programs",
+          entityId: id,
+          details: {
+            today,
+            changes: changedFields(current, { status, endDate }),
+          },
+        });
+        return status;
+      },
     );
-    return archived;
+
+    return {
+      outcome,
+      program:
+        outcome === "archived"
+          ? null
+          : await this.findProgramWithExercises(id, currentUser),
+    };
   }
 
   async removeExercise(
@@ -1193,6 +1345,7 @@ export class AssignedProgramsService {
       currentUser,
     );
     await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
     await this.findProgramExerciseOrThrow(
       assignedProgramId,
       rowId,
@@ -1210,7 +1363,24 @@ export class AssignedProgramsService {
 
   private async resolveSourceExercises(
     dto: CreateAssignedProgramDto,
+    currentUser: CurrentUser,
   ): Promise<ResolvedSource> {
+    // ONE source: a template, a program to continue, or an inline list.
+    // Two at once is a client bug — refused rather than one silently
+    // winning (before step 2b-iii, a template quietly beat an inline list).
+    const sources = [
+      dto.basedOnTemplateId != null,
+      dto.basedOnProgramId != null,
+      (dto.exercises?.length ?? 0) > 0,
+    ].filter(Boolean).length;
+    if (sources > 1) {
+      throw new BadRequestException(
+        "Give one source: basedOnTemplateId, basedOnProgramId or exercises",
+      );
+    }
+    if (dto.basedOnProgramId != null) {
+      return this.resolveProgramToContinue(dto, currentUser);
+    }
     if (dto.basedOnTemplateId) {
       // The template ROW first (closes the gap in deferred-improvements.md:
       // this used to read only template_exercises, so an ARCHIVED — i.e.
@@ -1298,12 +1468,14 @@ export class AssignedProgramsService {
       return {
         workouts: workouts.map((workout) => ({ name: workout.name })),
         exercises: exercisesToCopy,
+        basedOnTemplateId: dto.basedOnTemplateId,
+        basedOnProgramId: null,
       };
     }
 
     if (!dto.exercises || dto.exercises.length === 0) {
       throw new BadRequestException(
-        "Provide either basedOnTemplateId or an inline exercises array",
+        "Provide basedOnTemplateId, basedOnProgramId or an inline exercises array",
       );
     }
     // Unlike the template branch, a client-supplied exerciseId here has
@@ -1335,7 +1507,100 @@ export class AssignedProgramsService {
         workoutIndex: 0,
       };
     });
-    return { workouts: [{ name: null }], exercises: exercisesToCopy };
+    return {
+      workouts: [{ name: null }],
+      exercises: exercisesToCopy,
+      basedOnTemplateId: null,
+      basedOnProgramId: null,
+    };
+  }
+
+  // "Assign again" (decisions §5, "Settled 2026-10-11", point 3): a
+  // completed or cancelled program is never reopened — it would bring back
+  // weeks already judged — so continuing it means a NEW program, copied from
+  // its TAILORED workouts and exercises (what the patient was really doing,
+  // not the template, which may have changed since). New dates and schedule
+  // come with the request, as for any assignment.
+  //
+  // Read as the caller, under RLS: a program they can't see is a 404, like
+  // anywhere else.
+  private async resolveProgramToContinue(
+    dto: CreateAssignedProgramDto,
+    currentUser: CurrentUser,
+  ): Promise<ResolvedSource> {
+    const sourceId = dto.basedOnProgramId!;
+    const source = await this.findProgramOrThrow(sourceId, currentUser);
+    if (source.isArchived) {
+      throw new BadRequestException(
+        "Deleted programs cannot be assigned again",
+      );
+    }
+    // Only a CLOSED program is continued: an active one is still going —
+    // tailor it, or complete it first.
+    if (source.status === "active") {
+      throw new ConflictException(
+        "Only a completed or cancelled program can be assigned again: this one is still active",
+      );
+    }
+    // Continuing means the same patient; giving another patient a copy of
+    // someone's tailored program isn't what this is for (a template is).
+    if (source.patientId !== dto.patientId) {
+      throw new BadRequestException(
+        `Program ${sourceId} belongs to another patient: a program is assigned again to the same patient`,
+      );
+    }
+    const [workoutRows, exerciseRows] = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) =>
+        [
+          await this.findWorkouts(tx, sourceId),
+          await tx.query.assignedProgramExercises.findMany({
+            where: eq(assignedProgramExercises.assignedProgramId, sourceId),
+          }),
+        ] as const,
+    );
+    const workouts = orderWorkouts(workoutRows);
+    // The same rule as a template: every workout must have exercises (an
+    // emptied workout of the old program would give the patient sessions
+    // with nothing in them).
+    workouts.forEach((workout, index) => {
+      if (!exerciseRows.some((row) => row.workoutId === workout.id)) {
+        throw new BadRequestException(
+          `Workout ${workoutLabel(index)} of program ${sourceId} has no exercises`,
+        );
+      }
+    });
+    const indexOfWorkout = new Map(
+      workouts.map((workout, index) => [workout.id, index]),
+    );
+    // Copied AS THEY ARE in the old program — its snapshot of each exercise
+    // (name, muscles, instructions) included, not re-read from the library:
+    // the continuation starts from exactly what the patient was given.
+    const exercisesToCopy = orderExercisesByWorkout(exerciseRows, workouts).map(
+      (row) => ({
+        exerciseId: row.exerciseId,
+        name: row.name,
+        primaryMuscles: row.primaryMuscles,
+        secondaryMuscles: row.secondaryMuscles,
+        equipment: row.equipment,
+        instructions: row.instructions,
+        sets: row.sets ?? undefined,
+        reps: row.reps ?? undefined,
+        durationInSeconds: row.durationInSeconds ?? undefined,
+        weight: row.weight ?? undefined,
+        weightUnit: row.weightUnit ?? undefined,
+        sortOrder: row.sortOrder,
+        notes: row.notes ?? undefined,
+        workoutIndex: indexOfWorkout.get(row.workoutId)!,
+      }),
+    );
+    return {
+      workouts: workouts.map((workout) => ({ name: workout.name })),
+      exercises: exercisesToCopy,
+      basedOnTemplateId: source.basedOnTemplateId,
+      basedOnProgramId: sourceId,
+    };
   }
 
   // The program with its workouts (A first), its exercises (one flat list,
@@ -1492,6 +1757,27 @@ export class AssignedProgramsService {
       .from(assignedPrograms)
       .where(eq(assignedPrograms.id, assignedProgramId))
       .for("update");
+  }
+
+  // The program row, read AFTER taking its lock: a state read before the
+  // lock could be stale by the time it's used (another request may have
+  // closed the program while this one waited). Found by
+  // findProgramOrThrow a moment ago, so it exists here.
+  private async lockAndReadProgram(tx: DrizzleDb, id: number) {
+    await this.lockProgram(tx, id);
+    const current = await tx.query.assignedPrograms.findFirst({
+      where: eq(assignedPrograms.id, id),
+    });
+    return current!;
+  }
+
+  // Every session of the program — any status — as its day and status:
+  // enough to know whether it has any, and whether one was completed today.
+  private async readSessionDays(tx: DrizzleDb, id: number) {
+    return tx
+      .select({ localDate: sessions.localDate, status: sessions.status })
+      .from(sessions)
+      .where(eq(sessions.assignedProgramId, id));
   }
 
   private async findProgramOrThrow(id: number, currentUser: CurrentUser) {

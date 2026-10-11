@@ -46,6 +46,13 @@ export class CreateAssignedProgramDto {
   @IsInt()
   basedOnTemplateId?: number
 
+  // "Assign again" (step 2b-iii): a completed or cancelled program of the
+  // same patient to continue — its workouts and tailored exercises are
+  // copied. One source only: this, basedOnTemplateId, or exercises.
+  @IsOptional()
+  @IsInt()
+  basedOnProgramId?: number
+
   // ValidateNested + @Type() is what's new here: for an array of PLAIN
   // VALUES (like specialties: string[]), @IsString({ each: true }) alone is
   // enough. For an array of OBJECTS, each one needs its own full DTO
