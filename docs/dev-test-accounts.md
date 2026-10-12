@@ -48,7 +48,7 @@ Every account that has a password uses: **`password123`**
 | `admin@stride.test` | admin | both | The founding admin: clinics, users, and each user's invitation status (Admin → Users → a user). |
 | `morgan@stride.test` | practitioner + admin | Riverside | The role switcher in the account menu. Logging in asks which role to use. |
 | `alex@stride.test` | practitioner | Riverside | A practitioner with patients: two custom exercises in the library, two templates, and a program assigned to Pat (Programs page: *Templates* and *Assigned* tabs). |
-| `sam@stride.test` | practitioner | Riverside | Same clinic as Alex, but on the care team of Jo, Robin and Frank only — the directory-vs-clinical split. Visible once the patient roster ships; it's in the data and the API today. |
+| `sam@stride.test` | practitioner | Riverside | Same clinic as Alex, but on the care team of Jo, Robin and Frank only — the directory-vs-clinical split: **Add patient** finds Pat in the clinic directory, but Pat's page says Sam isn't on the care team. (Frank is `former.patient@`, deactivated.) |
 | `blake@stride.test` | practitioner | Harbour | Another clinic: shares just Robin with Riverside. |
 | `pat@stride.test` | patient | Riverside | Alex's patient, with an assigned program (the patient's own screens come in Phase 4). |
 | `jo@stride.test` | patient | Riverside | A care team of two: Alex and Sam. |
@@ -90,7 +90,11 @@ made, through the app's own code); the seed announces it just before.
     day (with the missed day's workout), the 4th, **missed**, and the 5th,
     done by a **swap**: on the unscheduled day next to it, a session saying
     it counts for that day (`countsFor`).
-  - *Lower Back Mobility — Jo*, …(unchanged)…
+  - *Lower Back Mobility — Jo*, assigned by **Sam**, started **10 days
+    before** the seed ran, **3 times a week** — so its program weeks start
+    on the weekday it started, not on Monday. The template has a single
+    workout, so every session is A. First program week: **2 of 3, missed**;
+    second week: **1 so far, in progress** (the seed runs on its 4th day).
   - *Knee Rehab — Robin*, assigned by **Sam**, started **21 days before**
     the seed ran, **twice a week** (A, then B): two weeks done, then
     nothing — and **cancelled** on the day the seed ran. It had sessions, so
