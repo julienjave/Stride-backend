@@ -187,7 +187,7 @@ export const ACCOUNTS: SeedAccount[] = [
     clinics: ['riverside'],
     invitation: 'accepted',
     shows:
-      'Same clinic as Alex, but on the care team of Jo, Robin and Frank only: the directory-vs-clinical split (the directory search finds Pat, but Pat's page is refused).',
+      "Same clinic as Alex, but on the care team of Jo, Robin and Frank only: the directory-vs-clinical split (the directory search finds Pat, but Pat's page is refused).",
   },
   {
     kind: 'practitioner',
