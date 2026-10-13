@@ -184,6 +184,19 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.closingPreview(id, user, query.today)
   }
 
+  // What removing this exercise WOULD do — deleted, or kept (retired) for
+  // the sessions that used it — for the confirmation dialog (decided
+  // 2026-10-13). A read like the closing preview: no @AuditedByService, any
+  // role reaches the service, which refuses anyone who couldn't remove it.
+  @Get(':id/exercises/:exerciseRowId/removal')
+  removalPreview(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.assignedProgramsService.removalPreview(id, exerciseRowId, user)
+  }
+
   @Get(':id/summary')
   summary(
     @Param('id', ParseIntPipe) id: number,

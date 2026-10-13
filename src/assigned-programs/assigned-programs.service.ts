@@ -25,7 +25,16 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  countDistinct,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  sql,
+} from "drizzle-orm";
 import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   assignedPrograms,
@@ -35,6 +44,7 @@ import {
   programScheduleRotation,
   programTemplates,
   programWorkouts,
+  sessionExercises,
   sessions,
   templateExercises,
   templateWorkouts,
@@ -237,6 +247,34 @@ function exerciseForAudit(row: typeof assignedProgramExercises.$inferSelect) {
 // practitioner removed would bring it back silently. 409, like a write on a
 // closed program: the request is fine, the state of the row refuses it.
 // Migration 0033's trigger is the same rule in the database.
+// Removing an exercise that is already removed (retired): 409 — for the
+// removal and its preview alike, in the same words.
+function assertNotAlreadyRemoved(row: { retiredAt: Date | null }) {
+  if (row.retiredAt) {
+    throw new ConflictException(
+      "This exercise was already removed from the program",
+    );
+  }
+}
+
+// What removing a program exercise WILL do, given how many sessions used it
+// (decided 2026-10-13: the dialog asks the backend, as for closing). One
+// rule, the same one the removal follows: a session used it → it is RETIRED
+// (kept for those sessions), otherwise DELETED. Exported for its unit test.
+//
+// The removal itself doesn't call this: it lets the foreign key decide,
+// atomically, at the moment of the DELETE (a session may start in between —
+// the preview is a moment's answer, like the closing preview). The two can't
+// disagree on the rule — "any session_exercises row points at it" is
+// exactly what RESTRICT refuses — only on timing, and then the removal's
+// answer is the true one.
+export function planRemoval(sessionCount: number) {
+  return {
+    outcome: sessionCount > 0 ? ("retired" as const) : ("deleted" as const),
+    sessionCount,
+  };
+}
+
 function assertNotRetired(row: { retiredAt: Date | null }) {
   if (row.retiredAt) {
     throw new ConflictException(
@@ -1506,11 +1544,7 @@ export class AssignedProgramsService {
       // session_exercises needs a lock on this row (the foreign key's FOR
       // KEY SHARE), which conflicts with this one.
       const row = await this.lockProgramExercise(tx, assignedProgramId, rowId);
-      if (row.retiredAt) {
-        throw new ConflictException(
-          "This exercise was already removed from the program",
-        );
-      }
+      assertNotAlreadyRemoved(row);
 
       // DELETE it if no session used it; otherwise RETIRE it. Decided by
       // the DATABASE, not by counting sessions first: the foreign key from
@@ -1565,6 +1599,47 @@ export class AssignedProgramsService {
     });
     // The full program (it used to answer with nothing), like every write.
     return this.findProgramWithExercises(assignedProgramId, currentUser);
+  }
+
+  // GET /assigned-programs/:id/exercises/:exerciseRowId/removal — what
+  // removing this exercise WOULD do, for the confirmation dialog (decided
+  // 2026-10-13): `{ outcome: 'deleted' | 'retired', sessionCount }`. Asked of
+  // the server because the answer depends on sessions, which the page can't
+  // see. Read-only, so not audited; no lock (removeExercise decides again,
+  // under its lock). The same people and refusals as the removal itself:
+  // assertCanManage, an open program, an exercise of THIS program (404), not
+  // already removed (409).
+  //
+  // Sessions are counted under the caller's row-level security: the care
+  // team and admins — the only people past assertCanManage — see every
+  // session of the patient, so the count is complete. DISTINCT sessions: a
+  // checklist has one row per exercise today, but "how many sessions used
+  // it" shouldn't depend on that.
+  async removalPreview(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+  ) {
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    );
+    await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const row = await this.lockProgramExercise(
+        tx,
+        assignedProgramId,
+        rowId,
+        false,
+      );
+      assertNotAlreadyRemoved(row);
+      const [{ sessionCount }] = await tx
+        .select({ sessionCount: countDistinct(sessionExercises.sessionId) })
+        .from(sessionExercises)
+        .where(eq(sessionExercises.assignedProgramExerciseId, rowId));
+      return planRemoval(sessionCount);
+    });
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -1872,19 +1947,21 @@ export class AssignedProgramsService {
     return Math.max(-1, ...positions.map((p) => p.sortOrder)) + 1;
   }
 
-  // One exercise of THIS program, read and locked (SELECT … FOR UPDATE)
-  // until the end of the caller's transaction — 404 when the program has no
-  // such row (or row-level security hides it). The lock makes the edits and
-  // the removal of one exercise happen one at a time, each starting from
-  // the row as the previous one left it. Under row-level security, FOR
-  // UPDATE also asks the UPDATE policy: the care team or an admin, the
-  // people allowed to change the program's exercises.
+  // One exercise of THIS program, read and — by default — locked (SELECT …
+  // FOR UPDATE) until the end of the caller's transaction; 404 when the
+  // program has no such row (or row-level security hides it). The lock makes
+  // the edits and the removal of one exercise happen one at a time, each
+  // starting from the row as the previous one left it. Under row-level
+  // security, FOR UPDATE also asks the UPDATE policy: the care team or an
+  // admin, the people allowed to change the program's exercises. A read that
+  // changes nothing (the removal preview) passes `lock = false`.
   private async lockProgramExercise(
     tx: DrizzleDb,
     assignedProgramId: number,
     rowId: number,
+    lock = true,
   ) {
-    const [row] = await tx
+    const query = tx
       .select()
       .from(assignedProgramExercises)
       .where(
@@ -1892,8 +1969,8 @@ export class AssignedProgramsService {
           eq(assignedProgramExercises.id, rowId),
           eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
         ),
-      )
-      .for("update");
+      );
+    const [row] = lock ? await query.for("update") : await query;
     if (!row) {
       throw new NotFoundException(
         `Exercise ${rowId} not found in this assigned program`,

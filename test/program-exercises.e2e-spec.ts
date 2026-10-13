@@ -635,6 +635,15 @@ describe('Program exercises (e2e)', () => {
     it('DELETES one no session used, recorded whole', async () => {
       const program = await assign()
       const row = rowOf(program)
+      // The preview first (3b-1): what the removal WILL do — and then does.
+      const preview = await practitionerA.get(
+        `/assigned-programs/${program.id}/exercises/${row.id}/removal`,
+      )
+      expect(preview.status).toBe(200)
+      expect(preview.body).toStrictEqual({
+        outcome: 'deleted',
+        sessionCount: 0,
+      })
 
       const res = await practitionerA.delete(
         `/assigned-programs/${program.id}/exercises/${row.id}`,
@@ -645,7 +654,10 @@ describe('Program exercises (e2e)', () => {
       expect(body.exercises.map((e) => e.id)).not.toContain(row.id)
       expect(body.retiredExercises).toEqual([])
       expect(await programExerciseRow(row.id)).toBeUndefined()
-      const [entry] = await changeEntries(program.id)
+      // ONE entry: the preview, a read, records nothing.
+      const entries = await changeEntries(program.id)
+      expect(entries).toHaveLength(1)
+      const [entry] = entries
       expect(entry.action).toBe('ASSIGNED_PROGRAM_EXERCISE_REMOVED')
       expect(entry.details).toMatchObject({
         exercise: { id: row.id, name: 'Exercises E2E Row', sets: 2, reps: 10 },
@@ -667,6 +679,84 @@ describe('Program exercises (e2e)', () => {
         const started = await startSession(program)
         expect(started.status).toBe(201)
         sessionId = bodyOf<SessionBody>(started).id
+      })
+
+      // Before removing it: the preview says it will be KEPT, for the one
+      // session that used it.
+      it('previews keeping it for the session that used it', async () => {
+        const preview = await practitionerA.get(
+          `/assigned-programs/${program.id}/exercises/${row.id}/removal`,
+        )
+        expect(preview.status).toBe(200)
+        expect(preview.body).toStrictEqual({
+          outcome: 'retired',
+          sessionCount: 1,
+        })
+      })
+
+      // The neighbour: B's exercise, in the same program, used by no session
+      // — while A's are. The count is about THIS exercise only; counting the
+      // patient's other checklist rows would say "retired" here.
+      it('previews deleting an exercise no session used, next to ones that were', async () => {
+        const unused = program.exercises.find(
+          (e) => e.workoutId === workoutB(program),
+        )!
+        const preview = await practitionerA.get(
+          `/assigned-programs/${program.id}/exercises/${unused.id}/removal`,
+        )
+        expect(preview.body).toStrictEqual({
+          outcome: 'deleted',
+          sessionCount: 0,
+        })
+      })
+
+      // "How many SESSIONS", not how many checklist rows: a second row for
+      // the same exercise in the same session (written here by the owner —
+      // the app writes one) still counts as one session. Rolled back.
+      it('counts sessions, not checklist rows', async () => {
+        const client = await sessionPool.connect()
+        try {
+          await client.query('BEGIN')
+          await client.query(
+            `INSERT INTO session_exercises
+               (session_id, assigned_program_exercise_id, name, completed, sort_order)
+             VALUES ($1, $2, 'Exercises E2E Row', false, 9)`,
+            [sessionId, row.id],
+          )
+          const { rows } = await client.query<{
+            sessions: string
+            rows: string
+          }>(
+            `SELECT count(DISTINCT session_id) AS sessions, count(*) AS rows
+             FROM session_exercises WHERE assigned_program_exercise_id = $1`,
+            [row.id],
+          )
+          // The fixture makes the two counts DISAGREE (1 session, 2 rows).
+          expect(rows[0]).toEqual({ sessions: '1', rows: '2' })
+          await client.query('COMMIT')
+          const preview = await practitionerA.get(
+            `/assigned-programs/${program.id}/exercises/${row.id}/removal`,
+          )
+          expect(preview.body).toStrictEqual({
+            outcome: 'retired',
+            sessionCount: 1,
+          })
+        } finally {
+          await client.query(
+            'DELETE FROM session_exercises WHERE session_id = $1 AND sort_order = 9',
+            [sessionId],
+          )
+          client.release()
+        }
+      })
+
+      // The preview, as the people who couldn't remove it: the patient (who
+      // sees the program — 403) and a practitioner off the care team (who
+      // doesn't — 404).
+      it("refuses the preview to anyone who couldn't remove it", async () => {
+        const url = `/assigned-programs/${program.id}/exercises/${row.id}/removal`
+        expect((await patient.get(url)).status).toBe(403)
+        expect((await practitionerC.get(url)).status).toBe(404)
       })
 
       it('RETIRES it: out of the program, kept — by whom, when — and recorded', async () => {
@@ -717,6 +807,13 @@ describe('Program exercises (e2e)', () => {
         expect(bodyOf<ErrorBody>(again).message).toEqual([
           'This exercise was already removed from the program',
         ])
+        const preview = await practitionerA.get(
+          `/assigned-programs/${program.id}/exercises/${row.id}/removal`,
+        )
+        expect(preview.status).toBe(409)
+        expect(bodyOf<ErrorBody>(preview).message).toEqual([
+          'This exercise was already removed from the program',
+        ])
       })
 
       // Reordering A is about its ACTIVE exercises: the retired one isn't
@@ -756,6 +853,14 @@ describe('Program exercises (e2e)', () => {
           .post(`/assigned-programs/${program.id}/cancel`)
           .send({ today })
         expect(bodyOf<{ outcome: string }>(cancelled).outcome).toBe('cancelled')
+        // A closed program has nothing to remove: the preview is a 409 too.
+        const active = (
+          await practitionerA.get(`/assigned-programs/${program.id}`)
+        ).body as Program
+        const closedPreview = await practitionerA.get(
+          `/assigned-programs/${program.id}/exercises/${active.exercises[0].id}/removal`,
+        )
+        expect(closedPreview.status).toBe(409)
         const again = await practitionerA.post('/assigned-programs').send({
           patientId,
           basedOnProgramId: program.id,

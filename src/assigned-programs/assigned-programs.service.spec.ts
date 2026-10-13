@@ -9,6 +9,7 @@ import {
 import {
   AssignedProgramsService,
   assertScheduleDayAllowed,
+  planRemoval,
 } from "./assigned-programs.service";
 import { addDays, utcToday } from "../common/calendar-date";
 import { AuditService } from "../audit/audit.service";
@@ -1048,8 +1049,9 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
 //   - `writes` records every write IN ORDER — [kind, details] — so a test can
 //     say "the UPDATE, then its audit entry" or "nothing at all";
 //   - `lockedRow` is what lockProgramExercise's SELECT … FOR UPDATE reads;
-//   - `positions` what nextExercisePosition reads (the workout's active
+//   - `positions` what nextExercisePosition reads (the workout's
 //     exercises' positions);
+//   - `sessionCount` what the removal preview counts;
 //   - `deleteError` makes the DELETE fail (a foreign key refusing it);
 //   - `depth` is how many db.transaction() calls are open (the mock's tx IS
 //     db): 1 inside withRlsContext, 2 inside a nested one — a SAVEPOINT. The
@@ -1063,6 +1065,7 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
   let writes: [string, unknown][];
   let lockedRow: Record<string, unknown> | undefined;
   let positions: { sortOrder: number }[];
+  let sessionCount: number;
   let deleteError: Error | undefined;
   let forCalls: string[];
   let depth: number;
@@ -1131,6 +1134,7 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
     writes = [];
     lockedRow = { ...storedRow };
     positions = [];
+    sessionCount = 0;
     deleteError = undefined;
     forCalls = [];
     depth = 0;
@@ -1167,18 +1171,25 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
         programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      // One select chain serves both reads: awaited directly it gives the
-      // positions (nextExercisePosition); through .for("update") the locked
-      // row (lockProgramExercise).
-      select: jest.fn(() => ({
+      // One select chain serves every read, told apart by the fields asked
+      // for: `{ sessionCount }` → the preview's count; `{ sortOrder }` → the
+      // positions (nextExercisePosition); none (the whole row) → the
+      // exercise row (lockProgramExercise) — awaited directly when read
+      // without a lock, through .for("update") when locked.
+      select: jest.fn((fields?: Record<string, unknown>) => ({
         from: () => ({
-          where: () =>
-            Object.assign(Promise.resolve(positions), {
+          where: () => {
+            if (fields && "sessionCount" in fields) {
+              return Promise.resolve([{ sessionCount }]);
+            }
+            const row = lockedRow ? [lockedRow] : [];
+            return Object.assign(Promise.resolve(fields ? positions : row), {
               for: jest.fn((strength: string) => {
                 forCalls.push(strength);
-                return Promise.resolve(lockedRow ? [lockedRow] : []);
+                return Promise.resolve(row);
               }),
-            }),
+            });
+          },
         }),
       })),
       insert: jest.fn(() => ({
@@ -1626,6 +1637,72 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
 
       expect(result.exercises).toEqual([{ ...storedRow, id: 30 }]);
       expect(result.retiredExercises).toEqual([early, late]);
+    });
+  });
+
+  // The removal preview (3b-1): what removing WOULD do, read-only.
+  describe("removalPreview", () => {
+    it("says DELETED when no session used it — reading without a lock, writing nothing", async () => {
+      await expect(
+        service.removalPreview(900, 31, practitioner),
+      ).resolves.toStrictEqual({ outcome: "deleted", sessionCount: 0 });
+      expect(forCalls).toEqual([]);
+      expect(writes).toEqual([]);
+    });
+
+    it("says RETIRED, with how many sessions used it", async () => {
+      sessionCount = 3;
+
+      await expect(
+        service.removalPreview(900, 31, practitioner),
+      ).resolves.toStrictEqual({ outcome: "retired", sessionCount: 3 });
+    });
+
+    it("refuses an exercise already removed, in the removal's words", async () => {
+      lockedRow = { ...storedRow, retiredAt: new Date(), retiredBy: 7 };
+
+      await expect(
+        service.removalPreview(900, 31, practitioner),
+      ).rejects.toThrow(
+        new ConflictException("This exercise was already removed from the program"),
+      );
+    });
+
+    it("answers 404 for a row the program doesn't have", async () => {
+      lockedRow = undefined;
+
+      await expect(
+        service.removalPreview(900, 99, practitioner),
+      ).rejects.toThrow(
+        new NotFoundException("Exercise 99 not found in this assigned program"),
+      );
+    });
+
+    it("refuses a closed program before reading the exercise", async () => {
+      db.query.assignedPrograms.findFirst.mockResolvedValue({
+        id: 900,
+        patientId: 20,
+        status: "completed",
+        isArchived: false,
+      });
+
+      await expect(
+        service.removalPreview(900, 31, practitioner),
+      ).rejects.toThrow(ConflictException);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it("refuses someone who couldn't remove it", async () => {
+      usersService.isPatientManagedBy.mockResolvedValue(false);
+
+      await expect(
+        service.removalPreview(900, 31, practitioner),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          "You do not have permission to manage this assigned program",
+        ),
+      );
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 });
@@ -3358,5 +3435,20 @@ describe("AssignedProgramsService.create — assigning again (step 2b-iii)", () 
       new NotFoundException("Assigned program 800 not found"),
     );
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+// The rule the removal preview answers with — the same one the removal
+// follows (a session used it → retired, else deleted).
+describe("planRemoval", () => {
+  it.each([
+    [0, "deleted"],
+    [1, "retired"],
+    [12, "retired"],
+  ])("%i session(s) → %s", (sessions, outcome) => {
+    expect(planRemoval(sessions)).toStrictEqual({
+      outcome,
+      sessionCount: sessions,
+    });
   });
 });
