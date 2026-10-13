@@ -72,6 +72,7 @@ describe('Program lifecycle (e2e)', () => {
 
   const today = utcToday()
   const yesterday = addDays(today, -1)
+  const tomorrow = addDays(today, 1)
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -335,7 +336,8 @@ describe('Program lifecycle (e2e)', () => {
 
   describe('swaps', () => {
     // Yesterday expected B and nothing was done: today's session for
-    // yesterday does B (no workoutId needed), and the summary shows
+    // yesterday does B (no workoutId needed). Today is a SCHEDULED day
+    // (every day is, here), so it's half of a swap: the summary shows
     // yesterday as swapped — done late, today.
     it("records a swap with the counted day's workout, and the summary shows it", async () => {
       const program = await createProgram()
@@ -354,11 +356,74 @@ describe('Program lifecycle (e2e)', () => {
         state: 'swapped',
         sessionId: null,
         madeUpBy: null,
+        doneEarlyBy: null,
         swappedBy: { sessionId: res.body.id, date: today },
       })
       // Today itself (A) is still to do: the swap didn't count for it.
       expect(summary.body.days[1]).toMatchObject({ date: today, state: 'due' })
-      expect(summary.body.totals).toMatchObject({ swapped: 1, extra: 0 })
+      expect(summary.body.totals).toMatchObject({
+        doneEarly: 0,
+        swapped: 1,
+        extra: 0,
+      })
+    })
+
+    // Today is a FREE day (only tomorrow is scheduled, with B): a session
+    // for tomorrow is DONE EARLY — not a swap, nothing is exchanged.
+    it('records a session done early on a free day, and the summary says so', async () => {
+      const program = await createProgram({
+        schedule: {
+          type: 'weekdays',
+          days: [{ weekday: isoWeekday(tomorrow), workoutIndex: 1 }],
+        },
+      })
+      const b = program.workouts[1].id
+
+      const res = await startSession(program.id, { countsFor: tomorrow }, true)
+      expect(res.status).toBe(201)
+      expect(res.body).toMatchObject({ workoutId: b, countsFor: tomorrow })
+
+      const summary = await practitionerA.get(
+        `/assigned-programs/${program.id}/summary?today=${today}`,
+      )
+      expect(summary.body.days[0]).toEqual({
+        date: tomorrow,
+        workoutId: b,
+        state: 'done_early',
+        sessionId: null,
+        madeUpBy: null,
+        doneEarlyBy: { sessionId: res.body.id, date: today },
+        swappedBy: null,
+      })
+      expect(summary.body.totals).toMatchObject({
+        doneEarly: 1,
+        swapped: 0,
+        extra: 0,
+      })
+    })
+
+    // A session done early is judged by the version in force on the day it
+    // counts for — here one starting TOMORROW, which gives tomorrow A
+    // instead of B. The service reads the versions up to the LATER of the
+    // two days (reading up to today would miss it, and answer B).
+    it("takes a later day's workout from a version that starts after today", async () => {
+      const program = await createProgram()
+      const [a] = program.workouts.map((w) => w.id)
+      const change = await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({
+          type: 'weekdays',
+          days: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+            weekday,
+            workoutId: a,
+          })),
+          effectiveFrom: tomorrow,
+        })
+      expect(change.status).toBe(201)
+
+      const res = await startSession(program.id, { countsFor: tomorrow })
+      expect(res.status).toBe(201)
+      expect(res.body.workoutId).toBe(a)
     })
 
     it.each<[string, () => Promise<Program>, Record<string, unknown>, string]>([
@@ -372,13 +437,27 @@ describe('Program lifecycle (e2e)', () => {
         'a day of the next program week',
         () => createProgram(),
         { countsFor: addDays(today, 6) },
-        'A swap stays within the program week: countsFor must be in the same week as today',
+        'A session for another day stays within the program week: countsFor must be in the same week as today',
       ],
       [
         'a weekly-count schedule',
         () => createProgram({ schedule: TWICE_A_WEEK }),
         { countsFor: yesterday },
-        'Swaps are for schedules with specific days: with a weekly count, any order within the week already counts',
+        'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts',
+      ],
+      // Today free, yesterday scheduled: counting for yesterday would be
+      // catching up a missed day — a make-up, not a link (2026-10-12).
+      [
+        'an earlier day, from a free day',
+        () =>
+          createProgram({
+            schedule: {
+              type: 'weekdays',
+              days: [{ weekday: isoWeekday(yesterday), workoutIndex: 1 }],
+            },
+          }),
+        { countsFor: yesterday },
+        `A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up ${yesterday}, do its workout before the next scheduled day: it counts as a make-up`,
       ],
       [
         'today itself',
@@ -461,7 +540,7 @@ describe('Program lifecycle (e2e)', () => {
       const res = await startSession(program.id, { countsFor: yesterday })
       expect(res.status).toBe(400)
       expect(res.body.message).toEqual([
-        'Swaps are turned off for this program: do the workout scheduled today, or ask your practitioner',
+        'Rearranging the week is turned off for this program: do the workout scheduled today, or ask your practitioner',
       ])
       // An ordinary session still works.
       const ordinary = await startSession(program.id, {

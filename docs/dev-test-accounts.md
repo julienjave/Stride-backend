@@ -83,13 +83,16 @@ made, through the app's own code); the seed announces it just before.
   completed sessions (on past days, so their summaries have something to
   show — today's session is left for you):
   - *Knee Rehab — Pat*, a copy of the knee template by Alex (both workouts
-    copied with it), started **14 days before** the seed ran. Its schedule
-    names a workout for each day: **Monday and Friday = A · Mobility,
-    Wednesday = B · Strength**. Every scheduled day so far is done — each
-    session with that day's workout — except the 2nd, **made up** the next
-    day (with the missed day's workout), the 4th, **missed**, and the 5th,
-    done by a **swap**: on the unscheduled day next to it, a session saying
-    it counts for that day (`countsFor`).
+    copied with it), started **21 days before** the seed ran — three whole
+    program weeks. Its schedule names a workout for each day: **Monday and
+    Friday = A · Mobility, Wednesday = B · Strength**. Every scheduled day so
+    far is done — each session with that day's workout — except:
+    - week 1: the 2nd scheduled day, **made up** the next day (with the
+      missed day's workout);
+    - week 2: the 4th, **missed**, and the 5th, **done early** — on the free
+      day before it, a session saying it counts for that day (`countsFor`);
+    - week 3: a **swap** — the first two scheduled days doing different
+      workouts exchange them, each session counting for the other day.
   - *Lower Back Mobility — Jo*, assigned by **Sam**, started **10 days
     before** the seed ran, **3 times a week** — so its program weeks start
     on the weekday it started, not on Monday. The template has a single

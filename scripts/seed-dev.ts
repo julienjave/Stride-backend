@@ -481,7 +481,8 @@ async function run(): Promise<void> {
         const workout = program.workouts.find(
           (w) => w.id === workoutIds[index],
         )!
-        // counts_for: set for a swap only (the day it fulfils).
+        // counts_for: set only for a session done early or half of a swap
+        // (the day it fulfils).
         const {
           rows: [session],
         } = await owner.query<{ id: number }>(

@@ -24,7 +24,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, desc, eq, inArray, lte } from 'drizzle-orm'
+import { and, eq, inArray, lte } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   sessions,
@@ -152,39 +152,57 @@ export class SessionsService {
       const workouts = await tx.query.programWorkouts.findMany({
         where: eq(programWorkouts.assignedProgramId, dto.assignedProgramId),
       })
-      // A swap: the workout is the one scheduled on `countsFor`, after the
-      // swap rules (swap-rules.ts — 400 if any fails). That day is judged
-      // by the schedule version in force ON IT: the latest starting on or
-      // before it — read with its days. (The patient may read both: their
+      // A session for another day (done early, or half of a swap): the
+      // workout is the one scheduled on `countsFor`, after the rules in
+      // swap-rules.ts (400 if any fails). They need the schedule on TWO days
+      // — the counted day (its workout) and today (is it a scheduled day?)
+      // — each judged by the version in force on it. So: every version
+      // starting on or before the later of the two, then their days, and
+      // the pure rules pick the version for each day (versionOn). Two
+      // queries whatever the days. (The patient may read both tables: their
       // policies follow the program's.)
       let requested = dto.workoutId
       if (dto.countsFor != null) {
-        const [version] = await tx
+        const lastDay =
+          dto.countsFor > dto.localDate ? dto.countsFor : dto.localDate
+        const versionRows = await tx
           .select({
             id: programSchedules.id,
             type: programSchedules.type,
+            effectiveFrom: programSchedules.effectiveFrom,
           })
           .from(programSchedules)
           .where(
             and(
               eq(programSchedules.assignedProgramId, dto.assignedProgramId),
-              lte(programSchedules.effectiveFrom, dto.countsFor),
+              lte(programSchedules.effectiveFrom, lastDay),
             ),
           )
-          .orderBy(desc(programSchedules.effectiveFrom))
-          .limit(1)
-        const days = version
-          ? await tx
-              .select({
-                weekday: programScheduleDays.weekday,
-                workoutId: programScheduleDays.workoutId,
-              })
-              .from(programScheduleDays)
-              .where(eq(programScheduleDays.scheduleId, version.id))
-          : []
+        const dayRows =
+          versionRows.length > 0
+            ? await tx
+                .select({
+                  scheduleId: programScheduleDays.scheduleId,
+                  weekday: programScheduleDays.weekday,
+                  workoutId: programScheduleDays.workoutId,
+                })
+                .from(programScheduleDays)
+                .where(
+                  inArray(
+                    programScheduleDays.scheduleId,
+                    versionRows.map((version) => version.id),
+                  ),
+                )
+            : []
         requested = swapWorkoutId({
           program,
-          version: version ? { type: version.type, days } : null,
+          versions: versionRows.map((version) => ({
+            type: version.type,
+            effectiveFrom: version.effectiveFrom,
+            days: dayRows
+              .filter((day) => day.scheduleId === version.id)
+              .map(({ weekday, workoutId }) => ({ weekday, workoutId })),
+          })),
           localDate: dto.localDate,
           countsFor: dto.countsFor,
           requestedWorkoutId: dto.workoutId,

@@ -16,6 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { addDays } from '../../src/common/calendar-date'
+import { summarizeSchedule } from '../../src/assigned-programs/schedule/schedule-summary'
 import { seedSessionDays, seedSessionWorkouts } from './session-history'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -210,6 +211,71 @@ describe('the seed dataset', () => {
     },
   )
 
+  // The histories JUDGED: the real schedule module run on each program's
+  // seeded sessions, for every weekday the seed could run on. Pat's history
+  // must show exactly one of each kind of day — what the demo is for — and
+  // no seeded session may be an extra (one that counts for nothing would
+  // be a seed bug: the old generator could put a "swap" on the day AFTER
+  // its day, which stopped counting on 2026-10-12). Workout POSITIONS stand
+  // in for ids; session ids are their order.
+  it.each([20, 21, 22, 23, 24, 25, 26])(
+    'gives histories the schedule module counts as planned (seed run on Oct %i)',
+    (dayOfMonth) => {
+      const today = `2026-10-${dayOfMonth}`
+      for (const assignment of ASSIGNED_PROGRAMS) {
+        const start = addDays(today, -assignment.startsDaysAgo)
+        const { schedule } = assignment
+        const content =
+          schedule.type === 'weekdays'
+            ? {
+                type: 'weekdays' as const,
+                timesPerWeek: null,
+                days: schedule.days.map((d) => ({
+                  weekday: d.weekday,
+                  workoutId: d.workoutIndex,
+                })),
+                rotation: [],
+              }
+            : {
+                type: 'times_per_week' as const,
+                timesPerWeek: schedule.timesPerWeek,
+                days: [],
+                rotation: schedule.rotation ?? [0],
+              }
+        const sessions = seedSessionDays(
+          start,
+          today,
+          schedule,
+          assignment.history,
+        )
+        const workouts = seedSessionWorkouts(start, content, sessions)
+        const summary = summarizeSchedule({
+          startDate: start,
+          endDate: null,
+          versions: [{ ...content, effectiveFrom: start }],
+          sessions: sessions.map((session, index) => ({
+            id: index + 1,
+            localDate: session.day,
+            workoutId: workouts[index],
+            countsFor: session.countsFor,
+          })),
+          today,
+        })
+        expect(summary.extraSessions).toEqual([])
+        if (assignment.patient === 'pat') {
+          expect(summary.totals).toMatchObject({
+            done: 4,
+            madeUp: 1,
+            doneEarly: 1,
+            swapped: 2,
+            missed: 1,
+            extra: 0,
+          })
+        }
+      }
+    },
+  )
+
   // Step 2b-iii: only a closed program can be assigned again (the service
   // refuses an active one, and the seed would stop halfway) — and the demo
   // has one of each new thing for the screens: a swap, a cancelled program
@@ -220,11 +286,13 @@ describe('the seed dataset', () => {
     }
   })
 
-  it('includes a swap, and a cancelled program continued by another', () => {
+  it('includes a day done early, a swap, and a cancelled program continued by another', () => {
     expect(
       ASSIGNED_PROGRAMS.some(
         (a) =>
-          a.history.kind === 'weekdays' && a.history.swappedIndex !== undefined,
+          a.history.kind === 'weekdays' &&
+          a.history.doneEarlyIndex !== undefined &&
+          a.history.swappedWeek !== undefined,
       ),
     ).toBe(true)
     expect(

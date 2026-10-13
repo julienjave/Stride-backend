@@ -579,10 +579,11 @@ describe('SessionsService IDOR check (updateExercise)', () => {
 describe('SessionsService.create — closed programs and swaps', () => {
   let service: SessionsService
   let sessionInserts: Record<string, unknown>[]
-  // What the two swap queries answer: the version in force on countsFor,
-  // then its days. Each test can change them.
-  let versionRows: { id: number; type: string }[]
-  let dayRows: { weekday: number; workoutId: number }[]
+  // What the two queries of a session for another day answer: the
+  // program's versions up to the later day, then their days (each with its
+  // version's id). Each test can change them.
+  let versionRows: { id: number; type: string; effectiveFrom: string }[]
+  let dayRows: { scheduleId: number; weekday: number; workoutId: number }[]
   let versionWhere: jest.Mock
   let db: {
     query: Record<string, { findFirst?: jest.Mock; findMany?: jest.Mock }>
@@ -605,11 +606,11 @@ describe('SessionsService.create — closed programs and swaps', () => {
 
   beforeEach(async () => {
     sessionInserts = []
-    versionRows = [{ id: 77, type: 'weekdays' }]
+    versionRows = [
+      { id: 77, type: 'weekdays', effectiveFrom: program.startDate },
+    ]
     dayRows = []
-    versionWhere = jest.fn(() => ({
-      orderBy: () => ({ limit: () => Promise.resolve(versionRows) }),
-    }))
+    versionWhere = jest.fn(() => Promise.resolve(versionRows))
     db = {
       query: {
         assignedPrograms: { findFirst: jest.fn().mockResolvedValue(program) },
@@ -625,8 +626,8 @@ describe('SessionsService.create — closed programs and swaps', () => {
         sessions: { findFirst: jest.fn().mockResolvedValue({ id: 500 }) },
         sessionExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      // The first select is the version query (it has orderBy / limit),
-      // the second the days query (awaited after where()).
+      // The first select is the versions query, the second the days query
+      // (each awaited after where()).
       select: jest
         .fn()
         .mockImplementationOnce(() => ({
@@ -679,11 +680,15 @@ describe('SessionsService.create — closed programs and swaps', () => {
     },
   )
 
-  // Yesterday's workout was B: a swap for yesterday, with no workoutId,
-  // is recorded as B and keeps the day it counts for.
+  // Yesterday's workout was B, and today is a scheduled day (A): a swap's
+  // second half for yesterday, with no workoutId, is recorded as B and
+  // keeps the day it counts for.
   it("records a swap with the counted day's workout", async () => {
     const yesterday = addDays(today, -1)
-    dayRows = [{ weekday: isoWeekdayOf(yesterday), workoutId: 951 }]
+    dayRows = [
+      { scheduleId: 77, weekday: isoWeekdayOf(yesterday), workoutId: 951 },
+      { scheduleId: 77, weekday: isoWeekdayOf(today), workoutId: 950 },
+    ]
 
     await service.create(patient, {
       assignedProgramId: 5,
@@ -725,10 +730,74 @@ describe('SessionsService.create — closed programs and swaps', () => {
     expect(sessionInserts).toEqual([])
   })
 
+  // Today is a FREE day: counting for yesterday would be catching up a
+  // missed day — a make-up, not a link. The rule needs today's schedule,
+  // which the service reads with the counted day's.
+  it('refuses a session on a free day for an earlier day, before writing', async () => {
+    const yesterday = addDays(today, -1)
+    dayRows = [
+      { scheduleId: 77, weekday: isoWeekdayOf(yesterday), workoutId: 951 },
+    ]
+
+    await expect(
+      service.create(patient, {
+        assignedProgramId: 5,
+        localDate: today,
+        countsFor: yesterday,
+      }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        `A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up ${yesterday}, do its workout before the next scheduled day: it counts as a make-up`,
+      ),
+    )
+    expect(sessionInserts).toEqual([])
+  })
+
+  // Each version gets ITS days: the rows are matched by scheduleId. Two
+  // versions, the newer (from today) scheduling B tomorrow; the older one
+  // A. A session done early for tomorrow does B.
+  it("gives each version its own days, so the counted day's version decides", async () => {
+    const tomorrow = addDays(today, 1)
+    versionRows = [
+      { id: 77, type: 'weekdays', effectiveFrom: program.startDate },
+      { id: 78, type: 'weekdays', effectiveFrom: today },
+    ]
+    dayRows = [
+      { scheduleId: 77, weekday: isoWeekdayOf(tomorrow), workoutId: 950 },
+      { scheduleId: 78, weekday: isoWeekdayOf(tomorrow), workoutId: 951 },
+    ]
+
+    await service.create(patient, {
+      assignedProgramId: 5,
+      localDate: today,
+      countsFor: tomorrow,
+    })
+
+    expect(sessionInserts).toEqual([
+      expect.objectContaining({ workoutId: 951, countsFor: tomorrow }),
+    ])
+  })
+
+  // No version at all (not possible inside a program): no days query.
+  it('reads no days when there is no version', async () => {
+    versionRows = []
+
+    await expect(
+      service.create(patient, {
+        assignedProgramId: 5,
+        localDate: today,
+        countsFor: addDays(today, 1),
+      }),
+    ).rejects.toThrow(BadRequestException)
+    expect(db.select).toHaveBeenCalledTimes(1)
+  })
+
   // The days of THE version in force — its type passed on: a weekly-count
-  // version means no swap at all.
+  // version means no rearranging at all.
   it('refuses a swap under a weekly-count version, whatever its days', async () => {
-    versionRows = [{ id: 78, type: 'times_per_week' }]
+    versionRows = [
+      { id: 78, type: 'times_per_week', effectiveFrom: program.startDate },
+    ]
 
     await expect(
       service.create(patient, {
@@ -738,7 +807,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
       }),
     ).rejects.toThrow(
       new BadRequestException(
-        'Swaps are for schedules with specific days: with a weekly count, any order within the week already counts',
+        'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts',
       ),
     )
   })

@@ -43,6 +43,26 @@ describe('Auth — MFA and password recovery (e2e)', () => {
   let db: DrizzleDb
   const otp = new OTP({ strategy: 'totp' })
 
+  // A TOTP code for `secret` that is still valid when the server checks it.
+  // A code belongs to one 30-second window, and the server accepts only the
+  // CURRENT window (epochTolerance 0 — auth.controller.ts). A code generated
+  // in a window's last moments can expire before the request arrives: the
+  // server then answers 401, at random, about once in a hundred runs on a
+  // busy machine (found 2026-10-12: one failure in a full e2e run, passing
+  // alone). So when fewer than 5 seconds of the window are left, wait for
+  // the next window first — then the code has at least 5 seconds to live,
+  // far more than a request takes. (Loosening the server's window instead
+  // would weaken MFA to suit a test.)
+  async function freshCode(secret: string): Promise<string> {
+    const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30)
+    if (secondsLeft < 5) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, secondsLeft * 1000 + 100),
+      )
+    }
+    return otp.generate({ secret })
+  }
+
   // register-clinic only ever succeeds ONCE per (truncated) database — the
   // founding admin is bootstrapped a single time here and reused across
   // every test below, rather than each test trying (and failing) to create
@@ -180,6 +200,8 @@ describe('Auth — MFA and password recovery (e2e)', () => {
   // through the SAME agent automatically remembers and resends whatever
   // session cookie the server issued.
   const mfaAgent = () => request.agent(app.getHttpServer())
+  // 20 s, not Jest's default 5: freshCode may wait about 5 s, twice, for a
+  // fresh MFA window, on top of the requests.
   it('walks the full two-step MFA login flow using the same session throughout', async () => {
     const mfa = mfaAgent()
     const mfaEmail = mfaAccountEmail
@@ -209,7 +231,7 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     const { secret } = setupRes.body
     expect(typeof secret).toBe('string')
 
-    const enableCode = await otp.generate({ secret })
+    const enableCode = await freshCode(secret)
     const enableRes = await mfa
       .post('/auth/mfa/enable')
       .send({ code: enableCode })
@@ -245,7 +267,7 @@ describe('Auth — MFA and password recovery (e2e)', () => {
       .send({ code: '000000' })
     expect(wrongCodeRes.status).toBe(401)
 
-    const verifyCode = await otp.generate({ secret })
+    const verifyCode = await freshCode(secret)
     const verifyRes = await mfa
       .post('/auth/mfa/verify')
       .send({ code: verifyCode })
@@ -289,7 +311,7 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     expect(switchRes.body.patientProfile).toEqual({
       dateOfBirth: '1990-01-01',
     })
-  })
+  }, 20_000)
 
   it('forgot-password always responds 204, whether or not the email exists — no account enumeration', async () => {
     const stamp = Date.now()
@@ -327,16 +349,27 @@ describe('Auth — MFA and password recovery (e2e)', () => {
   // entry from the MFA test's own forgot-password call, so this orders by
   // the newest row (desc(auditLogs.id)) rather than findFirst()'s
   // unspecified order, to actually grab the entry this request just wrote.
+  // The database's clock now, in milliseconds — clock_timestamp(), the real
+  // time at this statement (now() is the time its transaction started; the
+  // same here, as each query is its own transaction, but clock_timestamp()
+  // says what is meant).
+  async function databaseNow(): Promise<number> {
+    const { rows } = await sessionPool.query<{ now: Date }>(
+      'SELECT clock_timestamp() AS now',
+    )
+    return rows[0].now.getTime()
+  }
+
   it('writes a PASSWORD_RESET_REQUESTED audit entry that is already present by the time the response returns', async () => {
     const userId = mfaAccountId
     expect(typeof userId).toBe('number')
 
-    const before = Date.now()
+    const before = await databaseNow()
     const forgotRes = await request(app.getHttpServer())
       .post('/auth/forgot-password')
       .send({ email: mfaAccountEmail })
     expect(forgotRes.status).toBe(204)
-    const after = Date.now()
+    const after = await databaseNow()
 
     // audit_logs has its own RLS SELECT policy requiring
     // app.current_role = 'admin' (0002_audit_logs_rls.sql) — the founding
@@ -360,21 +393,23 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     expect(entry?.entityType).toBe('users')
     expect(entry?.entityId).toBe(userId)
     expect(entry?.createdAt).toBeInstanceOf(Date)
-    // A real timestamp, not a placeholder — bounded by the request's own
-    // start/end, with a small margin for clock skew between the test
-    // process and the database.
+    // A real timestamp, not a placeholder — between the request's own start
+    // and end. Both bounds are read from the DATABASE's clock, the one that
+    // wrote createdAt (its `now()` default), so no margin is needed: the
+    // three readings come from one clock, in order.
     //
-    // That margin assumes host/container clock parity, which doesn't
-    // always hold: Docker Desktop's WSL2 VM clock can drift several
-    // seconds ahead of the host (observed directly — `SELECT now()`
-    // in-container vs. `Date.now()` on the host — while diagnosing a flake
-    // in this exact test), which would reopen this assertion if the drift
-    // exceeds 2s. `wsl --shutdown` resyncs it; not run as part of this fix
-    // — host-level infrastructure, out of scope here. See DEPLOYMENT.md
-    // Part 1.
+    // Until 2026-10-12 the bounds were Date.now() — the test process's
+    // clock — with 2 s of margin each way. That compared two clocks: with
+    // Postgres in Docker Desktop, the WSL2 VM's clock can drift seconds
+    // ahead of the host's (`wsl --shutdown` resyncs it), and the test failed
+    // at random (seen: an entry stamped 2.36 s after the test's "after").
+    // Widening the margin would only move the line; one clock removes it.
+    //
+    // (Milliseconds: getTime() drops microseconds from all three readings
+    // alike — rounding down keeps their order, so the bounds still hold.)
     const createdAtMs = entry!.createdAt.getTime()
-    expect(createdAtMs).toBeGreaterThanOrEqual(before - 2000)
-    expect(createdAtMs).toBeLessThanOrEqual(after + 2000)
+    expect(createdAtMs).toBeGreaterThanOrEqual(before)
+    expect(createdAtMs).toBeLessThanOrEqual(after)
   })
 
   // The whole reset flow, the way a user lives it: ask for a reset, open

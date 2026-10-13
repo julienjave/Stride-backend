@@ -423,8 +423,8 @@ export type SeedSchedule =
 //
 // history: completed sessions on past days (session-history.ts turns the
 // plan into dates for the day the seed runs), so the program pages show
-// done, made-up, swapped and missed days at once. Each session does the
-// workout the schedule asks for (seedSessionWorkouts).
+// done, made-up, done-early, swapped and missed days at once. Each session
+// does the workout the schedule asks for (seedSessionWorkouts).
 //
 // close (step 2b-iii): the program is then cancelled or completed, on the
 // day the seed runs, through the real service (so its end date follows the
@@ -447,7 +447,10 @@ export const ASSIGNED_PROGRAMS: {
     by: 'alex',
     template: 'Knee Rehab — Phase 1',
     title: 'Knee Rehab — Pat',
-    startsDaysAgo: 14,
+    // Three whole program weeks before the seed's day (a 7-day week always
+    // holds three of Mon / Wed / Fri, whatever the weekday): room for one
+    // of each kind of day.
+    startsDaysAgo: 21,
     // ISO weekdays: Mobility (A) on Mondays and Fridays, Strength (B) on
     // Wednesdays.
     schedule: {
@@ -458,14 +461,15 @@ export const ASSIGNED_PROGRAMS: {
         { weekday: 5, workoutIndex: 0 },
       ],
     },
-    // Every scheduled day done, except the 2nd (made up the next day), the
-    // 4th (missed) and the 5th (a SWAP: done on the unscheduled day next to
-    // it, saying it counts for it).
+    // Every scheduled day done, except: week 1, the 2nd (made up the next
+    // day); week 2, the 4th (missed) and the 5th (DONE EARLY, on the free
+    // day before it); week 3, two days that SWAP their workouts.
     history: {
       kind: 'weekdays',
       madeUpIndex: 1,
       missedIndex: 3,
-      swappedIndex: 4,
+      doneEarlyIndex: 4,
+      swappedWeek: 2,
     },
   },
   {

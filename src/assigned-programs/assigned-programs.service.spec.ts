@@ -2340,6 +2340,7 @@ describe("AssignedProgramsService.summary", () => {
       expected: null,
       done: 1,
       madeUp: 0,
+      doneEarly: 0,
       swapped: 0,
       missed: 0,
       extra: 0,

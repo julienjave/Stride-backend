@@ -53,18 +53,18 @@ describe('seedSessionDays', () => {
     ])
   })
 
-  // A swap of the FIRST scheduled day (index 0; 9 = no make-up, no miss).
-  // Started on Thursday 15, so program weeks run Thursday to Wednesday and
-  // the scheduled days are Fri 16, Mon 19, Wed 21, Fri 23: Fri 16's day
-  // before (Thu 15) is in the same week → the swap is done early, on
-  // Thursday, counting for Friday.
-  it('gives a swap the day before its day, in the same program week', () => {
+  // Done early: the FIRST scheduled day (index 0; 9 = no make-up, no
+  // miss). Started on Thursday 15, so program weeks run Thursday to
+  // Wednesday and the scheduled days are Fri 16, Mon 19, Wed 21, Fri 23:
+  // Fri 16's day before (Thu 15) is a free day of the same week → done
+  // early on Thursday, counting for Friday.
+  it('gives a day done early on the free day before it', () => {
     expect(
       seedSessionDays(d('15'), d('26'), MWF, {
         kind: 'weekdays',
         madeUpIndex: 9,
         missedIndex: 9,
-        swappedIndex: 0,
+        doneEarlyIndex: 0,
       }),
     ).toEqual([
       { day: d('15'), forDay: d('16'), countsFor: d('16') },
@@ -75,30 +75,25 @@ describe('seedSessionDays', () => {
   })
 
   // Started on Monday 12: Mon 19 starts the second program week, so the day
-  // before it (Sun 18) is in the FIRST — the swap is done the day after.
-  it('gives a swap the day after when the day before is in another week', () => {
-    const sessions = seedSessionDays(d('12'), d('26'), MWF, {
-      kind: 'weekdays',
-      madeUpIndex: 9,
-      missedIndex: 9,
-      swappedIndex: 3,
-    })
-    expect(sessions).toContainEqual({
-      day: d('20'),
-      forDay: d('19'),
-      countsFor: d('19'),
-    })
-    expect(sessions.map((s) => s.day)).toEqual([
-      d('12'),
-      d('14'),
-      d('16'),
-      d('20'),
-      d('21'),
-      d('23'),
-    ])
+  // before it (Sun 18) is in the first. Done early never crosses a week —
+  // and the day AFTER would be catching up, not doing early (the old
+  // generator did that; refused since 2026-10-12).
+  it('refuses a day done early when it starts a program week', () => {
+    expect(() =>
+      seedSessionDays(d('12'), d('26'), MWF, {
+        kind: 'weekdays',
+        madeUpIndex: 9,
+        missedIndex: 9,
+        doneEarlyIndex: 3,
+      }),
+    ).toThrow(
+      "2026-10-19 starts a program week: it can't be done early in the same week",
+    )
   })
 
-  it('refuses a swap that would land on a scheduled day', () => {
+  // Tue / Wed: the day before Wednesday is scheduled — a session there for
+  // Wednesday would be half of a swap, not done early.
+  it('refuses a day done early on a scheduled day', () => {
     expect(() =>
       seedSessionDays(
         d('12'),
@@ -110,9 +105,69 @@ describe('seedSessionDays', () => {
             { weekday: 3, workoutIndex: 0 },
           ],
         },
-        { kind: 'weekdays', madeUpIndex: 9, missedIndex: 9, swappedIndex: 1 },
+        { kind: 'weekdays', madeUpIndex: 9, missedIndex: 9, doneEarlyIndex: 1 },
       ),
-    ).toThrow('A swap on 2026-10-13 would fall on a scheduled day')
+    ).toThrow(
+      'Done early on 2026-10-13 would fall on a scheduled day (a swap, not done early)',
+    )
+  })
+
+  // A swap in the first program week (Mon 12 – Sun 18): Mon 12 (A) and
+  // Wed 14 (B) exchange — Monday does B for Wednesday, Wednesday A for
+  // Monday; Friday is done as usual.
+  it('gives a swap: two consecutive scheduled days exchange their workouts', () => {
+    const sessions = seedSessionDays(d('12'), d('26'), MWF, {
+      kind: 'weekdays',
+      madeUpIndex: 9,
+      missedIndex: 9,
+      swappedWeek: 0,
+    })
+    expect(sessions.slice(0, 3)).toEqual([
+      { day: d('12'), forDay: d('14'), countsFor: d('14') },
+      { day: d('14'), forDay: d('12'), countsFor: d('12') },
+      { day: d('16'), forDay: d('16'), countsFor: null },
+    ])
+    // The second week untouched.
+    expect(sessions.slice(3).map((s) => s.countsFor)).toEqual([
+      null,
+      null,
+      null,
+    ])
+  })
+
+  // Started on Friday 16: week 1 is Fri 16 (A), Mon 19 (A), Wed 21 (B).
+  // Friday and Monday do the same workout — nothing to exchange — so the
+  // swap is Monday and Wednesday.
+  it('swaps the first two consecutive days whose workouts differ', () => {
+    const sessions = seedSessionDays(d('16'), d('26'), MWF, {
+      kind: 'weekdays',
+      madeUpIndex: 9,
+      missedIndex: 9,
+      swappedWeek: 0,
+    })
+    expect(sessions).toEqual([
+      { day: d('16'), forDay: d('16'), countsFor: null },
+      { day: d('19'), forDay: d('21'), countsFor: d('21') },
+      { day: d('21'), forDay: d('19'), countsFor: d('19') },
+      { day: d('23'), forDay: d('23'), countsFor: null },
+    ])
+  })
+
+  it('refuses a swap in a week whose days all do the same workout', () => {
+    expect(() =>
+      seedSessionDays(
+        d('12'),
+        d('26'),
+        {
+          type: 'weekdays',
+          days: [
+            { weekday: 1, workoutIndex: 0 },
+            { weekday: 3, workoutIndex: 0 },
+          ],
+        },
+        { kind: 'weekdays', madeUpIndex: 9, missedIndex: 9, swappedWeek: 0 },
+      ),
+    ).toThrow('Program week 1 has no two days with different workouts to swap')
   })
 
   // Only days before today: today's session is left to try.
@@ -233,6 +288,17 @@ describe('seedSessionWorkouts', () => {
         on('16'),
       ]),
     ).toEqual([101, 102, 101])
+  })
+
+  // Each half of a swap does the OTHER day's workout: Monday 12 B (for
+  // Wednesday), Wednesday 14 A (for Monday).
+  it('gives each half of a swap the workout of the day it counts for', () => {
+    expect(
+      seedSessionWorkouts(d('12'), storedMwf, [
+        { day: d('12'), forDay: d('14'), countsFor: d('14') },
+        { day: d('14'), forDay: d('12'), countsFor: d('12') },
+      ]),
+    ).toEqual([102, 101])
   })
 
   it("refuses a session for a day the schedule doesn't have", () => {
