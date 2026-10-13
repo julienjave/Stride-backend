@@ -704,6 +704,113 @@ describe('Program lifecycle (e2e)', () => {
     })
   })
 
+  describe('previewing a close', () => {
+    // The answers' shapes, written out as a client sees them: typing the
+    // bodies (instead of reading `any`) lets the compiler check every
+    // field these tests read.
+    interface ClosingPlanBody {
+      outcome: string
+      endDate: string | null
+    }
+    interface ClosingPreviewBody {
+      cancel: ClosingPlanBody
+      complete: ClosingPlanBody
+    }
+    interface CloseBody {
+      outcome: string
+      program: { endDate: string | null }
+    }
+
+    const preview = (
+      agent: ReturnType<typeof request.agent>,
+      programId: number,
+      day = today,
+    ) => agent.get(`/assigned-programs/${programId}/closing?today=${day}`)
+
+    // No session yet: cancelling would archive (no end date — it's gone);
+    // completing would end it yesterday.
+    it('answers what cancelling and completing would do, with no session yet', async () => {
+      const program = await createProgram({ startsIn: -3 })
+
+      const res = await preview(practitionerA, program.id)
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({
+        cancel: { outcome: 'archived', endDate: null },
+        complete: { outcome: 'completed', endDate: yesterday },
+      })
+    })
+
+    // The case the screen can't see: a session started and never finished
+    // still counts — and what the preview promises is what cancelling does.
+    it('counts an unfinished session, and promises what cancelling then does', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      await startSession(program.id, { workoutId: program.workouts[0].id })
+
+      const promised = (await preview(practitionerA, program.id))
+        .body as ClosingPreviewBody
+      expect(promised.cancel).toEqual({
+        outcome: 'cancelled',
+        endDate: yesterday,
+      })
+
+      const done = (await close(practitionerA, program.id, 'cancel'))
+        .body as CloseBody
+      expect(done.outcome).toBe(promised.cancel.outcome)
+      expect(done.program.endDate).toBe(promised.cancel.endDate)
+    })
+
+    // A session completed today: either action would end it today.
+    it('ends today when a session was completed today', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      await startSession(
+        program.id,
+        { workoutId: program.workouts[0].id },
+        true,
+      )
+
+      const res = await preview(practitionerA, program.id)
+      expect(res.body).toEqual({
+        cancel: { outcome: 'cancelled', endDate: today },
+        complete: { outcome: 'completed', endDate: today },
+      })
+    })
+
+    // A read: it changes nothing and writes no audit entry.
+    it('changes nothing and writes no audit entry', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      await preview(practitionerA, program.id)
+
+      const after = await practitionerA.get(`/assigned-programs/${program.id}`)
+      expect(after.body).toMatchObject({ status: 'active', isArchived: false })
+      expect((await auditTrail(program.id)).map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+      ])
+    })
+
+    // The same people as closing: an admin yes; the patient no (403); a
+    // colleague off the team can't even see it (404).
+    it('answers those who may close it, only', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      expect((await preview(admin, program.id)).status).toBe(200)
+      expect((await preview(patient, program.id)).status).toBe(403)
+      expect((await preview(practitionerC, program.id)).status).toBe(404)
+    })
+
+    // A closed program has nothing to preview — closing it again is a 409.
+    it('refuses a closed program (409), and a today that can\'t be today (400)', async () => {
+      const program = await createProgram({ startsIn: -3 })
+      expect((await preview(practitionerA, program.id, 'tomorrow')).status).toBe(400)
+      const tooEarly = await preview(practitionerA, program.id, addDays(today, -2))
+      expect(tooEarly.status).toBe(400)
+      expect((tooEarly.body as { message: string[] }).message).toEqual([
+        "today must be today's date in your time zone",
+      ])
+
+      await close(practitionerA, program.id, 'complete')
+      expect((await preview(practitionerA, program.id)).status).toBe(409)
+    })
+  })
+
   // --- 3. Archiving ----------------------------------------------------------------------------------------
 
   describe('archiving', () => {

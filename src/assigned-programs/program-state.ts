@@ -78,3 +78,41 @@ export function closingEndDate(program: {
   if (end < program.startDate) end = program.startDate
   return end
 }
+
+// What closing the program on `today` WOULD do — cancel or complete — from
+// its dates and its session rows. One function for both the real thing
+// (AssignedProgramsService.close, under the program's row lock) and the
+// preview the confirmation dialog asks for first (GET …/closing), so what
+// the dialog promises and what the button does can't disagree.
+//   - Cancel with no session at all → archived (no end date: it's gone).
+//   - Otherwise → cancelled / completed, ending on closingEndDate().
+// "A session" is ANY row, started-and-abandoned included (decided
+// 2026-10-11): it records something that happened. "Completed today" looks
+// at completed sessions only — an abandoned one doesn't make today a day
+// of the program.
+export interface ClosingPlan {
+  outcome: 'archived' | 'cancelled' | 'completed'
+  endDate: string | null
+}
+
+export function planClosing(
+  action: 'cancel' | 'complete',
+  program: { startDate: string; endDate: string | null },
+  sessions: { localDate: string; status: string }[],
+  today: string,
+): ClosingPlan {
+  if (action === 'cancel' && sessions.length === 0) {
+    return { outcome: 'archived', endDate: null }
+  }
+  return {
+    outcome: action === 'cancel' ? 'cancelled' : 'completed',
+    endDate: closingEndDate({
+      startDate: program.startDate,
+      endDate: program.endDate,
+      today,
+      completedToday: sessions.some(
+        (s) => s.status === 'completed' && s.localDate === today,
+      ),
+    }),
+  }
+}

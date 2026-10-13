@@ -165,6 +165,18 @@ export class AssignedProgramsController {
   // Due / done / made up / missed for the whole program (the schedule
   // module). Every role may ask; the service checks it's someone who may
   // see this program.
+  // What cancelling / completing would do today — for the confirmation
+  // dialog. A read: no @AuditedByService (the interceptor only logs writes).
+  @Get(':id/closing')
+  closingPreview(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    // The same one-field query as the summary's: { today }.
+    @Query() query: ScheduleSummaryQueryDto,
+  ) {
+    return this.assignedProgramsService.closingPreview(id, user, query.today)
+  }
+
   @Get(':id/summary')
   summary(
     @Param('id', ParseIntPipe) id: number,

@@ -16,7 +16,11 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { ConflictException } from '@nestjs/common'
-import { assertProgramOpen, closingEndDate } from './program-state'
+import {
+  assertProgramOpen,
+  closingEndDate,
+  planClosing,
+} from './program-state'
 
 describe('assertProgramOpen', () => {
   it('lets an active program change', () => {
@@ -87,5 +91,58 @@ describe('closingEndDate', () => {
     ['never ends before a future start', '25', null, '20', false, '25'],
   ])('%s', (_label, start, end, today, completedToday, expected) => {
     expect(close(start, end, today, completedToday)).toBe(d(expected))
+  })
+})
+
+describe('planClosing', () => {
+  const d = (day: string) => `2026-10-${day}`
+  const program = { startDate: d('01'), endDate: d('31') }
+  const session = (day: string, status: string) => ({
+    localDate: d(day),
+    status,
+  })
+
+  // Nothing happened clinically: cancelling archives — and there's no end
+  // date to give a program that's gone.
+  it('archives a program cancelled with no session at all', () => {
+    expect(planClosing('cancel', program, [], d('20'))).toStrictEqual({
+      outcome: 'archived',
+      endDate: null,
+    })
+  })
+
+  // Completing is never archiving, sessions or not.
+  it('completes a program with no session, ending yesterday', () => {
+    expect(planClosing('complete', program, [], d('20'))).toStrictEqual({
+      outcome: 'completed',
+      endDate: d('19'),
+    })
+  })
+
+  // A session started and abandoned is still a session (decided
+  // 2026-10-11): the program is cancelled, not archived — but it doesn't
+  // make today a day of the program either (only a COMPLETED one does).
+  it('cancels — not archives — a program whose only session was abandoned today', () => {
+    expect(
+      planClosing('cancel', program, [session('20', 'in_progress')], d('20')),
+    ).toStrictEqual({ outcome: 'cancelled', endDate: d('19') })
+  })
+
+  it('ends today when a session was completed today', () => {
+    expect(
+      planClosing(
+        'complete',
+        program,
+        [session('12', 'completed'), session('20', 'completed')],
+        d('20'),
+      ),
+    ).toStrictEqual({ outcome: 'completed', endDate: d('20') })
+  })
+
+  // Completed on ANOTHER day: today stays out.
+  it('ends yesterday when no session was completed today', () => {
+    expect(
+      planClosing('cancel', program, [session('12', 'completed')], d('20')),
+    ).toStrictEqual({ outcome: 'cancelled', endDate: d('19') })
   })
 })

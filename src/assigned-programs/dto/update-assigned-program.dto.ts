@@ -57,8 +57,9 @@ export class UpdateAssignedProgramDto {
   @IsCalendarDate()
   endDate?: string | null
 
-  // May the patient swap two days' workouts within a week (sessions'
-  // `countsFor`)? Turning it off stops NEW swaps; recorded ones still count.
+  // May the patient rearrange the week — do a later day's workout early, or
+  // swap two days' workouts (sessions' `countsFor`, swap-rules.ts)? Turning
+  // it off stops NEW ones; those recorded still count.
   @ValidateIf(isPresent)
   @IsBoolean()
   allowSwaps?: boolean

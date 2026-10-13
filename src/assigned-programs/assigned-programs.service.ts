@@ -65,7 +65,7 @@ import {
   assertStartDateMovable,
   planStartDateMove,
 } from "./start-date-move";
-import { assertProgramOpen, closingEndDate } from "./program-state";
+import { assertProgramOpen, planClosing } from "./program-state";
 import {
   ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
   isForeignKeyViolation,
@@ -231,6 +231,18 @@ export function assertScheduleDayAllowed(
   if (day < addDays(utcToday(now), -1)) {
     throw new BadRequestException(
       "A schedule change can't apply to a day in the past",
+    );
+  }
+}
+
+// `today` sent by the viewer's app (the summary, closing a program, its
+// preview) must be a date that is today SOMEWHERE (isPossibleToday): within
+// a day of UTC's. One copy of the check and of its message for the three
+// routes.
+function assertPossibleToday(today: string) {
+  if (!isPossibleToday(today)) {
+    throw new BadRequestException(
+      "today must be today's date in your time zone",
     );
   }
 }
@@ -734,11 +746,7 @@ export class AssignedProgramsService {
   // patient, an admin. The reads run in their RLS context — sessions and
   // schedule versions have policies of their own, which agree.
   async summary(id: number, currentUser: CurrentUser, today: string) {
-    if (!isPossibleToday(today)) {
-      throw new BadRequestException(
-        "today must be today's date in your time zone",
-      );
-    }
+    assertPossibleToday(today);
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanView(program.patientId, currentUser);
 
@@ -1238,6 +1246,32 @@ export class AssignedProgramsService {
     });
   }
 
+  // GET /assigned-programs/:id/closing?today= — what cancelling and what
+  // completing the program WOULD do today, for the confirmation dialog
+  // ("No session yet: cancelling deletes it" / "It will end on Sun 11 Oct
+  // and become read-only"). Asked of the server because the answer depends
+  // on what the screen can't see: unfinished sessions (they count as
+  // "sessions"), and whether one was completed today. Answered by the same
+  // planClosing() as close() itself. Read-only, so not audited.
+  //
+  // The same people as closing (assertCanManage), and only for an open
+  // program: a closed one has nothing to preview (409, as close() would).
+  // No lock: a preview is a moment's answer; close() decides again under
+  // the lock.
+  async closingPreview(id: number, currentUser: CurrentUser, today: string) {
+    assertPossibleToday(today);
+    const program = await this.findProgramOrThrow(id, currentUser);
+    await this.assertCanManage(program.patientId, currentUser);
+    assertProgramOpen(program);
+    const sessionDays = await withRlsContext(this.db, currentUser, (tx) =>
+      this.readSessionDays(tx, id),
+    );
+    return {
+      cancel: planClosing("cancel", program, sessionDays, today),
+      complete: planClosing("complete", program, sessionDays, today),
+    };
+  }
+
   // POST /assigned-programs/:id/cancel and …/complete (decisions §5,
   // "Settled 2026-10-11", point 3). `today` is the practitioner's date.
   //   - CANCEL with no session at all: nothing happened clinically, so the
@@ -1258,11 +1292,7 @@ export class AssignedProgramsService {
     action: "cancel" | "complete",
     today: string,
   ) {
-    if (!isPossibleToday(today)) {
-      throw new BadRequestException(
-        "today must be today's date in your time zone",
-      );
-    }
+    assertPossibleToday(today);
     const program = await this.findProgramOrThrow(id, currentUser);
     await this.assertCanManage(program.patientId, currentUser);
 
@@ -1273,8 +1303,14 @@ export class AssignedProgramsService {
         const current = await this.lockAndReadProgram(tx, id);
         assertProgramOpen(current);
         const sessionDays = await this.readSessionDays(tx, id);
+        // What closing does is planClosing()'s answer — the same function
+        // the preview (closingPreview) asks, so what the dialog promised and
+        // what happens can't disagree. Decided here from the state read
+        // UNDER the lock: the preview's answer may be stale by now (a
+        // session started since), and this is the one that counts.
+        const plan = planClosing(action, current, sessionDays, today);
 
-        if (action === "cancel" && sessionDays.length === 0) {
+        if (plan.outcome === "archived") {
           await tx
             .update(assignedPrograms)
             .set({ isArchived: true })
@@ -1293,15 +1329,8 @@ export class AssignedProgramsService {
           return "archived";
         }
 
-        const status = action === "cancel" ? "cancelled" : "completed";
-        const endDate = closingEndDate({
-          startDate: current.startDate,
-          endDate: current.endDate,
-          today,
-          completedToday: sessionDays.some(
-            (s) => s.status === "completed" && s.localDate === today,
-          ),
-        });
+        const status = plan.outcome;
+        const endDate = plan.endDate!;
         await tx
           .update(assignedPrograms)
           .set({ status, endDate })
