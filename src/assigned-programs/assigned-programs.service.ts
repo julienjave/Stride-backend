@@ -25,7 +25,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { and, count, eq, gte, inArray } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
 import {
   assignedPrograms,
@@ -73,8 +73,10 @@ import {
   PROGRAM_SCHEDULE_DAYS_WORKOUT_FK,
   PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK,
   PROGRAM_SCHEDULES_ONE_PER_DAY,
+  SESSION_EXERCISES_PROGRAM_EXERCISE_FK,
   SESSIONS_WORKOUT_FK,
 } from "../database/pg-errors";
+import { assertEndDateMovable } from "./end-date";
 import {
   assertCanAddWorkout,
   assertWorkoutRemovable,
@@ -174,6 +176,19 @@ function versionForAudit(version: ScheduleVersion) {
   };
 }
 
+// Two stored values are "the same" for an audit entry: equal scalars, or
+// arrays with the same items in the same order. Arrays need their own case
+// because `===` compares arrays by IDENTITY — a re-sent `primaryMuscles:
+// ["legs"]` is a different array object than the stored ["legs"], and would
+// otherwise be reported as a change that isn't one. (The array columns here
+// hold strings, so comparing items with `===` is enough.)
+function sameValue(a: unknown, b: unknown) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, i) => item === b[i]);
+  }
+  return a === b;
+}
+
 // The fields a PATCH really changed, as { field: { from, to } } — a field
 // sent with the value it already had isn't a change, and isn't listed.
 function changedFields(
@@ -182,11 +197,52 @@ function changedFields(
 ) {
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   for (const [field, to] of Object.entries(dto)) {
-    if (to !== undefined && before[field] !== to) {
+    if (to !== undefined && !sameValue(before[field], to)) {
       changes[field] = { from: before[field], to };
     }
   }
   return changes;
+}
+
+// A program exercise as an audit entry records it — everything that says
+// what the patient was given: which exercise, in which workout and place,
+// its own copy of the description, and the prescription. A plain copy (like
+// versionForAudit), so an entry never depends on what the row type carries.
+// Used for an added exercise (what was added) and a removed or retired one
+// (what is gone from the program — after a DELETE, the entry is the only
+// place it still exists).
+function exerciseForAudit(row: typeof assignedProgramExercises.$inferSelect) {
+  return {
+    id: row.id,
+    workoutId: row.workoutId,
+    exerciseId: row.exerciseId,
+    name: row.name,
+    primaryMuscles: row.primaryMuscles,
+    secondaryMuscles: row.secondaryMuscles,
+    equipment: row.equipment,
+    instructions: row.instructions,
+    sets: row.sets,
+    reps: row.reps,
+    durationInSeconds: row.durationInSeconds,
+    weight: row.weight,
+    weightUnit: row.weightUnit,
+    sortOrder: row.sortOrder,
+    notes: row.notes,
+  };
+}
+
+// A retired exercise (removed from the program, kept for the sessions that
+// used it — step 3b-0) can no longer change: a new prescription or a move
+// would rewrite what those sessions point at, and editing something the
+// practitioner removed would bring it back silently. 409, like a write on a
+// closed program: the request is fine, the state of the row refuses it.
+// Migration 0033's trigger is the same rule in the database.
+function assertNotRetired(row: { retiredAt: Date | null }) {
+  if (row.retiredAt) {
+    throw new ConflictException(
+      "This exercise was removed from the program, so it can no longer change",
+    );
+  }
 }
 
 // The end of a program can't come before its start (decisions §5: the
@@ -457,19 +513,20 @@ export class AssignedProgramsService {
       throw new NotFoundException(`Exercise ${dto.exerciseId} not found`);
     }
 
-    const [row] = await withRlsContext(this.db, currentUser, async (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      // The workout asked for (one of THIS program's — 404 otherwise), or the
+      // first. Read inside the transaction: program_workouts has row-level
+      // security, like everything about a patient's program.
+      const workoutId = resolveWorkoutId(
+        dto.workoutId,
+        await this.findWorkouts(tx, assignedProgramId),
+        "program",
+      );
+      const [row] = await tx
         .insert(assignedProgramExercises)
         .values({
           assignedProgramId,
-          // The workout asked for (one of THIS program's — 404 otherwise),
-          // or the first. Read inside the transaction: program_workouts has
-          // row-level security, like everything about a patient's program.
-          workoutId: resolveWorkoutId(
-            dto.workoutId,
-            await this.findWorkouts(tx, assignedProgramId),
-            "program",
-          ),
+          workoutId,
           exerciseId: dto.exerciseId,
           // Snapshotted from the SAME already-fetched `exercise` above —
           // no extra query needed, since the existence check already
@@ -487,12 +544,32 @@ export class AssignedProgramsService {
           durationInSeconds: dto.durationInSeconds,
           weight: dto.weight,
           weightUnit: dto.weightUnit,
-          sortOrder: dto.sortOrder,
+          // The position asked for, or — the usual case since step 3b-0 —
+          // after the workout's last exercise. Computed here, inside the
+          // transaction, rather than by the client from what it last saw:
+          // the client's copy may be stale, and a count is wrong anyway
+          // (removals leave gaps, see nextExercisePosition).
+          sortOrder:
+            dto.sortOrder ?? (await this.nextExercisePosition(tx, workoutId)),
           notes: dto.notes,
         })
-        .returning(),
-    );
-    return row;
+        .returning();
+      // The audit convention (step 3b-0 brought the four exercise routes to
+      // it): ONE complete entry, in the change's own transaction — the whole
+      // exercise as added, prescription included.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_EXERCISE_ADDED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: assignedProgramId,
+        details: { exercise: exerciseForAudit(row) },
+      });
+    });
+    // The full program, like every other write on it (it used to be the bare
+    // inserted row — a screen writing that into its cache would have
+    // replaced the whole program with one exercise).
+    return this.findProgramWithExercises(assignedProgramId, currentUser);
   }
 
   // POST /assigned-programs/:id/schedules — "from effectiveFrom on, the
@@ -813,6 +890,14 @@ export class AssignedProgramsService {
       dto.startDate ?? program.startDate,
       dto.endDate === undefined ? program.endDate : dto.endDate,
     );
+    // Moving the end date: never into the past (end-date.ts) — past days
+    // have been judged, and ending a program now is what complete / cancel
+    // do. Only when it really changes: re-sending the stored end date, even
+    // a past one, changes nothing and is fine. After the order check, so an
+    // end before a (past) start gets that more basic explanation.
+    if (dto.endDate !== undefined && dto.endDate !== program.endDate) {
+      assertEndDateMovable(dto.endDate);
+    }
     await withRlsContext(this.db, currentUser, async (tx) => {
       await tx
         .update(assignedPrograms)
@@ -905,13 +990,14 @@ export class AssignedProgramsService {
     );
     await this.assertCanManage(program.patientId, currentUser);
     assertProgramOpen(program);
-    const row = await this.findProgramExerciseOrThrow(
-      assignedProgramId,
-      rowId,
-      currentUser,
-    );
 
     await withRlsContext(this.db, currentUser, async (tx) => {
+      // The row as it is NOW, locked until this transaction ends: the audit
+      // entry's "from" values must be the ones this UPDATE replaces, and a
+      // removal racing this edit waits for it (or this waits for the
+      // removal, and then finds the row gone or retired).
+      const row = await this.lockProgramExercise(tx, assignedProgramId, rowId);
+      assertNotRetired(row);
       const changes: UpdateAssignedProgramExerciseDto & { sortOrder?: number } =
         { ...dto };
       // Moving to another workout of the program (404 if it isn't one):
@@ -923,17 +1009,28 @@ export class AssignedProgramsService {
           await this.findWorkouts(tx, assignedProgramId),
           "program",
         );
-        const positions = await tx
-          .select({ sortOrder: assignedProgramExercises.sortOrder })
-          .from(assignedProgramExercises)
-          .where(eq(assignedProgramExercises.workoutId, dto.workoutId));
-        changes.sortOrder =
-          Math.max(-1, ...positions.map((p) => p.sortOrder)) + 1;
+        changes.sortOrder = await this.nextExercisePosition(tx, dto.workoutId);
       }
+      // Only what really changes (a field re-sent with its stored value
+      // isn't a change). Nothing → no UPDATE and no audit entry: the
+      // convention's "a request that changes nothing writes nothing".
+      const diff = changedFields(row, { ...changes });
+      if (Object.keys(diff).length === 0) return;
       await tx
         .update(assignedProgramExercises)
         .set(changes)
         .where(eq(assignedProgramExercises.id, rowId));
+      // `name` alongside the changes so the entry reads on its own ("Squat:
+      // sets 3 → 4") even after the exercise is renamed or removed. A move
+      // shows as workoutId and sortOrder changes.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_EXERCISE_UPDATED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: assignedProgramId,
+        details: { exerciseRowId: rowId, name: row.name, changes: diff },
+      });
     });
     // The FULL program (exercises in order, schedules), not the bare
     // updated row — closes the gap recorded in deferred-improvements.md,
@@ -979,11 +1076,17 @@ export class AssignedProgramsService {
         await this.findWorkouts(tx, assignedProgramId),
         "program",
       );
+      // The workout's ACTIVE exercises, in their current order: a retired
+      // one isn't in the list the practitioner reorders (it's no longer part
+      // of the program), so it isn't part of the permutation either. The
+      // order is read here for the audit entry's "from".
       const currentRows = await tx.query.assignedProgramExercises.findMany({
         where: and(
           eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
           eq(assignedProgramExercises.workoutId, workoutId),
+          isNull(assignedProgramExercises.retiredAt),
         ),
+        orderBy: (row, { asc }) => [asc(row.sortOrder), asc(row.id)],
       });
       // Same fix as ProgramsService.reorderExercises — a genuine permutation
       // check needs length + no-internal-duplicates + valid-membership
@@ -1001,12 +1104,25 @@ export class AssignedProgramsService {
         );
       }
 
+      // The same order again changes nothing: no writes, no audit entry.
+      const from = currentRows.map((r) => r.id);
+      if (from.every((id, index) => id === newOrder[index])) return;
+
       for (const [index, rowId] of newOrder.entries()) {
         await tx
           .update(assignedProgramExercises)
           .set({ sortOrder: index })
           .where(eq(assignedProgramExercises.id, rowId));
       }
+      // Which workout, and its exercises' order before → after (row ids).
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: "ASSIGNED_PROGRAM_EXERCISES_REORDERED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: assignedProgramId,
+        details: { workoutId, from, to: newOrder },
+      });
     });
 
     return this.findProgramWithExercises(assignedProgramId, currentUser);
@@ -1147,6 +1263,13 @@ export class AssignedProgramsService {
         await this.lockProgram(tx, id);
         const workouts = orderWorkouts(await this.findWorkouts(tx, id));
         resolveWorkoutId(workoutId, workouts, "program");
+        // EVERY exercise row of the workout, retired ones included: a retired
+        // exercise still belongs to it (workout_id, the composite foreign
+        // key), so the DELETE below would fail on it anyway. In practice a
+        // workout with a retired exercise also has the sessions that used it
+        // (the count below), so the answer is "it has sessions". The page
+        // offers Delete only when it would succeed (3a-w), counting the
+        // retired ones too.
         const [{ exerciseCount }] = await tx
           .select({ exerciseCount: count() })
           .from(assignedProgramExercises)
@@ -1375,17 +1498,73 @@ export class AssignedProgramsService {
     );
     await this.assertCanManage(program.patientId, currentUser);
     assertProgramOpen(program);
-    await this.findProgramExerciseOrThrow(
-      assignedProgramId,
-      rowId,
-      currentUser,
-    );
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .delete(assignedProgramExercises)
-        .where(eq(assignedProgramExercises.id, rowId)),
-    );
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      // Locked: a concurrent edit of the same exercise waits for this
+      // removal (and then finds it gone or retired), and so does a session
+      // starting with it in its checklist — its INSERT into
+      // session_exercises needs a lock on this row (the foreign key's FOR
+      // KEY SHARE), which conflicts with this one.
+      const row = await this.lockProgramExercise(tx, assignedProgramId, rowId);
+      if (row.retiredAt) {
+        throw new ConflictException(
+          "This exercise was already removed from the program",
+        );
+      }
+
+      // DELETE it if no session used it; otherwise RETIRE it. Decided by
+      // the DATABASE, not by counting sessions first: the foreign key from
+      // session_exercises (ON DELETE RESTRICT) refuses the DELETE exactly
+      // when some session points at the row — atomically, at the moment of
+      // the DELETE, with no window between a count and the write.
+      //
+      // The DELETE runs inside a SAVEPOINT (tx.transaction() inside a
+      // transaction = a nested transaction, which Postgres implements as a
+      // savepoint). An error aborts the whole transaction in Postgres — every
+      // later statement would fail with "current transaction is aborted" —
+      // unless the statement ran after a savepoint: rolling back TO the
+      // savepoint undoes just the failed DELETE and lets the transaction go
+      // on, here to retire the row instead.
+      let outcome: "deleted" | "retired";
+      try {
+        await tx.transaction(async (savepoint) => {
+          await savepoint
+            .delete(assignedProgramExercises)
+            .where(eq(assignedProgramExercises.id, rowId));
+        });
+        outcome = "deleted";
+      } catch (error) {
+        if (!isForeignKeyViolation(error, SESSION_EXERCISES_PROGRAM_EXERCISE_FK)) {
+          throw error;
+        }
+        // now(): the database's clock, the same moment as the transaction's
+        // other timestamps. retired_by = the person removing it (migration
+        // 0033's trigger insists).
+        await tx
+          .update(assignedProgramExercises)
+          .set({ retiredAt: sql`now()`, retiredBy: currentUser.id })
+          .where(eq(assignedProgramExercises.id, rowId));
+        outcome = "retired";
+      }
+
+      // Two actions, so an audit viewer can tell "taken out, never used"
+      // from "taken out, kept for its sessions". Either way the whole
+      // exercise as it was: after a DELETE, this entry is the only place it
+      // still exists.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action:
+          outcome === "deleted"
+            ? "ASSIGNED_PROGRAM_EXERCISE_REMOVED"
+            : "ASSIGNED_PROGRAM_EXERCISE_RETIRED",
+        targetUserId: program.patientId,
+        entityType: "assigned-programs",
+        entityId: assignedProgramId,
+        details: { exercise: exerciseForAudit(row) },
+      });
+    });
+    // The full program (it used to answer with nothing), like every write.
+    return this.findProgramWithExercises(assignedProgramId, currentUser);
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -1584,8 +1763,13 @@ export class AssignedProgramsService {
       async (tx) =>
         [
           await this.findWorkouts(tx, sourceId),
+          // Its ACTIVE exercises only: a retired one was taken out of the
+          // program, so the continuation doesn't bring it back.
           await tx.query.assignedProgramExercises.findMany({
-            where: eq(assignedProgramExercises.assignedProgramId, sourceId),
+            where: and(
+              eq(assignedProgramExercises.assignedProgramId, sourceId),
+              isNull(assignedProgramExercises.retiredAt),
+            ),
           }),
         ] as const,
     );
@@ -1635,6 +1819,13 @@ export class AssignedProgramsService {
   // The program with its workouts (A first), its exercises (one flat list,
   // workout by workout — see ProgramsService.findOne for why flat) and its
   // schedule versions (oldest first — the order they took effect in).
+  //
+  // `exercises` holds the ACTIVE exercises only — what the program IS — so
+  // every screen that lists them (the program page, the patient's session
+  // flow later) needs to know nothing about retiring. The retired ones come
+  // apart, in `retiredExercises`, in the order they were removed: kept for
+  // the record (the sessions that used them), and for a screen that wants
+  // to show "removed exercises".
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
     const [workoutRows, exerciseRows, schedules] = await withRlsContext(
@@ -1649,12 +1840,66 @@ export class AssignedProgramsService {
       ] as const,
     );
     const workouts = orderWorkouts(workoutRows);
+    // "No retirement date" = active (a falsy check: null from the database).
+    const active = exerciseRows.filter((row) => !row.retiredAt);
+    const retired = exerciseRows
+      .filter((row) => row.retiredAt)
+      .sort(
+        (a, b) => a.retiredAt!.getTime() - b.retiredAt!.getTime() || a.id - b.id,
+      );
     return {
       ...program,
       workouts,
-      exercises: orderExercisesByWorkout(exerciseRows, workouts),
+      exercises: orderExercisesByWorkout(active, workouts),
+      retiredExercises: retired,
       schedules,
     };
+  }
+
+  // Where an exercise added (or moved) to this workout goes: after its
+  // LAST exercise — the highest position + 1, or 0 in an empty workout. Not
+  // a count: removing an exercise leaves a gap (positions 0 and 2, a count
+  // of 2 → a clash with position 2). The frontend's nextExercisePosition
+  // (src/workouts/workoutGroups.ts) is the same rule. Retired exercises are
+  // counted too, deliberately without a filter: a position after one of
+  // them is as good as any (only the order of the active ones is shown),
+  // and a filter no test could tell apart would be dead weight.
+  private async nextExercisePosition(tx: DrizzleDb, workoutId: number) {
+    const positions = await tx
+      .select({ sortOrder: assignedProgramExercises.sortOrder })
+      .from(assignedProgramExercises)
+      .where(eq(assignedProgramExercises.workoutId, workoutId));
+    return Math.max(-1, ...positions.map((p) => p.sortOrder)) + 1;
+  }
+
+  // One exercise of THIS program, read and locked (SELECT … FOR UPDATE)
+  // until the end of the caller's transaction — 404 when the program has no
+  // such row (or row-level security hides it). The lock makes the edits and
+  // the removal of one exercise happen one at a time, each starting from
+  // the row as the previous one left it. Under row-level security, FOR
+  // UPDATE also asks the UPDATE policy: the care team or an admin, the
+  // people allowed to change the program's exercises.
+  private async lockProgramExercise(
+    tx: DrizzleDb,
+    assignedProgramId: number,
+    rowId: number,
+  ) {
+    const [row] = await tx
+      .select()
+      .from(assignedProgramExercises)
+      .where(
+        and(
+          eq(assignedProgramExercises.id, rowId),
+          eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
+        ),
+      )
+      .for("update");
+    if (!row) {
+      throw new NotFoundException(
+        `Exercise ${rowId} not found in this assigned program`,
+      );
+    }
+    return row;
   }
 
   // The schedule versions of these programs, each with its content: the
@@ -1825,27 +2070,6 @@ export class AssignedProgramsService {
       throw new NotFoundException(`Assigned program ${id} not found`);
     }
     return program;
-  }
-
-  private async findProgramExerciseOrThrow(
-    assignedProgramId: number,
-    rowId: number,
-    currentUser: CurrentUser,
-  ) {
-    const row = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.query.assignedProgramExercises.findFirst({
-        where: and(
-          eq(assignedProgramExercises.id, rowId),
-          eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
-        ),
-      }),
-    );
-    if (!row) {
-      throw new NotFoundException(
-        `Exercise ${rowId} not found in this assigned program`,
-      );
-    }
-    return row;
   }
 
   // Viewing allows a third case beyond manage: the patient viewing their

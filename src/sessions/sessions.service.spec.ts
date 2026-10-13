@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing'
+import { DrizzleQueryError } from 'drizzle-orm'
 import {
   BadRequestException,
   ConflictException,
@@ -108,8 +109,28 @@ describe('SessionsService.create', () => {
 
     const sessionExerciseInserts: any[] = []
     db.query.assignedProgramExercises.findMany.mockResolvedValue([
-      { id: 30, sortOrder: 0 },
-      { id: 31, sortOrder: 1 },
+      {
+        id: 30,
+        sortOrder: 0,
+        name: 'Squat',
+        sets: 3,
+        reps: 10,
+        durationInSeconds: null,
+        weight: 20,
+        weightUnit: 'kg',
+        notes: 'Slowly',
+      },
+      {
+        id: 31,
+        sortOrder: 1,
+        name: 'Plank',
+        sets: null,
+        reps: null,
+        durationInSeconds: 45,
+        weight: null,
+        weightUnit: null,
+        notes: null,
+      },
     ])
     db.insert.mockImplementation(() => ({
       values: jest.fn().mockImplementation((values: any) => {
@@ -131,15 +152,107 @@ describe('SessionsService.create', () => {
       { assignedProgramId: 5, localDate: utcToday() },
     )
 
-    expect(sessionExerciseInserts).toHaveLength(2)
-    expect(sessionExerciseInserts[0]).toEqual(
-      expect.objectContaining({
+    // Each checklist row: which program exercise, a COPY of its name and
+    // prescription as they are now (step 3b-0), nothing done yet, its place.
+    // toStrictEqual: no field more, none less.
+    expect(sessionExerciseInserts).toStrictEqual([
+      {
         sessionId: 500,
         assignedProgramExerciseId: 30,
+        name: 'Squat',
+        sets: 3,
+        reps: 10,
+        durationInSeconds: null,
+        weight: 20,
+        weightUnit: 'kg',
+        notes: 'Slowly',
         completed: false,
-      }),
-    )
+        sortOrder: 0,
+      },
+      {
+        sessionId: 500,
+        assignedProgramExerciseId: 31,
+        name: 'Plank',
+        sets: null,
+        reps: null,
+        durationInSeconds: 45,
+        weight: null,
+        weightUnit: null,
+        notes: null,
+        completed: false,
+        sortOrder: 1,
+      },
+    ])
     expect(result).toEqual(expect.objectContaining({ id: 500 }))
+  })
+
+  // The race of step 3b-0: the practitioner DELETED an exercise of this
+  // checklist (never used, so really deleted) between the read above and
+  // the insert. The checklist row's foreign key refuses it: the patient is
+  // told to start again — a 409, not a 500.
+  it('answers 409 when an exercise of the checklist was deleted meanwhile', async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue(OPEN_PROGRAM)
+    db.insert.mockImplementation(() => ({
+      values: jest
+        .fn()
+        .mockImplementation((values: Record<string, unknown>) => {
+          if (values.status === 'pending') {
+            return {
+              returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+            }
+          }
+          return Promise.reject(
+            new DrizzleQueryError(
+              'insert into "session_exercises" ...',
+              [],
+              Object.assign(new Error('fk'), {
+                code: '23503',
+                constraint: 'session_exercises_program_exercise_fk',
+              }),
+            ),
+          )
+        }),
+    }))
+
+    await expect(
+      service.create(
+        { id: 20, activeRole: UserRole.PATIENT },
+        { assignedProgramId: 5, localDate: utcToday() },
+      ),
+    ).rejects.toThrow(
+      new ConflictException(
+        'Your program was just changed: start the session again',
+      ),
+    )
+  })
+
+  // Any other failure of the insert is not that race: unchanged.
+  it('lets any other insert failure through unchanged', async () => {
+    db.query.assignedPrograms.findFirst.mockResolvedValue(OPEN_PROGRAM)
+    const other = Object.assign(new Error('fk'), {
+      code: '23503',
+      constraint: 'session_exercises_session_id_sessions_id_fk',
+    })
+    db.insert.mockImplementation(() => ({
+      values: jest
+        .fn()
+        .mockImplementation((values: Record<string, unknown>) =>
+          values.status === 'pending'
+            ? {
+                returning: jest
+                  .fn()
+                  .mockResolvedValue([{ id: 500, ...values }]),
+              }
+            : Promise.reject(other),
+        ),
+    }))
+
+    await expect(
+      service.create(
+        { id: 20, activeRole: UserRole.PATIENT },
+        { assignedProgramId: 5, localDate: utcToday() },
+      ),
+    ).rejects.toBe(other)
   })
 
   // No workoutId sent, one workout: the session records that one.

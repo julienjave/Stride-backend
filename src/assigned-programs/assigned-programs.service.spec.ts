@@ -1003,6 +1003,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       endDate: "2026-12-31",
       workouts: PROGRAM_WORKOUTS,
       exercises: [],
+      retiredExercises: [],
       schedules: [],
     });
   });
@@ -1033,29 +1034,114 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
       endDate: "2026-12-31",
       workouts: PROGRAM_WORKOUTS,
       exercises: [],
+      retiredExercises: [],
       schedules: [],
     });
   });
 });
 
-describe("AssignedProgramsService.addExercise", () => {
+// --- The four exercise routes (step 3b-0) -------------------------------------------------------------
+//
+// Add, edit / move, reorder, remove: each writes ONE complete audit entry in
+// its own transaction, writes nothing when nothing changes, and answers with
+// the full program. One flexible mock database for all of them:
+//   - `writes` records every write IN ORDER — [kind, details] — so a test can
+//     say "the UPDATE, then its audit entry" or "nothing at all";
+//   - `lockedRow` is what lockProgramExercise's SELECT … FOR UPDATE reads;
+//   - `positions` what nextExercisePosition reads (the workout's active
+//     exercises' positions);
+//   - `deleteError` makes the DELETE fail (a foreign key refusing it);
+//   - `depth` is how many db.transaction() calls are open (the mock's tx IS
+//     db): 1 inside withRlsContext, 2 inside a nested one — a SAVEPOINT. The
+//     DELETE and the retiring UPDATE record the depth they ran at.
+// Real behaviour against Postgres — the savepoint, the foreign key, the
+// trigger — is proven in test/program-exercises.e2e-spec.ts; these pin the
+// service's own decisions.
+describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
   let service: AssignedProgramsService;
   let usersService: { isPatientManagedBy: jest.Mock };
-  let db: {
+  let writes: [string, unknown][];
+  let lockedRow: Record<string, unknown> | undefined;
+  let positions: { sortOrder: number }[];
+  let deleteError: Error | undefined;
+  let forCalls: string[];
+  let depth: number;
+  let depthOf: Record<string, number>;
+  let db: Record<string, unknown> & {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
       exercises: { findFirst: jest.Mock };
+      assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
+      programSchedules: { findMany: jest.Mock };
     };
-    insert: jest.Mock;
-    execute: jest.Mock;
     transaction: jest.Mock;
   };
 
+  const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER };
+  // Two workouts: A (950) and B (951).
+  const workouts = [
+    { id: 950, assignedProgramId: 900, name: null, sortOrder: 0 },
+    { id: 951, assignedProgramId: 900, name: "Strength", sortOrder: 1 },
+  ];
+  // Exercise row 31 as stored: in A, at position 1, 3 × 10.
+  const storedRow = {
+    id: 31,
+    assignedProgramId: 900,
+    workoutId: 950,
+    exerciseId: 5,
+    name: "Squat",
+    primaryMuscles: ["legs"],
+    secondaryMuscles: [],
+    equipment: [],
+    instructions: ["Stand", "Sit"],
+    sets: 3,
+    reps: 10,
+    durationInSeconds: null,
+    weight: null,
+    weightUnit: null,
+    sortOrder: 1,
+    notes: null,
+    retiredAt: null,
+    retiredBy: null,
+  };
+  // What the row as an audit entry records (exerciseForAudit): everything
+  // but the program id and the retirement columns.
+  const storedRowForAudit = {
+    id: 31,
+    workoutId: 950,
+    exerciseId: 5,
+    name: "Squat",
+    primaryMuscles: ["legs"],
+    secondaryMuscles: [],
+    equipment: [],
+    instructions: ["Stand", "Sit"],
+    sets: 3,
+    reps: 10,
+    durationInSeconds: null,
+    weight: null,
+    weightUnit: null,
+    sortOrder: 1,
+    notes: null,
+  };
+
   beforeEach(async () => {
-    usersService = {
-      isPatientManagedBy: jest.fn().mockResolvedValue(true),
-    };
+    writes = [];
+    lockedRow = { ...storedRow };
+    positions = [];
+    deleteError = undefined;
+    forCalls = [];
+    depth = 0;
+    depthOf = {};
+    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) };
+    auditService.logInTransaction.mockImplementation(
+      (_tx: unknown, entry: unknown) => {
+        writes.push(["audit", entry]);
+        return Promise.resolve(undefined);
+      },
+    );
     db = {
       query: {
         assignedPrograms: {
@@ -1063,16 +1149,76 @@ describe("AssignedProgramsService.addExercise", () => {
             .fn()
             .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
         },
-        programWorkouts: {
-          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
-        },
+        programWorkouts: { findMany: jest.fn().mockResolvedValue(workouts) },
         exercises: {
-          findFirst: jest.fn().mockResolvedValue({ id: 5, name: "Squat" }),
+          findFirst: jest.fn().mockResolvedValue({
+            id: 5,
+            name: "Squat",
+            primaryMuscles: ["legs"],
+            secondaryMuscles: ["core"],
+            equipment: ["barbell"],
+            instructions: ["Step one"],
+          }),
         },
+        // findProgramWithExercises' read (and reorder's own read, which
+        // tests override with mockResolvedValueOnce).
+        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
+        programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      insert: jest.fn(),
+      // One select chain serves both reads: awaited directly it gives the
+      // positions (nextExercisePosition); through .for("update") the locked
+      // row (lockProgramExercise).
+      select: jest.fn(() => ({
+        from: () => ({
+          where: () =>
+            Object.assign(Promise.resolve(positions), {
+              for: jest.fn((strength: string) => {
+                forCalls.push(strength);
+                return Promise.resolve(lockedRow ? [lockedRow] : []);
+              }),
+            }),
+        }),
+      })),
+      insert: jest.fn(() => ({
+        values: jest.fn((values: Record<string, unknown>) => {
+          writes.push(["insert", values]);
+          return {
+            returning: jest
+              .fn()
+              .mockResolvedValue([{ id: 40, retiredAt: null, ...values }]),
+          };
+        }),
+      })),
+      update: jest.fn(() => ({
+        set: jest.fn((values: unknown) => ({
+          where: jest.fn(() => {
+            writes.push(["update", values]);
+            depthOf.update = depth;
+            return Promise.resolve(undefined);
+          }),
+        })),
+      })),
+      delete: jest.fn(() => ({
+        where: jest.fn(() => {
+          depthOf.delete = depth;
+          if (deleteError) return Promise.reject(deleteError);
+          writes.push(["delete", null]);
+          return Promise.resolve(undefined);
+        }),
+      })),
       execute: jest.fn().mockResolvedValue(undefined),
-      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+      // Like Drizzle's: the callback's result (or rejection) is the
+      // transaction's; `depth` tracks the nesting while it runs.
+      transaction: jest.fn(async (fn: (tx: unknown) => unknown) => {
+        depth += 1;
+        try {
+          return await fn(db);
+        } finally {
+          depth -= 1;
+        }
+      }),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -1083,95 +1229,404 @@ describe("AssignedProgramsService.addExercise", () => {
         { provide: AuditService, useValue: auditService },
       ],
     }).compile();
-
     service = moduleRef.get(AssignedProgramsService);
   });
 
-  it("throws NotFoundException when the referenced exercise does not exist", async () => {
-    db.query.exercises.findFirst.mockResolvedValue(undefined);
-
-    await expect(
-      service.addExercise(
-        900,
-        { id: 7, activeRole: UserRole.PRACTITIONER },
-        {
-          exerciseId: 999,
-          sortOrder: 0,
-        },
-      ),
-    ).rejects.toThrow(NotFoundException);
+  // The audit entry common to every route: who, the patient, the program.
+  const entry = (action: string, details: unknown) => ({
+    performedBy: 7,
+    action,
+    targetUserId: 20,
+    entityType: "assigned-programs",
+    entityId: 900,
+    details,
   });
 
-  it("rejects a non-managing practitioner before ever checking the exercise exists", async () => {
-    usersService.isPatientManagedBy.mockResolvedValue(false);
+  describe("addExercise", () => {
+    it("throws NotFoundException when the referenced exercise does not exist, writing nothing", async () => {
+      db.query.exercises.findFirst.mockResolvedValue(undefined);
 
-    await expect(
-      service.addExercise(
-        900,
-        { id: 7, activeRole: UserRole.PRACTITIONER },
-        {
-          exerciseId: 5,
-          sortOrder: 0,
-        },
-      ),
-    ).rejects.toThrow(ForbiddenException);
-    expect(db.query.exercises.findFirst).not.toHaveBeenCalled();
-  });
-
-  it("inserts every provided field, including weight/weightUnit and the exercise's snapshotted details", async () => {
-    db.query.exercises.findFirst.mockResolvedValue({
-      id: 5,
-      name: "Squat",
-      primaryMuscles: ["legs"],
-      secondaryMuscles: ["core"],
-      equipment: ["barbell"],
-      instructions: ["Step one"],
+      await expect(
+        service.addExercise(900, practitioner, { exerciseId: 999 }),
+      ).rejects.toThrow(new NotFoundException("Exercise 999 not found"));
+      expect(writes).toEqual([]);
     });
-    // Captured so the test can assert on exactly what reached the
-    // database — the same real bug (weight/weightUnit silently missing
-    // from this object) shipped once on the programs side already,
-    // caught only by a real e2e run, precisely because no unit test
-    // checked this before.
-    const valuesMock = jest.fn().mockReturnValue({
-      returning: jest
-        .fn()
-        .mockResolvedValue([{ id: 40, assignedProgramId: 900, exerciseId: 5 }]),
-    });
-    db.insert.mockReturnValue({ values: valuesMock });
 
-    const result = await service.addExercise(
-      900,
-      { id: 7, activeRole: UserRole.PRACTITIONER },
-      {
+    it("rejects a non-managing practitioner before ever checking the exercise exists", async () => {
+      usersService.isPatientManagedBy.mockResolvedValue(false);
+
+      await expect(
+        service.addExercise(900, practitioner, { exerciseId: 5 }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(db.query.exercises.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("inserts every provided field and the exercise's snapshot, then its audit entry", async () => {
+      await service.addExercise(900, practitioner, {
         exerciseId: 5,
+        workoutId: 951,
         sets: 3,
         reps: 10,
         weight: 62.5,
         weightUnit: "kg",
         notes: "Go slow",
-        sortOrder: 0,
-      },
-    );
+        sortOrder: 4,
+      });
 
-    expect(valuesMock).toHaveBeenCalledWith({
-      assignedProgramId: 900,
-      // No workoutId in the request: the program's first workout.
-      workoutId: 950,
-      exerciseId: 5,
-      name: "Squat",
-      primaryMuscles: ["legs"],
-      secondaryMuscles: ["core"],
-      equipment: ["barbell"],
-      instructions: ["Step one"],
-      sets: 3,
-      reps: 10,
-      durationInSeconds: undefined,
-      weight: 62.5,
-      weightUnit: "kg",
-      sortOrder: 0,
-      notes: "Go slow",
+      const values = {
+        assignedProgramId: 900,
+        workoutId: 951,
+        exerciseId: 5,
+        name: "Squat",
+        primaryMuscles: ["legs"],
+        secondaryMuscles: ["core"],
+        equipment: ["barbell"],
+        instructions: ["Step one"],
+        sets: 3,
+        reps: 10,
+        durationInSeconds: undefined,
+        weight: 62.5,
+        weightUnit: "kg",
+        // Asked for explicitly: used as is.
+        sortOrder: 4,
+        notes: "Go slow",
+      };
+      expect(writes).toEqual([
+        ["insert", values],
+        [
+          "audit",
+          entry("ASSIGNED_PROGRAM_EXERCISE_ADDED", {
+            exercise: {
+              id: 40,
+              workoutId: 951,
+              exerciseId: 5,
+              name: "Squat",
+              primaryMuscles: ["legs"],
+              secondaryMuscles: ["core"],
+              equipment: ["barbell"],
+              instructions: ["Step one"],
+              sets: 3,
+              reps: 10,
+              durationInSeconds: undefined,
+              weight: 62.5,
+              weightUnit: "kg",
+              sortOrder: 4,
+              notes: "Go slow",
+            },
+          }),
+        ],
+      ]);
     });
-    expect(result).toEqual({ id: 40, assignedProgramId: 900, exerciseId: 5 });
+
+    // Positions 0 and 2 (one was removed in between): a count would say 2 —
+    // already taken. The last position + 1 is 3.
+    it("appends after the workout's last exercise when no position is given", async () => {
+      positions = [{ sortOrder: 0 }, { sortOrder: 2 }];
+
+      await service.addExercise(900, practitioner, { exerciseId: 5 });
+
+      expect(writes[0]).toEqual([
+        "insert",
+        expect.objectContaining({ workoutId: 950, sortOrder: 3 }),
+      ]);
+    });
+
+    it("starts an empty workout at position 0", async () => {
+      await service.addExercise(900, practitioner, { exerciseId: 5 });
+
+      expect(writes[0]).toEqual([
+        "insert",
+        expect.objectContaining({ sortOrder: 0 }),
+      ]);
+    });
+
+    // It used to answer with the bare inserted row: a screen writing that
+    // into the program's cache would have lost every other exercise.
+    it("answers with the full program", async () => {
+      db.query.assignedProgramExercises.findMany.mockResolvedValue([
+        { ...storedRow },
+      ]);
+
+      const result = await service.addExercise(900, practitioner, {
+        exerciseId: 5,
+      });
+
+      expect(result).toEqual({
+        ...OPEN_STATE,
+        id: 900,
+        patientId: 20,
+        workouts,
+        exercises: [storedRow],
+        retiredExercises: [],
+        schedules: [],
+      });
+    });
+  });
+
+  describe("updateExercise", () => {
+    it("locks the row, updates only what changed, and records before → after", async () => {
+      await service.updateExercise(900, 31, practitioner, {
+        sets: 4,
+        // Re-sent with the stored value: not a change.
+        reps: 10,
+        // An array re-sent with the same items: not a change either (a new
+        // array object — `===` alone would call it one).
+        primaryMuscles: ["legs"],
+      });
+
+      expect(forCalls).toEqual(["update"]);
+      expect(writes).toEqual([
+        ["update", { sets: 4, reps: 10, primaryMuscles: ["legs"] }],
+        [
+          "audit",
+          entry("ASSIGNED_PROGRAM_EXERCISE_UPDATED", {
+            exerciseRowId: 31,
+            name: "Squat",
+            changes: { sets: { from: 3, to: 4 } },
+          }),
+        ],
+      ]);
+    });
+
+    // Same length, other items: still a change (comparing lengths alone
+    // would miss it).
+    it("records an array whose items changed, at the same length", async () => {
+      await service.updateExercise(900, 31, practitioner, {
+        primaryMuscles: ["glutes"],
+      });
+
+      expect(writes[1]).toEqual([
+        "audit",
+        entry("ASSIGNED_PROGRAM_EXERCISE_UPDATED", {
+          exerciseRowId: 31,
+          name: "Squat",
+          changes: { primaryMuscles: { from: ["legs"], to: ["glutes"] } },
+        }),
+      ]);
+    });
+
+    it("records an array that really changed", async () => {
+      await service.updateExercise(900, 31, practitioner, {
+        primaryMuscles: ["legs", "glutes"],
+      });
+
+      expect(writes[1]).toEqual([
+        "audit",
+        entry("ASSIGNED_PROGRAM_EXERCISE_UPDATED", {
+          exerciseRowId: 31,
+          name: "Squat",
+          changes: { primaryMuscles: { from: ["legs"], to: ["legs", "glutes"] } },
+        }),
+      ]);
+    });
+
+    // A form re-sending what's stored: no UPDATE, no entry.
+    it("writes nothing when nothing changes", async () => {
+      await service.updateExercise(900, 31, practitioner, {
+        sets: 3,
+        workoutId: 950,
+      });
+
+      expect(writes).toEqual([]);
+    });
+
+    it("moves to the end of another workout, recorded as workout and position changes", async () => {
+      positions = [{ sortOrder: 0 }, { sortOrder: 5 }];
+
+      await service.updateExercise(900, 31, practitioner, { workoutId: 951 });
+
+      expect(writes).toEqual([
+        ["update", { workoutId: 951, sortOrder: 6 }],
+        [
+          "audit",
+          entry("ASSIGNED_PROGRAM_EXERCISE_UPDATED", {
+            exerciseRowId: 31,
+            name: "Squat",
+            changes: {
+              workoutId: { from: 950, to: 951 },
+              sortOrder: { from: 1, to: 6 },
+            },
+          }),
+        ],
+      ]);
+    });
+
+    it("refuses a retired exercise, writing nothing", async () => {
+      lockedRow = { ...storedRow, retiredAt: new Date(), retiredBy: 7 };
+
+      await expect(
+        service.updateExercise(900, 31, practitioner, { sets: 4 }),
+      ).rejects.toThrow(
+        new ConflictException(
+          "This exercise was removed from the program, so it can no longer change",
+        ),
+      );
+      expect(writes).toEqual([]);
+    });
+
+    it("answers 404 for a row the program doesn't have", async () => {
+      lockedRow = undefined;
+
+      await expect(
+        service.updateExercise(900, 99, practitioner, { sets: 4 }),
+      ).rejects.toThrow(
+        new NotFoundException("Exercise 99 not found in this assigned program"),
+      );
+      expect(writes).toEqual([]);
+    });
+
+    // The gap from deferred-improvements.md (fixed in step 1): it used to
+    // answer with the one updated row.
+    it("answers with the full program — every exercise and the schedules — not the updated row", async () => {
+      db.query.assignedProgramExercises.findMany.mockResolvedValue([
+        { ...storedRow, id: 30, sets: 2 },
+        { ...storedRow, sets: 4 },
+      ]);
+
+      const result = await service.updateExercise(900, 31, practitioner, {
+        sets: 4,
+      });
+
+      expect(result).toEqual({
+        ...OPEN_STATE,
+        id: 900,
+        patientId: 20,
+        workouts,
+        exercises: [
+          { ...storedRow, id: 30, sets: 2 },
+          { ...storedRow, sets: 4 },
+        ],
+        retiredExercises: [],
+        schedules: [],
+      });
+    });
+  });
+
+  describe("removeExercise", () => {
+    // Drizzle's wrapping of node-postgres's error, as the service receives
+    // it.
+    const foreignKeyError = (constraint: string) =>
+      new DrizzleQueryError(
+        'delete from "assigned_program_exercises" ...',
+        [],
+        Object.assign(new Error("fk"), { code: "23503", constraint }),
+      );
+
+    it("deletes an exercise no session used, inside a savepoint, and records it whole", async () => {
+      await service.removeExercise(900, 31, practitioner);
+
+      expect(forCalls).toEqual(["update"]);
+      expect(writes).toEqual([
+        ["delete", null],
+        [
+          "audit",
+          entry("ASSIGNED_PROGRAM_EXERCISE_REMOVED", {
+            exercise: storedRowForAudit,
+          }),
+        ],
+      ]);
+    });
+
+    // The DELETE runs in a nested transaction — a SAVEPOINT — so that its
+    // failure doesn't abort the transaction; the retiring UPDATE then runs
+    // in the outer one, after the savepoint is rolled back. (Without the
+    // savepoint, Postgres would refuse that UPDATE: "current transaction is
+    // aborted" — the e2e test proves it for real.)
+    it("deletes inside a savepoint, and retires in the outer transaction", async () => {
+      deleteError = foreignKeyError("session_exercises_program_exercise_fk");
+
+      await service.removeExercise(900, 31, practitioner);
+
+      expect(depthOf).toEqual({ delete: 2, update: 1 });
+    });
+
+    it("retires it when a session's foreign key refuses the delete", async () => {
+      deleteError = foreignKeyError("session_exercises_program_exercise_fk");
+
+      await service.removeExercise(900, 31, practitioner);
+
+      expect(writes).toHaveLength(2);
+      // now() from the database (an SQL fragment), and the remover's id.
+      const [kind, values] = writes[0] as [string, Record<string, unknown>];
+      expect(kind).toBe("update");
+      expect(values.retiredBy).toBe(7);
+      expect(values.retiredAt).toBeDefined();
+      expect(values.retiredAt).not.toBeInstanceOf(Date);
+      expect(Object.keys(values).sort()).toEqual(["retiredAt", "retiredBy"]);
+      expect(writes[1]).toEqual([
+        "audit",
+        entry("ASSIGNED_PROGRAM_EXERCISE_RETIRED", {
+          exercise: storedRowForAudit,
+        }),
+      ]);
+    });
+
+    // Only THAT foreign key means "a session used it": any other failure is
+    // not a reason to retire, and goes up unchanged.
+    it.each([
+      ["another foreign key", foreignKeyError("some_other_fk")],
+      ["any other error", new Error("connection lost")],
+    ])("lets %s through without retiring or auditing", async (_label, error) => {
+      deleteError = error;
+
+      await expect(service.removeExercise(900, 31, practitioner)).rejects.toBe(
+        error,
+      );
+      expect(writes).toEqual([]);
+    });
+
+    it("refuses an exercise already retired, writing nothing", async () => {
+      lockedRow = { ...storedRow, retiredAt: new Date(), retiredBy: 7 };
+
+      await expect(
+        service.removeExercise(900, 31, practitioner),
+      ).rejects.toThrow(
+        new ConflictException(
+          "This exercise was already removed from the program",
+        ),
+      );
+      expect(writes).toEqual([]);
+    });
+
+    it("answers 404 for a row the program doesn't have", async () => {
+      lockedRow = undefined;
+
+      await expect(
+        service.removeExercise(900, 99, practitioner),
+      ).rejects.toThrow(NotFoundException);
+      expect(writes).toEqual([]);
+    });
+
+    it("refuses a closed program before touching the row", async () => {
+      db.query.assignedPrograms.findFirst.mockResolvedValue({
+        id: 900,
+        patientId: 20,
+        status: "cancelled",
+        isArchived: false,
+      });
+
+      await expect(
+        service.removeExercise(900, 31, practitioner),
+      ).rejects.toThrow(ConflictException);
+      expect(forCalls).toEqual([]);
+    });
+
+    // The answer: the full program, the retired exercise apart from the
+    // active ones, retired ones in the order they were removed.
+    it("answers with the full program, retired exercises listed apart", async () => {
+      const early = { ...storedRow, id: 33, retiredAt: new Date("2031-01-02T10:00:00Z"), retiredBy: 7 };
+      const late = { ...storedRow, id: 32, retiredAt: new Date("2031-01-05T10:00:00Z"), retiredBy: 7 };
+      db.query.assignedProgramExercises.findMany.mockResolvedValue([
+        late,
+        { ...storedRow, id: 30 },
+        early,
+      ]);
+
+      const result = await service.removeExercise(900, 31, practitioner);
+
+      expect(result.exercises).toEqual([{ ...storedRow, id: 30 }]);
+      expect(result.retiredExercises).toEqual([early, late]);
+    });
   });
 });
 
@@ -1255,6 +1710,36 @@ describe("AssignedProgramsService.reorderExercises", () => {
     );
     expect(db.transaction).toHaveBeenCalled();
     expect(txUpdate).toHaveBeenCalledTimes(3);
+  });
+
+  // Step 3b-0: the audit convention — which workout, and the order before →
+  // after, as row ids (the first workout, as none was named).
+  it("records the workout and its order before → after", async () => {
+    await service.reorderExercises(
+      900,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      [3, 1, 2],
+    );
+    expect(auditService.logInTransaction).toHaveBeenCalledTimes(1);
+    expect(auditService.logInTransaction).toHaveBeenCalledWith(db, {
+      performedBy: 7,
+      action: "ASSIGNED_PROGRAM_EXERCISES_REORDERED",
+      targetUserId: 20,
+      entityType: "assigned-programs",
+      entityId: 900,
+      details: { workoutId: 950, from: [1, 2, 3], to: [3, 1, 2] },
+    });
+  });
+
+  // The order it already has: nothing to write, nothing to record.
+  it("writes nothing for the order it already has", async () => {
+    await service.reorderExercises(
+      900,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      [1, 2, 3],
+    );
+    expect(txUpdate).not.toHaveBeenCalled();
+    expect(auditService.logInTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects an order that does not match the current set of rows, without writing anything", async () => {
@@ -1565,6 +2050,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
       endDate: null,
       workouts: PROGRAM_WORKOUTS,
       exercises: [],
+      retiredExercises: [],
       schedules: [
         { id: 1, days: [], rotation: [] },
         { id: 2, days: [], rotation: [] },
@@ -1959,6 +2445,60 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
     expect(writes.map(([kind]) => kind)).toEqual(["update", "audit"]);
   });
 
+  // Step 3b-0 — the end date never moves into the past (end-date.ts has the
+  // rule's own table; these check the service applies it, and only to a
+  // real change).
+  describe("the end date of a started program", () => {
+    const started = addDays(today, -30);
+    beforeEach(() => {
+      db.query.assignedPrograms.findFirst.mockResolvedValue({
+        ...OPEN_STATE,
+        id: 900,
+        patientId: 20,
+        title: "Knee Rehab",
+        startDate: started,
+        endDate: addDays(today, 10),
+      });
+    });
+
+    it("refuses moving it into the past, without writing", async () => {
+      await expect(
+        service.update(900, admin, { endDate: addDays(today, -5) }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          "The end date can't be moved into the past: to end the program now, complete or cancel it",
+        ),
+      );
+      expect(writes).toEqual([]);
+    });
+
+    // Shortening to a day still ahead is a change of plan, not of history.
+    it("accepts shortening it to today", async () => {
+      await service.update(900, admin, { endDate: today });
+
+      expect(setValues).toHaveBeenCalledWith({ endDate: today });
+    });
+
+    // A program whose end has passed but that nobody completed yet: a form
+    // re-sending every field, the end date as stored, must keep working —
+    // re-sending isn't moving.
+    it("lets the stored end date be re-sent even when it has passed", async () => {
+      const passed = addDays(today, -3);
+      db.query.assignedPrograms.findFirst.mockResolvedValue({
+        ...OPEN_STATE,
+        id: 900,
+        patientId: 20,
+        title: "Knee Rehab",
+        startDate: started,
+        endDate: passed,
+      });
+
+      await service.update(900, admin, { endDate: passed, title: "Knee" });
+
+      expect(writes.map(([kind]) => kind)).toEqual(["update", "audit"]);
+    });
+  });
+
   // The program row, then its schedule (via planStartDateMove: here the one
   // version moves — its row AND its days), then the audit entry — all in
   // that order, in one transaction.
@@ -2153,101 +2693,6 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
       txSeen,
       expect.objectContaining({ action: "ASSIGNED_PROGRAM_UPDATED" }),
     );
-  });
-});
-
-describe("AssignedProgramsService.updateExercise", () => {
-  let service: AssignedProgramsService;
-  let db: {
-    query: {
-      assignedPrograms: { findFirst: jest.Mock };
-      programWorkouts: { findMany: jest.Mock };
-      assignedProgramExercises: {
-        findFirst: jest.Mock;
-        findMany: jest.Mock;
-      };
-      programScheduleDays: { findMany: jest.Mock };
-      programScheduleRotation: { findMany: jest.Mock };
-      programSchedules: { findMany: jest.Mock };
-    };
-    update: jest.Mock;
-    execute: jest.Mock;
-    transaction: jest.Mock;
-  };
-
-  beforeEach(async () => {
-    db = {
-      query: {
-        assignedPrograms: {
-          findFirst: jest
-            .fn()
-            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
-        },
-        programWorkouts: {
-          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
-        },
-        assignedProgramExercises: {
-          findFirst: jest
-            .fn()
-            .mockResolvedValue({ id: 31, assignedProgramId: 900 }),
-          findMany: jest.fn().mockResolvedValue([
-            { id: 30, sets: 2 },
-            { id: 31, sets: 4 },
-          ]),
-        },
-        // Version 5 is Tuesdays, workout 950.
-        programScheduleDays: {
-          findMany: jest
-            .fn()
-            .mockResolvedValue([{ scheduleId: 5, weekday: 2, workoutId: 950 }]),
-        },
-        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
-        programSchedules: {
-          findMany: jest.fn().mockResolvedValue([{ id: 5 }]),
-        },
-      },
-      update: jest.fn().mockReturnValue({
-        set: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue(undefined),
-        }),
-      }),
-      execute: jest.fn().mockResolvedValue(undefined),
-      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
-    };
-
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        AssignedProgramsService,
-        { provide: DRIZZLE, useValue: db },
-        { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
-        { provide: AuditService, useValue: auditService },
-      ],
-    }).compile();
-
-    service = moduleRef.get(AssignedProgramsService);
-  });
-
-  // The gap from deferred-improvements.md: it used to answer with the one
-  // updated row. A screen writing that into the program's cache entry
-  // would lose every other exercise.
-  it("answers with the full program — every exercise and the schedules — not the updated row", async () => {
-    const result = await service.updateExercise(
-      900,
-      31,
-      { id: 1, activeRole: UserRole.ADMIN },
-      { sets: 4 },
-    );
-
-    expect(result).toEqual({
-      ...OPEN_STATE,
-      id: 900,
-      patientId: 20,
-      workouts: PROGRAM_WORKOUTS,
-      exercises: [{ id: 30, sets: 2 }, { id: 31, sets: 4 }],
-      schedules: [
-        { id: 5, days: [{ weekday: 2, workoutId: 950 }], rotation: [] },
-      ],
-    });
   });
 });
 

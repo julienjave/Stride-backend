@@ -20,11 +20,12 @@ import { DrizzleQueryError } from 'drizzle-orm'
 import {
   CLOSED_PROGRAM_MESSAGE,
   HttpExceptionFilter,
+  RETIRED_EXERCISE_MESSAGE,
 } from './http-exception.filter'
 
-// The filter shapes every error response. Here: the one database error it
-// translates (the closed-program guard, migration 0031) and that the rest is
-// unchanged. A fake ArgumentsHost hands it a request and a response whose
+// The filter shapes every error response. Here: the database errors it
+// translates (the closed-program guard, migration 0031; the retired-exercise
+// guard, 0033) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
 // status() and json() calls are recorded.
 describe('HttpExceptionFilter', () => {
   function run(exception: unknown) {
@@ -59,6 +60,18 @@ describe('HttpExceptionFilter', () => {
       message: [CLOSED_PROGRAM_MESSAGE],
       error: 'ConflictException',
       path: '/sessions',
+    })
+  })
+
+  it("answers 409 for the retired-exercise guard, in the service's own words", () => {
+    const { status, body } = run(
+      databaseError('23514', 'assigned_program_exercise_retired'),
+    )
+    expect(status).toBe(409)
+    expect(body).toMatchObject({
+      statusCode: 409,
+      message: [RETIRED_EXERCISE_MESSAGE],
+      error: 'ConflictException',
     })
   })
 

@@ -86,6 +86,23 @@ export const PROGRAM_SCHEDULE_ROTATION_WORKOUT_FK =
 // hit it.
 export const ASSIGNED_PROGRAM_CLOSED = 'assigned_program_closed'
 
+// The foreign key from a session's checklist row to the program exercise it
+// is (sessions.schema.ts — named explicitly in migration 0032; its old,
+// generated name was over Postgres's 63-character limit and got cut).
+// RESTRICT: when it refuses deleting a program exercise, a session used it,
+// and AssignedProgramsService.removeExercise RETIRES the exercise instead.
+// SessionsService.create meets it from the other side: an exercise deleted
+// while a session was starting with it.
+export const SESSION_EXERCISES_PROGRAM_EXERCISE_FK =
+  'session_exercises_program_exercise_fk'
+
+// Not a real CHECK either: the name migration 0033's trigger gives its
+// refusal — a retired program exercise can no longer change. Reached through
+// the API only by a request racing the removal (the service refuses first
+// otherwise); HttpExceptionFilter turns it into a 409.
+export const ASSIGNED_PROGRAM_EXERCISE_RETIRED =
+  'assigned_program_exercise_retired'
+
 // --- HELPER ------------------------------------------------------------------------------------------------
 
 // The shape we read off a Postgres error. node-postgres's DatabaseError

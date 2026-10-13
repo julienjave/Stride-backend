@@ -225,6 +225,20 @@
       "when": 1791739872774,
       "tag": "0031_closed_program_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791902289337,
+      "tag": "0032_retire_and_session_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791902345151,
+      "tag": "0033_retired_exercise_guards",
+      "breakpoints": true
     }
   ]
 }

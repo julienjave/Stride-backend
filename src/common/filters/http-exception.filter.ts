@@ -29,6 +29,7 @@ import {
 import { Request, Response } from 'express'
 import {
   ASSIGNED_PROGRAM_CLOSED,
+  ASSIGNED_PROGRAM_EXERCISE_RETIRED,
   isCheckViolation,
 } from '../../database/pg-errors'
 
@@ -41,6 +42,25 @@ import {
 export const CLOSED_PROGRAM_MESSAGE =
   'This program is closed, so it can no longer change'
 
+// The same idea for a RETIRED program exercise (migration 0033): a request
+// that raced its removal — reordering a workout while one of its exercises
+// is being removed, say — gets the 409 the service's own check
+// (assertNotRetired) gives, in the same words.
+export const RETIRED_EXERCISE_MESSAGE =
+  'This exercise was removed from the program, so it can no longer change'
+
+// The database refusals that mean "the request is fine, but the data it
+// targets can't change any more" — each turned into its 409.
+function translateDatabaseRefusal(caught: unknown): unknown {
+  if (isCheckViolation(caught, ASSIGNED_PROGRAM_CLOSED)) {
+    return new ConflictException(CLOSED_PROGRAM_MESSAGE)
+  }
+  if (isCheckViolation(caught, ASSIGNED_PROGRAM_EXERCISE_RETIRED)) {
+    return new ConflictException(RETIRED_EXERCISE_MESSAGE)
+  }
+  return caught
+}
+
 // --- FILTER ------------------------------------------------------------------------------------------------
 
 // @Catch() with no argument catches EVERYTHING — both Nest's own
@@ -52,9 +72,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter')
 
   catch(caught: unknown, host: ArgumentsHost) {
-    const exception = isCheckViolation(caught, ASSIGNED_PROGRAM_CLOSED)
-      ? new ConflictException(CLOSED_PROGRAM_MESSAGE)
-      : caught
+    const exception = translateDatabaseRefusal(caught)
     const ctx = host.switchToHttp()
     const response = ctx.getResponse<Response>()
     const request = ctx.getRequest<Request>()

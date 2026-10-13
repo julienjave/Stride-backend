@@ -28,9 +28,12 @@ import {
   check,
   index,
   foreignKey,
+  varchar,
+  real,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
+import { weightUnitEnum } from './weight-unit.schema'
 import {
   assignedPrograms,
   assignedProgramExercises,
@@ -127,9 +130,29 @@ export const sessionExercises = pgTable(
     sessionId: bigint('session_id', { mode: 'number' })
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),
-    assignedProgramExerciseId: integer('assigned_program_exercise_id')
-      .notNull()
-      .references(() => assignedProgramExercises.id, { onDelete: 'restrict' }),
+    // Which exercise of the program this checklist row is. RESTRICT (the
+    // foreign key below): a program exercise a session used can't be
+    // deleted — removing it RETIRES it instead (step 3b-0).
+    assignedProgramExerciseId: integer(
+      'assigned_program_exercise_id',
+    ).notNull(),
+    // --- What was PRESCRIBED, as it was when the session started -----------
+    // A COPY of the program exercise's name and prescription (step 3b-0,
+    // decided 2026-10-13) — the same "copy, not reference" rule as a program
+    // copying its template. Before this, the row only pointed at the program
+    // exercise: changing 3×10 to 4×8 after two weeks made every earlier
+    // session say 4×8. The program says what to do NOW; each session keeps
+    // what it was given. Written by SessionsService.create; fixed afterwards
+    // (migration 0033's trigger refuses changing them). `name` is NOT NULL
+    // like the program's; the prescription fields are as optional as there.
+    name: varchar('name', { length: 255 }).notNull(),
+    sets: integer('sets'),
+    reps: integer('reps'),
+    durationInSeconds: integer('duration_in_seconds'),
+    weight: real('weight'),
+    weightUnit: weightUnitEnum('weight_unit'),
+    notes: text('notes'),
+    // --- What the patient DID -----------------------------------------------
     completed: boolean('completed').notNull().default(false),
     durationActualInSeconds: integer('duration_actual_in_seconds'),
     difficultyRating: integer('difficulty_rating'),
@@ -142,5 +165,24 @@ export const sessionExercises = pgTable(
       sql`${table.difficultyRating} IS NULL OR ${table.difficultyRating} BETWEEN 1 AND 10`,
     ),
     sessionIdIdx: index('session_exercises_session_id_idx').on(table.sessionId),
+    // Named explicitly (step 3b-0). Drizzle's generated name,
+    // "session_exercises_assigned_program_exercise_id_assigned_program_exercises_id_fk",
+    // is longer than Postgres's 63-character limit for identifiers, so
+    // Postgres silently CUT it ("…_assigned_program"): the code that needs to
+    // recognise this constraint's refusal (removing a used exercise) would
+    // have had to spell a truncated name. A short name says what it is.
+    programExerciseFk: foreignKey({
+      name: 'session_exercises_program_exercise_fk',
+      columns: [table.assignedProgramExerciseId],
+      foreignColumns: [assignedProgramExercises.id],
+    }).onDelete('restrict'),
+    // Deleting a program exercise makes Postgres check this foreign key —
+    // "does any session_exercises row still point at it?". Without an index
+    // on the referencing column that check reads the WHOLE table, on every
+    // removal. (Postgres indexes the referenced side — a primary key —
+    // automatically, never the referencing side.)
+    programExerciseIdx: index('session_exercises_program_exercise_id_idx').on(
+      table.assignedProgramExerciseId,
+    ),
   }),
 )

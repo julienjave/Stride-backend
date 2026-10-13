@@ -17,7 +17,8 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional } from 'class-validator'
+import { OmitType } from '@nestjs/mapped-types'
+import { IsInt, IsOptional, Min } from 'class-validator'
 import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -32,10 +33,28 @@ import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
 // workoutId there could only be ignored, and silently ignoring part of a
 // request hides the client's bug. Here, the field exists only where it means
 // something.
-export class AddAssignedProgramExerciseDto extends AssignedExerciseInputDto {
+//
+// `sortOrder` is OPTIONAL here (step 3b-0), unlike in the inline list:
+// without it the exercise goes after the workout's last one, a position the
+// service works out inside its transaction — from the data as it is, not
+// from the client's possibly stale copy. OmitType(…, ['sortOrder']) copies
+// every other field WITH its validation decorators (that's what the
+// mapped-types helpers are for), and the field is then declared again as
+// optional; a plain `sortOrder?:` in a subclass wouldn't compile, because the
+// parent declares it required.
+export class AddAssignedProgramExerciseDto extends OmitType(
+  AssignedExerciseInputDto,
+  ['sortOrder'] as const,
+) {
   // Optional: without it, the program's FIRST workout (resolveWorkoutId) —
   // what today's screens, which don't know about workouts yet, rely on.
   @IsOptional()
   @IsInt()
   workoutId?: number | null
+
+  // A position asked for explicitly is still checked as before.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number
 }

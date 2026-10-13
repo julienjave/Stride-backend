@@ -83,8 +83,15 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.create(user, dto)
   }
 
+  // The four EXERCISE routes below (add, edit / move, reorder, remove)
+  // predate the audit convention and relied on the generic interceptor,
+  // which records only "PATCH /assigned-programs/1/exercises/3" — not that
+  // sets went from 3 to 4. Step 3b-0 brought them to it: tagged
+  // @AuditedByService(), each writes ONE complete entry (before → after) in
+  // its own transaction, and each answers with the full program.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -210,6 +217,7 @@ export class AssignedProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/exercises/:exerciseRowId')
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -227,6 +235,7 @@ export class AssignedProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
@@ -314,8 +323,12 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.archive(id, user)
   }
 
+  // Deletes the exercise if no session used it, RETIRES it otherwise
+  // (kept for those sessions' history, out of the program) — the database's
+  // foreign key decides. Answers with the full program (200).
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/exercises/:exerciseRowId')
   removeExercise(
     @Param('id', ParseIntPipe) id: number,

@@ -29,6 +29,7 @@ import {
   check,
   unique,
   foreignKey,
+  timestamp,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -321,11 +322,27 @@ export const assignedProgramExercises = pgTable(
     weightUnit: weightUnitEnum("weight_unit"),
     sortOrder: integer("sort_order").notNull(),
     notes: text("notes"),
+    // RETIRED (step 3b-0, decided 2026-10-13): taken out of the program, but
+    // kept, because a session recorded it — session_exercises points at this
+    // row (ON DELETE RESTRICT), and that history must keep saying what was
+    // done. A retired exercise is left out of new sessions' checklists and
+    // of "Assign again", and can no longer change (migration 0033's trigger).
+    // An exercise no session used is really DELETED instead: there is no
+    // history to keep. Both columns or neither (the CHECK below), like
+    // care_team_members' ends_at / ended_by.
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+    retiredBy: integer("retired_by").references(() => users.id, {
+      onDelete: "restrict",
+    }),
   },
   (table) => ({
     assignedProgramIdIdx: index(
       "assigned_program_exercises_assigned_program_id_idx",
     ).on(table.assignedProgramId),
+    retiredTogether: check(
+      "assigned_program_exercises_retired_together",
+      sql`(${table.retiredAt} IS NULL) = (${table.retiredBy} IS NULL)`,
+    ),
     // Same as template_exercises_workout_fk: the workout must belong to the
     // same program; NO ACTION for the same cascade reason.
     workoutFk: foreignKey({

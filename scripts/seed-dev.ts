@@ -498,11 +498,21 @@ async function run(): Promise<void> {
         for (const exercise of program.exercises.filter(
           (e) => e.workoutId === workout.id,
         )) {
+          // The checklist row keeps a copy of the exercise's name and
+          // prescription, like a real session's (SessionsService.create's
+          // prescriptionSnapshot, step 3b-0) — copied by the database itself
+          // from the program exercise row: INSERT … SELECT.
           await owner.query(
             `INSERT INTO session_exercises
-               (session_id, assigned_program_exercise_id, completed, sort_order)
-             VALUES ($1, $2, true, $3)`,
-            [session.id, exercise.id, exercise.sortOrder],
+               (session_id, assigned_program_exercise_id, name, sets, reps,
+                duration_in_seconds, weight, weight_unit, notes, completed,
+                sort_order)
+             SELECT $1, pe.id, pe.name, pe.sets, pe.reps,
+                    pe.duration_in_seconds, pe.weight, pe.weight_unit, pe.notes,
+                    true, pe.sort_order
+             FROM assigned_program_exercises pe
+             WHERE pe.id = $2`,
+            [session.id, exercise.id],
           )
         }
       }

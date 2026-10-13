@@ -19,12 +19,13 @@
 
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, inArray, lte } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lte } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   sessions,
@@ -45,6 +46,10 @@ import { isPossibleToday } from '../common/calendar-date'
 import { workoutLabel, type WorkoutRow } from '../common/workout-rules'
 import { assertProgramOpen } from '../assigned-programs/program-state'
 import { swapWorkoutId } from '../assigned-programs/schedule/swap-rules'
+import {
+  isForeignKeyViolation,
+  SESSION_EXERCISES_PROGRAM_EXERCISE_FK,
+} from '../database/pg-errors'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
@@ -106,6 +111,32 @@ export function chooseSessionWorkout(
   )
 }
 
+// What a session's checklist row keeps of its program exercise (step 3b-0):
+// the name and the prescription AS THEY ARE when the session starts. The
+// program can change afterwards (a new prescription, a renamed exercise, a
+// removal) — this session's record of what it was given doesn't. A plain
+// copy, field by field: the create test checks every field of the inserted
+// row (toStrictEqual), so a field forgotten here fails it.
+function prescriptionSnapshot(programExercise: {
+  name: string
+  sets: number | null
+  reps: number | null
+  durationInSeconds: number | null
+  weight: number | null
+  weightUnit: 'kg' | 'lbs' | null
+  notes: string | null
+}) {
+  return {
+    name: programExercise.name,
+    sets: programExercise.sets,
+    reps: programExercise.reps,
+    durationInSeconds: programExercise.durationInSeconds,
+    weight: programExercise.weight,
+    weightUnit: programExercise.weightUnit,
+    notes: programExercise.notes,
+  }
+}
+
 @Injectable()
 export class SessionsService {
   constructor(
@@ -146,6 +177,13 @@ export class SessionsService {
     assertProgramOpen(program)
     assertLocalDateIsToday(dto.localDate)
 
+    // An exercise of the checklist DELETED by the practitioner while this
+    // session was starting (read just before the delete committed): the
+    // checklist row's foreign key refuses the insert, and the patient gets a
+    // 409 — start again, with the program as it now is — instead of a 500.
+    // (One RETIRED in that moment stays in this checklist: the session
+    // started with it, and a retired exercise is exactly one kept for the
+    // sessions that used it.)
     const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
       // The patient can read their own program's workouts (program_workouts'
       // SELECT policy follows the program's).
@@ -210,10 +248,11 @@ export class SessionsService {
       }
       const workoutId = chooseSessionWorkout(requested, workouts)
 
-      // Today's checklist: the exercises of THAT workout, in their order.
-      // Each row REFERENCES its assignedProgramExerciseId, it doesn't
-      // duplicate sets/reps. The prescription lives on the assigned
-      // program; the session just tracks actual performance against it.
+      // Today's checklist: the ACTIVE exercises of THAT workout, in their
+      // order — a retired one was taken out of the program (step 3b-0). Each
+      // row points at its program exercise AND keeps a copy of its name and
+      // prescription as they are now (prescriptionSnapshot): the program
+      // says what to do from now on, each session what it was given.
       // assigned_program_exercises, sessions, and session_exercises all
       // have RLS, so this whole insert running through withRlsContext isn't
       // just harmless, it's required — sessions_insert /
@@ -228,6 +267,7 @@ export class SessionsService {
               dto.assignedProgramId,
             ),
             eq(assignedProgramExercises.workoutId, workoutId),
+            isNull(assignedProgramExercises.retiredAt),
           ),
           orderBy: (row, { asc }) => [asc(row.sortOrder)],
         })
@@ -259,12 +299,20 @@ export class SessionsService {
         await tx.insert(sessionExercises).values({
           sessionId: session.id,
           assignedProgramExerciseId: pe.id,
+          ...prescriptionSnapshot(pe),
           completed: false,
           sortOrder: pe.sortOrder,
         })
       }
 
       return session.id
+    }).catch((error: unknown) => {
+      if (isForeignKeyViolation(error, SESSION_EXERCISES_PROGRAM_EXERCISE_FK)) {
+        throw new ConflictException(
+          'Your program was just changed: start the session again',
+        )
+      }
+      throw error
     })
 
     // Deliberately its own, separate RLS-scoped transaction — by the time

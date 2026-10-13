@@ -443,7 +443,11 @@ describe("AssignedPrograms (e2e)", () => {
     const addSecondRes = await practitionerA
       .post(`/assigned-programs/${programId}/exercises`)
       .send({ exerciseId: secondExerciseRes.body.id, sortOrder: 1 });
-    const secondRowId = addSecondRes.body.id;
+    // The answer is the full program (step 3b-0; it used to be the bare
+    // inserted row): the new row is the one that isn't the first.
+    const secondRowId = (
+      addSecondRes.body as { exercises: { id: number }[] }
+    ).exercises.find((row) => row.id !== firstRowId)!.id;
 
     const badOrder = await practitionerA
       .patch(`/assigned-programs/${programId}/exercises`)
