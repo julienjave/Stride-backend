@@ -340,6 +340,31 @@ describe('Sessions (e2e)', () => {
     expect(outOfRange.status).toBe(400);
   });
 
+  // The null trap (is-present.ts), found live 2026-10-14: `status` and
+  // `completed` are NOT NULL columns, and `null` reached Postgres — a 500.
+  // Now a 400, and nothing changes.
+  it('refuses null for a session status and an exercise\'s completed, changing nothing', async () => {
+    const createRes = await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
+    const sessionId = createRes.body.id;
+    const rowId = createRes.body.exercises[0].id;
+
+    const nullStatus = await patientA.patch(`/sessions/${sessionId}`).send({ status: null });
+    expect(nullStatus.status).toBe(400);
+    expect(nullStatus.body.message).toEqual([
+      'status must be one of the following values: pending, in_progress, completed, skipped',
+    ]);
+
+    const nullCompleted = await patientA
+      .patch(`/sessions/${sessionId}/exercises/${rowId}`)
+      .send({ completed: null });
+    expect(nullCompleted.status).toBe(400);
+    expect(nullCompleted.body.message).toEqual(['completed must be a boolean value']);
+
+    const readBack = await patientA.get(`/sessions/${sessionId}`);
+    expect(readBack.body.status).toBe('pending');
+    expect(readBack.body.exercises[0].completed).toBe(false);
+  });
+
   it('scopes GET /sessions by role: patient sees own, unrelated practitioner sees none, admin sees all', async () => {
     await patientA.post('/sessions').send({ assignedProgramId, localDate: utcToday() });
 

@@ -25,12 +25,18 @@ import {
   MaxLength,
   Min,
   Max,
+  ValidateIf,
 } from 'class-validator'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class UpdateSessionExerciseDto {
-  @IsOptional()
+  // NOT NULL column (default false): @ValidateIf(isPresent), so `null` is a
+  // 400 instead of a 500 from Postgres (the null trap — is-present.ts;
+  // found live 2026-10-14). The other fields are nullable: `null` clears
+  // them, so they keep @IsOptional().
+  @ValidateIf(isPresent)
   @IsBoolean()
   completed?: boolean
 

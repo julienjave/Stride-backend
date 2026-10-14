@@ -251,6 +251,35 @@ describe("Programs (e2e)", () => {
     expect(unitWithoutWeight.status).toBe(400);
   });
 
+  // The null trap (is-present.ts), found live 2026-10-14: sort_order is NOT
+  // NULL, and UpdateTemplateExerciseDto's PartialType let `null` through — a
+  // 500. Now a 400, and the position is unchanged.
+  it("refuses a null sortOrder on an exercise row, changing nothing", async () => {
+    const createRes = await practitionerA
+      .post("/programs")
+      .send({ title: "Null Position Template" });
+    const templateId = (createRes.body as { id: number }).id;
+    const addRes = await practitionerA
+      .post(`/programs/${templateId}/exercises`)
+      .send({ exerciseId, sets: 3, sortOrder: 4 });
+    type Row = { id: number; sortOrder: number };
+    const rowOf = (body: unknown) =>
+      (body as { exercises: Row[] }).exercises[0];
+    const rowId = rowOf(addRes.body).id;
+
+    const res = await practitionerA
+      .patch(`/programs/${templateId}/exercises/${rowId}`)
+      .send({ sortOrder: null });
+    expect(res.status).toBe(400);
+    expect((res.body as { message: string[] }).message).toEqual([
+      "sortOrder must not be less than 0",
+      "sortOrder must be an integer number",
+    ]);
+
+    const after = await practitionerA.get(`/programs/${templateId}`);
+    expect(rowOf(after.body).sortOrder).toBe(4);
+  });
+
   it("clears prescription fields with an explicit null, and enforces weight both-or-neither on update", async () => {
     const createRes = await practitionerA
       .post("/programs")

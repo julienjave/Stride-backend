@@ -127,10 +127,28 @@ export class HttpExceptionFilter implements ExceptionFilter {
         }
       }
     } else {
-      this.logger.error(
-        `Unhandled exception on ${request.method} ${request.url}`,
-        exception instanceof Error ? exception.stack : String(exception),
-      )
+      // The error OBJECT goes to the logger, under `err` — not its stack as
+      // a string. pino's error serializer then writes the message, the stack
+      // AND every `cause` behind it. That matters for database errors:
+      // Drizzle wraps node-postgres's error in a DrizzleQueryError whose own
+      // stack only says "Failed query: update …"; Postgres's reason ("null
+      // value in column "status" … violates not-null constraint", its code,
+      // the constraint) is in `cause`. Passed as a string, the cause was lost
+      // — every unexpected 500 was logged without its reason (found
+      // 2026-10-14, reading the log of a real 500). nestjs-pino turns an
+      // object first argument into the log line's fields, and the next
+      // argument into its message. Something thrown that isn't an Error
+      // (a string, an object) has no stack to give: it's logged as text.
+      if (exception instanceof Error) {
+        this.logger.error(
+          { err: exception },
+          `Unhandled exception on ${request.method} ${request.url}`,
+        )
+      } else {
+        this.logger.error(
+          `Unhandled exception on ${request.method} ${request.url}: ${String(exception)}`,
+        )
+      }
     }
 
     const messages = Array.isArray(message) ? message : [message]

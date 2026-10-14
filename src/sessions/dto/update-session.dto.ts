@@ -24,7 +24,9 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -36,7 +38,14 @@ export enum SessionStatus {
 }
 
 export class UpdateSessionDto {
-  @IsOptional()
+  // `status` is a NOT NULL column: @ValidateIf(isPresent), not @IsOptional()
+  // — @IsOptional() skips every check for `null` too, so `{ "status": null }`
+  // reached Postgres and came back a 500 (the null trap — is-present.ts;
+  // found live 2026-10-14). Not sent = unchanged; `null` = a 400. The other
+  // fields are nullable columns, where `null` means "clear it": they keep
+  // @IsOptional(). (WHICH status changes are allowed is the Phase 4 session
+  // flow's question — today any value of the enum is accepted.)
+  @ValidateIf(isPresent)
   @IsEnum(SessionStatus)
   status?: SessionStatus
 

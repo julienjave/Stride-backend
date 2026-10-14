@@ -28,6 +28,7 @@ import { StorageService } from '../src/storage/storage.service'
 import { exercises } from '../src/database/schema'
 import { getDatabaseUrl } from '../src/config/database-url'
 import * as schema from '../src/database/schema'
+import { cleanInstructions } from './seed/exercise-import'
 
 const SOURCE_JSON_URL =
   'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json'
@@ -106,11 +107,12 @@ async function run() {
       // stores an array, matching the "equipment" column pattern from
       // template_exercises — a single-item array here, not a mismatch.
       equipment: entry.equipment ? [entry.equipment] : [],
-      // Passed straight through as an array — matches the source's own
-      // shape now that instructions is a TEXT[] column, no formatting or
-      // numbering baked in. That's a frontend rendering decision, not
-      // something the stored data should dictate.
-      instructions: entry.instructions,
+      // An array, like the source's own shape (instructions is a TEXT[]
+      // column), no formatting or numbering baked in — that's a frontend
+      // rendering decision. Cleaned on the way in (trimmed, blank steps
+      // dropped — cleanInstructions): the app refuses blank steps, so the
+      // library mustn't start with any.
+      instructions: cleanInstructions(entry.instructions),
       mediaUrls,
       source: 'api',
     })

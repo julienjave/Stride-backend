@@ -15,7 +15,7 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { ArgumentsHost, NotFoundException } from '@nestjs/common'
+import { ArgumentsHost, Logger, NotFoundException } from '@nestjs/common'
 import { DrizzleQueryError } from 'drizzle-orm'
 import {
   CLOSED_PROGRAM_MESSAGE,
@@ -109,6 +109,45 @@ describe('HttpExceptionFilter', () => {
     const { status, body } = run(databaseError('23514', constraint))
     expect(status).toBe(500)
     expect(body.message).toEqual(['Internal server error'])
+  })
+
+  // What reaches the log for an unexpected error: the error OBJECT, under
+  // `err`, so pino's serializer writes its stack and every `cause` — for a
+  // database error, Postgres's own reason. (Logged as a stack STRING, the
+  // cause was lost: "Failed query: update …", and no why.)
+  describe('logging an unexpected error', () => {
+    let logged: jest.SpyInstance
+    beforeEach(() => {
+      logged = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined)
+    })
+    afterEach(() => logged.mockRestore())
+
+    it('hands the error itself, cause included, to the logger', () => {
+      const error = databaseError('23502', 'sessions_status_not_null')
+      run(error)
+      expect(logged.mock.calls).toStrictEqual([
+        [{ err: error }, 'Unhandled exception on POST /sessions'],
+      ])
+      // The object passed is the one that carries Postgres's reason.
+      const passed = (logged.mock.calls[0][0] as { err: Error }).err
+      expect(passed.cause).toMatchObject({ code: '23502' })
+    })
+
+    // Anything can be thrown: a string has no stack to give, so its text
+    // goes into the message.
+    it('writes something thrown that is not an Error into the message', () => {
+      run('not an error')
+      expect(logged.mock.calls).toStrictEqual([
+        ['Unhandled exception on POST /sessions: not an error'],
+      ])
+    })
+
+    it('logs nothing for an HTTP exception (an expected answer)', () => {
+      run(new NotFoundException('Nope'))
+      expect(logged).not.toHaveBeenCalled()
+    })
   })
 
   it('passes HTTP exceptions through unchanged', () => {

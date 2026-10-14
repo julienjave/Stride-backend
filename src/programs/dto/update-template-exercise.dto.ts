@@ -53,8 +53,20 @@ export class UpdateTemplateExerciseDto extends PartialType(
     'workoutId',
     'weight',
     'weightUnit',
+    'sortOrder',
   ] as const),
 ) {
+  // The position within its workout — omitted from the PartialType
+  // derivation and redeclared, for the same reason as workoutId just below:
+  // sort_order is NOT NULL, and PartialType's @IsOptional() let `null`
+  // through to Postgres — a 500 (found live 2026-10-14, after the D-1 pass
+  // had fixed the exercise DTOs). Same rules as when adding: an integer, 0
+  // or more.
+  @ValidateIf(isPresent)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number
+
   // Moving the exercise to another workout of the template. Omitted from
   // the PartialType derivation for the same reason as weight below:
   // PartialType's @IsOptional() would let `null` through, and workout_id is

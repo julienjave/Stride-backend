@@ -253,6 +253,13 @@
       "when": 1791985541603,
       "tag": "0035_title_not_blank",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791998258906,
+      "tag": "0036_remove_blank_instruction_steps",
+      "breakpoints": true
     }
   ]
 }
