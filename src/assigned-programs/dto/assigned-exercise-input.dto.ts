@@ -26,8 +26,8 @@ import {
   MaxLength,
   Min,
   ValidateIf,
-} from "class-validator";
-import { hasStartedWeight } from "../../common/validators/has-started-weight";
+} from 'class-validator'
+import { hasStartedWeight } from '../../common/validators/has-started-weight'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -40,22 +40,22 @@ import { hasStartedWeight } from "../../common/validators/has-started-weight";
 // living in common/, not a cross-module DTO import.
 export class AssignedExerciseInputDto {
   @IsInt()
-  exerciseId!: number;
+  exerciseId!: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  sets?: number;
+  sets?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  reps?: number;
+  reps?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  durationInSeconds?: number;
+  durationInSeconds?: number
 
   // See AddTemplateExerciseDto's identical fields for the full
   // reasoning (both-or-neither via hasStartedWeight, 2 decimal places
@@ -63,18 +63,18 @@ export class AssignedExerciseInputDto {
   @ValidateIf(hasStartedWeight)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  weight?: number;
+  weight?: number
 
   @ValidateIf(hasStartedWeight)
-  @IsIn(["kg", "lbs"])
-  weightUnit?: "kg" | "lbs";
+  @IsIn(['kg', 'lbs'])
+  weightUnit?: 'kg' | 'lbs'
 
   @IsInt()
   @Min(0)
-  sortOrder!: number;
+  sortOrder!: number
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
-  notes?: string;
+  notes?: string
 }

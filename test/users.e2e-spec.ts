@@ -2,24 +2,24 @@
 // like ts-node, never auto-loads .env. AppModule's DrizzleModule needs
 // POSTGRES_* in process.env the moment Test.createTestingModule() below
 // tries to construct it, so this has to be the very first thing that runs.
-import 'dotenv/config';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import request from 'supertest';
-import session from 'express-session';
-import passport from 'passport';
-import connectPgSimple from 'connect-pg-simple';
-import { Pool } from 'pg';
-import { sql } from 'drizzle-orm';
-import { AppModule } from '../src/app.module';
-import { EMAIL_TRANSPORT } from '../src/email/email-transport';
+import 'dotenv/config'
+import { Test, TestingModule } from '@nestjs/testing'
+import { INestApplication, ValidationPipe } from '@nestjs/common'
+import request from 'supertest'
+import session from 'express-session'
+import passport from 'passport'
+import connectPgSimple from 'connect-pg-simple'
+import { Pool } from 'pg'
+import { sql } from 'drizzle-orm'
+import { AppModule } from '../src/app.module'
+import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import {
   InMemoryEmailTransport,
   findLink,
-} from './support/in-memory-email-transport';
-import { activateAccount } from './support/accounts';
-import { getDatabaseUrl } from '../src/config/database-url';
-import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
+} from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
+import { getDatabaseUrl } from '../src/config/database-url'
+import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -28,37 +28,37 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
 describe('Users (e2e)', () => {
-  let app: INestApplication;
-  let sessionPool: Pool;
+  let app: INestApplication
+  let sessionPool: Pool
   // Kept, not just created inline: the invitation tests read what was sent.
-  const outbox = new InMemoryEmailTransport();
+  const outbox = new InMemoryEmailTransport()
 
-  const adminAgent = () => request.agent(app.getHttpServer());
-  const practitionerAAgent = () => request.agent(app.getHttpServer());
-  const practitionerBAgent = () => request.agent(app.getHttpServer());
-  const patient1Agent = () => request.agent(app.getHttpServer());
-  const patient2Agent = () => request.agent(app.getHttpServer());
+  const adminAgent = () => request.agent(app.getHttpServer())
+  const practitionerAAgent = () => request.agent(app.getHttpServer())
+  const practitionerBAgent = () => request.agent(app.getHttpServer())
+  const patient1Agent = () => request.agent(app.getHttpServer())
+  const patient2Agent = () => request.agent(app.getHttpServer())
 
-  let admin: ReturnType<typeof adminAgent>;
-  let practitionerA: ReturnType<typeof practitionerAAgent>;
-  let practitionerB: ReturnType<typeof practitionerBAgent>;
-  let patient1: ReturnType<typeof patient1Agent>;
-  let patient2: ReturnType<typeof patient2Agent>;
-  let clinicXId: number;
-  let adminId: number;
-  let clinicYId: number;
-  let patient1Id: number;
-  let patient2Id: number;
-  let patient2Email: string;
-  let practitionerAId: number;
-  let practitionerAEmail: string;
+  let admin: ReturnType<typeof adminAgent>
+  let practitionerA: ReturnType<typeof practitionerAAgent>
+  let practitionerB: ReturnType<typeof practitionerBAgent>
+  let patient1: ReturnType<typeof patient1Agent>
+  let patient2: ReturnType<typeof patient2Agent>
+  let clinicXId: number
+  let adminId: number
+  let clinicYId: number
+  let patient1Id: number
+  let patient2Id: number
+  let patient2Email: string
+  let practitionerAId: number
+  let practitionerAEmail: string
   let practitionerAProfile: {
-    licenseNumber: string;
-    specialties: string[];
-    bio: string | null;
-  };
-  let practitionerBId: number;
-  let practitionerBLicense: string;
+    licenseNumber: string
+    specialties: string[]
+    bio: string | null
+  }
+  let practitionerBId: number
+  let practitionerBLicense: string
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -68,31 +68,38 @@ describe('Users (e2e)', () => {
       // email, whatever EMAIL_TRANSPORT says in .env.
       .overrideProvider(EMAIL_TRANSPORT)
       .useValue(outbox)
-      .compile();
+      .compile()
 
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication()
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
-    );
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    )
 
     // Same session setup as main.ts — an e2e test needs the REAL middleware
     // stack, not just the DI-wired providers, since guards/sessions live in
     // middleware that main.ts sets up manually, outside AppModule itself.
-    sessionPool = new Pool({ connectionString: getDatabaseUrl() });
-    const PgSessionStore = connectPgSimple(session);
+    sessionPool = new Pool({ connectionString: getDatabaseUrl() })
+    const PgSessionStore = connectPgSimple(session)
     app.use(
       session({
-        store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
+        store: new PgSessionStore({
+          pool: sessionPool,
+          createTableIfMissing: true,
+        }),
         secret: 'e2e-test-secret',
         resave: false,
         saveUninitialized: false,
         cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 },
       }),
-    );
-    app.use(passport.initialize());
-    app.use(passport.session());
+    )
+    app.use(passport.initialize())
+    app.use(passport.session())
 
-    await app.init();
+    await app.init()
 
     // A hard safety check, not just a naming convention to remember —
     // refuses to proceed at all unless genuinely connected to the
@@ -100,16 +107,16 @@ describe('Users (e2e)', () => {
     // tests via the wrong npm script (plain `test:e2e` instead of
     // `test:e2e:fresh`) would TRUNCATE the real dev database with no
     // warning, since nothing else in this file would notice the difference.
-    const db = app.get<DrizzleDb>(DRIZZLE);
+    const db = app.get<DrizzleDb>(DRIZZLE)
     const { rows } = await db.execute<{ current_database: string }>(
       sql`SELECT current_database()`,
-    );
-    const currentDatabase = rows[0].current_database;
+    )
+    const currentDatabase = rows[0].current_database
     if (currentDatabase !== 'stride_test') {
       throw new Error(
         `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test". ` +
           'Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?',
-      );
+      )
     }
 
     // Resets this test's starting state, so this file can run any number of
@@ -118,16 +125,18 @@ describe('Users (e2e)', () => {
     // stride_app connection) — TRUNCATE needs a privilege this app role is
     // deliberately never granted, since real app traffic never truncates
     // tables. This is test cleanup infrastructure only.
-    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
+    await sessionPool.query(
+      'TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE',
+    )
 
     // --- Shared scaffolding for every test below ---
-    admin = adminAgent();
-    practitionerA = practitionerAAgent();
-    practitionerB = practitionerBAgent();
-    patient1 = patient1Agent();
-    patient2 = patient2Agent();
+    admin = adminAgent()
+    practitionerA = practitionerAAgent()
+    practitionerB = practitionerBAgent()
+    patient1 = patient1Agent()
+    patient2 = patient2Agent()
 
-    const stamp = Date.now();
+    const stamp = Date.now()
 
     const clinicXRes = await admin.post('/auth/register-clinic').send({
       clinicName: 'Users E2E Clinic X',
@@ -136,19 +145,21 @@ describe('Users (e2e)', () => {
       password: 'password123',
       firstName: 'Users',
       lastName: 'Admin',
-    });
+    })
     if (clinicXRes.status !== 201) {
-      throw new Error(`Failed to bootstrap the founding admin: ${JSON.stringify(clinicXRes.body)}`);
+      throw new Error(
+        `Failed to bootstrap the founding admin: ${JSON.stringify(clinicXRes.body)}`,
+      )
     }
-    clinicXId = clinicXRes.body.clinicId;
-    adminId = clinicXRes.body.id;
+    clinicXId = clinicXRes.body.clinicId
+    adminId = clinicXRes.body.id
 
     const clinicYRes = await admin.post('/clinics').send({
       name: 'Users E2E Clinic Y',
       email: `clinicy-${stamp}@example.com`,
-    });
-    expect(clinicYRes.status).toBe(201);
-    clinicYId = clinicYRes.body.id;
+    })
+    expect(clinicYRes.status).toBe(201)
+    clinicYId = clinicYRes.body.id
 
     const practitionerARes = await admin.post('/users').send({
       email: `practitioner-a-${stamp}@example.com`,
@@ -164,9 +175,9 @@ describe('Users (e2e)', () => {
       addressPostalCode: '62704',
       addressCountry: 'US',
       clinicId: clinicXId,
-    });
-    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`);
-    expect(practitionerARes.status).toBe(201);
+    })
+    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`)
+    expect(practitionerARes.status).toBe(201)
     // Regression coverage for the gap this fix closes: practitioner_profiles
     // is written by UsersService.create() but was never attached to its own
     // response — not even here, on the account's own creation. bio was a
@@ -175,18 +186,18 @@ describe('Users (e2e)', () => {
       licenseNumber: `PT-A-${stamp}`,
       specialties: ['sports rehab'],
       bio: 'Specializes in post-op rehab.',
-    });
+    })
     // phone/address moved from patient_profiles onto users itself — now
     // common to every role, including a practitioner.
-    expect(practitionerARes.body.phone).toBe('555-0200');
-    expect(practitionerARes.body.addressLine1).toBe('1 Practitioner Ave');
-    practitionerAId = practitionerARes.body.id;
-    practitionerAEmail = `practitioner-a-${stamp}@example.com`;
-    practitionerAProfile = practitionerARes.body.practitionerProfile;
+    expect(practitionerARes.body.phone).toBe('555-0200')
+    expect(practitionerARes.body.addressLine1).toBe('1 Practitioner Ave')
+    practitionerAId = practitionerARes.body.id
+    practitionerAEmail = `practitioner-a-${stamp}@example.com`
+    practitionerAProfile = practitionerARes.body.practitionerProfile
     await practitionerA.post('/auth/login').send({
       email: `practitioner-a-${stamp}@example.com`,
       password: 'password123',
-    });
+    })
 
     const practitionerBRes = await admin.post('/users').send({
       email: `practitioner-b-${stamp}@example.com`,
@@ -195,15 +206,15 @@ describe('Users (e2e)', () => {
       lastName: 'B',
       licenseNumber: `PT-B-${stamp}`,
       clinicId: clinicYId,
-    });
-    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`);
-    expect(practitionerBRes.status).toBe(201);
-    practitionerBId = practitionerBRes.body.id;
-    practitionerBLicense = `PT-B-${stamp}`;
+    })
+    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`)
+    expect(practitionerBRes.status).toBe(201)
+    practitionerBId = practitionerBRes.body.id
+    practitionerBLicense = `PT-B-${stamp}`
     await practitionerB.post('/auth/login').send({
       email: `practitioner-b-${stamp}@example.com`,
       password: 'password123',
-    });
+    })
 
     const patient1Res = await admin.post('/users').send({
       email: `patient1-${stamp}@example.com`,
@@ -217,29 +228,33 @@ describe('Users (e2e)', () => {
       addressPostalCode: '62704',
       addressCountry: 'US',
       clinicId: clinicXId,
-    });
-    await activateAccount(sessionPool, `patient1-${stamp}@example.com`);
-    expect(patient1Res.status).toBe(201);
-    patient1Id = patient1Res.body.id;
-    expect(patient1Res.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
-    expect(patient1Res.body).not.toHaveProperty('practitionerProfile');
-    expect(patient1Res.body).not.toHaveProperty('adminProfile');
+    })
+    await activateAccount(sessionPool, `patient1-${stamp}@example.com`)
+    expect(patient1Res.status).toBe(201)
+    patient1Id = patient1Res.body.id
+    expect(patient1Res.body.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
+    expect(patient1Res.body).not.toHaveProperty('practitionerProfile')
+    expect(patient1Res.body).not.toHaveProperty('adminProfile')
     // phone/address are common to every role now — a patient gets them too,
     // read straight off `users` rather than the old patient_profiles columns.
-    expect(patient1Res.body.phone).toBe('555-0300');
-    expect(patient1Res.body.addressLine1).toBe('1 Patient One Street');
+    expect(patient1Res.body.phone).toBe('555-0300')
+    expect(patient1Res.body.addressLine1).toBe('1 Patient One Street')
     await patient1.post('/auth/login').send({
       email: `patient1-${stamp}@example.com`,
       password: 'password123',
-    });
+    })
 
     // Since the care team (decisions §3), sharing a clinic no longer makes a
     // practitioner "manage" a patient — being on the patient's care team does.
     // practitionerA joins through the real endpoint (an empty body = "join").
-    const joinRes = await practitionerA.post(`/users/${patient1Id}/care-team`).send({});
-    expect(joinRes.status).toBe(201);
+    const joinRes = await practitionerA
+      .post(`/users/${patient1Id}/care-team`)
+      .send({})
+    expect(joinRes.status).toBe(201)
 
-    patient2Email = `patient2-${stamp}@example.com`;
+    patient2Email = `patient2-${stamp}@example.com`
     const patient2Res = await admin.post('/users').send({
       email: patient2Email,
       role: 'patient',
@@ -247,36 +262,38 @@ describe('Users (e2e)', () => {
       lastName: 'Two',
       dateOfBirth: '1990-01-01',
       clinicId: clinicYId,
-    });
-    await activateAccount(sessionPool, patient2Email);
-    expect(patient2Res.status).toBe(201);
-    patient2Id = patient2Res.body.id;
+    })
+    await activateAccount(sessionPool, patient2Email)
+    expect(patient2Res.status).toBe(201)
+    patient2Id = patient2Res.body.id
     await patient2.post('/auth/login').send({
       email: patient2Email,
       password: 'password123',
-    });
-  });
+    })
+  })
 
   afterAll(async () => {
-    await app.close();
+    await app.close()
     // app.close() only closes what Nest's own DI container manages.
     // sessionPool was created manually, outside that container, so it needs
     // to be closed explicitly too.
-    await sessionPool.end();
-  });
+    await sessionPool.end()
+  })
 
   it('lets a patient view and update their own profile', async () => {
-    const viewRes = await patient1.get(`/users/${patient1Id}`);
-    expect(viewRes.status).toBe(200);
+    const viewRes = await patient1.get(`/users/${patient1Id}`)
+    expect(viewRes.status).toBe(200)
 
-    const updateRes = await patient1.patch(`/users/${patient1Id}`).send({ firstName: 'Updated' });
-    expect(updateRes.status).toBe(200);
-    expect(updateRes.body.firstName).toBe('Updated');
+    const updateRes = await patient1
+      .patch(`/users/${patient1Id}`)
+      .send({ firstName: 'Updated' })
+    expect(updateRes.status).toBe(200)
+    expect(updateRes.body.firstName).toBe('Updated')
     // Regression coverage: PATCH /users/:id goes through the same
     // toPublic()+roles+attachProfile() pattern as GET — profile data
     // (unaffected by this edit, which only touches firstName) should still
     // be present in the response.
-    expect(updateRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    expect(updateRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
     // phone/address are plain `users` columns now (moved off
     // patient_profiles), so they fall through UpdateUserDto's own
@@ -284,100 +301,116 @@ describe('Users (e2e)', () => {
     // role can update them the same way.
     const contactUpdateRes = await patient1
       .patch(`/users/${patient1Id}`)
-      .send({ phone: '555-9999', addressLine1: '99 Updated Ave' });
-    expect(contactUpdateRes.status).toBe(200);
-    expect(contactUpdateRes.body.phone).toBe('555-9999');
-    expect(contactUpdateRes.body.addressLine1).toBe('99 Updated Ave');
-  });
+      .send({ phone: '555-9999', addressLine1: '99 Updated Ave' })
+    expect(contactUpdateRes.status).toBe(200)
+    expect(contactUpdateRes.body.phone).toBe('555-9999')
+    expect(contactUpdateRes.body.addressLine1).toBe('99 Updated Ave')
+  })
 
   it('lets an admin update anyone', async () => {
-    const res = await admin.patch(`/users/${patient1Id}`).send({ firstName: 'AdminEdited' });
-    expect(res.status).toBe(200);
-    expect(res.body.firstName).toBe('AdminEdited');
-  });
+    const res = await admin
+      .patch(`/users/${patient1Id}`)
+      .send({ firstName: 'AdminEdited' })
+    expect(res.status).toBe(200)
+    expect(res.body.firstName).toBe('AdminEdited')
+  })
 
   it('lets a managing practitioner (on the care team) update the patient', async () => {
-    const res = await practitionerA.patch(`/users/${patient1Id}`).send({ firstName: 'PractitionerEdited' });
-    expect(res.status).toBe(200);
-    expect(res.body.firstName).toBe('PractitionerEdited');
-  });
+    const res = await practitionerA
+      .patch(`/users/${patient1Id}`)
+      .send({ firstName: 'PractitionerEdited' })
+    expect(res.status).toBe(200)
+    expect(res.body.firstName).toBe('PractitionerEdited')
+  })
 
   it('rejects a non-managing practitioner (no shared clinic) from updating the patient', async () => {
-    const res = await practitionerB.patch(`/users/${patient1Id}`).send({ firstName: 'ShouldNotWork' });
-    expect(res.status).toBe(403);
-  });
+    const res = await practitionerB
+      .patch(`/users/${patient1Id}`)
+      .send({ firstName: 'ShouldNotWork' })
+    expect(res.status).toBe(403)
+  })
 
   it('rejects one patient viewing or updating a profile that is not theirs', async () => {
-    const viewRes = await patient2.get(`/users/${patient1Id}`);
-    expect(viewRes.status).toBe(403);
+    const viewRes = await patient2.get(`/users/${patient1Id}`)
+    expect(viewRes.status).toBe(403)
 
-    const updateRes = await patient2.patch(`/users/${patient1Id}`).send({ firstName: 'Hijacked' });
-    expect(updateRes.status).toBe(403);
-  });
+    const updateRes = await patient2
+      .patch(`/users/${patient1Id}`)
+      .send({ firstName: 'Hijacked' })
+    expect(updateRes.status).toBe(403)
+  })
 
   it('scopes GET /users to only care-team patients for a practitioner, and to everyone for an admin — and attaches roles + profile data to both branches', async () => {
-    const forPractitionerA = await practitionerA.get('/users');
-    expect(forPractitionerA.status).toBe(200);
-    const idsForA = forPractitionerA.body.map((u: any) => u.id);
-    expect(idsForA).toContain(patient1Id);
-    expect(idsForA).not.toContain(patient2Id);
+    const forPractitionerA = await practitionerA.get('/users')
+    expect(forPractitionerA.status).toBe(200)
+    const idsForA = forPractitionerA.body.map((u: any) => u.id)
+    expect(idsForA).toContain(patient1Id)
+    expect(idsForA).not.toContain(patient2Id)
     // Regression coverage: findPatientsForPractitioner() (this branch of
     // GET /users) previously attached neither roles nor profile data at
     // all, unlike every single-user fetch.
-    const patient1InList = forPractitionerA.body.find((u: any) => u.id === patient1Id);
-    expect(patient1InList.roles).toEqual(['patient']);
-    expect(patient1InList.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const patient1InList = forPractitionerA.body.find(
+      (u: any) => u.id === patient1Id,
+    )
+    expect(patient1InList.roles).toEqual(['patient'])
+    expect(patient1InList.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
-    const forAdmin = await admin.get('/users');
-    expect(forAdmin.status).toBe(200);
-    const idsForAdmin = forAdmin.body.map((u: any) => u.id);
-    expect(idsForAdmin).toEqual(expect.arrayContaining([patient1Id, patient2Id]));
+    const forAdmin = await admin.get('/users')
+    expect(forAdmin.status).toBe(200)
+    const idsForAdmin = forAdmin.body.map((u: any) => u.id)
+    expect(idsForAdmin).toEqual(
+      expect.arrayContaining([patient1Id, patient2Id]),
+    )
     // Same regression coverage, findAll() branch — plus a practitioner in
     // the same list, to prove role-appropriate nesting (not just patients).
-    const patient1InAdminList = forAdmin.body.find((u: any) => u.id === patient1Id);
-    expect(patient1InAdminList.roles).toEqual(['patient']);
-    expect(patient1InAdminList.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const patient1InAdminList = forAdmin.body.find(
+      (u: any) => u.id === patient1Id,
+    )
+    expect(patient1InAdminList.roles).toEqual(['patient'])
+    expect(patient1InAdminList.patientProfile).toEqual({
+      dateOfBirth: '1990-01-01',
+    })
     const practitionerAInAdminList = forAdmin.body.find(
       (u: any) => u.email === practitionerAEmail,
-    );
-    expect(practitionerAInAdminList.roles).toEqual(['practitioner']);
+    )
+    expect(practitionerAInAdminList.roles).toEqual(['practitioner'])
     expect(practitionerAInAdminList.practitionerProfile).toEqual(
       practitionerAProfile,
-    );
-  });
+    )
+  })
 
   it('rejects a plain patient from listing users at all', async () => {
-    const res = await patient1.get('/users');
-    expect(res.status).toBe(403);
-  });
+    const res = await patient1.get('/users')
+    expect(res.status).toBe(403)
+  })
 
   it('lets a user deactivate their own account (self soft-delete)', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const selfCreate = await admin.post('/users').send({
       email: `self-delete-${stamp}@example.com`,
       role: 'patient',
       firstName: 'Self',
       lastName: 'Delete',
       dateOfBirth: '1990-01-01',
-    });
-    await activateAccount(sessionPool, `self-delete-${stamp}@example.com`);
-    expect(selfCreate.status).toBe(201);
-    const selfAgent = request.agent(app.getHttpServer());
+    })
+    await activateAccount(sessionPool, `self-delete-${stamp}@example.com`)
+    expect(selfCreate.status).toBe(201)
+    const selfAgent = request.agent(app.getHttpServer())
     await selfAgent.post('/auth/login').send({
       email: `self-delete-${stamp}@example.com`,
       password: 'password123',
-    });
+    })
 
-    const deleteRes = await selfAgent.delete(`/users/${selfCreate.body.id}`);
-    expect(deleteRes.status).toBe(200);
-    expect(deleteRes.body.isActive).toBe(false);
+    const deleteRes = await selfAgent.delete(`/users/${selfCreate.body.id}`)
+    expect(deleteRes.status).toBe(200)
+    expect(deleteRes.body.isActive).toBe(false)
     // Regression coverage: DELETE /users/:id (soft-delete) goes through the
     // same attachProfile() pattern as GET/PATCH.
-    expect(deleteRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
-  });
+    expect(deleteRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+  })
 
   it('lets a managing practitioner deactivate one of their own patients', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     // Created BY practitionerA: a practitioner who creates a patient is put
     // on their care team automatically (UsersService.create()), which is
     // what makes them "one of their own patients" here.
@@ -388,16 +421,16 @@ describe('Users (e2e)', () => {
       lastName: 'Delete',
       dateOfBirth: '1990-01-01',
       clinicId: clinicXId,
-    });
-    expect(create.status).toBe(201);
+    })
+    expect(create.status).toBe(201)
 
-    const deleteRes = await practitionerA.delete(`/users/${create.body.id}`);
-    expect(deleteRes.status).toBe(200);
-    expect(deleteRes.body.isActive).toBe(false);
-  });
+    const deleteRes = await practitionerA.delete(`/users/${create.body.id}`)
+    expect(deleteRes.status).toBe(200)
+    expect(deleteRes.body.isActive).toBe(false)
+  })
 
   it('rejects a non-managing practitioner from deactivating a patient they do not manage', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const create = await admin.post('/users').send({
       email: `unmanaged-delete-${stamp}@example.com`,
       role: 'patient',
@@ -405,12 +438,12 @@ describe('Users (e2e)', () => {
       lastName: 'Delete',
       dateOfBirth: '1990-01-01',
       clinicId: clinicXId,
-    });
-    expect(create.status).toBe(201);
+    })
+    expect(create.status).toBe(201)
 
-    const deleteRes = await practitionerB.delete(`/users/${create.body.id}`);
-    expect(deleteRes.status).toBe(403);
-  });
+    const deleteRes = await practitionerB.delete(`/users/${create.body.id}`)
+    expect(deleteRes.status).toBe(403)
+  })
 
   // --- Accounts are created by invitation (design decisions §3) ---
 
@@ -418,7 +451,7 @@ describe('Users (e2e)', () => {
   // once — the person chooses their own password by accepting it
   // (test/invitations.e2e-spec.ts tests that half).
   it('creates an account without a password, and sends it a pending invitation', async () => {
-    const email = `invited-${Date.now()}@example.com`;
+    const email = `invited-${Date.now()}@example.com`
     const res = await admin.post('/users').send({
       email,
       role: 'patient',
@@ -426,34 +459,34 @@ describe('Users (e2e)', () => {
       lastName: 'Patient',
       dateOfBirth: '1990-01-01',
       clinicId: clinicXId,
-    });
-    expect(res.status).toBe(201);
+    })
+    expect(res.status).toBe(201)
     expect(res.body.invitation).toMatchObject({
       status: 'pending',
       emailSent: true,
-    });
-    expect(res.body).not.toHaveProperty('passwordHash');
+    })
+    expect(res.body).not.toHaveProperty('passwordHash')
 
     const { rows } = await sessionPool.query<{ password_hash: string | null }>(
       'SELECT password_hash FROM users WHERE id = $1',
       [res.body.id],
-    );
-    expect(rows[0].password_hash).toBeNull();
+    )
+    expect(rows[0].password_hash).toBeNull()
 
-    const sent = outbox.lastSentTo(email);
-    expect(sent.subject).toBe("You're invited to Stride");
+    const sent = outbox.lastSentTo(email)
+    expect(sent.subject).toBe("You're invited to Stride")
     expect(
       findLink(sent, '/accept-invitation').searchParams.get('token'),
-    ).toMatch(/^[0-9a-f]{64}$/);
+    ).toMatch(/^[0-9a-f]{64}$/)
 
-    const history = await admin.get(`/users/${res.body.id}/invitations`);
-    expect(history.body).toHaveLength(1);
+    const history = await admin.get(`/users/${res.body.id}/invitations`)
+    expect(history.body).toHaveLength(1)
     expect(history.body[0]).toMatchObject({
       id: res.body.invitation.id,
       status: 'pending',
       invitedBy: { id: adminId },
-    });
-  });
+    })
+  })
 
   // An old client still sending a password fails loudly (the global
   // ValidationPipe forbids unknown fields) instead of having it silently
@@ -465,10 +498,10 @@ describe('Users (e2e)', () => {
       role: 'admin',
       firstName: 'With',
       lastName: 'Password',
-    });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toContain('property password should not exist');
-  });
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.message).toContain('property password should not exist')
+  })
 
   // Against the REAL row-level security: the invitations insert policy
   // lets a practitioner invite only a patient whose care team they're on.
@@ -476,7 +509,7 @@ describe('Users (e2e)', () => {
   // creates the invitation, in the same transaction — reversed, the policy
   // would refuse the INSERT and this creation would fail.
   it('records the practitioner who creates a patient as the inviter', async () => {
-    const email = `invited-by-practitioner-${Date.now()}@example.com`;
+    const email = `invited-by-practitioner-${Date.now()}@example.com`
     const res = await practitionerA.post('/users').send({
       email,
       role: 'patient',
@@ -484,31 +517,29 @@ describe('Users (e2e)', () => {
       lastName: 'ByPractitioner',
       dateOfBirth: '1990-01-01',
       clinicId: clinicXId,
-    });
-    expect(res.status).toBe(201);
-    expect(res.body.invitation.status).toBe('pending');
+    })
+    expect(res.status).toBe(201)
+    expect(res.body.invitation.status).toBe('pending')
 
-    const history = await practitionerA.get(
-      `/users/${res.body.id}/invitations`,
-    );
-    expect(history.body[0].invitedBy.id).toBe(practitionerAId);
-    expect(outbox.sentTo(email)).toHaveLength(1);
-  });
+    const history = await practitionerA.get(`/users/${res.body.id}/invitations`)
+    expect(history.body[0].invitedBy.id).toBe(practitionerAId)
+    expect(outbox.sentTo(email)).toHaveLength(1)
+  })
 
   it('rejects a practitioner creating anything other than a patient account', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const res = await practitionerA.post('/users').send({
       email: `should-not-be-created-${stamp}@example.com`,
       role: 'practitioner',
       firstName: 'Should',
       lastName: 'NotWork',
       licenseNumber: `PT-X-${stamp}`,
-    });
-    expect(res.status).toBe(403);
-  });
+    })
+    expect(res.status).toBe(403)
+  })
 
   it('rejects a practitioner creating a patient in a clinic they do not belong to', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const res = await practitionerA.post('/users').send({
       email: `cross-clinic-patient-${stamp}@example.com`,
       role: 'patient',
@@ -516,12 +547,12 @@ describe('Users (e2e)', () => {
       lastName: 'Clinic',
       dateOfBirth: '1990-01-01',
       clinicId: clinicYId,
-    });
-    expect(res.status).toBe(403);
-  });
+    })
+    expect(res.status).toBe(403)
+  })
 
   it('lets a practitioner create a patient in their own clinic', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const res = await practitionerA.post('/users').send({
       email: `own-clinic-patient-${stamp}@example.com`,
       role: 'patient',
@@ -529,12 +560,12 @@ describe('Users (e2e)', () => {
       lastName: 'Clinic',
       dateOfBirth: '1990-01-01',
       clinicId: clinicXId,
-    });
-    expect(res.status).toBe(201);
-  });
+    })
+    expect(res.status).toBe(201)
+  })
 
   it('lets an admin create a patient in any clinic, exempt from the clinic-ownership check', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
     const res = await admin.post('/users').send({
       email: `admin-cross-clinic-patient-${stamp}@example.com`,
       role: 'patient',
@@ -542,37 +573,41 @@ describe('Users (e2e)', () => {
       lastName: 'CrossClinic',
       dateOfBirth: '1990-01-01',
       clinicId: clinicYId,
-    });
-    expect(res.status).toBe(201);
-  });
+    })
+    expect(res.status).toBe(201)
+  })
 
   it('scopes GET /users/:id: rejects an unrelated practitioner, allows the managing practitioner, self, and admin — all three see the same profile data', async () => {
-    const unrelated = await practitionerB.get(`/users/${patient1Id}`);
-    expect(unrelated.status).toBe(403);
+    const unrelated = await practitionerB.get(`/users/${patient1Id}`)
+    expect(unrelated.status).toBe(403)
 
     // Regression coverage for the actual gap this fix closes: whoever
     // already passes the existing self/admin/managing-practitioner check
     // gets the same profile fields — no new, finer-grained rule.
-    const managing = await practitionerA.get(`/users/${patient1Id}`);
-    expect(managing.status).toBe(200);
-    expect(managing.body.id).toBe(patient1Id);
-    expect(managing.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const managing = await practitionerA.get(`/users/${patient1Id}`)
+    expect(managing.status).toBe(200)
+    expect(managing.body.id).toBe(patient1Id)
+    expect(managing.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
-    const self = await patient1.get(`/users/${patient1Id}`);
-    expect(self.status).toBe(200);
-    expect(self.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const self = await patient1.get(`/users/${patient1Id}`)
+    expect(self.status).toBe(200)
+    expect(self.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
-    const adminView = await admin.get(`/users/${patient1Id}`);
-    expect(adminView.status).toBe(200);
-    expect(adminView.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' });
+    const adminView = await admin.get(`/users/${patient1Id}`)
+    expect(adminView.status).toBe(200)
+    expect(adminView.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
     // A practitioner viewing themself sees their own practitionerProfile,
     // never a patientProfile they don't have.
-    const practitionerSelf = await practitionerA.get(`/users/${practitionerAId}`);
-    expect(practitionerSelf.status).toBe(200);
-    expect(practitionerSelf.body.practitionerProfile).toEqual(practitionerAProfile);
-    expect(practitionerSelf.body).not.toHaveProperty('patientProfile');
-  });
+    const practitionerSelf = await practitionerA.get(
+      `/users/${practitionerAId}`,
+    )
+    expect(practitionerSelf.status).toBe(200)
+    expect(practitionerSelf.body.practitionerProfile).toEqual(
+      practitionerAProfile,
+    )
+    expect(practitionerSelf.body).not.toHaveProperty('patientProfile')
+  })
 
   // No route to POST /users/:id/roles was exercised anywhere in this suite
   // before — real gap, closed here specifically because grantRole()'s own
@@ -582,20 +617,20 @@ describe('Users (e2e)', () => {
   // comment on user_roles_insert for why the old shape would have failed
   // outright under FORCE ROW LEVEL SECURITY).
   it('lets an admin grant an additional role, rejects a non-admin attempting the same, and the granted role is real (not just echoed)', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
 
     const forbidden = await practitionerA
       .post(`/users/${patient2Id}/roles`)
-      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` });
-    expect(forbidden.status).toBe(403);
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` })
+    expect(forbidden.status).toBe(403)
 
     const granted = await admin
       .post(`/users/${patient2Id}/roles`)
-      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` });
-    expect(granted.status).toBe(201);
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-${stamp}` })
+    expect(granted.status).toBe(201)
     expect(granted.body).toEqual(
       expect.arrayContaining(['patient', 'practitioner']),
-    );
+    )
 
     // Proves the INSERT genuinely committed under user_roles' real RLS
     // policy, not just that the HTTP response looked right — patient2's
@@ -609,15 +644,15 @@ describe('Users (e2e)', () => {
     // getRolesForUser(userId, tx) fix above was about, from the other side.
     const switched = await patient2
       .post('/auth/switch-role')
-      .send({ role: 'practitioner' });
-    expect(switched.status).toBe(201);
-    expect(switched.body.activeRole).toBe('practitioner');
+      .send({ role: 'practitioner' })
+    expect(switched.status).toBe(201)
+    expect(switched.body.activeRole).toBe('practitioner')
 
     const duplicate = await admin
       .post(`/users/${patient2Id}/roles`)
-      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-DUP-${stamp}` });
-    expect(duplicate.status).toBe(409);
-  });
+      .send({ role: 'practitioner', licenseNumber: `PT-GRANT-DUP-${stamp}` })
+    expect(duplicate.status).toBe(409)
+  })
 
   // Real gap this fix closes: licenseNumber/specialties, dateOfBirth, and
   // position were writable at account creation (create(), grantRole()) but
@@ -634,118 +669,133 @@ describe('Users (e2e)', () => {
     // self-update test right after it — both mutate practitionerAId's row in
     // sequence, so the bio test needs the license value as it stands AFTER
     // that update, not practitionerAProfile's original creation-time value.
-    let practitionerACurrentLicense: string;
+    let practitionerACurrentLicense: string
 
     it('lets a patient self-update their own dateOfBirth', async () => {
-      const res = await patient1.patch(`/users/${patient1Id}`).send({ dateOfBirth: '1991-02-02' });
-      expect(res.status).toBe(200);
-      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1991-02-02' });
-    });
+      const res = await patient1
+        .patch(`/users/${patient1Id}`)
+        .send({ dateOfBirth: '1991-02-02' })
+      expect(res.status).toBe(200)
+      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1991-02-02' })
+    })
 
     it("lets an admin update any user's profile field — a practitioner's specialties here", async () => {
       const res = await admin
         .patch(`/users/${practitionerAId}`)
-        .send({ specialties: ['sports rehab', 'geriatrics'] });
-      expect(res.status).toBe(200);
+        .send({ specialties: ['sports rehab', 'geriatrics'] })
+      expect(res.status).toBe(200)
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: practitionerAProfile.licenseNumber,
         specialties: ['sports rehab', 'geriatrics'],
         bio: practitionerAProfile.bio,
-      });
-    });
+      })
+    })
 
     // licenseNumber became admin-only (design decisions §4): a professional
     // credential, set or verified by an admin — no longer self-editable.
     it('refuses a practitioner changing their own licenseNumber, and changes nothing — not even the other field sent with it', async () => {
       const res = await practitionerA
         .patch(`/users/${practitionerAId}`)
-        .send({ licenseNumber: `PT-A-SELF-${Date.now()}`, specialties: ['should not apply'] });
-      expect(res.status).toBe(403);
+        .send({
+          licenseNumber: `PT-A-SELF-${Date.now()}`,
+          specialties: ['should not apply'],
+        })
+      expect(res.status).toBe(403)
 
       // Read back with a separate GET: the response to a refused request
       // proves nothing about what's stored.
-      const readBack = await admin.get(`/users/${practitionerAId}`);
+      const readBack = await admin.get(`/users/${practitionerAId}`)
       expect(readBack.body.practitionerProfile).toEqual({
         licenseNumber: practitionerAProfile.licenseNumber,
         specialties: ['sports rehab', 'geriatrics'],
         bio: practitionerAProfile.bio,
-      });
-    });
+      })
+    })
 
-    it("still lets a practitioner self-update their other practitionerProfile fields — specialties here", async () => {
+    it('still lets a practitioner self-update their other practitionerProfile fields — specialties here', async () => {
       const res = await practitionerA
         .patch(`/users/${practitionerAId}`)
-        .send({ specialties: ['sports rehab'] });
-      expect(res.status).toBe(200);
+        .send({ specialties: ['sports rehab'] })
+      expect(res.status).toBe(200)
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: practitionerAProfile.licenseNumber,
         specialties: ['sports rehab'],
         bio: practitionerAProfile.bio,
-      });
-    });
+      })
+    })
 
     it("lets an admin change a practitioner's licenseNumber", async () => {
-      const newLicense = `PT-A-UPDATED-${Date.now()}`;
+      const newLicense = `PT-A-UPDATED-${Date.now()}`
       const res = await admin
         .patch(`/users/${practitionerAId}`)
-        .send({ licenseNumber: newLicense });
-      expect(res.status).toBe(200);
+        .send({ licenseNumber: newLicense })
+      expect(res.status).toBe(200)
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: newLicense,
         specialties: ['sports rehab'],
         bio: practitionerAProfile.bio,
-      });
-      practitionerACurrentLicense = newLicense;
-    });
+      })
+      practitionerACurrentLicense = newLicense
+    })
 
     // licenseNumber is UNIQUE in the database. A collision used to surface
     // as a 500 (unhandled Postgres error 23505); it's now a 409.
-    it("returns 409 — not 500 — when an admin sets a license number another practitioner already holds, and keeps the old one", async () => {
+    it('returns 409 — not 500 — when an admin sets a license number another practitioner already holds, and keeps the old one', async () => {
       const res = await admin
         .patch(`/users/${practitionerAId}`)
-        .send({ licenseNumber: practitionerBLicense });
-      expect(res.status).toBe(409);
+        .send({ licenseNumber: practitionerBLicense })
+      expect(res.status).toBe(409)
 
-      const readBack = await admin.get(`/users/${practitionerAId}`);
-      expect(readBack.body.practitionerProfile.licenseNumber).toBe(practitionerACurrentLicense);
-    });
+      const readBack = await admin.get(`/users/${practitionerAId}`)
+      expect(readBack.body.practitionerProfile.licenseNumber).toBe(
+        practitionerACurrentLicense,
+      )
+    })
 
     // bio was a completely dead column before this fix: a real column on
     // practitioner_profiles with no DTO field anywhere and never attached to
     // any response. This proves it now round-trips through PATCH the same
     // way licenseNumber/specialties already did.
-    it("lets a practitioner self-update their own bio, and reads it back", async () => {
+    it('lets a practitioner self-update their own bio, and reads it back', async () => {
       const res = await practitionerA
         .patch(`/users/${practitionerAId}`)
-        .send({ bio: 'Updated bio after a PATCH.' });
-      expect(res.status).toBe(200);
+        .send({ bio: 'Updated bio after a PATCH.' })
+      expect(res.status).toBe(200)
       expect(res.body.practitionerProfile).toEqual({
         licenseNumber: practitionerACurrentLicense,
         specialties: ['sports rehab'],
         bio: 'Updated bio after a PATCH.',
-      });
-    });
+      })
+    })
 
     it("lets a managing practitioner update a managed patient's patientProfile field", async () => {
-      const res = await practitionerA.patch(`/users/${patient1Id}`).send({ dateOfBirth: '1992-03-03' });
-      expect(res.status).toBe(200);
-      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1992-03-03' });
-    });
+      const res = await practitionerA
+        .patch(`/users/${patient1Id}`)
+        .send({ dateOfBirth: '1992-03-03' })
+      expect(res.status).toBe(200)
+      expect(res.body.patientProfile).toEqual({ dateOfBirth: '1992-03-03' })
+    })
 
     it('rejects one patient updating a profile field on a user that is not theirs', async () => {
-      const res = await patient2.patch(`/users/${patient1Id}`).send({ dateOfBirth: '2000-01-01' });
-      expect(res.status).toBe(403);
-    });
+      const res = await patient2
+        .patch(`/users/${patient1Id}`)
+        .send({ dateOfBirth: '2000-01-01' })
+      expect(res.status).toBe(403)
+    })
 
     it('rejects a non-managing practitioner from updating a profile field on a patient they do not manage', async () => {
-      const res = await practitionerB.patch(`/users/${patient1Id}`).send({ dateOfBirth: '2000-01-01' });
-      expect(res.status).toBe(403);
-    });
+      const res = await practitionerB
+        .patch(`/users/${patient1Id}`)
+        .send({ dateOfBirth: '2000-01-01' })
+      expect(res.status).toBe(403)
+    })
 
     it("rejects a practitioner from updating another practitioner's profile", async () => {
-      const res = await practitionerA.patch(`/users/${practitionerBId}`).send({ specialties: ['hijacked'] });
-      expect(res.status).toBe(403);
-    });
+      const res = await practitionerA
+        .patch(`/users/${practitionerBId}`)
+        .send({ specialties: ['hijacked'] })
+      expect(res.status).toBe(403)
+    })
 
     // The top-level isSelf||isAdmin||isManagingPractitioner check is not the
     // only gate: which profile fields even apply depends on the TARGET's
@@ -754,63 +804,73 @@ describe('Users (e2e)', () => {
     it('rejects a profile field that does not apply to the target — even for an admin caller', async () => {
       const licenseOnPatient = await admin
         .patch(`/users/${patient1Id}`)
-        .send({ licenseNumber: 'PT-SHOULD-FAIL' });
-      expect(licenseOnPatient.status).toBe(400);
+        .send({ licenseNumber: 'PT-SHOULD-FAIL' })
+      expect(licenseOnPatient.status).toBe(400)
 
       // bio is gated the same way as licenseNumber/specialties — a
       // practitioner-profile field, rejected for a target with no
       // practitioner role at all, even for an admin caller.
       const bioOnPatient = await admin
         .patch(`/users/${patient1Id}`)
-        .send({ bio: 'Should Fail' });
-      expect(bioOnPatient.status).toBe(400);
+        .send({ bio: 'Should Fail' })
+      expect(bioOnPatient.status).toBe(400)
 
       const positionOnPractitioner = await admin
         .patch(`/users/${practitionerAId}`)
-        .send({ position: 'Should Fail' });
-      expect(positionOnPractitioner.status).toBe(400);
+        .send({ position: 'Should Fail' })
+      expect(positionOnPractitioner.status).toBe(400)
 
       const dateOfBirthOnPractitioner = await practitionerA
         .patch(`/users/${practitionerAId}`)
-        .send({ dateOfBirth: '1990-01-01' });
-      expect(dateOfBirthOnPractitioner.status).toBe(400);
-    });
+        .send({ dateOfBirth: '1990-01-01' })
+      expect(dateOfBirthOnPractitioner.status).toBe(400)
+    })
 
     // Required (NOT NULL) columns can be left out of a PATCH, but not
     // cleared. An explicit null used to slip past @IsOptional() and reach
     // Postgres, which answered with a 500; it's now a 400 from validation.
     it('rejects clearing a required field (null or empty) with a 400', async () => {
-      const nullFirstName = await admin.patch(`/users/${patient1Id}`).send({ firstName: null });
-      expect(nullFirstName.status).toBe(400);
+      const nullFirstName = await admin
+        .patch(`/users/${patient1Id}`)
+        .send({ firstName: null })
+      expect(nullFirstName.status).toBe(400)
 
-      const emptyLastName = await admin.patch(`/users/${patient1Id}`).send({ lastName: '' });
-      expect(emptyLastName.status).toBe(400);
+      const emptyLastName = await admin
+        .patch(`/users/${patient1Id}`)
+        .send({ lastName: '' })
+      expect(emptyLastName.status).toBe(400)
 
-      const nullDateOfBirth = await admin.patch(`/users/${patient1Id}`).send({ dateOfBirth: null });
-      expect(nullDateOfBirth.status).toBe(400);
+      const nullDateOfBirth = await admin
+        .patch(`/users/${patient1Id}`)
+        .send({ dateOfBirth: null })
+      expect(nullDateOfBirth.status).toBe(400)
 
-      const nullSpecialties = await admin.patch(`/users/${practitionerAId}`).send({ specialties: null });
-      expect(nullSpecialties.status).toBe(400);
-    });
+      const nullSpecialties = await admin
+        .patch(`/users/${practitionerAId}`)
+        .send({ specialties: null })
+      expect(nullSpecialties.status).toBe(400)
+    })
 
     // ...while nullable columns CAN be cleared — this is how the profile
     // page removes a value.
     it('lets a user clear an optional field with null, and reads it back as null', async () => {
-      const res = await practitionerA.patch(`/users/${practitionerAId}`).send({ bio: null, phone: null });
-      expect(res.status).toBe(200);
+      const res = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({ bio: null, phone: null })
+      expect(res.status).toBe(200)
 
-      const readBack = await admin.get(`/users/${practitionerAId}`);
-      expect(readBack.body.phone).toBeNull();
-      expect(readBack.body.practitionerProfile.bio).toBeNull();
-    });
-  });
+      const readBack = await admin.get(`/users/${practitionerAId}`)
+      expect(readBack.body.phone).toBeNull()
+      expect(readBack.body.practitionerProfile.bio).toBeNull()
+    })
+  })
 
   // The same unique constraint guards the two other places a license
   // number is written: creating a practitioner, and granting the
   // practitioner role. Both used to answer a duplicate with a 500.
   describe('duplicate licenseNumber on create and grant-role', () => {
     it('returns 409 when creating a practitioner with a taken license — and leaves no half-created account behind', async () => {
-      const email = `dup-license-${Date.now()}@example.com`;
+      const email = `dup-license-${Date.now()}@example.com`
       const body = {
         email,
         role: 'practitioner',
@@ -818,30 +878,30 @@ describe('Users (e2e)', () => {
         lastName: 'License',
         licenseNumber: practitionerBLicense,
         clinicId: clinicXId,
-      };
+      }
 
-      const duplicate = await admin.post('/users').send(body);
-      expect(duplicate.status).toBe(409);
+      const duplicate = await admin.post('/users').send(body)
+      expect(duplicate.status).toBe(409)
 
       // The users row is inserted BEFORE the profile row, in the same
       // transaction. If the rollback didn't happen, this email would now be
       // taken and the retry would be a 409 for the EMAIL instead.
       const retry = await admin
         .post('/users')
-        .send({ ...body, licenseNumber: `PT-DUP-RETRY-${Date.now()}` });
-      expect(retry.status).toBe(201);
-    });
+        .send({ ...body, licenseNumber: `PT-DUP-RETRY-${Date.now()}` })
+      expect(retry.status).toBe(201)
+    })
 
     it('returns 409 when granting the practitioner role with a taken license — and the role is not granted', async () => {
       const res = await admin
         .post(`/users/${patient1Id}/roles`)
-        .send({ role: 'practitioner', licenseNumber: practitionerBLicense });
-      expect(res.status).toBe(409);
+        .send({ role: 'practitioner', licenseNumber: practitionerBLicense })
+      expect(res.status).toBe(409)
 
-      const readBack = await admin.get(`/users/${patient1Id}`);
-      expect(readBack.body.roles).toEqual(['patient']);
-    });
-  });
+      const readBack = await admin.get(`/users/${patient1Id}`)
+      expect(readBack.body.roles).toEqual(['patient'])
+    })
+  })
 
   // The weight-unit preference (a users column, NOT NULL DEFAULT 'kg').
   // Uses patient2, whom no earlier test successfully edits. In order:
@@ -849,46 +909,46 @@ describe('Users (e2e)', () => {
   // then the one allowed change.
   describe('preferredWeightUnit', () => {
     it("defaults to 'kg' for an account that never set it — on /users/:id and /auth/me", async () => {
-      const userRes = await patient2.get(`/users/${patient2Id}`);
-      expect(userRes.body.preferredWeightUnit).toBe('kg');
+      const userRes = await patient2.get(`/users/${patient2Id}`)
+      expect(userRes.body.preferredWeightUnit).toBe('kg')
 
       // /auth/me is where the frontend actually reads it from.
-      const meRes = await patient2.get('/auth/me');
-      expect(meRes.body.preferredWeightUnit).toBe('kg');
-    });
+      const meRes = await patient2.get('/auth/me')
+      expect(meRes.body.preferredWeightUnit).toBe('kg')
+    })
 
     it("refuses an admin changing someone else's preference, and changes nothing", async () => {
       const res = await admin
         .patch(`/users/${patient2Id}`)
-        .send({ preferredWeightUnit: 'lbs' });
-      expect(res.status).toBe(403);
+        .send({ preferredWeightUnit: 'lbs' })
+      expect(res.status).toBe(403)
 
-      const readBack = await admin.get(`/users/${patient2Id}`);
-      expect(readBack.body.preferredWeightUnit).toBe('kg');
-    });
+      const readBack = await admin.get(`/users/${patient2Id}`)
+      expect(readBack.body.preferredWeightUnit).toBe('kg')
+    })
 
     // null: the column is NOT NULL — before the DTO rule this would have
     // reached Postgres and come back as a 500.
     it.each([null, 'stone'])('rejects %j with a 400', async (value) => {
       const res = await patient2
         .patch(`/users/${patient2Id}`)
-        .send({ preferredWeightUnit: value });
-      expect(res.status).toBe(400);
-    });
+        .send({ preferredWeightUnit: value })
+      expect(res.status).toBe(400)
+    })
 
     it('lets a user change their own preference, and /auth/me reflects it', async () => {
       const res = await patient2
         .patch(`/users/${patient2Id}`)
-        .send({ preferredWeightUnit: 'lbs' });
-      expect(res.status).toBe(200);
-      expect(res.body.preferredWeightUnit).toBe('lbs');
+        .send({ preferredWeightUnit: 'lbs' })
+      expect(res.status).toBe(200)
+      expect(res.body.preferredWeightUnit).toBe('lbs')
 
       // A separate read: the session's user is rebuilt from the database on
       // every request, so the next /auth/me must already carry the change.
-      const meRes = await patient2.get('/auth/me');
-      expect(meRes.body.preferredWeightUnit).toBe('lbs');
-    });
-  });
+      const meRes = await patient2.get('/auth/me')
+      expect(meRes.body.preferredWeightUnit).toBe('lbs')
+    })
+  })
 
   // Avatars (POST/DELETE /users/:id/avatar). These go all the way to the
   // real RustFS, so besides status codes they check the thing a user would
@@ -899,65 +959,74 @@ describe('Users (e2e)', () => {
     // A stand-in for real image bytes — the upload filter only checks the
     // declared Content-Type, never the content (same as in
     // exercises.e2e-spec.ts).
-    const fakeImage = (label: string) => Buffer.from(`fake-avatar-${label}`);
+    const fakeImage = (label: string) => Buffer.from(`fake-avatar-${label}`)
 
     // Loads a presigned URL the way a browser's <img> would: a plain GET,
     // no cookie, straight to storage. Returns the status and the body.
     const loadImage = async (url: string) => {
-      const response = await fetch(url);
-      return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
-    };
+      const response = await fetch(url)
+      return {
+        status: response.status,
+        body: Buffer.from(await response.arrayBuffer()),
+      }
+    }
 
     // Carried between the tests below, which run in order.
-    let firstAvatarUrl: string;
-    let secondAvatarUrl: string;
+    let firstAvatarUrl: string
+    let secondAvatarUrl: string
 
     it('starts as avatarUrl: null, with no raw avatarPath anywhere', async () => {
-      const meRes = await patient1.get('/auth/me');
-      expect(meRes.body.avatarUrl).toBeNull();
-      expect(meRes.body).not.toHaveProperty('avatarPath');
+      const meRes = await patient1.get('/auth/me')
+      expect(meRes.body.avatarUrl).toBeNull()
+      expect(meRes.body).not.toHaveProperty('avatarPath')
 
-      const userRes = await admin.get(`/users/${patient1Id}`);
-      expect(userRes.body.avatarUrl).toBeNull();
-      expect(userRes.body).not.toHaveProperty('avatarPath');
-    });
+      const userRes = await admin.get(`/users/${patient1Id}`)
+      expect(userRes.body.avatarUrl).toBeNull()
+      expect(userRes.body).not.toHaveProperty('avatarPath')
+    })
 
     it('lets a user upload their own avatar, and the returned avatarUrl really serves the image', async () => {
       const res = await patient1
         .post(`/users/${patient1Id}/avatar`)
-        .attach('file', fakeImage('first'), { filename: 'me.png', contentType: 'image/png' });
-      expect(res.status).toBe(201);
-      expect(res.body).not.toHaveProperty('avatarPath');
-      expect(typeof res.body.avatarUrl).toBe('string');
-      firstAvatarUrl = res.body.avatarUrl;
+        .attach('file', fakeImage('first'), {
+          filename: 'me.png',
+          contentType: 'image/png',
+        })
+      expect(res.status).toBe(201)
+      expect(res.body).not.toHaveProperty('avatarPath')
+      expect(typeof res.body.avatarUrl).toBe('string')
+      firstAvatarUrl = res.body.avatarUrl
 
-      const image = await loadImage(firstAvatarUrl);
-      expect(image.status).toBe(200);
-      expect(image.body.toString()).toBe('fake-avatar-first');
+      const image = await loadImage(firstAvatarUrl)
+      expect(image.status).toBe(200)
+      expect(image.body.toString()).toBe('fake-avatar-first')
 
       // /auth/me is where the header reads it from.
-      const meRes = await patient1.get('/auth/me');
-      expect(typeof meRes.body.avatarUrl).toBe('string');
-      expect(meRes.body).not.toHaveProperty('avatarPath');
-    });
+      const meRes = await patient1.get('/auth/me')
+      expect(typeof meRes.body.avatarUrl).toBe('string')
+      expect(meRes.body).not.toHaveProperty('avatarPath')
+    })
 
     it('deletes the old file when the avatar is replaced', async () => {
       const res = await patient1
         .post(`/users/${patient1Id}/avatar`)
-        .attach('file', fakeImage('second'), { filename: 'me.png', contentType: 'image/png' });
-      expect(res.status).toBe(201);
-      secondAvatarUrl = res.body.avatarUrl;
-      expect(secondAvatarUrl).not.toBe(firstAvatarUrl);
+        .attach('file', fakeImage('second'), {
+          filename: 'me.png',
+          contentType: 'image/png',
+        })
+      expect(res.status).toBe(201)
+      secondAvatarUrl = res.body.avatarUrl
+      expect(secondAvatarUrl).not.toBe(firstAvatarUrl)
 
-      const newImage = await loadImage(secondAvatarUrl);
-      expect(newImage.status).toBe(200);
-      expect(newImage.body.toString()).toBe('fake-avatar-second');
+      const newImage = await loadImage(secondAvatarUrl)
+      expect(newImage.status).toBe(200)
+      expect(newImage.body.toString()).toBe('fake-avatar-second')
 
       // The first URL's signature is still valid (24 hours), so a 404 here
       // can only mean one thing: the file itself is gone from storage.
-      const oldImage = await loadImage(firstAvatarUrl);
-      expect(oldImage.status).toBe(404);
-    });
+      const oldImage = await loadImage(firstAvatarUrl)
+      expect(oldImage.status).toBe(404)
+    })
 
     it('rejects a file that is not an image with a 400', async () => {
       const res = await patient1
@@ -965,66 +1034,74 @@ describe('Users (e2e)', () => {
         .attach('file', Buffer.from('not an image'), {
           filename: 'notes.txt',
           contentType: 'text/plain',
-        });
-      expect(res.status).toBe(400);
-    });
+        })
+      expect(res.status).toBe(400)
+    })
 
     it("refuses a managing practitioner uploading or removing their patient's avatar, and changes nothing", async () => {
       const uploadRes = await practitionerA
         .post(`/users/${patient1Id}/avatar`)
-        .attach('file', fakeImage('intruder'), { filename: 'x.png', contentType: 'image/png' });
-      expect(uploadRes.status).toBe(403);
+        .attach('file', fakeImage('intruder'), {
+          filename: 'x.png',
+          contentType: 'image/png',
+        })
+      expect(uploadRes.status).toBe(403)
 
-      const removeRes = await practitionerA.delete(`/users/${patient1Id}/avatar`);
-      expect(removeRes.status).toBe(403);
+      const removeRes = await practitionerA.delete(
+        `/users/${patient1Id}/avatar`,
+      )
+      expect(removeRes.status).toBe(403)
 
       // Still the second photo, still in storage.
-      const image = await loadImage(secondAvatarUrl);
-      expect(image.status).toBe(200);
-      expect(image.body.toString()).toBe('fake-avatar-second');
-    });
+      const image = await loadImage(secondAvatarUrl)
+      expect(image.status).toBe(200)
+      expect(image.body.toString()).toBe('fake-avatar-second')
+    })
 
     it("refuses another patient removing someone else's avatar", async () => {
-      const res = await patient2.delete(`/users/${patient1Id}/avatar`);
-      expect(res.status).toBe(403);
-    });
+      const res = await patient2.delete(`/users/${patient1Id}/avatar`)
+      expect(res.status).toBe(403)
+    })
 
     it("lets an admin remove someone's avatar: avatarUrl becomes null and the file is gone", async () => {
-      const res = await admin.delete(`/users/${patient1Id}/avatar`);
-      expect(res.status).toBe(200);
-      expect(res.body.avatarUrl).toBeNull();
-      expect(res.body).not.toHaveProperty('avatarPath');
+      const res = await admin.delete(`/users/${patient1Id}/avatar`)
+      expect(res.status).toBe(200)
+      expect(res.body.avatarUrl).toBeNull()
+      expect(res.body).not.toHaveProperty('avatarPath')
 
-      const image = await loadImage(secondAvatarUrl);
-      expect(image.status).toBe(404);
+      const image = await loadImage(secondAvatarUrl)
+      expect(image.status).toBe(404)
 
-      const meRes = await patient1.get('/auth/me');
-      expect(meRes.body.avatarUrl).toBeNull();
-    });
+      const meRes = await patient1.get('/auth/me')
+      expect(meRes.body.avatarUrl).toBeNull()
+    })
 
     it('treats removing an avatar that is already gone as a success (idempotent)', async () => {
-      const res = await patient1.delete(`/users/${patient1Id}/avatar`);
-      expect(res.status).toBe(200);
-      expect(res.body.avatarUrl).toBeNull();
-    });
+      const res = await patient1.delete(`/users/${patient1Id}/avatar`)
+      expect(res.status).toBe(200)
+      expect(res.body.avatarUrl).toBeNull()
+    })
 
     it("lets an admin set someone else's avatar, and that user remove it themselves", async () => {
       const uploadRes = await admin
         .post(`/users/${patient2Id}/avatar`)
-        .attach('file', fakeImage('by-admin'), { filename: 'p2.png', contentType: 'image/png' });
-      expect(uploadRes.status).toBe(201);
-      const url = uploadRes.body.avatarUrl;
-      expect((await loadImage(url)).status).toBe(200);
+        .attach('file', fakeImage('by-admin'), {
+          filename: 'p2.png',
+          contentType: 'image/png',
+        })
+      expect(uploadRes.status).toBe(201)
+      const url = uploadRes.body.avatarUrl
+      expect((await loadImage(url)).status).toBe(200)
 
-      const removeRes = await patient2.delete(`/users/${patient2Id}/avatar`);
-      expect(removeRes.status).toBe(200);
-      expect(removeRes.body.avatarUrl).toBeNull();
-      expect((await loadImage(url)).status).toBe(404);
-    });
+      const removeRes = await patient2.delete(`/users/${patient2Id}/avatar`)
+      expect(removeRes.status).toBe(200)
+      expect(removeRes.body.avatarUrl).toBeNull()
+      expect((await loadImage(url)).status).toBe(404)
+    })
 
     it('returns 404 for an avatar route on a user that does not exist', async () => {
-      const res = await admin.delete('/users/999999/avatar');
-      expect(res.status).toBe(404);
-    });
-  });
-});
+      const res = await admin.delete('/users/999999/avatar')
+      expect(res.status).toBe(404)
+    })
+  })
+})

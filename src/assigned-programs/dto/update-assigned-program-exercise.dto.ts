@@ -26,13 +26,13 @@ import {
   MaxLength,
   Min,
   ValidateIf,
-} from "class-validator";
+} from 'class-validator'
 import {
   IsExerciseList,
   IsExerciseName,
-} from "../../common/validators/exercise-description";
-import { hasStartedWeight } from "../../common/validators/has-started-weight";
-import { isPresent } from "../../common/validators/is-present";
+} from '../../common/validators/exercise-description'
+import { hasStartedWeight } from '../../common/validators/has-started-weight'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
 
@@ -63,23 +63,23 @@ export class UpdateAssignedProgramExerciseDto {
 
   @ValidateIf(isPresent)
   @IsExerciseName()
-  name?: string;
+  name?: string
 
   @ValidateIf(isPresent)
-  @IsExerciseList("primaryMuscles")
-  primaryMuscles?: string[];
+  @IsExerciseList('primaryMuscles')
+  primaryMuscles?: string[]
 
   @ValidateIf(isPresent)
-  @IsExerciseList("secondaryMuscles")
-  secondaryMuscles?: string[];
+  @IsExerciseList('secondaryMuscles')
+  secondaryMuscles?: string[]
 
   @ValidateIf(isPresent)
-  @IsExerciseList("equipment")
-  equipment?: string[];
+  @IsExerciseList('equipment')
+  equipment?: string[]
 
   @ValidateIf(isPresent)
-  @IsExerciseList("instructions")
-  instructions?: string[];
+  @IsExerciseList('instructions')
+  instructions?: string[]
 
   // --- Per-patient prescription fields ------------------------------------
   // Unchanged from the previous PartialType(OmitType(...)) derivation —
@@ -89,31 +89,31 @@ export class UpdateAssignedProgramExerciseDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  sets?: number;
+  sets?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  reps?: number;
+  reps?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  durationInSeconds?: number;
+  durationInSeconds?: number
 
   @ValidateIf(hasStartedWeight)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  weight?: number;
+  weight?: number
 
   @ValidateIf(hasStartedWeight)
-  @IsIn(["kg", "lbs"])
-  weightUnit?: "kg" | "lbs";
+  @IsIn(['kg', 'lbs'])
+  weightUnit?: 'kg' | 'lbs'
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
-  notes?: string;
+  notes?: string
 
   // --- Which workout ------------------------------------------------------
   // Moves the exercise to another workout of the program (it goes to the
@@ -123,5 +123,5 @@ export class UpdateAssignedProgramExerciseDto {
   // is-present.ts.
   @ValidateIf(isPresent)
   @IsInt()
-  workoutId?: number;
+  workoutId?: number
 }

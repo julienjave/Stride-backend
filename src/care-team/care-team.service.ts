@@ -602,9 +602,7 @@ export class CareTeamService {
       tx
         .select({ practitionerId: careTeamMembers.practitionerId })
         .from(careTeamMembers)
-        .where(
-          and(eq(careTeamMembers.patientId, patientId), activePeriod()),
-        ),
+        .where(and(eq(careTeamMembers.patientId, patientId), activePeriod())),
     )
     const onTeam = new Set(onTeamRows.map((row) => row.practitionerId))
 

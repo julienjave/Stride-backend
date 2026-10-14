@@ -110,7 +110,10 @@ describe('UsersService.create', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -196,9 +199,7 @@ describe('UsersService.create', () => {
         },
       },
     }
-    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) =>
-      cb(tx),
-    )
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
 
     const result = await usersService.create(
       {
@@ -326,9 +327,11 @@ describe('UsersService.create', () => {
       select: emptyClinicsSelect(),
       insert: jest.fn().mockReturnValue({
         values: jest.fn().mockReturnValue({
-          returning: jest.fn().mockResolvedValue([
-            { id: 10, email: 'p@example.com', passwordHash: 'x' },
-          ]),
+          returning: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 10, email: 'p@example.com', passwordHash: 'x' },
+            ]),
         }),
       }),
       query: {
@@ -336,9 +339,7 @@ describe('UsersService.create', () => {
         patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
       },
     }
-    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) =>
-      cb(tx),
-    )
+    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
 
     await usersService.create(
       {
@@ -632,7 +633,10 @@ describe('UsersService.grantRole', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -771,7 +775,10 @@ describe('UsersService.findPatientsForPractitioner', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -790,9 +797,11 @@ describe('UsersService.findPatientsForPractitioner', () => {
     db.selectDistinct.mockReturnValue({
       from: jest.fn().mockReturnValue({
         innerJoin: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue(
-            patients.map((p) => ({ user: { ...p, passwordHash: 'x' } })),
-          ),
+          where: jest
+            .fn()
+            .mockResolvedValue(
+              patients.map((p) => ({ user: { ...p, passwordHash: 'x' } })),
+            ),
         }),
       }),
     })
@@ -800,9 +809,11 @@ describe('UsersService.findPatientsForPractitioner', () => {
       // attachProfilesToMany()'s batched userRoles query.
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue(
-            patients.map((p) => ({ userId: p.id, role: UserRole.PATIENT })),
-          ),
+          where: jest
+            .fn()
+            .mockResolvedValue(
+              patients.map((p) => ({ userId: p.id, role: UserRole.PATIENT })),
+            ),
         }),
       })
       // attachProfilesToMany()'s batched clinic-membership query.
@@ -882,7 +893,10 @@ describe('UsersService.isPatientManagedBy', () => {
         UsersService,
         { provide: DRIZZLE, useValue: {} },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -947,7 +961,10 @@ describe('UsersService.findOne', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1074,7 +1091,10 @@ describe('UsersService.update', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1566,7 +1586,9 @@ describe('UsersService.reactivate', () => {
     db = {
       query: {
         users: { findFirst: jest.fn() },
-        practitionerProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
         patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
         adminProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
       },
@@ -1622,7 +1644,10 @@ describe('UsersService.reactivate', () => {
       }),
     })
     db.transaction.mockImplementation((cb) =>
-      cb({ execute: jest.fn().mockResolvedValue(undefined), update: () => ({ set }) }),
+      cb({
+        execute: jest.fn().mockResolvedValue(undefined),
+        update: () => ({ set }),
+      }),
     )
 
     const result = await usersService.reactivate(5, {
@@ -1650,7 +1675,9 @@ describe('UsersService.reactivate', () => {
         update: () => ({
           set: () => ({
             where: () => ({
-              returning: jest.fn().mockResolvedValue([{ id: 5, isActive: true }]),
+              returning: jest
+                .fn()
+                .mockResolvedValue([{ id: 5, isActive: true }]),
             }),
           }),
         }),
@@ -1692,11 +1719,15 @@ describe('UsersService.findAll', () => {
     }
     db.select
       .mockReturnValueOnce({
-        from: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+        from: jest
+          .fn()
+          .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
       })
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
-          innerJoin: jest.fn().mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
+          innerJoin: jest
+            .fn()
+            .mockReturnValue({ where: jest.fn().mockResolvedValue([]) }),
         }),
       })
 
@@ -1705,7 +1736,10 @@ describe('UsersService.findAll', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1949,10 +1983,13 @@ describe('UsersService.updateAvatar', () => {
     await usersService.updateAvatar(5, fakeAvatar, selfUser)
 
     expect(storageService.deleteUnreferenced).toHaveBeenCalledTimes(1)
-    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('avatars/5/OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith(
+      'avatars/5/OLD.png',
+    )
     // invocationCallOrder: a global counter Jest stamps on every mock call
     // — a lower number means an earlier call.
-    const deleteOrder = storageService.deleteUnreferenced.mock.invocationCallOrder[0]
+    const deleteOrder =
+      storageService.deleteUnreferenced.mock.invocationCallOrder[0]
     expect(storageService.upload.mock.invocationCallOrder[0]).toBeLessThan(
       deleteOrder,
     )
@@ -1963,7 +2000,10 @@ describe('UsersService.updateAvatar', () => {
 describe('UsersService.removeAvatar', () => {
   let usersService: UsersService
   let db: ReturnType<typeof avatarTestDb>
-  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: {
+    deleteUnreferenced: jest.Mock
+    getPresignedUrlOrNull: jest.Mock
+  }
 
   beforeEach(async () => {
     db = avatarTestDb()
@@ -2005,7 +2045,9 @@ describe('UsersService.removeAvatar', () => {
     const result = await usersService.removeAvatar(5, selfUser)
 
     expect(set).toHaveBeenCalledWith({ avatarPath: null })
-    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('avatars/5/OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith(
+      'avatars/5/OLD.png',
+    )
     // The row stops pointing at the file BEFORE the file is deleted.
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
       storageService.deleteUnreferenced.mock.invocationCallOrder[0],

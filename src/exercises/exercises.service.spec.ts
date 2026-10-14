@@ -1,22 +1,22 @@
-import { Test } from "@nestjs/testing";
+import { Test } from '@nestjs/testing'
 import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
-} from "@nestjs/common";
-import { ExercisesService } from "./exercises.service";
-import { StorageService } from "../storage/storage.service";
-import { DRIZZLE } from "../database/drizzle.provider";
-import { UserRole } from "../users/dto/create-user.dto";
+} from '@nestjs/common'
+import { ExercisesService } from './exercises.service'
+import { StorageService } from '../storage/storage.service'
+import { DRIZZLE } from '../database/drizzle.provider'
+import { UserRole } from '../users/dto/create-user.dto'
 
-describe("ExercisesService.assertCanModify (via update)", () => {
-  let exercisesService: ExercisesService;
+describe('ExercisesService.assertCanModify (via update)', () => {
+  let exercisesService: ExercisesService
   let db: {
-    query: { exercises: { findFirst: jest.Mock } };
-    update: jest.Mock;
-    execute: jest.Mock;
-    transaction: jest.Mock;
-  };
+    query: { exercises: { findFirst: jest.Mock } }
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     db = {
@@ -26,7 +26,7 @@ describe("ExercisesService.assertCanModify (via update)", () => {
           where: jest.fn().mockReturnValue({
             returning: jest
               .fn()
-              .mockResolvedValue([{ id: 1, name: "Updated", mediaUrls: [] }]),
+              .mockResolvedValue([{ id: 1, name: 'Updated', mediaUrls: [] }]),
           }),
         }),
       }),
@@ -35,7 +35,7 @@ describe("ExercisesService.assertCanModify (via update)", () => {
       // resolves against this same object.
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
-    };
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -43,91 +43,91 @@ describe("ExercisesService.assertCanModify (via update)", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("allows the practitioner who created a custom exercise to modify it", async () => {
+  it('allows the practitioner who created a custom exercise to modify it', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      source: "custom",
+      source: 'custom',
       createdBy: 7,
       mediaUrls: [],
-    });
+    })
 
     await expect(
       exercisesService.update(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        { name: "Updated" },
+        { name: 'Updated' },
       ),
       // withImages replaces mediaUrls with images on every returned
       // value now — an empty mediaUrls array means an empty images
       // array, not the field disappearing entirely.
-    ).resolves.toEqual({ id: 1, name: "Updated", images: [] });
-  });
+    ).resolves.toEqual({ id: 1, name: 'Updated', images: [] })
+  })
 
-  it("allows an admin to modify any exercise, including one they did not create", async () => {
+  it('allows an admin to modify any exercise, including one they did not create', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      source: "custom",
+      source: 'custom',
       createdBy: 7,
       mediaUrls: [],
-    });
+    })
 
     await expect(
       exercisesService.update(
         1,
         { id: 999, activeRole: UserRole.ADMIN },
-        { name: "Updated" },
+        { name: 'Updated' },
       ),
-    ).resolves.toEqual({ id: 1, name: "Updated", images: [] });
-  });
+    ).resolves.toEqual({ id: 1, name: 'Updated', images: [] })
+  })
 
-  it("rejects a different practitioner modifying a custom exercise they did not create", async () => {
+  it('rejects a different practitioner modifying a custom exercise they did not create', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      source: "custom",
+      source: 'custom',
       createdBy: 7,
       mediaUrls: [],
-    });
+    })
 
     await expect(
       exercisesService.update(
         1,
         { id: 999, activeRole: UserRole.PRACTITIONER },
-        { name: "Updated" },
+        { name: 'Updated' },
       ),
-    ).rejects.toThrow(ForbiddenException);
-  });
+    ).rejects.toThrow(ForbiddenException)
+  })
 
   it('rejects a practitioner modifying an api-sourced exercise, even one nobody "owns"', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      source: "api",
+      source: 'api',
       createdBy: null,
       mediaUrls: [],
-    });
+    })
 
     await expect(
       exercisesService.update(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        { name: "Updated" },
+        { name: 'Updated' },
       ),
-    ).rejects.toThrow(ForbiddenException);
-  });
-});
+    ).rejects.toThrow(ForbiddenException)
+  })
+})
 
-describe("ExercisesService.reorderImages", () => {
-  let exercisesService: ExercisesService;
+describe('ExercisesService.reorderImages', () => {
+  let exercisesService: ExercisesService
   let db: {
-    query: { exercises: { findFirst: jest.Mock } };
-    update: jest.Mock;
-    execute: jest.Mock;
-    transaction: jest.Mock;
-  };
+    query: { exercises: { findFirst: jest.Mock } }
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     db = {
@@ -135,9 +135,9 @@ describe("ExercisesService.reorderImages", () => {
         exercises: {
           findFirst: jest.fn().mockResolvedValue({
             id: 1,
-            source: "custom",
+            source: 'custom',
             createdBy: 7,
-            mediaUrls: ["a.jpg", "b.jpg", "c.jpg"],
+            mediaUrls: ['a.jpg', 'b.jpg', 'c.jpg'],
           }),
         },
       },
@@ -147,7 +147,7 @@ describe("ExercisesService.reorderImages", () => {
             returning: jest
               .fn()
               .mockResolvedValue([
-                { id: 1, mediaUrls: ["c.jpg", "a.jpg", "b.jpg"] },
+                { id: 1, mediaUrls: ['c.jpg', 'a.jpg', 'b.jpg'] },
               ]),
           }),
         }),
@@ -157,7 +157,7 @@ describe("ExercisesService.reorderImages", () => {
       // resolves against this same object.
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
-    };
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -179,17 +179,17 @@ describe("ExercisesService.reorderImages", () => {
           },
         },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("accepts a reordering that is an exact permutation of the current images", async () => {
+  it('accepts a reordering that is an exact permutation of the current images', async () => {
     const result = await exercisesService.reorderImages(
       1,
       { id: 7, activeRole: UserRole.PRACTITIONER },
-      ["c.jpg", "a.jpg", "b.jpg"],
-    );
+      ['c.jpg', 'a.jpg', 'b.jpg'],
+    )
 
     // images preserves the NEW order (c, a, b) — proving reorderImages'
     // own permutation logic actually took effect — and each entry pairs
@@ -199,65 +199,68 @@ describe("ExercisesService.reorderImages", () => {
     expect(result).toEqual({
       id: 1,
       images: [
-        { objectKey: "c.jpg", url: "https://signed.example/c.jpg" },
-        { objectKey: "a.jpg", url: "https://signed.example/a.jpg" },
-        { objectKey: "b.jpg", url: "https://signed.example/b.jpg" },
+        { objectKey: 'c.jpg', url: 'https://signed.example/c.jpg' },
+        { objectKey: 'a.jpg', url: 'https://signed.example/a.jpg' },
+        { objectKey: 'b.jpg', url: 'https://signed.example/b.jpg' },
       ],
-    });
-  });
+    })
+  })
 
-  it("rejects a reordering that drops an existing image", async () => {
+  it('rejects a reordering that drops an existing image', async () => {
     await expect(
       exercisesService.reorderImages(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        ["a.jpg", "b.jpg"],
+        ['a.jpg', 'b.jpg'],
       ),
-    ).rejects.toThrow(BadRequestException);
-  });
+    ).rejects.toThrow(BadRequestException)
+  })
 
-  it("rejects a reordering that introduces a key that was never uploaded", async () => {
+  it('rejects a reordering that introduces a key that was never uploaded', async () => {
     await expect(
       exercisesService.reorderImages(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        ["a.jpg", "b.jpg", "c.jpg", "never-uploaded.jpg"],
+        ['a.jpg', 'b.jpg', 'c.jpg', 'never-uploaded.jpg'],
       ),
-    ).rejects.toThrow(BadRequestException);
-  });
+    ).rejects.toThrow(BadRequestException)
+  })
 
-  it("rejects a duplicate-padded reordering instead of silently corrupting the gallery", async () => {
+  it('rejects a duplicate-padded reordering instead of silently corrupting the gallery', async () => {
     await expect(
       exercisesService.reorderImages(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        ["a.jpg", "b.jpg", "c.jpg", "a.jpg"],
+        ['a.jpg', 'b.jpg', 'c.jpg', 'a.jpg'],
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(BadRequestException)
 
-    expect(db.update).not.toHaveBeenCalled();
-  });
+    expect(db.update).not.toHaveBeenCalled()
+  })
 
-  it("rejects a reordering from someone who does not own the exercise", async () => {
+  it('rejects a reordering from someone who does not own the exercise', async () => {
     await expect(
       exercisesService.reorderImages(
         1,
         { id: 999, activeRole: UserRole.PRACTITIONER },
-        ["c.jpg", "a.jpg", "b.jpg"],
+        ['c.jpg', 'a.jpg', 'b.jpg'],
       ),
-    ).rejects.toThrow(ForbiddenException);
-  });
-});
+    ).rejects.toThrow(ForbiddenException)
+  })
+})
 
-describe("ExercisesService.removeImage", () => {
-  let exercisesService: ExercisesService;
-  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrl: jest.Mock };
+describe('ExercisesService.removeImage', () => {
+  let exercisesService: ExercisesService
+  let storageService: {
+    deleteUnreferenced: jest.Mock
+    getPresignedUrl: jest.Mock
+  }
   let db: {
-    query: { exercises: { findFirst: jest.Mock } };
-    update: jest.Mock;
-    execute: jest.Mock;
-    transaction: jest.Mock;
-  };
+    query: { exercises: { findFirst: jest.Mock } }
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
 
   beforeEach(async () => {
     storageService = {
@@ -267,15 +270,15 @@ describe("ExercisesService.removeImage", () => {
         .mockImplementation((key: string) =>
           Promise.resolve(`https://signed.example/${key}`),
         ),
-    };
+    }
     db = {
       query: {
         exercises: {
           findFirst: jest.fn().mockResolvedValue({
             id: 1,
-            source: "custom",
+            source: 'custom',
             createdBy: 7,
-            mediaUrls: ["a.jpg", "b.jpg"],
+            mediaUrls: ['a.jpg', 'b.jpg'],
           }),
         },
       },
@@ -284,7 +287,7 @@ describe("ExercisesService.removeImage", () => {
           where: jest.fn().mockReturnValue({
             returning: jest
               .fn()
-              .mockResolvedValue([{ id: 1, mediaUrls: ["b.jpg"] }]),
+              .mockResolvedValue([{ id: 1, mediaUrls: ['b.jpg'] }]),
           }),
         }),
       }),
@@ -293,7 +296,7 @@ describe("ExercisesService.removeImage", () => {
       // resolves against this same object.
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
-    };
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -301,52 +304,52 @@ describe("ExercisesService.removeImage", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("removes an image key that belongs to this exercise", async () => {
+  it('removes an image key that belongs to this exercise', async () => {
     const result = await exercisesService.removeImage(
       1,
       { id: 7, activeRole: UserRole.PRACTITIONER },
-      "a.jpg",
-    );
+      'a.jpg',
+    )
 
     expect(result).toEqual({
       id: 1,
-      images: [{ objectKey: "b.jpg", url: "https://signed.example/b.jpg" }],
-    });
-    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith("a.jpg");
+      images: [{ objectKey: 'b.jpg', url: 'https://signed.example/b.jpg' }],
+    })
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('a.jpg')
     // The key is removed from the row (what actually reached the UPDATE)…
-    const { set } = db.update.mock.results[0].value as { set: jest.Mock };
-    expect(set).toHaveBeenCalledWith({ mediaUrls: ["b.jpg"] });
+    const { set } = db.update.mock.results[0].value as { set: jest.Mock }
+    expect(set).toHaveBeenCalledWith({ mediaUrls: ['b.jpg'] })
     // …BEFORE the file is deleted, so a failed UPDATE can never leave the
     // exercise listing a photo whose file is already gone.
     // invocationCallOrder: lower number = called earlier.
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
       storageService.deleteUnreferenced.mock.invocationCallOrder[0],
-    );
-  });
+    )
+  })
 
-  it("throws NotFoundException for a key that does not belong to this exercise", async () => {
+  it('throws NotFoundException for a key that does not belong to this exercise', async () => {
     await expect(
       exercisesService.removeImage(
         1,
         { id: 7, activeRole: UserRole.PRACTITIONER },
-        "not-mine.jpg",
+        'not-mine.jpg',
       ),
-    ).rejects.toThrow(NotFoundException);
-    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled();
-  });
-});
+    ).rejects.toThrow(NotFoundException)
+    expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
+  })
+})
 
-describe("ExercisesService.findOne", () => {
-  let exercisesService: ExercisesService;
-  let db: { query: { exercises: { findFirst: jest.Mock } } };
+describe('ExercisesService.findOne', () => {
+  let exercisesService: ExercisesService
+  let db: { query: { exercises: { findFirst: jest.Mock } } }
 
   beforeEach(async () => {
-    db = { query: { exercises: { findFirst: jest.fn() } } };
+    db = { query: { exercises: { findFirst: jest.fn() } } }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -354,26 +357,26 @@ describe("ExercisesService.findOne", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("throws NotFoundException when the exercise does not exist", async () => {
-    db.query.exercises.findFirst.mockResolvedValue(undefined);
+  it('throws NotFoundException when the exercise does not exist', async () => {
+    db.query.exercises.findFirst.mockResolvedValue(undefined)
 
     await expect(exercisesService.findOne(999)).rejects.toThrow(
       NotFoundException,
-    );
-  });
-});
+    )
+  })
+})
 
-describe("ExercisesService.findOneForDisplay", () => {
-  let exercisesService: ExercisesService;
-  let db: { query: { exercises: { findFirst: jest.Mock } } };
+describe('ExercisesService.findOneForDisplay', () => {
+  let exercisesService: ExercisesService
+  let db: { query: { exercises: { findFirst: jest.Mock } } }
 
   beforeEach(async () => {
-    db = { query: { exercises: { findFirst: jest.fn() } } };
+    db = { query: { exercises: { findFirst: jest.fn() } } }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -390,63 +393,63 @@ describe("ExercisesService.findOneForDisplay", () => {
           },
         },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("replaces mediaUrls with images, pairing each raw key with its signed url", async () => {
+  it('replaces mediaUrls with images, pairing each raw key with its signed url', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      name: "Wall Slide",
-      mediaUrls: ["a.jpg", "b.jpg"],
-    });
+      name: 'Wall Slide',
+      mediaUrls: ['a.jpg', 'b.jpg'],
+    })
 
-    const result = await exercisesService.findOneForDisplay(1);
+    const result = await exercisesService.findOneForDisplay(1)
 
     expect(result).toEqual({
       id: 1,
-      name: "Wall Slide",
+      name: 'Wall Slide',
       images: [
-        { objectKey: "a.jpg", url: "https://signed.example/a.jpg" },
-        { objectKey: "b.jpg", url: "https://signed.example/b.jpg" },
+        { objectKey: 'a.jpg', url: 'https://signed.example/a.jpg' },
+        { objectKey: 'b.jpg', url: 'https://signed.example/b.jpg' },
       ],
-    });
+    })
     // The REAL point of this test: raw object keys never reach a
     // client-facing response, only paired {objectKey, url} entries.
-    expect(result).not.toHaveProperty("mediaUrls");
-  });
+    expect(result).not.toHaveProperty('mediaUrls')
+  })
 
-  it("returns an empty images array, not an error, for an exercise with no photos yet", async () => {
+  it('returns an empty images array, not an error, for an exercise with no photos yet', async () => {
     db.query.exercises.findFirst.mockResolvedValue({
       id: 1,
-      name: "Wall Slide",
+      name: 'Wall Slide',
       mediaUrls: [],
-    });
+    })
 
-    const result = await exercisesService.findOneForDisplay(1);
+    const result = await exercisesService.findOneForDisplay(1)
 
-    expect(result).toEqual({ id: 1, name: "Wall Slide", images: [] });
-  });
+    expect(result).toEqual({ id: 1, name: 'Wall Slide', images: [] })
+  })
 
-  it("propagates NotFoundException from the underlying findOne, unchanged", async () => {
-    db.query.exercises.findFirst.mockResolvedValue(undefined);
+  it('propagates NotFoundException from the underlying findOne, unchanged', async () => {
+    db.query.exercises.findFirst.mockResolvedValue(undefined)
 
     await expect(exercisesService.findOneForDisplay(999)).rejects.toThrow(
       NotFoundException,
-    );
-  });
-});
+    )
+  })
+})
 
 // findAll's pagination math (offset/total/totalPages) was added later and
 // had no coverage at all — worth pinning down given it's genuine arithmetic,
 // not just a passthrough.
-describe("ExercisesService.findAll", () => {
-  let exercisesService: ExercisesService;
+describe('ExercisesService.findAll', () => {
+  let exercisesService: ExercisesService
   let db: {
-    query: { exercises: { findMany: jest.Mock } };
-    select: jest.Mock;
-  };
+    query: { exercises: { findMany: jest.Mock } }
+    select: jest.Mock
+  }
 
   beforeEach(async () => {
     db = {
@@ -460,7 +463,7 @@ describe("ExercisesService.findAll", () => {
           where: jest.fn().mockResolvedValue([{ total: 42 }]),
         }),
       }),
-    };
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -468,43 +471,43 @@ describe("ExercisesService.findAll", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: {} },
       ],
-    }).compile();
+    }).compile()
 
-    exercisesService = moduleRef.get(ExercisesService);
-  });
+    exercisesService = moduleRef.get(ExercisesService)
+  })
 
-  it("defaults to page 1 and limit 20, computing offset 0, when neither is provided", async () => {
-    const result = await exercisesService.findAll({});
+  it('defaults to page 1 and limit 20, computing offset 0, when neither is provided', async () => {
+    const result = await exercisesService.findAll({})
 
     expect(db.query.exercises.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 20, offset: 0 }),
-    );
+    )
     expect(result.data).toEqual([
       { id: 1, author: null },
       { id: 2, author: null },
-    ]);
+    ])
     expect(result.meta).toEqual({
       total: 42,
       page: 1,
       limit: 20,
       totalPages: 3,
-    });
-  });
+    })
+  })
 
-  it("computes the offset from the requested page and limit", async () => {
-    await exercisesService.findAll({ page: 3, limit: 10 });
+  it('computes the offset from the requested page and limit', async () => {
+    await exercisesService.findAll({ page: 3, limit: 10 })
 
     expect(db.query.exercises.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 10, offset: 20 }),
-    );
-  });
+    )
+  })
 
-  it("rounds totalPages up so a partial last page still counts as a page", async () => {
-    const result = await exercisesService.findAll({ page: 1, limit: 10 });
+  it('rounds totalPages up so a partial last page still counts as a page', async () => {
+    const result = await exercisesService.findAll({ page: 1, limit: 10 })
 
     // total: 42, limit: 10 -> 4.2 pages -> rounds up to 5
-    expect(result.meta.totalPages).toBe(5);
-  });
+    expect(result.meta.totalPages).toBe(5)
+  })
 
   // The two tests below cover the author-attachment LOGIC (the JS-side
   // batching and mapping) with mocks, same as the pagination math above —
@@ -515,23 +518,23 @@ describe("ExercisesService.findAll", () => {
   // That correctness is covered by real e2e tests against a live
   // database instead (test/exercises.e2e-spec.ts).
 
-  it("skips the author lookup entirely when no returned exercise has a creator", async () => {
+  it('skips the author lookup entirely when no returned exercise has a creator', async () => {
     // The shared beforeEach's fixture rows ({id:1}, {id:2}) have no
     // createdBy at all — this asserts that ACTUALLY skips the second
     // query, not just that it happens to resolve to null either way.
-    await exercisesService.findAll({});
+    await exercisesService.findAll({})
 
     // Called once for the total count, and that's it — a second call
     // would mean the author lookup fired even though nothing needed it.
-    expect(db.select).toHaveBeenCalledTimes(1);
-  });
+    expect(db.select).toHaveBeenCalledTimes(1)
+  })
 
-  it("attaches the correct author to each exercise, batching a single lookup for all creators on the page", async () => {
+  it('attaches the correct author to each exercise, batching a single lookup for all creators on the page', async () => {
     db.query.exercises.findMany.mockResolvedValueOnce([
       { id: 1, createdBy: 5 },
       { id: 2, createdBy: 6 },
       { id: 3, createdBy: null },
-    ]);
+    ])
 
     // First call to db.select() is the total-count query (unchanged from
     // the shared beforeEach's mock); the second is the NEW author-batch
@@ -548,22 +551,22 @@ describe("ExercisesService.findAll", () => {
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
           where: jest.fn().mockResolvedValue([
-            { id: 5, firstName: "Amy", lastName: "Lee" },
-            { id: 6, firstName: "Bo", lastName: "Ng" },
+            { id: 5, firstName: 'Amy', lastName: 'Lee' },
+            { id: 6, firstName: 'Bo', lastName: 'Ng' },
           ]),
         }),
-      });
+      })
 
-    const result = await exercisesService.findAll({});
+    const result = await exercisesService.findAll({})
 
     expect(result.data).toEqual([
-      { id: 1, createdBy: 5, author: { firstName: "Amy", lastName: "Lee" } },
-      { id: 2, createdBy: 6, author: { firstName: "Bo", lastName: "Ng" } },
+      { id: 1, createdBy: 5, author: { firstName: 'Amy', lastName: 'Lee' } },
+      { id: 2, createdBy: 6, author: { firstName: 'Bo', lastName: 'Ng' } },
       { id: 3, createdBy: null, author: null },
-    ]);
+    ])
     // Exactly two db.select calls (total + one BATCHED author lookup) —
     // not three, which would mean a separate query per creator instead
     // of the single inArray(...) lookup this is supposed to be.
-    expect(db.select).toHaveBeenCalledTimes(2);
-  });
-});
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+})

@@ -257,17 +257,13 @@ describe('SessionsService.create', () => {
       constraint: 'session_exercises_session_id_sessions_id_fk',
     })
     db.insert.mockImplementation(() => ({
-      values: jest
-        .fn()
-        .mockImplementation((values: Record<string, unknown>) =>
-          values.status === 'pending'
-            ? {
-                returning: jest
-                  .fn()
-                  .mockResolvedValue([{ id: 500, ...values }]),
-              }
-            : Promise.reject(other),
-        ),
+      values: jest.fn().mockImplementation((values: Record<string, unknown>) =>
+        values.status === 'pending'
+          ? {
+              returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+            }
+          : Promise.reject(other),
+      ),
     }))
 
     await expect(

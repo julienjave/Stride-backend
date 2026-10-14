@@ -26,14 +26,14 @@ import {
   MaxLength,
   Min,
   ValidateIf,
-} from "class-validator";
-import { hasStartedWeight } from "../../common/validators/has-started-weight";
+} from 'class-validator'
+import { hasStartedWeight } from '../../common/validators/has-started-weight'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class AddTemplateExerciseDto {
   @IsInt()
-  exerciseId!: number;
+  exerciseId!: number
 
   // Which of the template's workouts the exercise goes into. Optional:
   // without it, the FIRST workout (resolveWorkoutId) — so the current
@@ -41,24 +41,24 @@ export class AddTemplateExerciseDto {
   // The service checks it's a workout of THIS template (404 otherwise).
   @IsOptional()
   @IsInt()
-  workoutId?: number | null;
+  workoutId?: number | null
 
   // Deliberately all nullable — a timed hold has no reps; a rep-based
   // exercise has no duration. Same reasoning as the schema's own columns.
   @IsOptional()
   @IsInt()
   @Min(1)
-  sets?: number;
+  sets?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  reps?: number;
+  reps?: number
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  durationInSeconds?: number;
+  durationInSeconds?: number
 
   // weight and weightUnit are each optional independently, but the
   // moment EITHER is provided, both become required together — see
@@ -68,18 +68,18 @@ export class AddTemplateExerciseDto {
   @ValidateIf(hasStartedWeight)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  weight?: number;
+  weight?: number
 
   @ValidateIf(hasStartedWeight)
-  @IsIn(["kg", "lbs"])
-  weightUnit?: "kg" | "lbs";
+  @IsIn(['kg', 'lbs'])
+  weightUnit?: 'kg' | 'lbs'
 
   @IsInt()
   @Min(0)
-  sortOrder!: number;
+  sortOrder!: number
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
-  notes?: string;
+  notes?: string
 }

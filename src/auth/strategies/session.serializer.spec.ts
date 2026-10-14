@@ -49,14 +49,17 @@ describe('SessionSerializer.deserializeUser', () => {
   // change but had no test at all until now: a role revoked mid-session
   // (still isActive, just no longer holding the role stored in THIS
   // session) should be rejected the same way.
-  it('rejects deserialization when the session\'s stored role is no longer held', async () => {
+  it("rejects deserialization when the session's stored role is no longer held", async () => {
     usersService.findOne.mockResolvedValue({
       id: 1,
       isActive: true,
       roles: [UserRole.PATIENT],
     })
 
-    const result = await deserialize({ id: 1, activeRole: UserRole.PRACTITIONER })
+    const result = await deserialize({
+      id: 1,
+      activeRole: UserRole.PRACTITIONER,
+    })
 
     expect(result).toBe(false)
   })
@@ -69,7 +72,10 @@ describe('SessionSerializer.deserializeUser', () => {
       roles: [UserRole.PATIENT, UserRole.PRACTITIONER],
     })
 
-    const result = await deserialize({ id: 1, activeRole: UserRole.PRACTITIONER })
+    const result = await deserialize({
+      id: 1,
+      activeRole: UserRole.PRACTITIONER,
+    })
 
     expect(result).toEqual({
       id: 1,

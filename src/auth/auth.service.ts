@@ -340,10 +340,7 @@ export class AuthService {
     // toPublic() — passwordResetTokenHash/ExpiresAt leaked from login for
     // a while. Sharing the one function removes that whole class of bug.)
     const publicUser = await this.usersService.toPublic(user)
-    const withProfile = await this.usersService.attachProfile(
-      publicUser,
-      roles,
-    )
+    const withProfile = await this.usersService.attachProfile(publicUser, roles)
     return { ...withProfile, roles, activeRole }
   }
 

@@ -1,4 +1,7 @@
-import { THROTTLER_LIMIT, THROTTLER_TTL } from '@nestjs/throttler/dist/throttler.constants'
+import {
+  THROTTLER_LIMIT,
+  THROTTLER_TTL,
+} from '@nestjs/throttler/dist/throttler.constants'
 import { AuthController } from './auth.controller'
 
 // Pins the fix: mfa/enable and mfa/disable used to fall back to the global
@@ -11,8 +14,10 @@ import { AuthController } from './auth.controller'
 // without spending any of that budget.
 describe('AuthController MFA route throttling', () => {
   const readThrottle = (fn: (...args: never[]) => unknown) => ({
-    limit: Reflect.getMetadata(THROTTLER_LIMIT + 'default', fn) as number | undefined,
-    ttl: Reflect.getMetadata(THROTTLER_TTL + 'default', fn) as number | undefined,
+    limit: Reflect.getMetadata(THROTTLER_LIMIT + 'default', fn) as
+      number | undefined,
+    ttl: Reflect.getMetadata(THROTTLER_TTL + 'default', fn) as
+      number | undefined,
   })
 
   it('applies the same throttle to mfa/enable and mfa/disable as mfa/verify', () => {
@@ -20,7 +25,11 @@ describe('AuthController MFA route throttling', () => {
     expect(verifyThrottle.limit).toBe(5)
     expect(verifyThrottle.ttl).toBeDefined()
 
-    expect(readThrottle(AuthController.prototype.enableMfa)).toEqual(verifyThrottle)
-    expect(readThrottle(AuthController.prototype.disableMfa)).toEqual(verifyThrottle)
+    expect(readThrottle(AuthController.prototype.enableMfa)).toEqual(
+      verifyThrottle,
+    )
+    expect(readThrottle(AuthController.prototype.disableMfa)).toEqual(
+      verifyThrottle,
+    )
   })
 })

@@ -72,9 +72,14 @@ describe('ClinicsService.addMember', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -179,9 +184,14 @@ describe('ClinicsService.findOne', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -216,9 +226,14 @@ describe('ClinicsService.create', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -230,7 +245,9 @@ describe('ClinicsService.create', () => {
     const values = jest.fn().mockReturnValue({
       returning: jest
         .fn()
-        .mockResolvedValue([{ id: 1, name: 'Acme Clinic', email: 'acme@example.com' }]),
+        .mockResolvedValue([
+          { id: 1, name: 'Acme Clinic', email: 'acme@example.com' },
+        ]),
     })
     db.insert.mockReturnValue({ values })
 
@@ -239,7 +256,10 @@ describe('ClinicsService.create', () => {
       email: 'acme@example.com',
     })
 
-    expect(values).toHaveBeenCalledWith({ name: 'Acme Clinic', email: 'acme@example.com' })
+    expect(values).toHaveBeenCalledWith({
+      name: 'Acme Clinic',
+      email: 'acme@example.com',
+    })
     expect(result).toEqual({
       id: 1,
       name: 'Acme Clinic',
@@ -303,9 +323,14 @@ describe('ClinicsService.findAll', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -372,9 +397,14 @@ describe('ClinicsService.update', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -395,12 +425,16 @@ describe('ClinicsService.update', () => {
     db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic' })
     const set = jest.fn().mockReturnValue({
       where: jest.fn().mockReturnValue({
-        returning: jest.fn().mockResolvedValue([{ id: 1, name: 'Renamed Clinic' }]),
+        returning: jest
+          .fn()
+          .mockResolvedValue([{ id: 1, name: 'Renamed Clinic' }]),
       }),
     })
     db.update.mockReturnValue({ set })
 
-    const result = await clinicsService.update(1, adminUser, { name: 'Renamed Clinic' })
+    const result = await clinicsService.update(1, adminUser, {
+      name: 'Renamed Clinic',
+    })
 
     expect(set).toHaveBeenCalledWith({ name: 'Renamed Clinic' })
     expect(result).toEqual({ id: 1, name: 'Renamed Clinic', logoUrl: null })
@@ -409,7 +443,11 @@ describe('ClinicsService.update', () => {
 
 describe('ClinicsService.updateLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { upload: jest.Mock; deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: {
+    upload: jest.Mock
+    deleteUnreferenced: jest.Mock
+    getPresignedUrlOrNull: jest.Mock
+  }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -423,7 +461,9 @@ describe('ClinicsService.updateLogo', () => {
       deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest
         .fn()
-        .mockResolvedValue('https://storage.example.com/signed/clinics/1/logo-123.png'),
+        .mockResolvedValue(
+          'https://storage.example.com/signed/clinics/1/logo-123.png',
+        ),
     }
     db = {
       query: { clinics: { findFirst: jest.fn() } },
@@ -440,7 +480,10 @@ describe('ClinicsService.updateLogo', () => {
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -521,7 +564,9 @@ describe('ClinicsService.updateLogo', () => {
       buffer: Buffer.from('fake-logo'),
     } as Express.Multer.File)
 
-    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith(
+      'clinics/1/logo-OLD.png',
+    )
     // Deleted AFTER the new file was uploaded and the DB pointed at it —
     // never before, so a failure partway through this method can't leave
     // the clinic pointing at an already-deleted file. invocationCallOrder
@@ -536,11 +581,17 @@ describe('ClinicsService.updateLogo', () => {
   })
 
   it('does not touch storage.delete when the clinic had no prior logo', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', logoPath: null })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      logoPath: null,
+    })
     db.update.mockReturnValue({
       set: () => ({
         where: () => ({
-          returning: jest.fn().mockResolvedValue([{ id: 1, logoPath: 'clinics/1/logo-NEW.png' }]),
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 1, logoPath: 'clinics/1/logo-NEW.png' }]),
         }),
       }),
     })
@@ -556,7 +607,10 @@ describe('ClinicsService.updateLogo', () => {
 
 describe('ClinicsService.removeLogo', () => {
   let clinicsService: ClinicsService
-  let storageService: { deleteUnreferenced: jest.Mock; getPresignedUrlOrNull: jest.Mock }
+  let storageService: {
+    deleteUnreferenced: jest.Mock
+    getPresignedUrlOrNull: jest.Mock
+  }
   let db: {
     query: { clinics: { findFirst: jest.Mock } }
     update: jest.Mock
@@ -581,7 +635,10 @@ describe('ClinicsService.removeLogo', () => {
         ClinicsService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -615,7 +672,9 @@ describe('ClinicsService.removeLogo', () => {
     const result = await clinicsService.removeLogo(1, adminUser)
 
     expect(set).toHaveBeenCalledWith({ logoPath: null })
-    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith('clinics/1/logo-OLD.png')
+    expect(storageService.deleteUnreferenced).toHaveBeenCalledWith(
+      'clinics/1/logo-OLD.png',
+    )
     // The DB update happens before the storage delete — same ordering
     // rule as updateLogo(), for the same reason: a failed storage delete
     // should leave an orphaned file, never a clinic still pointing at
@@ -627,7 +686,11 @@ describe('ClinicsService.removeLogo', () => {
   })
 
   it('is idempotent — succeeds without touching storage.delete when there was no logo to begin with', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', logoPath: null })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      logoPath: null,
+    })
     db.update.mockReturnValue({
       set: () => ({
         where: () => ({
@@ -656,9 +719,14 @@ describe('ClinicsService.exists', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -701,9 +769,14 @@ describe('ClinicsService.listMembers', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -714,7 +787,9 @@ describe('ClinicsService.listMembers', () => {
   it('throws NotFoundException when the clinic does not exist, without querying members', async () => {
     db.query.clinics.findFirst.mockResolvedValue(undefined)
 
-    await expect(clinicsService.listMembers(999)).rejects.toThrow(NotFoundException)
+    await expect(clinicsService.listMembers(999)).rejects.toThrow(
+      NotFoundException,
+    )
     expect(db.select).not.toHaveBeenCalled()
   })
 
@@ -732,7 +807,12 @@ describe('ClinicsService.listMembers', () => {
             where: jest
               .fn()
               .mockResolvedValue([
-                { id: 10, email: 'member@example.com', firstName: 'Mem', lastName: 'Ber' },
+                {
+                  id: 10,
+                  email: 'member@example.com',
+                  firstName: 'Mem',
+                  lastName: 'Ber',
+                },
               ]),
           }),
         }),
@@ -783,9 +863,14 @@ describe('ClinicsService.deactivate', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -803,7 +888,11 @@ describe('ClinicsService.deactivate', () => {
   })
 
   it('sets isActive to false and returns the deactivated clinic', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+    })
     const set = jest.fn().mockReturnValue({
       where: jest.fn().mockReturnValue({
         returning: jest.fn().mockResolvedValue([{ id: 1, isActive: false }]),
@@ -843,7 +932,9 @@ describe('ClinicsService.reactivate', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: CareTeamService, useValue: careTeamStub() },
@@ -863,10 +954,16 @@ describe('ClinicsService.reactivate', () => {
   })
 
   it('sets isActive back to true on the SAME row and returns the reactivated clinic', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: false })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: false,
+    })
     const set = jest.fn().mockReturnValue({
       where: jest.fn().mockReturnValue({
-        returning: jest.fn().mockResolvedValue([{ id: 1, name: 'Acme Clinic', isActive: true }]),
+        returning: jest
+          .fn()
+          .mockResolvedValue([{ id: 1, name: 'Acme Clinic', isActive: true }]),
       }),
     })
     db.update.mockReturnValue({ set })
@@ -874,7 +971,12 @@ describe('ClinicsService.reactivate', () => {
     const result = await clinicsService.reactivate(1, adminUser)
 
     expect(set).toHaveBeenCalledWith({ isActive: true })
-    expect(result).toEqual({ id: 1, name: 'Acme Clinic', isActive: true, logoUrl: null })
+    expect(result).toEqual({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+      logoUrl: null,
+    })
   })
 
   it('audit-logs the reactivation, naming who performed it and which clinic was affected', async () => {
@@ -926,9 +1028,14 @@ describe('ClinicsService.removeMember', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: StorageService,
-          useValue: { getPresignedUrlOrNull: jest.fn().mockResolvedValue(null) },
+          useValue: {
+            getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
+          },
         },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: CareTeamService, useValue: careTeamStub() },
       ],
     }).compile()
@@ -948,7 +1055,11 @@ describe('ClinicsService.removeMember', () => {
   })
 
   it('deletes the membership row for the given clinic and user', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+    })
     const where = jest.fn().mockResolvedValue(undefined)
     db.delete.mockReturnValue({ where })
 
@@ -962,7 +1073,11 @@ describe('ClinicsService.removeMember', () => {
   // without this, a future userClinics RLS policy would silently see no
   // session context and block or misjudge the delete.
   it('sets the RLS session context from the given currentUser before deleting', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+    })
     const where = jest.fn().mockResolvedValue(undefined)
     db.delete.mockReturnValue({ where })
 
@@ -982,7 +1097,11 @@ describe('ClinicsService.removeMember', () => {
   // tx object), after the delete (so the shared-clinic check sees the
   // membership gone), and each one is audited once committed.
   it('ends the care-team links left without a shared clinic, in the same transaction, and audits each', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+    })
     const where = jest.fn().mockResolvedValue(undefined)
     db.delete.mockReturnValue({ where })
     careTeam.endLinksWithoutSharedClinic.mockResolvedValue([
@@ -1034,7 +1153,11 @@ describe('ClinicsService.removeMember', () => {
   })
 
   it('writes no care-team audit entry when no link had to end', async () => {
-    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic', isActive: true })
+    db.query.clinics.findFirst.mockResolvedValue({
+      id: 1,
+      name: 'Acme Clinic',
+      isActive: true,
+    })
     db.delete.mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) })
 
     await clinicsService.removeMember(1, 10, adminUser)

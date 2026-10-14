@@ -24,24 +24,24 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
-import { and, count, eq, inArray } from "drizzle-orm";
-import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
+} from '@nestjs/common'
+import { and, count, eq, inArray } from 'drizzle-orm'
+import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   programTemplates,
   templateExercises,
   templateWorkouts,
   exercises,
-} from "../database/schema";
-import { CreateTemplateDto } from "./dto/create-template.dto";
-import { TITLE_MAX_LENGTH } from "../common/validators/title";
-import { UpdateTemplateDto } from "./dto/update-template.dto";
-import { AddTemplateExerciseDto } from "./dto/add-template-exercise.dto";
-import { UpdateTemplateExerciseDto } from "./dto/update-template-exercise.dto";
-import { AddWorkoutDto } from "./dto/add-workout.dto";
-import { RenameWorkoutDto } from "./dto/rename-workout.dto";
-import { UserRole } from "../users/dto/create-user.dto";
-import { withRlsContext } from "../database/rls-context";
+} from '../database/schema'
+import { CreateTemplateDto } from './dto/create-template.dto'
+import { TITLE_MAX_LENGTH } from '../common/validators/title'
+import { UpdateTemplateDto } from './dto/update-template.dto'
+import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
+import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
+import { AddWorkoutDto } from './dto/add-workout.dto'
+import { RenameWorkoutDto } from './dto/rename-workout.dto'
+import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 import {
   assertCanAddWorkout,
   assertWorkoutRemovable,
@@ -51,18 +51,18 @@ import {
   orderWorkouts,
   resolveWorkoutId,
   workoutLabel,
-} from "../common/workout-rules";
+} from '../common/workout-rules'
 import {
   isForeignKeyViolation,
   TEMPLATE_EXERCISES_WORKOUT_FK,
-} from "../database/pg-errors";
+} from '../database/pg-errors'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: UserRole };
+type CurrentUser = { id: number; activeRole: UserRole }
 
 // Prepended to a duplicated template's title — see buildDuplicateTitle.
-const DUPLICATE_TITLE_PREFIX = "Copy of ";
+const DUPLICATE_TITLE_PREFIX = 'Copy of '
 
 @Injectable()
 export class ProgramsService {
@@ -91,12 +91,12 @@ export class ProgramsService {
           title: dto.title,
           description: dto.description,
         })
-        .returning();
+        .returning()
       await tx
         .insert(templateWorkouts)
-        .values({ templateId: template.id, sortOrder: 0 });
-      return template;
-    });
+        .values({ templateId: template.id, sortOrder: 0 })
+      return template
+    })
   }
 
   async addExercise(
@@ -104,25 +104,25 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: AddTemplateExerciseDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
 
     // exercises' SELECT policy is USING (true) — unconditional, no
     // session setting involved — so this existence check stays on the
     // plain connection, same as findTemplateOrThrow below.
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, dto.exerciseId),
-    });
+    })
     if (!exercise) {
-      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`);
+      throw new NotFoundException(`Exercise ${dto.exerciseId} not found`)
     }
     // Which workout: the one asked for (it must be one of THIS template's),
     // or the first. See resolveWorkoutId.
     const workoutId = resolveWorkoutId(
       dto.workoutId,
       await this.findWorkouts(this.db, templateId),
-      "template",
-    );
+      'template',
+    )
 
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
@@ -140,13 +140,13 @@ export class ProgramsService {
           notes: dto.notes,
         })
         .returning(),
-    );
+    )
     // Returns the FULL enriched template, not just the one inserted row
     // — matches reorderExercises' own existing convention (see its
     // final line), and gives the frontend everything it needs to
     // re-render the whole card list after adding one, not just the new
     // card in isolation.
-    return this.findOne(templateId);
+    return this.findOne(templateId)
   }
 
   // Reorders the exercises of ONE workout (`workoutId`, or the first one
@@ -159,8 +159,8 @@ export class ProgramsService {
     newOrder: number[],
     requestedWorkoutId?: number | null,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
 
     // Read, permutation-check, and write all happen inside ONE transaction
     // (tx.query instead of this.db.query) — this used to read currentRows
@@ -192,14 +192,14 @@ export class ProgramsService {
       const workoutId = resolveWorkoutId(
         requestedWorkoutId,
         await this.findWorkouts(tx, templateId),
-        "template",
-      );
+        'template',
+      )
       const currentRows = await tx.query.templateExercises.findMany({
         where: and(
           eq(templateExercises.templateId, templateId),
           eq(templateExercises.workoutId, workoutId),
         ),
-      });
+      })
       // A genuine permutation check needs THREE conditions together — the
       // previous version only compared deduplicated Set sizes, which a
       // client could satisfy by submitting a newOrder array containing a
@@ -219,19 +219,19 @@ export class ProgramsService {
         )
       ) {
         throw new BadRequestException(
-          "The new order must contain exactly the exercises currently in this workout, just reordered",
-        );
+          'The new order must contain exactly the exercises currently in this workout, just reordered',
+        )
       }
 
       for (const [index, templateExerciseId] of newOrder.entries()) {
         await tx
           .update(templateExercises)
           .set({ sortOrder: index })
-          .where(eq(templateExercises.id, templateExerciseId));
+          .where(eq(templateExercises.id, templateExerciseId))
       }
-    });
+    })
 
-    return this.findOne(templateId);
+    return this.findOne(templateId)
   }
 
   // Copies a template AND all of its exercise rows into a brand-new
@@ -242,15 +242,15 @@ export class ProgramsService {
   // needs no permission check for the same reason: program_templates_select
   // and template_exercises_select are both USING (true).
   async duplicate(sourceId: number, currentUser: CurrentUser) {
-    const source = await this.findTemplateOrThrow(sourceId);
+    const source = await this.findTemplateOrThrow(sourceId)
     // An archived template is "deleted" as far as the app is concerned —
     // still viewable by direct URL, but never something to build new
     // content from. Without this, a bookmark to a deleted template would
     // be a back door to bring its content back into circulation.
     if (source.isArchived) {
       throw new BadRequestException(
-        "Archived program templates cannot be duplicated",
-      );
+        'Archived program templates cannot be duplicated',
+      )
     }
 
     // ONE transaction for both inserts, for two separate reasons:
@@ -278,7 +278,7 @@ export class ProgramsService {
             title: this.buildDuplicateTitle(source.title),
             description: source.description,
           })
-          .returning();
+          .returning()
 
         // The workouts first, in order, remembering which new workout each
         // old one became: the exercises below must point at the COPY's
@@ -287,7 +287,7 @@ export class ProgramsService {
         // for all: a multi-row INSERT … RETURNING doesn't promise to return
         // rows in the order they were given, and the mapping relies on
         // order. A template has at most MAX_WORKOUTS, so this stays cheap.
-        const newWorkoutIds = new Map<number, number>();
+        const newWorkoutIds = new Map<number, number>()
         for (const workout of orderWorkouts(
           await this.findWorkouts(tx, sourceId),
         )) {
@@ -298,14 +298,14 @@ export class ProgramsService {
               name: workout.name,
               sortOrder: workout.sortOrder,
             })
-            .returning();
-          newWorkoutIds.set(workout.id, copiedWorkout.id);
+            .returning()
+          newWorkoutIds.set(workout.id, copiedWorkout.id)
         }
 
         const sourceRows = await tx.query.templateExercises.findMany({
           where: eq(templateExercises.templateId, sourceId),
           orderBy: (te, { asc: ascend }) => [ascend(te.sortOrder)],
-        });
+        })
 
         // Drizzle throws on .values([]) — an INSERT with zero rows isn't
         // valid SQL — so a template with no exercises yet has to skip
@@ -334,18 +334,18 @@ export class ProgramsService {
               // source's workouts (foreign key), all copied just above.
               workoutId: newWorkoutIds.get(copyable.workoutId)!,
             })),
-          );
+          )
         }
 
-        return copy.id;
+        return copy.id
       },
-    );
+    )
 
     // Same "always return the full enriched template" convention as
     // every other write on this controller — here it also happens to be
     // exactly what the frontend needs to render the new copy's page
     // immediately, without a second request.
-    return this.findOne(newTemplateId);
+    return this.findOne(newTemplateId)
   }
 
   // --- GET ROUTES ---
@@ -357,7 +357,7 @@ export class ProgramsService {
   async findAll() {
     return this.db.query.programTemplates.findMany({
       where: eq(programTemplates.isArchived, false),
-    });
+    })
   }
 
   // The template with its `workouts` (in order: A first) and its
@@ -366,38 +366,38 @@ export class ProgramsService {
   // workouts yet keep listing every exercise, and those that do group the
   // list by workoutId.
   async findOne(id: number) {
-    const template = await this.findTemplateOrThrow(id);
-    const workouts = orderWorkouts(await this.findWorkouts(this.db, id));
+    const template = await this.findTemplateOrThrow(id)
+    const workouts = orderWorkouts(await this.findWorkouts(this.db, id))
     const exerciseRows = await this.db.query.templateExercises.findMany({
       where: eq(templateExercises.templateId, id),
-    });
+    })
     return {
       ...template,
       workouts,
       exercises: await this.withExerciseDetails(
         orderExercisesByWorkout(exerciseRows, workouts),
       ),
-    };
+    }
   }
 
   // --- PATCH ROUTES ---
 
   async update(id: number, currentUser: CurrentUser, dto: UpdateTemplateDto) {
-    const template = await this.findTemplateOrThrow(id);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(id)
+    this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set(dto)
         .where(eq(programTemplates.id, id))
         .returning(),
-    );
+    )
     // Returns the FULL enriched template, not the bare updated row — the
     // same consistency fix updateExercise needed. The frontend writes
     // this response straight into the template's cache entry; a bare
     // row has no `exercises` array, so the exercise list rendered on the
     // same page as the title would vanish right after renaming it.
-    return this.findOne(id);
+    return this.findOne(id)
   }
 
   async updateExercise(
@@ -406,15 +406,15 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: UpdateTemplateExerciseDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
     const row = await this.findTemplateExerciseOrThrow(
       templateId,
       templateExerciseId,
-    );
+    )
 
     await withRlsContext(this.db, currentUser, async (tx) => {
-      const changes = { ...dto };
+      const changes = { ...dto }
       // Moving the exercise to another workout: it must be one of this
       // template's (404 otherwise), and — unless the request also says where
       // — it goes to the END of that workout's list, rather than keeping a
@@ -423,20 +423,17 @@ export class ProgramsService {
         resolveWorkoutId(
           dto.workoutId,
           await this.findWorkouts(tx, templateId),
-          "template",
-        );
+          'template',
+        )
         if (dto.sortOrder === undefined) {
-          changes.sortOrder = await this.nextExercisePosition(
-            tx,
-            dto.workoutId,
-          );
+          changes.sortOrder = await this.nextExercisePosition(tx, dto.workoutId)
         }
       }
       await tx
         .update(templateExercises)
         .set(changes)
-        .where(eq(templateExercises.id, templateExerciseId));
-    });
+        .where(eq(templateExercises.id, templateExerciseId))
+    })
     // Returns the FULL enriched template, not just the bare updated row
     // — matches addExercise/removeExercise/reorderExercises' own
     // convention (see addExercise's comment for the original reasoning).
@@ -445,7 +442,7 @@ export class ProgramsService {
     // this specific endpoint yet — the gap only became visible once the
     // View/Edit screen actually needed the exercise's name/muscles/
     // photos back in the response after a save.
-    return this.findOne(templateId);
+    return this.findOne(templateId)
   }
 
   // --- WORKOUTS ---
@@ -468,21 +465,21 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: AddWorkoutDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, async (tx) => {
-      await this.lockTemplate(tx, templateId);
-      const workouts = await this.findWorkouts(tx, templateId);
-      assertCanAddWorkout(workouts.length);
+      await this.lockTemplate(tx, templateId)
+      const workouts = await this.findWorkouts(tx, templateId)
+      assertCanAddWorkout(workouts.length)
       await tx.insert(templateWorkouts).values({
         templateId,
         name: normalizeWorkoutName(dto.name),
         // After the last one. (max + 1, not length: positions can have gaps
         // after a delete, and `length` could repeat one that's in use.)
         sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
-      });
-    });
-    return this.findOne(templateId);
+      })
+    })
+    return this.findOne(templateId)
   }
 
   async renameWorkout(
@@ -491,20 +488,20 @@ export class ProgramsService {
     currentUser: CurrentUser,
     dto: RenameWorkoutDto,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, async (tx) => {
       resolveWorkoutId(
         workoutId,
         await this.findWorkouts(tx, templateId),
-        "template",
-      );
+        'template',
+      )
       await tx
         .update(templateWorkouts)
         .set({ name: normalizeWorkoutName(dto.name) })
-        .where(eq(templateWorkouts.id, workoutId));
-    });
-    return this.findOne(templateId);
+        .where(eq(templateWorkouts.id, workoutId))
+    })
+    return this.findOne(templateId)
   }
 
   // The complete new order of the template's workouts: the first id
@@ -515,10 +512,10 @@ export class ProgramsService {
     currentUser: CurrentUser,
     newOrder: number[],
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, async (tx) => {
-      const workouts = await this.findWorkouts(tx, templateId);
+      const workouts = await this.findWorkouts(tx, templateId)
       if (
         !isPermutationOf(
           newOrder,
@@ -526,17 +523,17 @@ export class ProgramsService {
         )
       ) {
         throw new BadRequestException(
-          "The new order must contain exactly the workouts currently in this template, just reordered",
-        );
+          'The new order must contain exactly the workouts currently in this template, just reordered',
+        )
       }
       for (const [index, workoutId] of newOrder.entries()) {
         await tx
           .update(templateWorkouts)
           .set({ sortOrder: index })
-          .where(eq(templateWorkouts.id, workoutId));
+          .where(eq(templateWorkouts.id, workoutId))
       }
-    });
-    return this.findOne(templateId);
+    })
+    return this.findOne(templateId)
   }
 
   // Only an EMPTY workout, and never the last (assertWorkoutRemovable).
@@ -545,26 +542,26 @@ export class ProgramsService {
     workoutId: number,
     currentUser: CurrentUser,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
-        await this.lockTemplate(tx, templateId);
-        const workouts = orderWorkouts(await this.findWorkouts(tx, templateId));
-        resolveWorkoutId(workoutId, workouts, "template");
+        await this.lockTemplate(tx, templateId)
+        const workouts = orderWorkouts(await this.findWorkouts(tx, templateId))
+        resolveWorkoutId(workoutId, workouts, 'template')
         const [{ exerciseCount }] = await tx
           .select({ exerciseCount: count() })
           .from(templateExercises)
-          .where(eq(templateExercises.workoutId, workoutId));
+          .where(eq(templateExercises.workoutId, workoutId))
         assertWorkoutRemovable({
           label: workoutLabel(workouts.findIndex((w) => w.id === workoutId)),
           workoutCount: workouts.length,
           exerciseCount,
-        });
+        })
         await tx
           .delete(templateWorkouts)
-          .where(eq(templateWorkouts.id, workoutId));
-      });
+          .where(eq(templateWorkouts.id, workoutId))
+      })
     } catch (error) {
       // An exercise added to this workout between the count above and the
       // DELETE (adding an exercise doesn't take the template's lock): the
@@ -572,30 +569,30 @@ export class ProgramsService {
       // Same answer as the count would have given.
       if (isForeignKeyViolation(error, TEMPLATE_EXERCISES_WORKOUT_FK)) {
         throw new ConflictException(
-          "This workout still has exercises: move or remove them first",
-        );
+          'This workout still has exercises: move or remove them first',
+        )
       }
-      throw error;
+      throw error
     }
-    return this.findOne(templateId);
+    return this.findOne(templateId)
   }
 
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: CurrentUser) {
-    const template = await this.findTemplateOrThrow(id);
-    this.assertCanModify(template, currentUser);
+    const template = await this.findTemplateOrThrow(id)
+    this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(programTemplates)
         .set({ isArchived: true })
         .where(eq(programTemplates.id, id))
         .returning(),
-    );
+    )
     // Same convention as update() above. findOne() doesn't filter on
     // isArchived, so this still finds the row it just archived — and the
     // response now carries isArchived: true alongside the exercises.
-    return this.findOne(id);
+    return this.findOne(id)
   }
 
   async removeExercise(
@@ -603,19 +600,19 @@ export class ProgramsService {
     templateExerciseId: number,
     currentUser: CurrentUser,
   ) {
-    const template = await this.findTemplateOrThrow(templateId);
-    this.assertCanModify(template, currentUser);
-    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId);
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
+    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
     await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .delete(templateExercises)
         .where(eq(templateExercises.id, templateExerciseId)),
-    );
+    )
     // Same reasoning as addExercise's own change — the frontend needs
     // the post-removal state to re-render the list, not just a bare
     // success signal.
-    return this.findOne(templateId);
+    return this.findOne(templateId)
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -631,8 +628,8 @@ export class ProgramsService {
   // unit: a plain .slice() on the string could cut an emoji (two code
   // units) in half, leaving a broken, unpaired half-character at the end.
   private buildDuplicateTitle(title: string) {
-    const room = TITLE_MAX_LENGTH - DUPLICATE_TITLE_PREFIX.length;
-    return DUPLICATE_TITLE_PREFIX + Array.from(title).slice(0, room).join("");
+    const room = TITLE_MAX_LENGTH - DUPLICATE_TITLE_PREFIX.length
+    return DUPLICATE_TITLE_PREFIX + Array.from(title).slice(0, room).join('')
   }
 
   // A template's workouts, in no particular order (callers that need the
@@ -643,7 +640,7 @@ export class ProgramsService {
   private async findWorkouts(executor: DrizzleDb, templateId: number) {
     return executor.query.templateWorkouts.findMany({
       where: eq(templateWorkouts.templateId, templateId),
-    });
+    })
   }
 
   // SELECT … FOR UPDATE on the template's row: holds a row lock until the
@@ -660,7 +657,7 @@ export class ProgramsService {
       .select({ id: programTemplates.id })
       .from(programTemplates)
       .where(eq(programTemplates.id, templateId))
-      .for("update");
+      .for('update')
   }
 
   // The position after the last exercise of a workout (0 for an empty one).
@@ -668,18 +665,18 @@ export class ProgramsService {
     const rows = await tx
       .select({ sortOrder: templateExercises.sortOrder })
       .from(templateExercises)
-      .where(eq(templateExercises.workoutId, workoutId));
-    return Math.max(-1, ...rows.map((r) => r.sortOrder)) + 1;
+      .where(eq(templateExercises.workoutId, workoutId))
+    return Math.max(-1, ...rows.map((r) => r.sortOrder)) + 1
   }
 
   private async findTemplateOrThrow(id: number) {
     const template = await this.db.query.programTemplates.findFirst({
       where: eq(programTemplates.id, id),
-    });
+    })
     if (!template) {
-      throw new NotFoundException(`Program template ${id} not found`);
+      throw new NotFoundException(`Program template ${id} not found`)
     }
-    return template;
+    return template
   }
 
   // Confirms a template_exercises row genuinely belongs to the template in
@@ -697,25 +694,25 @@ export class ProgramsService {
         eq(templateExercises.id, templateExerciseId),
         eq(templateExercises.templateId, templateId),
       ),
-    });
+    })
     if (!row) {
       throw new NotFoundException(
         `Exercise ${templateExerciseId} not found in this template`,
-      );
+      )
     }
-    return row;
+    return row
   }
 
   private assertCanModify(
     template: typeof programTemplates.$inferSelect,
     currentUser: CurrentUser,
   ) {
-    const isAdmin = currentUser.activeRole === UserRole.ADMIN;
-    const isOwner = template.practitionerId === currentUser.id;
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
+    const isOwner = template.practitionerId === currentUser.id
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException(
-        "You can only modify program templates you created, unless you are an administrator",
-      );
+        'You can only modify program templates you created, unless you are an administrator',
+      )
     }
   }
 
@@ -739,13 +736,13 @@ export class ProgramsService {
   private async withExerciseDetails(
     rows: (typeof templateExercises.$inferSelect)[],
   ) {
-    const exerciseIds = [...new Set(rows.map((row) => row.exerciseId))];
+    const exerciseIds = [...new Set(rows.map((row) => row.exerciseId))]
     const exerciseRows =
       exerciseIds.length > 0
         ? await this.db.query.exercises.findMany({
             where: inArray(exercises.id, exerciseIds),
           })
-        : [];
+        : []
     const exercisesById = new Map(
       exerciseRows.map((exercise) => [
         exercise.id,
@@ -755,10 +752,10 @@ export class ProgramsService {
           primaryMuscles: exercise.primaryMuscles,
         },
       ]),
-    );
+    )
     return rows.map((row) => ({
       ...row,
       exercise: exercisesById.get(row.exerciseId) ?? null,
-    }));
+    }))
   }
 }

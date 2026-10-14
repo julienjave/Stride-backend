@@ -16,11 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { ConflictException } from '@nestjs/common'
-import {
-  assertProgramOpen,
-  closingEndDate,
-  planClosing,
-} from './program-state'
+import { assertProgramOpen, closingEndDate, planClosing } from './program-state'
 
 describe('assertProgramOpen', () => {
   it('lets an active program change', () => {

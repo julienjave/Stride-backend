@@ -17,9 +17,9 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsBoolean, IsOptional, IsString, MaxLength } from "class-validator";
-import { Transform } from "class-transformer";
-import { PaginationQueryDto } from "../../common/dto/pagination-query.dto";
+import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator'
+import { Transform } from 'class-transformer'
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ export class FindExercisesQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(200) // a search TERM has no reason to be longer than a name itself would be
-  search?: string;
+  search?: string
 
   // "Show only exercises I created" — @Transform, not class-transformer's
   // usual @Type(() => Boolean), for the exact same reason
@@ -52,7 +52,7 @@ export class FindExercisesQueryDto extends PaginationQueryDto {
   // the same "compare the raw string to the one value that means true"
   // logic apply to a field inside a validated DTO instead.
   @IsOptional()
-  @Transform(({ value }: { value: unknown }) => value === "true")
+  @Transform(({ value }: { value: unknown }) => value === 'true')
   @IsBoolean()
-  mine?: boolean;
+  mine?: boolean
 }

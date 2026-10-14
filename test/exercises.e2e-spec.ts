@@ -2,21 +2,21 @@
 // like ts-node, never auto-loads .env. AppModule's DrizzleModule needs
 // POSTGRES_* in process.env the moment Test.createTestingModule() below
 // tries to construct it, so this has to be the very first thing that runs.
-import "dotenv/config";
-import { Test, TestingModule } from "@nestjs/testing";
-import { INestApplication, ValidationPipe } from "@nestjs/common";
-import request from "supertest";
-import session from "express-session";
-import passport from "passport";
-import connectPgSimple from "connect-pg-simple";
-import { Pool } from "pg";
-import { sql } from "drizzle-orm";
-import { AppModule } from "../src/app.module";
-import { EMAIL_TRANSPORT } from "../src/email/email-transport";
-import { InMemoryEmailTransport } from "./support/in-memory-email-transport";
-import { activateAccount } from "./support/accounts";
-import { getDatabaseUrl } from "../src/config/database-url";
-import { DRIZZLE, DrizzleDb } from "../src/database/drizzle.provider";
+import 'dotenv/config'
+import { Test, TestingModule } from '@nestjs/testing'
+import { INestApplication, ValidationPipe } from '@nestjs/common'
+import request from 'supertest'
+import session from 'express-session'
+import passport from 'passport'
+import connectPgSimple from 'connect-pg-simple'
+import { Pool } from 'pg'
+import { sql } from 'drizzle-orm'
+import { AppModule } from '../src/app.module'
+import { EMAIL_TRANSPORT } from '../src/email/email-transport'
+import { InMemoryEmailTransport } from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
+import { getDatabaseUrl } from '../src/config/database-url'
+import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -24,23 +24,23 @@ import { DRIZZLE, DrizzleDb } from "../src/database/drizzle.provider";
 // `docker compose up -d db storage` running, and must be pointed at the
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
-describe("Exercises (e2e)", () => {
-  let app: INestApplication;
-  let sessionPool: Pool;
+describe('Exercises (e2e)', () => {
+  let app: INestApplication
+  let sessionPool: Pool
 
   // request.agent() is supertest's built-in cookie jar — every call made
   // through the SAME agent automatically remembers and resends whatever
   // session cookie the server issued. This is the exact -b/-c juggling done
   // by hand with curl throughout this project, handled automatically.
-  const adminAgent = () => request.agent(app.getHttpServer());
-  const practitionerAAgent = () => request.agent(app.getHttpServer());
-  const practitionerBAgent = () => request.agent(app.getHttpServer());
-  const patientAgent = () => request.agent(app.getHttpServer());
+  const adminAgent = () => request.agent(app.getHttpServer())
+  const practitionerAAgent = () => request.agent(app.getHttpServer())
+  const practitionerBAgent = () => request.agent(app.getHttpServer())
+  const patientAgent = () => request.agent(app.getHttpServer())
 
-  let admin: ReturnType<typeof adminAgent>;
-  let practitionerA: ReturnType<typeof practitionerAAgent>;
-  let practitionerB: ReturnType<typeof practitionerBAgent>;
-  let patient: ReturnType<typeof patientAgent>;
+  let admin: ReturnType<typeof adminAgent>
+  let practitionerA: ReturnType<typeof practitionerAAgent>
+  let practitionerB: ReturnType<typeof practitionerBAgent>
+  let patient: ReturnType<typeof patientAgent>
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -50,38 +50,38 @@ describe("Exercises (e2e)", () => {
       // email, whatever EMAIL_TRANSPORT says in .env.
       .overrideProvider(EMAIL_TRANSPORT)
       .useValue(new InMemoryEmailTransport())
-      .compile();
+      .compile()
 
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication()
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
         forbidNonWhitelisted: true,
         transform: true,
       }),
-    );
+    )
 
     // Same session setup as main.ts — an e2e test needs the REAL middleware
     // stack, not just the DI-wired providers, since guards/sessions live in
     // middleware that main.ts sets up manually, outside AppModule itself.
-    sessionPool = new Pool({ connectionString: getDatabaseUrl() });
-    const PgSessionStore = connectPgSimple(session);
+    sessionPool = new Pool({ connectionString: getDatabaseUrl() })
+    const PgSessionStore = connectPgSimple(session)
     app.use(
       session({
         store: new PgSessionStore({
           pool: sessionPool,
           createTableIfMissing: true,
         }),
-        secret: "e2e-test-secret",
+        secret: 'e2e-test-secret',
         resave: false,
         saveUninitialized: false,
         cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 },
       }),
-    );
-    app.use(passport.initialize());
-    app.use(passport.session());
+    )
+    app.use(passport.initialize())
+    app.use(passport.session())
 
-    await app.init();
+    await app.init()
 
     // A hard safety check, not just a naming convention to remember —
     // refuses to proceed at all unless genuinely connected to the
@@ -89,16 +89,16 @@ describe("Exercises (e2e)", () => {
     // tests via the wrong npm script (plain `test:e2e` instead of
     // `test:e2e:fresh`) would TRUNCATE the real dev database with no
     // warning, since nothing else in this file would notice the difference.
-    const db = app.get<DrizzleDb>(DRIZZLE);
+    const db = app.get<DrizzleDb>(DRIZZLE)
     const { rows } = await db.execute<{ current_database: string }>(
       sql`SELECT current_database()`,
-    );
-    const currentDatabase = rows[0].current_database;
-    if (currentDatabase !== "stride_test") {
+    )
+    const currentDatabase = rows[0].current_database
+    if (currentDatabase !== 'stride_test') {
       throw new Error(
         `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test". ` +
-          "Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?",
-      );
+          'Did you run this via `npm run test:e2e:fresh` (not plain `test:e2e`)?',
+      )
     }
 
     // Resets this test's starting state, so this file can run any number of
@@ -112,83 +112,83 @@ describe("Exercises (e2e)", () => {
     // deliberately never granted, since real app traffic never truncates
     // tables. This is test cleanup infrastructure only.
     await sessionPool.query(
-      "TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE",
-    );
+      'TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE',
+    )
 
-    admin = adminAgent();
-    practitionerA = practitionerAAgent();
-    practitionerB = practitionerBAgent();
-    patient = patientAgent();
+    admin = adminAgent()
+    practitionerA = practitionerAAgent()
+    practitionerB = practitionerBAgent()
+    patient = patientAgent()
 
-    const stamp = Date.now();
+    const stamp = Date.now()
 
-    const clinicRes = await admin.post("/auth/register-clinic").send({
-      clinicName: "E2E Clinic",
+    const clinicRes = await admin.post('/auth/register-clinic').send({
+      clinicName: 'E2E Clinic',
       clinicEmail: `clinic-${stamp}@example.com`,
       email: `admin-${stamp}@example.com`,
-      password: "password123",
-      firstName: "E2E",
-      lastName: "Admin",
-    });
+      password: 'password123',
+      firstName: 'E2E',
+      lastName: 'Admin',
+    })
     if (clinicRes.status !== 201) {
       throw new Error(
         `Failed to bootstrap the founding admin: ${JSON.stringify(clinicRes.body)}`,
-      );
+      )
     }
-    const clinicId = clinicRes.body.clinicId;
+    const clinicId = clinicRes.body.clinicId
 
-    await admin.post("/users").send({
+    await admin.post('/users').send({
       email: `practitioner-a-${stamp}@example.com`,
-      role: "practitioner",
-      firstName: "Practitioner",
-      lastName: "A",
+      role: 'practitioner',
+      firstName: 'Practitioner',
+      lastName: 'A',
       licenseNumber: `PT-A-${stamp}`,
       clinicId,
-    });
-    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`);
-    await practitionerA.post("/auth/login").send({
+    })
+    await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`)
+    await practitionerA.post('/auth/login').send({
       email: `practitioner-a-${stamp}@example.com`,
-      password: "password123",
-    });
+      password: 'password123',
+    })
 
-    await admin.post("/users").send({
+    await admin.post('/users').send({
       email: `practitioner-b-${stamp}@example.com`,
-      role: "practitioner",
-      firstName: "Practitioner",
-      lastName: "B",
+      role: 'practitioner',
+      firstName: 'Practitioner',
+      lastName: 'B',
       licenseNumber: `PT-B-${stamp}`,
       clinicId,
-    });
-    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`);
-    await practitionerB.post("/auth/login").send({
+    })
+    await activateAccount(sessionPool, `practitioner-b-${stamp}@example.com`)
+    await practitionerB.post('/auth/login').send({
       email: `practitioner-b-${stamp}@example.com`,
-      password: "password123",
-    });
+      password: 'password123',
+    })
 
     // Public self-registration was removed (accounts are created by
     // invitation): the admin creates this patient instead — still in no
     // clinic, like the self-registered one it replaces — then the account
     // is activated (test/support/accounts.ts) and signs in.
-    await admin.post("/users").send({
+    await admin.post('/users').send({
       email: `patient-${stamp}@example.com`,
-      firstName: "E2E",
-      lastName: "Patient",
-      dateOfBirth: "1990-01-01",
-      role: "patient",
-    });
-    await activateAccount(sessionPool, `patient-${stamp}@example.com`);
+      firstName: 'E2E',
+      lastName: 'Patient',
+      dateOfBirth: '1990-01-01',
+      role: 'patient',
+    })
+    await activateAccount(sessionPool, `patient-${stamp}@example.com`)
     await patient
-      .post("/auth/login")
-      .send({ email: `patient-${stamp}@example.com`, password: "password123" });
-  });
+      .post('/auth/login')
+      .send({ email: `patient-${stamp}@example.com`, password: 'password123' })
+  })
 
   afterAll(async () => {
-    await app.close();
+    await app.close()
     // app.close() only closes what Nest's own DI container manages.
     // sessionPool was created manually, outside that container, so it needs
     // to be closed explicitly too.
-    await sessionPool.end();
-  });
+    await sessionPool.end()
+  })
 
   // A minimal buffer stands in for real image bytes here — imageUploadOptions'
   // fileFilter only inspects the multipart Content-Type header (set explicitly
@@ -196,67 +196,64 @@ describe("Exercises (e2e)", () => {
   // StorageService.upload() just forwards whatever bytes it's given straight
   // to RustFS with no format validation of its own.
   const fakeImage = (label: string) =>
-    Buffer.from(`fake-image-content-${label}`);
+    Buffer.from(`fake-image-content-${label}`)
 
   const createExercise = async (
     agent: ReturnType<typeof practitionerAAgent>,
     name: string,
   ) => {
-    const res = await agent.post("/exercises").send({
+    const res = await agent.post('/exercises').send({
       name,
-      primaryMuscles: ["shoulders"],
-      instructions: ["Step one", "Step two"],
-    });
-    return res;
-  };
+      primaryMuscles: ['shoulders'],
+      instructions: ['Step one', 'Step two'],
+    })
+    return res
+  }
 
-  it("walks the full multi-role, ownership-based access scenario", async () => {
-    const created = await createExercise(practitionerA, "E2E Wall Slide");
-    expect(created.status).toBe(201);
-    expect(created.body.source).toBe("custom");
+  it('walks the full multi-role, ownership-based access scenario', async () => {
+    const created = await createExercise(practitionerA, 'E2E Wall Slide')
+    expect(created.status).toBe(201)
+    expect(created.body.source).toBe('custom')
 
-    const patientCreate = await patient.post("/exercises").send({
-      name: "Should Not Work",
-      primaryMuscles: ["legs"],
-      instructions: ["Step one"],
-    });
-    expect(patientCreate.status).toBe(403);
+    const patientCreate = await patient.post('/exercises').send({
+      name: 'Should Not Work',
+      primaryMuscles: ['legs'],
+      instructions: ['Step one'],
+    })
+    expect(patientCreate.status).toBe(403)
 
     // An admin CAN edit an exercise they did not create.
     const adminEdit = await admin
       .patch(`/exercises/${created.body.id}`)
-      .send({ name: "Corrected By Admin" });
-    expect(adminEdit.status).toBe(200);
-    expect(adminEdit.body.name).toBe("Corrected By Admin");
+      .send({ name: 'Corrected By Admin' })
+    expect(adminEdit.status).toBe(200)
+    expect(adminEdit.body.name).toBe('Corrected By Admin')
 
     // A DIFFERENT practitioner cannot edit exercise A created.
     const otherPractitionerEdit = await practitionerB
       .patch(`/exercises/${created.body.id}`)
-      .send({ name: "Should Not Work Either" });
-    expect(otherPractitionerEdit.status).toBe(403);
-  });
+      .send({ name: 'Should Not Work Either' })
+    expect(otherPractitionerEdit.status).toBe(403)
+  })
 
   // --- Image upload (POST /exercises/:id/images) ---
 
-  it("lets the owning practitioner upload images, appending to the existing gallery", async () => {
-    const created = await createExercise(
-      practitionerA,
-      "Image Upload Exercise",
-    );
-    const id = created.body.id;
+  it('lets the owning practitioner upload images, appending to the existing gallery', async () => {
+    const created = await createExercise(practitionerA, 'Image Upload Exercise')
+    const id = created.body.id
 
     const firstUpload = await practitionerA
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("one"), {
-        filename: "one.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('one'), {
+        filename: 'one.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("two"), {
-        filename: "two.png",
-        contentType: "image/png",
-      });
-    expect(firstUpload.status).toBe(201);
-    expect(firstUpload.body.images).toHaveLength(2);
+      .attach('files', fakeImage('two'), {
+        filename: 'two.png',
+        contentType: 'image/png',
+      })
+    expect(firstUpload.status).toBe(201)
+    expect(firstUpload.body.images).toHaveLength(2)
     expect(
       firstUpload.body.images.every(
         (image: { objectKey: string; url: string }) =>
@@ -264,22 +261,22 @@ describe("Exercises (e2e)", () => {
           // A real signed URL, not just "some truthy value" — confirms
           // the withImages conversion actually ran against real storage,
           // not just that the objectKey survived the round trip.
-          typeof image.url === "string" &&
+          typeof image.url === 'string' &&
           image.url.length > 0,
       ),
-    ).toBe(true);
+    ).toBe(true)
 
     // A second upload APPENDS rather than replacing — seeded/edited
     // exercises can legitimately have several distinct images (e.g. a
     // movement's start and end position).
     const secondUpload = await practitionerA
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("three"), {
-        filename: "three.png",
-        contentType: "image/png",
-      });
-    expect(secondUpload.status).toBe(201);
-    expect(secondUpload.body.images).toHaveLength(3);
+      .attach('files', fakeImage('three'), {
+        filename: 'three.png',
+        contentType: 'image/png',
+      })
+    expect(secondUpload.status).toBe(201)
+    expect(secondUpload.body.images).toHaveLength(3)
     expect(
       secondUpload.body.images
         .slice(0, 2)
@@ -288,86 +285,86 @@ describe("Exercises (e2e)", () => {
       firstUpload.body.images.map(
         (image: { objectKey: string }) => image.objectKey,
       ),
-    );
-  });
+    )
+  })
 
-  it("rejects an image upload from a practitioner who does not own the exercise", async () => {
+  it('rejects an image upload from a practitioner who does not own the exercise', async () => {
     const created = await createExercise(
       practitionerA,
-      "Image Ownership Exercise",
-    );
-    const id = created.body.id;
+      'Image Ownership Exercise',
+    )
+    const id = created.body.id
 
     const res = await practitionerB
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("intruder"), {
-        filename: "intruder.png",
-        contentType: "image/png",
-      });
-    expect(res.status).toBe(403);
-  });
+      .attach('files', fakeImage('intruder'), {
+        filename: 'intruder.png',
+        contentType: 'image/png',
+      })
+    expect(res.status).toBe(403)
+  })
 
-  it("rejects an image upload from a patient — practitioner/admin only", async () => {
-    const created = await createExercise(practitionerA, "Image Role Exercise");
-    const id = created.body.id;
+  it('rejects an image upload from a patient — practitioner/admin only', async () => {
+    const created = await createExercise(practitionerA, 'Image Role Exercise')
+    const id = created.body.id
 
     const res = await patient
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("patient"), {
-        filename: "patient.png",
-        contentType: "image/png",
-      });
-    expect(res.status).toBe(403);
-  });
+      .attach('files', fakeImage('patient'), {
+        filename: 'patient.png',
+        contentType: 'image/png',
+      })
+    expect(res.status).toBe(403)
+  })
 
-  it("rejects an image upload request with no files attached", async () => {
+  it('rejects an image upload request with no files attached', async () => {
     const created = await createExercise(
       practitionerA,
-      "Image No Files Exercise",
-    );
-    const id = created.body.id;
+      'Image No Files Exercise',
+    )
+    const id = created.body.id
 
-    const res = await practitionerA.post(`/exercises/${id}/images`);
-    expect(res.status).toBe(400);
-  });
+    const res = await practitionerA.post(`/exercises/${id}/images`)
+    expect(res.status).toBe(400)
+  })
 
   // --- Reorder images (PATCH /exercises/:id/images) ---
 
-  it("reorders the gallery when the new order is an exact permutation of the current images", async () => {
+  it('reorders the gallery when the new order is an exact permutation of the current images', async () => {
     const created = await createExercise(
       practitionerA,
-      "Reorder Valid Exercise",
-    );
-    const id = created.body.id;
+      'Reorder Valid Exercise',
+    )
+    const id = created.body.id
 
     const uploaded = await practitionerA
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("r1"), {
-        filename: "r1.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('r1'), {
+        filename: 'r1.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("r2"), {
-        filename: "r2.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('r2'), {
+        filename: 'r2.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("r3"), {
-        filename: "r3.png",
-        contentType: "image/png",
-      });
+      .attach('files', fakeImage('r3'), {
+        filename: 'r3.png',
+        contentType: 'image/png',
+      })
     const [k1, k2, k3] = uploaded.body.images.map(
       (image: { objectKey: string }) => image.objectKey,
-    );
+    )
 
     const reordered = await practitionerA
       .patch(`/exercises/${id}/images`)
-      .send({ order: [k3, k1, k2] });
-    expect(reordered.status).toBe(200);
+      .send({ order: [k3, k1, k2] })
+    expect(reordered.status).toBe(200)
     expect(
       reordered.body.images.map(
         (image: { objectKey: string }) => image.objectKey,
       ),
-    ).toEqual([k3, k1, k2]);
-  });
+    ).toEqual([k3, k1, k2])
+  })
 
   // Regression coverage for the bug fixed in "Fix: reorder endpoints accept
   // duplicate-padded arrays". The OLD permutation check only compared
@@ -384,75 +381,75 @@ describe("Exercises (e2e)", () => {
   // pre-fix logic directly (not just by reading the diff): the old
   // predicate evaluates to `true` for this exact array, the new one to
   // `false`.
-  it("rejects a duplicate-padded order array instead of silently corrupting the gallery", async () => {
+  it('rejects a duplicate-padded order array instead of silently corrupting the gallery', async () => {
     const created = await createExercise(
       practitionerA,
-      "Reorder Duplicate Exercise",
-    );
-    const id = created.body.id;
+      'Reorder Duplicate Exercise',
+    )
+    const id = created.body.id
 
     const uploaded = await practitionerA
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("d1"), {
-        filename: "d1.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('d1'), {
+        filename: 'd1.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("d2"), {
-        filename: "d2.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('d2'), {
+        filename: 'd2.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("d3"), {
-        filename: "d3.png",
-        contentType: "image/png",
-      });
+      .attach('files', fakeImage('d3'), {
+        filename: 'd3.png',
+        contentType: 'image/png',
+      })
     const [k1, k2, k3] = uploaded.body.images.map(
       (image: { objectKey: string }) => image.objectKey,
-    );
+    )
 
     const res = await practitionerA
       .patch(`/exercises/${id}/images`)
       // Every real key present (so a deduped-set-only check sees a perfect
       // match), but k1 is padded in a second time, one longer than the
       // actual 3-image gallery.
-      .send({ order: [k1, k2, k3, k1] });
-    expect(res.status).toBe(400);
+      .send({ order: [k1, k2, k3, k1] })
+    expect(res.status).toBe(400)
 
     // The gallery must be untouched by the rejected request — still all
     // three original keys, in their original order.
-    const fetched = await practitionerA.get(`/exercises/${id}`);
+    const fetched = await practitionerA.get(`/exercises/${id}`)
     expect(
       fetched.body.images.map(
         (image: { objectKey: string }) => image.objectKey,
       ),
-    ).toEqual([k1, k2, k3]);
-  });
+    ).toEqual([k1, k2, k3])
+  })
 
-  it("rejects a reorder request from a practitioner who does not own the exercise", async () => {
+  it('rejects a reorder request from a practitioner who does not own the exercise', async () => {
     const created = await createExercise(
       practitionerA,
-      "Reorder Ownership Exercise",
-    );
-    const id = created.body.id;
+      'Reorder Ownership Exercise',
+    )
+    const id = created.body.id
 
     const uploaded = await practitionerA
       .post(`/exercises/${id}/images`)
-      .attach("files", fakeImage("o1"), {
-        filename: "o1.png",
-        contentType: "image/png",
+      .attach('files', fakeImage('o1'), {
+        filename: 'o1.png',
+        contentType: 'image/png',
       })
-      .attach("files", fakeImage("o2"), {
-        filename: "o2.png",
-        contentType: "image/png",
-      });
+      .attach('files', fakeImage('o2'), {
+        filename: 'o2.png',
+        contentType: 'image/png',
+      })
     const [k1, k2] = uploaded.body.images.map(
       (image: { objectKey: string }) => image.objectKey,
-    );
+    )
 
     const res = await practitionerB
       .patch(`/exercises/${id}/images`)
-      .send({ order: [k2, k1] });
-    expect(res.status).toBe(403);
-  });
+      .send({ order: [k2, k1] })
+    expect(res.status).toBe(403)
+  })
 
   // --- Pagination (GET /exercises) ---
 
@@ -464,315 +461,315 @@ describe("Exercises (e2e)", () => {
   // PartialType, whose @IsOptional() lets null through to the NOT NULL
   // columns), and blank names and items were stored. Every refusal below is
   // a 400 and changes nothing.
-  describe("the description rules", () => {
+  describe('the description rules', () => {
     // Each read states the shape it expects instead of reading `any` (the
     // project's known e2e lint category).
     interface ExerciseBody {
-      id: number;
-      name: string;
-      primaryMuscles: string[];
-      secondaryMuscles: string[];
-      equipment: string[];
-      instructions: string[];
+      id: number
+      name: string
+      primaryMuscles: string[]
+      secondaryMuscles: string[]
+      equipment: string[]
+      instructions: string[]
     }
-    const exerciseOf = (res: request.Response) => res.body as ExerciseBody;
+    const exerciseOf = (res: request.Response) => res.body as ExerciseBody
     const messagesOf = (res: request.Response) =>
-      (res.body as { message: string[] }).message;
+      (res.body as { message: string[] }).message
 
-    let exerciseId: number;
+    let exerciseId: number
     const AS_CREATED = {
-      name: "Description Rules Lunge",
-      primaryMuscles: ["shoulders"],
+      name: 'Description Rules Lunge',
+      primaryMuscles: ['shoulders'],
       secondaryMuscles: [],
       equipment: [],
-      instructions: ["Step one", "Step two"],
-    };
+      instructions: ['Step one', 'Step two'],
+    }
 
     beforeAll(async () => {
       const created = await createExercise(
         practitionerA,
-        "Description Rules Lunge",
-      );
-      expect(created.status).toBe(201);
-      exerciseId = exerciseOf(created).id;
-    });
+        'Description Rules Lunge',
+      )
+      expect(created.status).toBe(201)
+      exerciseId = exerciseOf(created).id
+    })
 
     it.each([
-      ["name", null, "name must be a string"],
-      ["primaryMuscles", null, "primaryMuscles must be a list"],
+      ['name', null, 'name must be a string'],
+      ['primaryMuscles', null, 'primaryMuscles must be a list'],
       [
-        "secondaryMuscles",
+        'secondaryMuscles',
         null,
-        "secondaryMuscles must be a list: send [] for none",
+        'secondaryMuscles must be a list: send [] for none',
       ],
-      ["equipment", null, "equipment must be a list: send [] for none"],
-      ["instructions", null, "instructions must be a list"],
-      ["name", "  ", "The exercise's name can't be blank"],
-      ["primaryMuscles", [" "], "A primary muscle can't be blank"],
-      ["instructions", [""], "An instruction step can't be blank"],
+      ['equipment', null, 'equipment must be a list: send [] for none'],
+      ['instructions', null, 'instructions must be a list'],
+      ['name', '  ', "The exercise's name can't be blank"],
+      ['primaryMuscles', [' '], "A primary muscle can't be blank"],
+      ['instructions', [''], "An instruction step can't be blank"],
     ])(
-      "refuses a PATCH of %s = %j (%s), changing nothing",
+      'refuses a PATCH of %s = %j (%s), changing nothing',
       async (field, value, message) => {
         const res = await practitionerA
           .patch(`/exercises/${exerciseId}`)
-          .send({ [field]: value });
-        expect(res.status).toBe(400);
+          .send({ [field]: value })
+        expect(res.status).toBe(400)
         // The first message explains; a `null` also fails the field's
         // other rules, listed after it.
-        expect(messagesOf(res)[0]).toBe(message);
+        expect(messagesOf(res)[0]).toBe(message)
 
-        const after = await practitionerA.get(`/exercises/${exerciseId}`);
-        expect(exerciseOf(after)).toMatchObject(AS_CREATED);
+        const after = await practitionerA.get(`/exercises/${exerciseId}`)
+        expect(exerciseOf(after)).toMatchObject(AS_CREATED)
       },
-    );
+    )
 
-    it("refuses creating an exercise with a blank name, or null for an optional list", async () => {
-      const blank = await practitionerA.post("/exercises").send({
-        name: "   ",
-        primaryMuscles: ["legs"],
-        instructions: ["Step one"],
-      });
-      expect(blank.status).toBe(400);
-      expect(messagesOf(blank)).toEqual(["The exercise's name can't be blank"]);
+    it('refuses creating an exercise with a blank name, or null for an optional list', async () => {
+      const blank = await practitionerA.post('/exercises').send({
+        name: '   ',
+        primaryMuscles: ['legs'],
+        instructions: ['Step one'],
+      })
+      expect(blank.status).toBe(400)
+      expect(messagesOf(blank)).toEqual(["The exercise's name can't be blank"])
 
       // "None" is [] — or leaving the list out — never null (it used to be
       // read as [] when creating, but was a 500 when editing).
-      const nullList = await practitionerA.post("/exercises").send({
-        name: "Null Equipment Squat",
-        primaryMuscles: ["legs"],
-        instructions: ["Step one"],
+      const nullList = await practitionerA.post('/exercises').send({
+        name: 'Null Equipment Squat',
+        primaryMuscles: ['legs'],
+        instructions: ['Step one'],
         equipment: null,
-      });
-      expect(nullList.status).toBe(400);
+      })
+      expect(nullList.status).toBe(400)
       expect(messagesOf(nullList)[0]).toBe(
-        "equipment must be a list: send [] for none",
-      );
-    });
+        'equipment must be a list: send [] for none',
+      )
+    })
 
     // The neighbours of the refusals: what IS allowed.
-    it("accepts [] for an optional list, and an instruction step past the old 500-character limit", async () => {
-      const longStep = "Keep the knee over the foot. ".repeat(25).trim();
-      expect(longStep.length).toBeGreaterThan(500);
+    it('accepts [] for an optional list, and an instruction step past the old 500-character limit', async () => {
+      const longStep = 'Keep the knee over the foot. '.repeat(25).trim()
+      expect(longStep.length).toBeGreaterThan(500)
 
       const res = await practitionerA
         .patch(`/exercises/${exerciseId}`)
-        .send({ equipment: [], instructions: ["Step one", longStep] });
-      expect(res.status).toBe(200);
+        .send({ equipment: [], instructions: ['Step one', longStep] })
+      expect(res.status).toBe(200)
       expect(exerciseOf(res)).toMatchObject({
         equipment: [],
-        instructions: ["Step one", longStep],
-      });
-    });
-  });
+        instructions: ['Step one', longStep],
+      })
+    })
+  })
 
-  describe("pagination", () => {
+  describe('pagination', () => {
     // Scoped with a per-run "search" term so counts stay exact regardless of
     // exercises created by the other it() blocks in this file (or by
     // previous runs' leftover data, in the unlikely case TRUNCATE didn't
     // apply) — none of those match this stamp.
-    const stamp = Date.now();
-    const probeName = (i: number) => `Pagination Probe ${stamp} ${i}`;
-    const TOTAL = 23;
+    const stamp = Date.now()
+    const probeName = (i: number) => `Pagination Probe ${stamp} ${i}`
+    const TOTAL = 23
 
     beforeAll(async () => {
       await Promise.all(
         Array.from({ length: TOTAL }, (_, i) =>
           createExercise(practitionerA, probeName(i)),
         ),
-      );
-    });
+      )
+    })
 
-    it("defaults to page 1 with a limit of 20 and reports accurate pagination metadata", async () => {
+    it('defaults to page 1 with a limit of 20 and reports accurate pagination metadata', async () => {
       const res = await patient
-        .get("/exercises")
-        .query({ search: `Pagination Probe ${stamp}` });
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(20);
+        .get('/exercises')
+        .query({ search: `Pagination Probe ${stamp}` })
+      expect(res.status).toBe(200)
+      expect(res.body.data).toHaveLength(20)
       expect(res.body.meta).toEqual({
         total: TOTAL,
         page: 1,
         limit: 20,
         totalPages: 2,
-      });
-    });
+      })
+    })
 
-    it("returns the remaining partial page and a disjoint set of rows on page 2", async () => {
+    it('returns the remaining partial page and a disjoint set of rows on page 2', async () => {
       const page1 = await patient
-        .get("/exercises")
-        .query({ search: `Pagination Probe ${stamp}`, page: 1, limit: 20 });
+        .get('/exercises')
+        .query({ search: `Pagination Probe ${stamp}`, page: 1, limit: 20 })
       const page2 = await patient
-        .get("/exercises")
-        .query({ search: `Pagination Probe ${stamp}`, page: 2, limit: 20 });
+        .get('/exercises')
+        .query({ search: `Pagination Probe ${stamp}`, page: 2, limit: 20 })
 
-      expect(page2.status).toBe(200);
-      expect(page2.body.data).toHaveLength(3);
+      expect(page2.status).toBe(200)
+      expect(page2.body.data).toHaveLength(3)
       expect(page2.body.meta).toEqual({
         total: TOTAL,
         page: 2,
         limit: 20,
         totalPages: 2,
-      });
+      })
 
-      const page1Ids = page1.body.data.map((e: any) => e.id);
-      const page2Ids = page2.body.data.map((e: any) => e.id);
-      expect(page1Ids.some((id: number) => page2Ids.includes(id))).toBe(false);
-    });
+      const page1Ids = page1.body.data.map((e: any) => e.id)
+      const page2Ids = page2.body.data.map((e: any) => e.id)
+      expect(page1Ids.some((id: number) => page2Ids.includes(id))).toBe(false)
+    })
 
-    it("honors a smaller explicit limit", async () => {
+    it('honors a smaller explicit limit', async () => {
       const res = await patient
-        .get("/exercises")
-        .query({ search: `Pagination Probe ${stamp}`, page: 1, limit: 10 });
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(10);
+        .get('/exercises')
+        .query({ search: `Pagination Probe ${stamp}`, page: 1, limit: 10 })
+      expect(res.status).toBe(200)
+      expect(res.body.data).toHaveLength(10)
       expect(res.body.meta).toEqual({
         total: TOTAL,
         page: 1,
         limit: 10,
         totalPages: 3,
-      });
-    });
+      })
+    })
 
-    it("rejects a limit above the hard ceiling of 100", async () => {
-      const res = await patient.get("/exercises").query({ limit: 101 });
-      expect(res.status).toBe(400);
-    });
+    it('rejects a limit above the hard ceiling of 100', async () => {
+      const res = await patient.get('/exercises').query({ limit: 101 })
+      expect(res.status).toBe(400)
+    })
 
-    it("rejects a page below 1", async () => {
-      const res = await patient.get("/exercises").query({ page: 0 });
-      expect(res.status).toBe(400);
-    });
-  });
+    it('rejects a page below 1', async () => {
+      const res = await patient.get('/exercises').query({ page: 0 })
+      expect(res.status).toBe(400)
+    })
+  })
 
   // --- Muscle search, mine filter, and author (GET /exercises) ---
 
-  describe("search, mine filter, and author", () => {
+  describe('search, mine filter, and author', () => {
     // Same isolation reasoning as the pagination block above — a unique
     // stamp per run so these assertions can't accidentally match one of
     // the ~800 real seeded exercises, or leftover fixtures from another
     // describe block in this same file.
-    const stamp = Date.now();
+    const stamp = Date.now()
 
     const createExerciseAs = (
       agent: ReturnType<typeof practitionerAAgent>,
       body: {
-        name: string;
-        primaryMuscles: string[];
-        secondaryMuscles?: string[];
+        name: string
+        primaryMuscles: string[]
+        secondaryMuscles?: string[]
       },
-    ) => agent.post("/exercises").send({ ...body, instructions: ["Step"] });
+    ) => agent.post('/exercises').send({ ...body, instructions: ['Step'] })
 
-    it("matches on a primary muscle, not just the name", async () => {
-      const muscle = `PrimaryProbe${stamp}`;
+    it('matches on a primary muscle, not just the name', async () => {
+      const muscle = `PrimaryProbe${stamp}`
       const created = await createExerciseAs(practitionerA, {
         name: `Unrelated Name ${stamp}`,
         primaryMuscles: [muscle],
-      });
-      expect(created.status).toBe(201);
+      })
+      expect(created.status).toBe(201)
 
       // Searching a SUBSTRING of the muscle, not the exact string —
       // proves this is a real ILIKE partial match, not an exact-equality
       // check that would only work by coincidence.
       const res = await patient
-        .get("/exercises")
-        .query({ search: "PrimaryProbe" + stamp });
-      expect(res.status).toBe(200);
-      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id);
-    });
+        .get('/exercises')
+        .query({ search: 'PrimaryProbe' + stamp })
+      expect(res.status).toBe(200)
+      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id)
+    })
 
-    it("matches on a secondary muscle too, not just primary", async () => {
-      const muscle = `SecondaryProbe${stamp}`;
+    it('matches on a secondary muscle too, not just primary', async () => {
+      const muscle = `SecondaryProbe${stamp}`
       const created = await createExerciseAs(practitionerA, {
         name: `Also Unrelated ${stamp}`,
-        primaryMuscles: ["core"],
+        primaryMuscles: ['core'],
         secondaryMuscles: [muscle],
-      });
-      expect(created.status).toBe(201);
+      })
+      expect(created.status).toBe(201)
 
       const res = await patient
-        .get("/exercises")
-        .query({ search: "SecondaryProbe" + stamp });
-      expect(res.status).toBe(200);
-      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id);
-    });
+        .get('/exercises')
+        .query({ search: 'SecondaryProbe' + stamp })
+      expect(res.status).toBe(200)
+      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id)
+    })
 
-    it("does not match a search term that appears in neither the name nor either muscle array", async () => {
+    it('does not match a search term that appears in neither the name nor either muscle array', async () => {
       const res = await patient
-        .get("/exercises")
-        .query({ search: `NothingShouldMatchThis${stamp}` });
-      expect(res.status).toBe(200);
-      expect(res.body.data).toEqual([]);
-      expect(res.body.meta.total).toBe(0);
-    });
+        .get('/exercises')
+        .query({ search: `NothingShouldMatchThis${stamp}` })
+      expect(res.status).toBe(200)
+      expect(res.body.data).toEqual([])
+      expect(res.body.meta.total).toBe(0)
+    })
 
     it("mine=true shows only the requesting user's own exercises, excluding another practitioner's", async () => {
-      const mineNamePrefix = `MineProbe${stamp}`;
+      const mineNamePrefix = `MineProbe${stamp}`
       const ownExercise = await createExerciseAs(practitionerA, {
         name: `${mineNamePrefix} Own`,
-        primaryMuscles: ["core"],
-      });
+        primaryMuscles: ['core'],
+      })
       const otherExercise = await createExerciseAs(practitionerB, {
         name: `${mineNamePrefix} Other`,
-        primaryMuscles: ["core"],
-      });
-      expect(ownExercise.status).toBe(201);
-      expect(otherExercise.status).toBe(201);
+        primaryMuscles: ['core'],
+      })
+      expect(ownExercise.status).toBe(201)
+      expect(otherExercise.status).toBe(201)
 
       const mineOnly = await practitionerA
-        .get("/exercises")
-        .query({ search: mineNamePrefix, mine: true });
-      expect(mineOnly.status).toBe(200);
-      const mineIds = mineOnly.body.data.map((e: any) => e.id);
-      expect(mineIds).toContain(ownExercise.body.id);
-      expect(mineIds).not.toContain(otherExercise.body.id);
+        .get('/exercises')
+        .query({ search: mineNamePrefix, mine: true })
+      expect(mineOnly.status).toBe(200)
+      const mineIds = mineOnly.body.data.map((e: any) => e.id)
+      expect(mineIds).toContain(ownExercise.body.id)
+      expect(mineIds).not.toContain(otherExercise.body.id)
 
       // Same search WITHOUT mine=true should show both — confirms the
       // filter above is genuinely doing something, not just always
       // returning everyone's exercises by coincidence.
       const everyone = await practitionerA
-        .get("/exercises")
-        .query({ search: mineNamePrefix });
-      const everyoneIds = everyone.body.data.map((e: any) => e.id);
-      expect(everyoneIds).toContain(ownExercise.body.id);
-      expect(everyoneIds).toContain(otherExercise.body.id);
-    });
+        .get('/exercises')
+        .query({ search: mineNamePrefix })
+      const everyoneIds = everyone.body.data.map((e: any) => e.id)
+      expect(everyoneIds).toContain(ownExercise.body.id)
+      expect(everyoneIds).toContain(otherExercise.body.id)
+    })
 
-    it("mine=false behaves the same as omitting mine entirely, not as its own exclusion filter", async () => {
+    it('mine=false behaves the same as omitting mine entirely, not as its own exclusion filter', async () => {
       // Guards against a subtle bug the includeInactive precedent this
       // pattern is modeled on explicitly warns about: naively converting
       // the string "false" to a boolean can behave unexpectedly. This
       // confirms ?mine=false genuinely means "no filter," not "only
       // exercises that are NOT mine" and not "treated as true."
-      const name = `MineFalseProbe${stamp}`;
+      const name = `MineFalseProbe${stamp}`
       const created = await createExerciseAs(practitionerA, {
         name,
-        primaryMuscles: ["core"],
-      });
+        primaryMuscles: ['core'],
+      })
 
       const res = await practitionerA
-        .get("/exercises")
-        .query({ search: name, mine: false });
-      expect(res.status).toBe(200);
-      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id);
-    });
+        .get('/exercises')
+        .query({ search: name, mine: false })
+      expect(res.status).toBe(200)
+      expect(res.body.data.map((e: any) => e.id)).toContain(created.body.id)
+    })
 
     it("attaches the creator's name as author for a custom exercise, and null for one with no creator", async () => {
-      const name = `AuthorProbe${stamp}`;
+      const name = `AuthorProbe${stamp}`
       const created = await createExerciseAs(practitionerA, {
         name,
-        primaryMuscles: ["core"],
-      });
+        primaryMuscles: ['core'],
+      })
 
-      const res = await patient.get("/exercises").query({ search: name });
-      expect(res.status).toBe(200);
-      const match = res.body.data.find((e: any) => e.id === created.body.id);
+      const res = await patient.get('/exercises').query({ search: name })
+      expect(res.status).toBe(200)
+      const match = res.body.data.find((e: any) => e.id === created.body.id)
       // "Practitioner"/"A" match practitionerA's own firstName/lastName
       // from this file's outer beforeAll — asserting the REAL name here,
       // not just "author is truthy," to prove the right row was joined,
       // not just any row.
       expect(match.author).toEqual({
-        firstName: "Practitioner",
-        lastName: "A",
-      });
+        firstName: 'Practitioner',
+        lastName: 'A',
+      })
 
       // Inserted via sessionPool — the same elevated, RLS-bypassing
       // connection this file already uses for TRUNCATE, not the
@@ -790,19 +787,19 @@ describe("Exercises (e2e)", () => {
       // — that's normally only run against a real dev database), unlike
       // relying on an unfiltered page happening to contain a real
       // seeded row.
-      const noCreatorName = `NoCreatorProbe${stamp}`;
+      const noCreatorName = `NoCreatorProbe${stamp}`
       await sessionPool.query(
         `INSERT INTO exercises (name, primary_muscles, instructions, source, created_by)
          VALUES ($1, $2, $3, 'api', NULL)`,
-        [noCreatorName, ["core"], ["Step"]],
-      );
+        [noCreatorName, ['core'], ['Step']],
+      )
 
       const res2 = await patient
-        .get("/exercises")
-        .query({ search: noCreatorName });
-      expect(res2.status).toBe(200);
-      expect(res2.body.data).toHaveLength(1);
-      expect(res2.body.data[0].author).toBeNull();
-    });
-  });
-});
+        .get('/exercises')
+        .query({ search: noCreatorName })
+      expect(res2.status).toBe(200)
+      expect(res2.body.data).toHaveLength(1)
+      expect(res2.body.data[0].author).toBeNull()
+    })
+  })
+})

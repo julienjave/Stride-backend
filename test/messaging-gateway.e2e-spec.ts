@@ -1,19 +1,19 @@
-import 'dotenv/config';
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import session from 'express-session';
-import passport from 'passport';
-import connectPgSimple from 'connect-pg-simple';
-import { Pool } from 'pg';
-import { sql } from 'drizzle-orm';
-import { io, Socket } from 'socket.io-client';
-import { AppModule } from '../src/app.module';
-import { EMAIL_TRANSPORT } from '../src/email/email-transport';
-import { InMemoryEmailTransport } from './support/in-memory-email-transport';
-import { activateAccount } from './support/accounts';
-import { getDatabaseUrl } from '../src/config/database-url';
-import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider';
-import { SessionIoAdapter } from '../src/messaging/session-io.adapter';
+import 'dotenv/config'
+import { Test, TestingModule } from '@nestjs/testing'
+import { INestApplication, ValidationPipe } from '@nestjs/common'
+import session from 'express-session'
+import passport from 'passport'
+import connectPgSimple from 'connect-pg-simple'
+import { Pool } from 'pg'
+import { sql } from 'drizzle-orm'
+import { io, Socket } from 'socket.io-client'
+import { AppModule } from '../src/app.module'
+import { EMAIL_TRANSPORT } from '../src/email/email-transport'
+import { InMemoryEmailTransport } from './support/in-memory-email-transport'
+import { activateAccount } from './support/accounts'
+import { getDatabaseUrl } from '../src/config/database-url'
+import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
+import { SessionIoAdapter } from '../src/messaging/session-io.adapter'
 
 // Named distinctly from any REST-focused messaging.e2e-spec.ts — this file
 // covers ONLY the live WebSocket behavior (handshake auth, room joins,
@@ -21,17 +21,17 @@ import { SessionIoAdapter } from '../src/messaging/session-io.adapter';
 // concept of a WebSocket upgrade. A real socket.io-client, connecting to a
 // genuinely listening server, is required here specifically.
 describe('MessagingGateway (e2e)', () => {
-  let app: INestApplication;
-  let sessionPool: Pool;
-  let baseUrl: string;
-  let adminCookie: string;
+  let app: INestApplication
+  let sessionPool: Pool
+  let baseUrl: string
+  let adminCookie: string
   // A single shared practitioner/patient/conversation, set up ONCE in
   // beforeAll and reused (read-only) by every test below that just needs
   // "some real, authenticated participant of some real conversation" — see
   // the comment on POST /auth/login's rate limit further down for why this
   // matters, not just for speed.
-  let sharedPractitionerCookie: string;
-  let sharedConversationId: number;
+  let sharedPractitionerCookie: string
+  let sharedConversationId: number
 
   // Handles the raw HTTP calls used to set up test data. Uses plain fetch(),
   // not supertest, specifically because the login calls below need direct,
@@ -47,20 +47,22 @@ describe('MessagingGateway (e2e)', () => {
         ...(cookie ? { Cookie: cookie } : {}),
       },
       body: JSON.stringify(body),
-    });
-    const setCookie = response.headers.get('set-cookie');
+    })
+    const setCookie = response.headers.get('set-cookie')
     // Only the "connect.sid=..." portion is usable as a Cookie header value —
     // the rest of a Set-Cookie string (Path, HttpOnly, Expires, etc.) is
     // metadata for a BROWSER's cookie jar to interpret, not something to
     // forward verbatim.
-    const cookieValue = setCookie ? setCookie.split(';')[0] : undefined;
-    const json = await response.json().catch(() => undefined);
-    return { status: response.status, body: json, cookie: cookieValue };
+    const cookieValue = setCookie ? setCookie.split(';')[0] : undefined
+    const json = await response.json().catch(() => undefined)
+    return { status: response.status, body: json, cookie: cookieValue }
   }
 
   async function get(path: string, cookie: string) {
-    const response = await fetch(`${baseUrl}${path}`, { headers: { Cookie: cookie } });
-    return response.json();
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: { Cookie: cookie },
+    })
+    return response.json()
   }
 
   beforeAll(async () => {
@@ -71,52 +73,61 @@ describe('MessagingGateway (e2e)', () => {
       // email, whatever EMAIL_TRANSPORT says in .env.
       .overrideProvider(EMAIL_TRANSPORT)
       .useValue(new InMemoryEmailTransport())
-      .compile();
+      .compile()
 
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication()
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
-    );
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    )
 
-    sessionPool = new Pool({ connectionString: getDatabaseUrl() });
-    const PgSessionStore = connectPgSimple(session);
+    sessionPool = new Pool({ connectionString: getDatabaseUrl() })
+    const PgSessionStore = connectPgSimple(session)
     const sessionMiddleware = session({
-      store: new PgSessionStore({ pool: sessionPool, createTableIfMissing: true }),
+      store: new PgSessionStore({
+        pool: sessionPool,
+        createTableIfMissing: true,
+      }),
       secret: 'e2e-test-secret',
       resave: false,
       saveUninitialized: false,
       cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 },
-    });
-    app.use(sessionMiddleware);
-    app.use(passport.initialize());
-    app.use(passport.session());
-    app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware));
+    })
+    app.use(sessionMiddleware)
+    app.use(passport.initialize())
+    app.use(passport.session())
+    app.useWebSocketAdapter(new SessionIoAdapter(app, sessionMiddleware))
 
-    await app.init();
+    await app.init()
 
-    const db = app.get<DrizzleDb>(DRIZZLE);
+    const db = app.get<DrizzleDb>(DRIZZLE)
     const { rows } = await db.execute<{ current_database: string }>(
       sql`SELECT current_database()`,
-    );
-    const currentDatabase = rows[0].current_database;
+    )
+    const currentDatabase = rows[0].current_database
     if (currentDatabase !== 'stride_test') {
       throw new Error(
         `Refusing to run e2e tests against database "${currentDatabase}" — expected "stride_test".`,
-      );
+      )
     }
     // Uses sessionPool (the owner connection), not db (the restricted
     // stride_app connection) — TRUNCATE needs a privilege this app role is
     // deliberately never granted, since real app traffic never truncates
     // tables. This is test cleanup infrastructure only.
-    await sessionPool.query('TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE');
+    await sessionPool.query(
+      'TRUNCATE TABLE users, clinics RESTART IDENTITY CASCADE',
+    )
 
     // port 0 = let the OS assign a free port. WebSocket connections need a
     // REAL, listening network server, unlike the REST e2e tests, which can
     // drive supertest against the app instance without necessarily binding
     // a real port at all.
-    await app.listen(0);
-    const address = app.getHttpServer().address();
-    baseUrl = `http://127.0.0.1:${address.port}`;
+    await app.listen(0)
+    const address = app.getHttpServer().address()
+    baseUrl = `http://127.0.0.1:${address.port}`
 
     // --- Shared scaffolding for every test below ---
     //
@@ -138,7 +149,7 @@ describe('MessagingGateway (e2e)', () => {
     //    same run). Only the "no relationship to this conversation" test
     //    below needs one additional, genuinely distinct identity, and logs
     //    in exactly once for it — 3 logins total across the whole file.
-    const stamp = Date.now();
+    const stamp = Date.now()
     const bootstrapRes = await post('/auth/register-clinic', {
       clinicName: 'WS Bootstrap Clinic',
       clinicEmail: `ws-bootstrap-clinic-${stamp}@example.com`,
@@ -146,9 +157,9 @@ describe('MessagingGateway (e2e)', () => {
       password: 'password123',
       firstName: 'WS',
       lastName: 'Admin',
-    });
-    adminCookie = bootstrapRes.cookie!;
-    const clinicId = bootstrapRes.body.clinicId;
+    })
+    adminCookie = bootstrapRes.cookie!
+    const clinicId = bootstrapRes.body.clinicId
 
     await post(
       '/users',
@@ -161,13 +172,13 @@ describe('MessagingGateway (e2e)', () => {
         clinicId,
       },
       adminCookie,
-    );
-    await activateAccount(sessionPool, `ws-practitioner-${stamp}@example.com`);
+    )
+    await activateAccount(sessionPool, `ws-practitioner-${stamp}@example.com`)
     const practitionerLogin = await post('/auth/login', {
       email: `ws-practitioner-${stamp}@example.com`,
       password: 'password123',
-    });
-    sharedPractitionerCookie = practitionerLogin.cookie!;
+    })
+    sharedPractitionerCookie = practitionerLogin.cookie!
 
     await post(
       '/users',
@@ -180,14 +191,14 @@ describe('MessagingGateway (e2e)', () => {
         clinicId,
       },
       adminCookie,
-    );
-    await activateAccount(sessionPool, `ws-patient-${stamp}@example.com`);
+    )
+    await activateAccount(sessionPool, `ws-patient-${stamp}@example.com`)
     const patientLogin = await post('/auth/login', {
       email: `ws-patient-${stamp}@example.com`,
       password: 'password123',
-    });
-    const patientCookie = patientLogin.cookie!;
-    const patientMe = await get('/auth/me', patientCookie);
+    })
+    const patientCookie = patientLogin.cookie!
+    const patientMe = await get('/auth/me', patientCookie)
 
     // Since the care team (decisions §3), starting a conversation needs a
     // care-team relationship, not just a shared clinic: the practitioner
@@ -196,38 +207,38 @@ describe('MessagingGateway (e2e)', () => {
       `/users/${patientMe.id}/care-team`,
       {},
       sharedPractitionerCookie,
-    );
-    expect(joinRes.status).toBe(201);
+    )
+    expect(joinRes.status).toBe(201)
 
     const conversationRes = await post(
       '/conversations',
       { userId: patientMe.id },
       sharedPractitionerCookie,
-    );
-    sharedConversationId = conversationRes.body.id;
-  });
+    )
+    sharedConversationId = conversationRes.body.id
+  })
 
   afterAll(async () => {
-    await app.close();
-    await sessionPool.end();
-  });
+    await app.close()
+    await sessionPool.end()
+  })
 
   it('rejects a socket connection with no session cookie', async () => {
-    const socket: Socket = io(baseUrl, { transports: ['websocket'] });
+    const socket: Socket = io(baseUrl, { transports: ['websocket'] })
 
     // Auth now runs as real Socket.IO middleware (server.use(), registered
     // from afterInit) rather than the old handleConnection lifecycle hook —
     // a rejected socket never completes the handshake at all, so 'connect'
     // must never fire here, only 'connect_error'.
     const outcome = await new Promise<'connected' | 'rejected'>((resolve) => {
-      socket.on('connect', () => resolve('connected'));
-      socket.on('connect_error', () => resolve('rejected'));
-    });
+      socket.on('connect', () => resolve('connected'))
+      socket.on('connect_error', () => resolve('rejected'))
+    })
 
-    expect(outcome).toBe('rejected');
-    expect(socket.connected).toBe(false);
-    socket.close();
-  });
+    expect(outcome).toBe('rejected')
+    expect(socket.connected).toBe(false)
+    socket.close()
+  })
 
   it('authenticates via the session cookie and broadcasts a message to a room', async () => {
     // extraHeaders is socket.io-client's way of attaching a raw Cookie
@@ -236,33 +247,36 @@ describe('MessagingGateway (e2e)', () => {
     const socket: Socket = io(baseUrl, {
       transports: ['websocket'],
       extraHeaders: { Cookie: sharedPractitionerCookie },
-    });
+    })
 
     await new Promise<void>((resolve, reject) => {
-      socket.on('connect', () => resolve());
-      socket.on('connect_error', (err) => reject(err));
-    });
+      socket.on('connect', () => resolve())
+      socket.on('connect_error', (err) => reject(err))
+    })
 
-    socket.emit('joinConversation', { conversationId: sharedConversationId });
+    socket.emit('joinConversation', { conversationId: sharedConversationId })
 
     const receivedMessage = new Promise<{ messageBody: string }>((resolve) => {
-      socket.on('newMessage', (msg) => resolve(msg));
-    });
+      socket.on('newMessage', (msg) => resolve(msg))
+    })
 
     // A small delay to let the join actually register server-side before
     // sending — joining a room and sending are two separate emitted events,
     // with no built-in guarantee of ordering completion on the server.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    socket.emit('sendMessage', { conversationId: sharedConversationId, messageBody: 'Hello over WebSocket!' });
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    socket.emit('sendMessage', {
+      conversationId: sharedConversationId,
+      messageBody: 'Hello over WebSocket!',
+    })
 
-    const received = await receivedMessage;
-    expect(received.messageBody).toBe('Hello over WebSocket!');
+    const received = await receivedMessage
+    expect(received.messageBody).toBe('Hello over WebSocket!')
 
-    socket.close();
-  });
+    socket.close()
+  })
 
   it('rejects joinConversation from an authenticated socket with no relationship to that conversation, with the real WsHttpExceptionFilter error', async () => {
-    const stamp = Date.now();
+    const stamp = Date.now()
 
     // A practitioner with no clinic membership at all — genuinely
     // authenticated (a valid session and role), but no relationship
@@ -279,23 +293,26 @@ describe('MessagingGateway (e2e)', () => {
         licenseNumber: `PT-WSU-${stamp}`,
       },
       adminCookie,
-    );
-    await activateAccount(sessionPool, `ws-unrelated-practitioner-${stamp}@example.com`);
+    )
+    await activateAccount(
+      sessionPool,
+      `ws-unrelated-practitioner-${stamp}@example.com`,
+    )
     const unrelatedLogin = await post('/auth/login', {
       email: `ws-unrelated-practitioner-${stamp}@example.com`,
       password: 'password123',
-    });
-    const unrelatedCookie = unrelatedLogin.cookie!;
+    })
+    const unrelatedCookie = unrelatedLogin.cookie!
 
     const socket: Socket = io(baseUrl, {
       transports: ['websocket'],
       extraHeaders: { Cookie: unrelatedCookie },
-    });
+    })
 
     await new Promise<void>((resolve, reject) => {
-      socket.on('connect', () => resolve());
-      socket.on('connect_error', (err) => reject(err));
-    });
+      socket.on('connect', () => resolve())
+      socket.on('connect_error', (err) => reject(err))
+    })
 
     // The whole point of WsHttpExceptionFilter: MessagingService throws an
     // ordinary NestJS exception, same as the REST API would, and the
@@ -306,18 +323,22 @@ describe('MessagingGateway (e2e)', () => {
     // conversation reads as NotFoundException from findConversationOrThrow,
     // before assertParticipant ever runs, rather than the
     // ForbiddenException it used to be.
-    const exception = new Promise<{ status: number; message: string[] }>((resolve) => {
-      socket.on('exception', (err) => resolve(err));
-    });
+    const exception = new Promise<{ status: number; message: string[] }>(
+      (resolve) => {
+        socket.on('exception', (err) => resolve(err))
+      },
+    )
 
-    socket.emit('joinConversation', { conversationId: sharedConversationId });
+    socket.emit('joinConversation', { conversationId: sharedConversationId })
 
-    const err = await exception;
-    expect(err.status).toBe(404);
-    expect(err.message).toEqual([`Conversation ${sharedConversationId} not found`]);
+    const err = await exception
+    expect(err.status).toBe(404)
+    expect(err.message).toEqual([
+      `Conversation ${sharedConversationId} not found`,
+    ])
 
-    socket.close();
-  });
+    socket.close()
+  })
 
   // The specific regression guard for the handleConnection-based race
   // condition this gateway used to have: a socket that emits an event the
@@ -347,36 +368,41 @@ describe('MessagingGateway (e2e)', () => {
     const socket: Socket = io(baseUrl, {
       transports: ['websocket'],
       extraHeaders: { Cookie: sharedPractitionerCookie },
-    });
+    })
 
-    const exceptions: unknown[] = [];
-    socket.on('exception', (err) => exceptions.push(err));
+    const exceptions: unknown[] = []
+    socket.on('exception', (err) => exceptions.push(err))
 
     // The regression trigger: emit 'joinConversation' the instant 'connect'
     // fires, with no setTimeout/await in between — the exact condition
     // that exposed the old handleConnection-based race.
     await new Promise<void>((resolve, reject) => {
-      socket.on('connect_error', (err) => reject(err));
+      socket.on('connect_error', (err) => reject(err))
       socket.on('connect', () => {
-        socket.emit('joinConversation', { conversationId: sharedConversationId });
-        resolve();
-      });
-    });
+        socket.emit('joinConversation', {
+          conversationId: sharedConversationId,
+        })
+        resolve()
+      })
+    })
 
     // Verification is a SEPARATE step, given a grace period to actually
     // settle server-side — this delay is only about confirming the
     // OUTCOME, not part of the regression-triggering condition above.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(exceptions).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(exceptions).toEqual([])
 
     const receivedMessage = new Promise<{ messageBody: string }>((resolve) => {
-      socket.on('newMessage', (msg) => resolve(msg));
-    });
-    socket.emit('sendMessage', { conversationId: sharedConversationId, messageBody: 'Immediate join, then confirmed' });
+      socket.on('newMessage', (msg) => resolve(msg))
+    })
+    socket.emit('sendMessage', {
+      conversationId: sharedConversationId,
+      messageBody: 'Immediate join, then confirmed',
+    })
 
-    const received = await receivedMessage;
-    expect(received.messageBody).toBe('Immediate join, then confirmed');
+    const received = await receivedMessage
+    expect(received.messageBody).toBe('Immediate join, then confirmed')
 
-    socket.close();
-  });
-});
+    socket.close()
+  })
+})

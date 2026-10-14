@@ -17,7 +17,14 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MaxLength, Length, IsOptional, ValidateIf } from 'class-validator'
+import {
+  IsEmail,
+  IsString,
+  MaxLength,
+  Length,
+  IsOptional,
+  ValidateIf,
+} from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------

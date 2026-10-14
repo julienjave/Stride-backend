@@ -23,21 +23,21 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
-import { and, eq, count, ilike, or, sql, inArray } from "drizzle-orm";
-import { DRIZZLE, type DrizzleDb } from "../database/drizzle.provider";
-import { exercises, users } from "../database/schema";
-import { CreateExerciseDto } from "./dto/create-exercise.dto";
-import { UpdateExerciseDto } from "./dto/update-exercise.dto";
-import { FindExercisesQueryDto } from "./dto/find-exercises-query.dto";
-import { StorageService } from "../storage/storage.service";
-import { extensionForMimeType } from "../common/config/image-upload.config";
-import { UserRole } from "../users/dto/create-user.dto";
-import { withRlsContext } from "../database/rls-context";
+} from '@nestjs/common'
+import { and, eq, count, ilike, or, sql, inArray } from 'drizzle-orm'
+import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
+import { exercises, users } from '../database/schema'
+import { CreateExerciseDto } from './dto/create-exercise.dto'
+import { UpdateExerciseDto } from './dto/update-exercise.dto'
+import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
+import { StorageService } from '../storage/storage.service'
+import { extensionForMimeType } from '../common/config/image-upload.config'
+import { UserRole } from '../users/dto/create-user.dto'
+import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
-type CurrentUser = { id: number; activeRole: UserRole };
+type CurrentUser = { id: number; activeRole: UserRole }
 
 @Injectable()
 export class ExercisesService {
@@ -61,12 +61,12 @@ export class ExercisesService {
           equipment: dto.equipment ?? [],
           instructions: dto.instructions,
           mediaUrls: [],
-          source: "custom",
+          source: 'custom',
           createdBy: currentUser.id,
         })
         .returning(),
-    );
-    return this.withImages(exercise);
+    )
+    return this.withImages(exercise)
   }
 
   // Appends to the existing mediaUrls array rather than replacing it.
@@ -80,14 +80,14 @@ export class ExercisesService {
     currentUser: CurrentUser,
     files: Express.Multer.File[],
   ) {
-    const exercise = await this.findOne(id);
-    this.assertCanModify(exercise, currentUser);
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
 
-    const newKeys: string[] = [];
+    const newKeys: string[] = []
     for (const [index, file] of files.entries()) {
-      const objectKey = `exercises/${id}/upload-${Date.now()}-${index}.${extensionForMimeType(file.mimetype)}`;
-      await this.storageService.upload(objectKey, file.buffer, file.mimetype);
-      newKeys.push(objectKey);
+      const objectKey = `exercises/${id}/upload-${Date.now()}-${index}.${extensionForMimeType(file.mimetype)}`
+      await this.storageService.upload(objectKey, file.buffer, file.mimetype)
+      newKeys.push(objectKey)
     }
 
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
@@ -96,8 +96,8 @@ export class ExercisesService {
         .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
         .where(eq(exercises.id, id))
         .returning(),
-    );
-    return this.withImages(updated);
+    )
+    return this.withImages(updated)
   }
 
   // --- GET ROUTES ---
@@ -114,9 +114,9 @@ export class ExercisesService {
   // route on this controller), so this is a defensive allowance for
   // callers that don't care about the mine filter, not a real gap.
   async findAll(query: FindExercisesQueryDto, currentUserId?: number) {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-    const offset = (page - 1) * limit;
+    const page = query.page ?? 1
+    const limit = query.limit ?? 20
+    const offset = (page - 1) * limit
 
     // Built as an array of conditions and combined with and(...spread)
     // rather than nested ternaries, now that there are THREE independent,
@@ -124,10 +124,10 @@ export class ExercisesService {
     // original two — nesting ternaries for three independent toggles
     // gets hard to read fast, where an array read top-to-bottom stays
     // clear as more conditions are added later.
-    const conditions = [eq(exercises.isArchived, false)];
+    const conditions = [eq(exercises.isArchived, false)]
 
     if (query.search) {
-      const term = `%${query.search}%`;
+      const term = `%${query.search}%`
       // Matches the exercise's name OR either muscle array. Arrays can't
       // use ilike() directly — a text[] column has no single string to
       // pattern-match against — so each muscle condition is a raw SQL
@@ -144,14 +144,14 @@ export class ExercisesService {
           sql`EXISTS (SELECT 1 FROM unnest(${exercises.primaryMuscles}) AS muscle WHERE muscle ILIKE ${term})`,
           sql`EXISTS (SELECT 1 FROM unnest(${exercises.secondaryMuscles}) AS muscle WHERE muscle ILIKE ${term})`,
         )!,
-      );
+      )
     }
 
     if (query.mine && currentUserId != null) {
-      conditions.push(eq(exercises.createdBy, currentUserId));
+      conditions.push(eq(exercises.createdBy, currentUserId))
     }
 
-    const whereClause = and(...conditions);
+    const whereClause = and(...conditions)
 
     // Run the page of rows and the total count as two separate, PARALLEL
     // queries (Promise.all) rather than sequentially — no reason to wait on
@@ -161,7 +161,7 @@ export class ExercisesService {
     const [rows, [{ total }]] = await Promise.all([
       this.db.query.exercises.findMany({ where: whereClause, limit, offset }),
       this.db.select({ total: count() }).from(exercises).where(whereClause),
-    ]);
+    ])
 
     // Author names are attached via a SEPARATE batched lookup, not a join
     // on the query above — same "fetch base rows, then batch-fetch related
@@ -179,12 +179,12 @@ export class ExercisesService {
           .map((row) => row.createdBy)
           .filter((id): id is number => id != null),
       ),
-    ];
+    ]
 
     const authorsById = new Map<
       number,
       { firstName: string; lastName: string }
-    >();
+    >()
     if (creatorIds.length > 0) {
       const authors = await this.db
         .select({
@@ -193,12 +193,12 @@ export class ExercisesService {
           lastName: users.lastName,
         })
         .from(users)
-        .where(inArray(users.id, creatorIds));
+        .where(inArray(users.id, creatorIds))
       for (const author of authors) {
         authorsById.set(author.id, {
           firstName: author.firstName,
           lastName: author.lastName,
-        });
+        })
       }
     }
 
@@ -211,17 +211,17 @@ export class ExercisesService {
             : null,
       })),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
-    };
+    }
   }
 
   async findOne(id: number) {
     const exercise = await this.db.query.exercises.findFirst({
       where: eq(exercises.id, id),
-    });
+    })
     if (!exercise) {
-      throw new NotFoundException(`Exercise ${id} not found`);
+      throw new NotFoundException(`Exercise ${id} not found`)
     }
-    return exercise;
+    return exercise
   }
 
   // The controller's GET /:id route calls THIS, not findOne directly —
@@ -235,18 +235,18 @@ export class ExercisesService {
   // a layer ABOVE findOne, applied only to what actually goes back to a
   // client, never to what other methods use for their own internal logic.
   async findOneForDisplay(id: number) {
-    return this.withImages(await this.findOne(id));
+    return this.withImages(await this.findOne(id))
   }
 
   // --- PATCH ROUTES ---
 
   async update(id: number, currentUser: CurrentUser, dto: UpdateExerciseDto) {
-    const exercise = await this.findOne(id);
-    this.assertCanModify(exercise, currentUser);
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
       tx.update(exercises).set(dto).where(eq(exercises.id, id)).returning(),
-    );
-    return this.withImages(updated);
+    )
+    return this.withImages(updated)
   }
 
   // "Cover image" is deliberately not its own column — it's simply
@@ -263,10 +263,10 @@ export class ExercisesService {
     currentUser: CurrentUser,
     newOrder: string[],
   ) {
-    const exercise = await this.findOne(id);
-    this.assertCanModify(exercise, currentUser);
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
 
-    const currentSet = new Set(exercise.mediaUrls);
+    const currentSet = new Set(exercise.mediaUrls)
     // Same fix as the two reorderExercises methods — a genuine permutation
     // check needs length + no-internal-duplicates + valid-membership
     // together. Here specifically, since mediaUrls gets OVERWRITTEN
@@ -279,12 +279,12 @@ export class ExercisesService {
     const isSamePermutation =
       newOrder.length === exercise.mediaUrls.length &&
       new Set(newOrder).size === newOrder.length &&
-      newOrder.every((key) => currentSet.has(key));
+      newOrder.every((key) => currentSet.has(key))
 
     if (!isSamePermutation) {
       throw new BadRequestException(
-        "The new order must contain exactly the same images as the current gallery, just reordered",
-      );
+        'The new order must contain exactly the same images as the current gallery, just reordered',
+      )
     }
 
     const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
@@ -293,34 +293,32 @@ export class ExercisesService {
         .set({ mediaUrls: newOrder })
         .where(eq(exercises.id, id))
         .returning(),
-    );
-    return this.withImages(updated);
+    )
+    return this.withImages(updated)
   }
 
   // --- DELETE ROUTES ---
 
   async archive(id: number, currentUser: CurrentUser) {
-    const exercise = await this.findOne(id);
-    this.assertCanModify(exercise, currentUser);
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
     const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .update(exercises)
         .set({ isArchived: true })
         .where(eq(exercises.id, id))
         .returning(),
-    );
-    return this.withImages(archived);
+    )
+    return this.withImages(archived)
   }
 
   // Validates the key actually belongs to THIS exercise before deleting anything
   async removeImage(id: number, currentUser: CurrentUser, objectKey: string) {
-    const exercise = await this.findOne(id);
-    this.assertCanModify(exercise, currentUser);
+    const exercise = await this.findOne(id)
+    this.assertCanModify(exercise, currentUser)
 
     if (!exercise.mediaUrls.includes(objectKey)) {
-      throw new NotFoundException(
-        "This image does not belong to this exercise",
-      );
+      throw new NotFoundException('This image does not belong to this exercise')
     }
 
     // The row stops listing the photo FIRST, and only then is the file
@@ -336,13 +334,13 @@ export class ExercisesService {
         })
         .where(eq(exercises.id, id))
         .returning(),
-    );
+    )
 
     // Best-effort: the removal is already saved, so a storage hiccup here
     // leaves an orphaned file (logged), not an error response.
-    await this.storageService.deleteUnreferenced(objectKey);
+    await this.storageService.deleteUnreferenced(objectKey)
 
-    return this.withImages(updated);
+    return this.withImages(updated)
   }
 
   // === HELPER FUNCTIONS =====================================================
@@ -353,13 +351,13 @@ export class ExercisesService {
     exercise: typeof exercises.$inferSelect,
     currentUser: CurrentUser,
   ) {
-    const isAdmin = currentUser.activeRole === UserRole.ADMIN;
+    const isAdmin = currentUser.activeRole === UserRole.ADMIN
     const isOwner =
-      exercise.source === "custom" && exercise.createdBy === currentUser.id;
+      exercise.source === 'custom' && exercise.createdBy === currentUser.id
     if (!isAdmin && !isOwner) {
       throw new ForbiddenException(
-        "You can only modify custom exercises you created, unless you are an administrator",
-      );
+        'You can only modify custom exercises you created, unless you are an administrator',
+      )
     }
   }
 
@@ -375,13 +373,13 @@ export class ExercisesService {
   // just changed in place, so any code still expecting the old
   // string[] shape fails to compile instead of silently misbehaving.
   private async withImages(exercise: typeof exercises.$inferSelect) {
-    const { mediaUrls, ...rest } = exercise;
+    const { mediaUrls, ...rest } = exercise
     const images = await Promise.all(
       mediaUrls.map(async (objectKey) => ({
         objectKey,
         url: await this.storageService.getPresignedUrl(objectKey),
       })),
-    );
-    return { ...rest, images };
+    )
+    return { ...rest, images }
   }
 }

@@ -199,7 +199,10 @@ describe('Messaging (e2e)', () => {
     await activateAccount(sessionPool, `patient-b-${stamp}@example.com`)
     await patientB
       .post('/auth/login')
-      .send({ email: `patient-b-${stamp}@example.com`, password: 'password123' })
+      .send({
+        email: `patient-b-${stamp}@example.com`,
+        password: 'password123',
+      })
   })
 
   afterAll(async () => {

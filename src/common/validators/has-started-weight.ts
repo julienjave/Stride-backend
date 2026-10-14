@@ -45,8 +45,8 @@
 // { weight: null, weightUnit: "kg" } the unit alone counts as started,
 // so weight must then be a real number — and null isn't one.
 export function hasStartedWeight(dto: {
-  weight?: number | null;
-  weightUnit?: string | null;
+  weight?: number | null
+  weightUnit?: string | null
 }): boolean {
-  return dto.weight != null || dto.weightUnit != null;
+  return dto.weight != null || dto.weightUnit != null
 }

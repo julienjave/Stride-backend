@@ -345,7 +345,9 @@ describe('Care team (e2e)', () => {
   // anyone joins patient1's team, so every candidate starts "not on it".
   describe('care-team candidates', () => {
     it("lists the practitioners of the patient's clinics — directory fields only — and nobody else", async () => {
-      const res = await practitionerA.get(`/users/${patient1Id}/care-team/candidates`)
+      const res = await practitionerA.get(
+        `/users/${patient1Id}/care-team/candidates`,
+      )
       expect(res.status).toBe(200)
       // Alice and Bob work at clinic X (patient1's); Carol, at Y, is not a
       // candidate. Ordered by last name, then first name.
@@ -367,7 +369,8 @@ describe('Care team (e2e)', () => {
     })
 
     it("follows the PATIENT's clinics, not the caller's: a patient in two clinics brings in the other clinic's practitioners", async () => {
-      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body.clinics[0].id
+      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body
+        .clinics[0].id
       const created = await admin.post('/users').send({
         email: `ct-patient3-${Date.now()}@example.com`,
         role: 'patient',
@@ -379,15 +382,25 @@ describe('Care team (e2e)', () => {
       expect(created.status).toBe(201)
       const patient3Id = created.body.id
       expect(
-        (await admin.post(`/clinics/${clinicYId}/members`).send({ userId: patient3Id })).status,
+        (
+          await admin
+            .post(`/clinics/${clinicYId}/members`)
+            .send({ userId: patient3Id })
+        ).status,
       ).toBe(201)
 
       // Alice works at X only — and still sees Carol (Y), since patient3
       // attends both.
-      const res = await practitionerA.get(`/users/${patient3Id}/care-team/candidates`)
+      const res = await practitionerA.get(
+        `/users/${patient3Id}/care-team/candidates`,
+      )
       expect(res.status).toBe(200)
-      const carol = res.body.find((c: { id: number }) => c.id === practitionerCId)
-      expect(carol.sharedClinics).toEqual([{ id: clinicYId, name: 'Care Team Clinic Y' }])
+      const carol = res.body.find(
+        (c: { id: number }) => c.id === practitionerCId,
+      )
+      expect(carol.sharedClinics).toEqual([
+        { id: clinicYId, name: 'Care Team Clinic Y' },
+      ])
       expect(res.body.map((c: { id: number }) => c.id).sort()).toEqual(
         [practitionerAId, practitionerBId, practitionerCId].sort(),
       )
@@ -397,21 +410,36 @@ describe('Care team (e2e)', () => {
         .post(`/users/${patient3Id}/care-team`)
         .send({ practitionerId: practitionerCId })
       expect(add.status).toBe(201)
-      const after = await practitionerA.get(`/users/${patient3Id}/care-team/candidates`)
-      expect(after.body.find((c: { id: number }) => c.id === practitionerCId).onCareTeam).toBe(true)
+      const after = await practitionerA.get(
+        `/users/${patient3Id}/care-team/candidates`,
+      )
+      expect(
+        after.body.find((c: { id: number }) => c.id === practitionerCId)
+          .onCareTeam,
+      ).toBe(true)
 
       // "On the team" means a CURRENT link: once ended (here by an admin, who
       // may end anyone's), Carol is a candidate again.
       expect(
-        (await admin.post(`/users/${patient3Id}/care-team/${practitionerCId}/end`)).status,
+        (
+          await admin.post(
+            `/users/${patient3Id}/care-team/${practitionerCId}/end`,
+          )
+        ).status,
       ).toBe(201)
-      const ended = await practitionerA.get(`/users/${patient3Id}/care-team/candidates`)
-      expect(ended.body.find((c: { id: number }) => c.id === practitionerCId).onCareTeam).toBe(false)
+      const ended = await practitionerA.get(
+        `/users/${patient3Id}/care-team/candidates`,
+      )
+      expect(
+        ended.body.find((c: { id: number }) => c.id === practitionerCId)
+          .onCareTeam,
+      ).toBe(false)
     })
 
-    it("leaves out deactivated practitioners, and names only the clinics a practitioner shares WITH THE PATIENT", async () => {
+    it('leaves out deactivated practitioners, and names only the clinics a practitioner shares WITH THE PATIENT', async () => {
       const stamp = Date.now()
-      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body.clinics[0].id
+      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body
+        .clinics[0].id
       // Dan works at X and Y; patient1 attends X only.
       const dan = await admin.post('/users').send({
         email: `ct-pd-${stamp}@example.com`,
@@ -422,7 +450,9 @@ describe('Care team (e2e)', () => {
         clinicId: clinicXId,
       })
       expect(dan.status).toBe(201)
-      await admin.post(`/clinics/${clinicYId}/members`).send({ userId: dan.body.id })
+      await admin
+        .post(`/clinics/${clinicYId}/members`)
+        .send({ userId: dan.body.id })
       // Eve works at X, but her account is deactivated.
       const eve = await admin.post('/users').send({
         email: `ct-pe-${stamp}@example.com`,
@@ -435,17 +465,22 @@ describe('Care team (e2e)', () => {
       expect(eve.status).toBe(201)
       expect((await admin.delete(`/users/${eve.body.id}`)).status).toBe(200)
 
-      const res = await practitionerA.get(`/users/${patient1Id}/care-team/candidates`)
+      const res = await practitionerA.get(
+        `/users/${patient1Id}/care-team/candidates`,
+      )
       const ids = res.body.map((c: { id: number }) => c.id)
       expect(ids).toContain(dan.body.id)
       expect(ids).not.toContain(eve.body.id)
       expect(
-        res.body.find((c: { id: number }) => c.id === dan.body.id).sharedClinics,
+        res.body.find((c: { id: number }) => c.id === dan.body.id)
+          .sharedClinics,
       ).toEqual([{ id: clinicXId, name: 'Care Team Clinic X' }])
     })
 
     it('is for an admin or a practitioner sharing a clinic with the patient — not another clinic, not the patient (403)', async () => {
-      expect((await admin.get(`/users/${patient1Id}/care-team/candidates`)).status).toBe(200)
+      expect(
+        (await admin.get(`/users/${patient1Id}/care-team/candidates`)).status,
+      ).toBe(200)
       for (const who of [practitionerC, patient1]) {
         const res = await who.get(`/users/${patient1Id}/care-team/candidates`)
         expect(res.status).toBe(403)
@@ -456,7 +491,9 @@ describe('Care team (e2e)', () => {
     })
 
     it('404s for someone who is not a patient', async () => {
-      const res = await admin.get(`/users/${practitionerAId}/care-team/candidates`)
+      const res = await admin.get(
+        `/users/${practitionerAId}/care-team/candidates`,
+      )
       expect(res.status).toBe(404)
     })
   })
@@ -525,7 +562,8 @@ describe('Care team (e2e)', () => {
       // (the candidates tests' patient3 sorts before "Martin").
       const directory = await practitionerA.get('/directory/patients')
       expect(
-        directory.body.find((p: { id: number }) => p.id === patient1Id).onMyCareTeam,
+        directory.body.find((p: { id: number }) => p.id === patient1Id)
+          .onMyCareTeam,
       ).toBe(true)
     })
 

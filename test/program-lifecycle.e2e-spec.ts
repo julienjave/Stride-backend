@@ -797,10 +797,16 @@ describe('Program lifecycle (e2e)', () => {
     })
 
     // A closed program has nothing to preview — closing it again is a 409.
-    it('refuses a closed program (409), and a today that can\'t be today (400)', async () => {
+    it("refuses a closed program (409), and a today that can't be today (400)", async () => {
       const program = await createProgram({ startsIn: -3 })
-      expect((await preview(practitionerA, program.id, 'tomorrow')).status).toBe(400)
-      const tooEarly = await preview(practitionerA, program.id, addDays(today, -2))
+      expect(
+        (await preview(practitionerA, program.id, 'tomorrow')).status,
+      ).toBe(400)
+      const tooEarly = await preview(
+        practitionerA,
+        program.id,
+        addDays(today, -2),
+      )
       expect(tooEarly.status).toBe(400)
       expect((tooEarly.body as { message: string[] }).message).toEqual([
         "today must be today's date in your time zone",
