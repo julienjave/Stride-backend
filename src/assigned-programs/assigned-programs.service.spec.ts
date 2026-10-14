@@ -13,6 +13,7 @@ import {
 } from "./assigned-programs.service";
 import { addDays, utcToday } from "../common/calendar-date";
 import { AuditService } from "../audit/audit.service";
+import { StorageService } from "../storage/storage.service";
 
 // The audit entries written by create / update / addScheduleVersion
 // (AuditService.logInTransaction) — shared by every test module below, and
@@ -24,6 +25,13 @@ beforeEach(() => {
   auditService.logInTransaction.mockReset();
   auditService.logInTransaction.mockResolvedValue(undefined);
 });
+
+// Signs the library photos a program exercise shows (findProgramWithExercises).
+// A fake signer: the "URL" names its key, so a test can see WHICH photos, in
+// WHICH order, reached the response — no storage, no clock.
+const storageService = {
+  getPresignedUrl: jest.fn((key: string) => Promise.resolve(`signed:${key}`)),
+};
 import { UsersService } from "../users/users.service";
 import { DRIZZLE } from "../database/drizzle.provider";
 import { UserRole } from "../users/dto/create-user.dto";
@@ -133,6 +141,7 @@ describe("AssignedProgramsService.create", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -682,6 +691,7 @@ describe("AssignedProgramsService.findAllForCurrentUser", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -876,6 +886,7 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -912,6 +923,153 @@ describe("AssignedProgramsService.assertCanView (via findOne)", () => {
     await expect(
       service.findOne(900, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException);
+  });
+});
+
+// "Exercise image upload", settled 2026-10-14: a program exercise shows its
+// LIBRARY exercise's photos, read live — the program copies the text (the
+// clinical record), not the illustrations. findOne goes through
+// findProgramWithExercises, which every program answer uses.
+describe("AssignedProgramsService.findOne — the library's photos", () => {
+  let service: AssignedProgramsService;
+  let db: {
+    query: {
+      assignedPrograms: { findFirst: jest.Mock };
+      programWorkouts: { findMany: jest.Mock };
+      assignedProgramExercises: { findMany: jest.Mock };
+      programScheduleDays: { findMany: jest.Mock };
+      programScheduleRotation: { findMany: jest.Mock };
+      programSchedules: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
+    };
+    execute: jest.Mock;
+    transaction: jest.Mock;
+  };
+  const admin = { id: 1, activeRole: UserRole.ADMIN };
+
+  // A program exercise row, with only what the read and the ordering use.
+  const row = (
+    id: number,
+    exerciseId: number,
+    sortOrder: number,
+    retiredAt: Date | null = null,
+  ) => ({
+    id,
+    assignedProgramId: 900,
+    workoutId: 950,
+    exerciseId,
+    sortOrder,
+    retiredAt,
+  });
+
+  beforeEach(async () => {
+    storageService.getPresignedUrl.mockClear();
+    db = {
+      query: {
+        assignedPrograms: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ ...OPEN_STATE, id: 900, patientId: 20 }),
+        },
+        programWorkouts: {
+          findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
+        },
+        assignedProgramExercises: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
+        programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
+        programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
+        // The library rows, as the column-limited query returns them.
+        exercises: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 5, mediaUrls: ["exercises/5/b.jpg", "exercises/5/a.jpg"] },
+            { id: 6, mediaUrls: [] },
+            { id: 7, mediaUrls: ["exercises/7/x.jpg"] },
+          ]),
+        },
+      },
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AssignedProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
+        { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
+      ],
+    }).compile();
+    service = moduleRef.get(AssignedProgramsService);
+  });
+
+  // Each exercise gets its OWN library exercise's photos, signed, in the
+  // library's order (the first is the cover: b before a, as stored). The
+  // object key itself is not sent — toStrictEqual fails on any extra key.
+  it("gives each exercise its library exercise's photos, signed, in the library's order", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(31, 5, 0),
+      row(32, 6, 1),
+      row(33, 7, 2),
+    ]);
+    const program = await service.findOne(900, admin);
+    expect(
+      program.exercises.map((exercise) => [exercise.id, exercise.images]),
+    ).toStrictEqual([
+      [
+        31,
+        [
+          { url: "signed:exercises/5/b.jpg" },
+          { url: "signed:exercises/5/a.jpg" },
+        ],
+      ],
+      [32, []],
+      [33, [{ url: "signed:exercises/7/x.jpg" }]],
+    ]);
+  });
+
+  // A removed (retired) exercise is still the record of what sessions did —
+  // the program exercise page can show it, photos included.
+  it("gives retired exercises their photos too", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(31, 5, 0),
+      row(34, 7, 1, new Date("2031-01-05T10:00:00Z")),
+    ]);
+    const program = await service.findOne(900, admin);
+    expect(
+      program.retiredExercises.map((exercise) => exercise.images),
+    ).toStrictEqual([[{ url: "signed:exercises/7/x.jpg" }]]);
+  });
+
+  // The same library exercise in two workouts (a copied warm-up): both rows
+  // show its photos — and the library is read ONCE for the whole program.
+  it("reads the library once for the whole program, even with an exercise used twice", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(31, 5, 0),
+      row(35, 5, 1),
+    ]);
+    const program = await service.findOne(900, admin);
+    expect(program.exercises.map((exercise) => exercise.images.length)).toEqual(
+      [2, 2],
+    );
+    expect(db.query.exercises.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  // No exercise at all: no library query (Drizzle refuses `IN ()`).
+  it("doesn't read the library for a program with no exercises", async () => {
+    const program = await service.findOne(900, admin);
+    expect(program.exercises).toEqual([]);
+    expect(db.query.exercises.findMany).not.toHaveBeenCalled();
+    expect(storageService.getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  // Only TypeScript's case (a foreign key guarantees the library row): a row
+  // the library query didn't return shows no photos rather than failing.
+  it("shows no photos for an exercise the library query didn't return", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(36, 99, 0),
+    ]);
+    const program = await service.findOne(900, admin);
+    expect(program.exercises[0].images).toStrictEqual([]);
   });
 });
 
@@ -970,6 +1128,7 @@ describe("AssignedProgramsService.assertCanManage (via update)", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -1074,7 +1233,7 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
     query: {
       assignedPrograms: { findFirst: jest.Mock };
       programWorkouts: { findMany: jest.Mock };
-      exercises: { findFirst: jest.Mock };
+      exercises: { findFirst: jest.Mock; findMany: jest.Mock };
       assignedProgramExercises: { findMany: jest.Mock };
       programScheduleDays: { findMany: jest.Mock };
       programScheduleRotation: { findMany: jest.Mock };
@@ -1163,6 +1322,9 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
             equipment: ["barbell"],
             instructions: ["Step one"],
           }),
+          // The library photos findProgramWithExercises reads (none here —
+          // these tests are about the exercise routes, not photos).
+          findMany: jest.fn().mockResolvedValue([]),
         },
         // findProgramWithExercises' read (and reorder's own read, which
         // tests override with mockResolvedValueOnce).
@@ -1238,6 +1400,7 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
     service = moduleRef.get(AssignedProgramsService);
@@ -1367,7 +1530,8 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
         id: 900,
         patientId: 20,
         workouts,
-        exercises: [storedRow],
+        // Every exercise carries its library photos (none in these mocks).
+        exercises: [{ ...storedRow, images: [] }],
         retiredExercises: [],
         schedules: [],
       });
@@ -1504,8 +1668,8 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
         patientId: 20,
         workouts,
         exercises: [
-          { ...storedRow, id: 30, sets: 2 },
-          { ...storedRow, sets: 4 },
+          { ...storedRow, id: 30, sets: 2, images: [] },
+          { ...storedRow, sets: 4, images: [] },
         ],
         retiredExercises: [],
         schedules: [],
@@ -1635,8 +1799,11 @@ describe("AssignedProgramsService — the exercise routes (step 3b-0)", () => {
 
       const result = await service.removeExercise(900, 31, practitioner);
 
-      expect(result.exercises).toEqual([{ ...storedRow, id: 30 }]);
-      expect(result.retiredExercises).toEqual([early, late]);
+      expect(result.exercises).toEqual([{ ...storedRow, id: 30, images: [] }]);
+      expect(result.retiredExercises).toEqual([
+        { ...early, images: [] },
+        { ...late, images: [] },
+      ]);
     });
   });
 
@@ -1718,6 +1885,7 @@ describe("AssignedProgramsService.reorderExercises", () => {
       programScheduleDays: { findMany: jest.Mock };
       programScheduleRotation: { findMany: jest.Mock };
       programSchedules: { findMany: jest.Mock };
+      exercises: { findMany: jest.Mock };
     };
     update: jest.Mock;
     execute: jest.Mock;
@@ -1757,6 +1925,8 @@ describe("AssignedProgramsService.reorderExercises", () => {
         programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
         programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
+        // The library photos findProgramWithExercises reads (none here).
+        exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
       update: txUpdate,
       // withRlsContext() wraps EVERY query in its own db.transaction() call
@@ -1773,6 +1943,7 @@ describe("AssignedProgramsService.reorderExercises", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -2013,6 +2184,7 @@ describe("AssignedProgramsService.addScheduleVersion", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -2451,6 +2623,7 @@ describe("AssignedProgramsService.update — dates, start-date moves, audit", ()
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -2841,6 +3014,7 @@ describe("AssignedProgramsService.summary", () => {
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
 
@@ -2945,6 +3119,7 @@ describe("AssignedProgramsService.removeWorkout — losing the race", () => {
           useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
         },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
     service = moduleRef.get(AssignedProgramsService);
@@ -3088,6 +3263,7 @@ describe("AssignedProgramsService — closing and archiving (step 2b-iii)", () =
           useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
         },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
     service = moduleRef.get(AssignedProgramsService);
@@ -3375,6 +3551,7 @@ describe("AssignedProgramsService.create — assigning again (step 2b-iii)", () 
           useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
         },
         { provide: AuditService, useValue: auditService },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile();
     service = moduleRef.get(AssignedProgramsService);

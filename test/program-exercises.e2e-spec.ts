@@ -272,6 +272,9 @@ describe('Program exercises (e2e)', () => {
     secondaryMuscles: string[]
     equipment: string[]
     instructions: string[]
+    // The LIBRARY exercise's photos, read live (2026-10-14): a signed URL
+    // each, never the object key.
+    images: { url: string }[]
   }
   interface Program {
     id: number
@@ -1219,6 +1222,117 @@ describe('Program exercises (e2e)', () => {
         .send({ endDate: today })
       expect(now.status).toBe(200)
       expect(bodyOf<{ endDate: string }>(now).endDate).toBe(today)
+    })
+  })
+
+  // --- 7b. Photos ----------------------------------------------------------------------------------------------
+
+  // Decided 2026-10-14: a program exercise shows its LIBRARY exercise's
+  // photos, LIVE. The program copies the clinical record (prescription and
+  // description); photos are illustrations, improved once for everyone. These
+  // tests use their own library exercise, with real uploads to storage.
+  describe('photos', () => {
+    // The library's own answer about its photos (it pairs each URL with its
+    // object key, which reorder and remove take).
+    interface LibraryExercise {
+      id: number
+      images: { objectKey: string; url: string }[]
+    }
+    // A signed URL's PATH names the file; its query (the signature, the
+    // expiry) differs every time it's signed — so photos are compared by path.
+    const pathOf = (url: string) => new URL(url).pathname
+    const photosOf = (program: Program, exerciseId: number) =>
+      program.exercises
+        .find((e) => e.exerciseId === exerciseId)!
+        .images.map((image) => pathOf(image.url))
+
+    let libraryId: number
+    let library: LibraryExercise
+    let program: Program
+
+    beforeAll(async () => {
+      const created = await practitionerA.post('/exercises').send({
+        name: 'Exercises E2E Bridge',
+        primaryMuscles: ['glutes'],
+        instructions: ['Lift the hips'],
+      })
+      expect(created.status).toBe(201)
+      libraryId = bodyOf<{ id: number }>(created).id
+      const uploaded = await practitionerA
+        .post(`/exercises/${libraryId}/images`)
+        .attach('files', Buffer.from('bridge-photo-one'), {
+          filename: 'one.png',
+          contentType: 'image/png',
+        })
+        .attach('files', Buffer.from('bridge-photo-two'), {
+          filename: 'two.png',
+          contentType: 'image/png',
+        })
+      expect(uploaded.status).toBe(201)
+      library = bodyOf<LibraryExercise>(uploaded)
+      expect(library.images).toHaveLength(2)
+
+      program = await assign()
+      const added = await practitionerA
+        .post(`/assigned-programs/${program.id}/exercises`)
+        .send({ exerciseId: libraryId })
+      expect(added.status).toBe(201)
+      program = bodyOf<Program>(added)
+    })
+
+    it("shows the library's photos as working signed URLs, without their keys", async () => {
+      const row = program.exercises.find((e) => e.exerciseId === libraryId)!
+      // Only `url` — toStrictEqual fails on an objectKey (or anything else).
+      expect(row.images.map((image) => Object.keys(image))).toStrictEqual([
+        ['url'],
+        ['url'],
+      ])
+      expect(photosOf(program, libraryId)).toEqual(
+        library.images.map((image) => pathOf(image.url)),
+      )
+      // A real signed URL: storage serves the file to whoever holds it.
+      const file = await fetch(row.images[0].url)
+      expect(file.status).toBe(200)
+      expect(await file.text()).toBe('bridge-photo-one')
+      // An exercise with no library photos shows none.
+      expect(rowOf(program).images).toEqual([])
+    })
+
+    it('follows the library LIVE: reordered, removed, then the exercise archived', async () => {
+      const [first, second] = library.images.map((image) => image.objectKey)
+      const read = async () => {
+        const res = await practitionerA.get(`/assigned-programs/${program.id}`)
+        expect(res.status).toBe(200)
+        return photosOf(bodyOf<Program>(res), libraryId)
+      }
+      const pathFor = (key: string) =>
+        pathOf(library.images.find((image) => image.objectKey === key)!.url)
+
+      const reordered = await practitionerA
+        .patch(`/exercises/${libraryId}/images`)
+        .send({ order: [second, first] })
+      expect(reordered.status).toBe(200)
+      expect(await read()).toEqual([pathFor(second), pathFor(first)])
+
+      const removed = await practitionerA
+        .delete(`/exercises/${libraryId}/images`)
+        .send({ objectKey: second })
+      expect(removed.status).toBe(200)
+      expect(await read()).toEqual([pathFor(first)])
+
+      // Archiving a library exercise only flags its row: the program still
+      // uses it, so its photo still shows.
+      const archived = await practitionerA.delete(`/exercises/${libraryId}`)
+      expect(archived.status).toBe(200)
+      expect(await read()).toEqual([pathFor(first)])
+    })
+
+    // The patient's own screens (Phase 4) read their program — under THEIR
+    // database context, where the library is readable too.
+    it('shows the patient the same photos', async () => {
+      const res = await patient.get(`/assigned-programs/${program.id}`)
+      expect(res.status).toBe(200)
+      expect(photosOf(bodyOf<Program>(res), libraryId)).toHaveLength(1)
     })
   })
 

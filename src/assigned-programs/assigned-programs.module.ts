@@ -21,6 +21,7 @@ import { Module } from '@nestjs/common'
 import { AssignedProgramsController } from './assigned-programs.controller'
 import { AssignedProgramsService } from './assigned-programs.service'
 import { UsersModule } from '../users/users.module'
+import { StorageModule } from '../storage/storage.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
@@ -28,7 +29,9 @@ import { UsersModule } from '../users/users.module'
   // A real, one-directional import — AssignedProgramsService injects
   // UsersService (isPatientManagedBy, findPatientsForPractitioner).
   // UsersModule needs nothing back, so no circularity risk.
-  imports: [UsersModule],
+  // StorageModule: StorageService signs the library photos each program
+  // exercise shows.
+  imports: [UsersModule, StorageModule],
   controllers: [AssignedProgramsController],
   providers: [AssignedProgramsService],
   exports: [AssignedProgramsService],

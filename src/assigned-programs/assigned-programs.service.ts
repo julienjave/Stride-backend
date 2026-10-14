@@ -71,6 +71,7 @@ import { withRlsContext } from "../database/rls-context";
 import { addDays, isPossibleToday, utcToday } from "../common/calendar-date";
 import { summarizeSchedule } from "./schedule/schedule-summary";
 import { AuditService } from "../audit/audit.service";
+import { StorageService } from "../storage/storage.service";
 import {
   assertStartDateMovable,
   planStartDateMove,
@@ -352,10 +353,14 @@ export class AssignedProgramsService {
   // AuditService (from the global AuditModule) writes the detailed audit
   // entries of the routes tagged @AuditedByService() — create, update and
   // addScheduleVersion — inside the change's own transaction.
+  //
+  // StorageService signs the URLs of the library photos each program
+  // exercise shows (findProgramWithExercises — "Exercise photos", below).
   constructor(
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
+    private readonly storageService: StorageService,
   ) {}
 
   // === ROUTES =============================================================
@@ -1901,23 +1906,35 @@ export class AssignedProgramsService {
   // apart, in `retiredExercises`, in the order they were removed: kept for
   // the record (the sessions that used them), and for a screen that wants
   // to show "removed exercises".
+  //
+  // Every exercise — active and retired — also carries `images`: the
+  // LIBRARY exercise's photos, read live (see libraryImagesByExercise).
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser);
-    const [workoutRows, exerciseRows, schedules] = await withRlsContext(
-      this.db,
-      currentUser,
-      async (tx) => [
-        await this.findWorkouts(tx, id),
-        await tx.query.assignedProgramExercises.findMany({
+    const [workoutRows, exerciseRows, schedules, imageKeys] =
+      await withRlsContext(this.db, currentUser, async (tx) => {
+        const rows = await tx.query.assignedProgramExercises.findMany({
           where: eq(assignedProgramExercises.assignedProgramId, id),
-        }),
-        await this.readScheduleVersions(tx, [id]),
-      ] as const,
-    );
+        });
+        return [
+          await this.findWorkouts(tx, id),
+          rows,
+          await this.readScheduleVersions(tx, [id]),
+          await this.libraryImageKeys(tx, rows),
+        ] as const;
+      });
     const workouts = orderWorkouts(workoutRows);
+    const withImages = await Promise.all(
+      exerciseRows.map(async (row) => ({
+        ...row,
+        // `?? []`: a row always has its library exercise (a foreign key), so
+        // this is only TypeScript's "a Map may not have the key" — no photos.
+        images: await this.signImages(imageKeys.get(row.exerciseId) ?? []),
+      })),
+    );
     // "No retirement date" = active (a falsy check: null from the database).
-    const active = exerciseRows.filter((row) => !row.retiredAt);
-    const retired = exerciseRows
+    const active = withImages.filter((row) => !row.retiredAt);
+    const retired = withImages
       .filter((row) => row.retiredAt)
       .sort(
         (a, b) => a.retiredAt!.getTime() - b.retiredAt!.getTime() || a.id - b.id,
@@ -1929,6 +1946,59 @@ export class AssignedProgramsService {
       retiredExercises: retired,
       schedules,
     };
+  }
+
+  // --- Exercise photos ---
+  //
+  // A program exercise shows the photos of the LIBRARY exercise it was copied
+  // from, read LIVE — not a copy (decided with the person 2026-10-14). The
+  // program copies everything that is the clinical record: the prescription,
+  // and the description (name, muscles, equipment, instructions — editable
+  // per patient since D-3, copied into every session since D-2). Photos are
+  // illustrations, like a leaflet: a better photo uploaded once in the library
+  // should reach every patient who does that exercise. What a patient is told
+  // to do is the text. (Photos chosen per program: a roadmap item of their
+  // own, "Program-specific photos".)
+  //
+  // The object keys of the library exercises these rows point at, in ONE query
+  // for the whole program (not one per exercise — the N+1 problem): exercise
+  // id → its `media_urls`, in the library's order (the first is the cover).
+  // Read in the caller's transaction, under the actor's RLS context;
+  // `exercises_select` is `USING (true)` — the library is readable by every
+  // signed-in user, patients included, so the patient's own screens (Phase 4)
+  // get the same answer. An archived library exercise keeps its photos (its
+  // row is only flagged), so a program that still uses it keeps showing them.
+  // No rows → no query (`inArray` with an empty list is an error in Drizzle).
+  // An id listed twice (the same exercise in two workouts) is harmless in
+  // `IN (…)`, so the ids aren't de-duplicated first.
+  private async libraryImageKeys(
+    executor: DrizzleDb,
+    rows: { exerciseId: number }[],
+  ): Promise<Map<number, string[]>> {
+    const ids = rows.map((row) => row.exerciseId);
+    if (ids.length === 0) {
+      return new Map();
+    }
+    const library = await executor.query.exercises.findMany({
+      where: inArray(exercises.id, ids),
+      columns: { id: true, mediaUrls: true },
+    });
+    return new Map(library.map((exercise) => [exercise.id, exercise.mediaUrls]));
+  }
+
+  // Object keys → what a client may see: a short-lived signed URL each (the
+  // same `getPresignedUrl` the library's own responses use — 15 minutes). The
+  // key itself is not sent: a program's screens only DISPLAY the photos, they
+  // never reorder or remove them (that's the library's photos page, which has
+  // its own responses), so `{ url }` is all they need. Signing is local
+  // cryptography (an HMAC over the request, with the storage credentials) —
+  // no network call per photo.
+  private async signImages(keys: string[]): Promise<{ url: string }[]> {
+    return Promise.all(
+      keys.map(async (key) => ({
+        url: await this.storageService.getPresignedUrl(key),
+      })),
+    );
   }
 
   // Where an exercise added (or moved) to this workout goes: after its
