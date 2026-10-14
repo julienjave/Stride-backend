@@ -18,9 +18,6 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
-  ArrayMaxSize,
-  ArrayMinSize,
-  IsArray,
   IsIn,
   IsInt,
   IsNumber,
@@ -30,6 +27,10 @@ import {
   Min,
   ValidateIf,
 } from "class-validator";
+import {
+  IsExerciseList,
+  IsExerciseName,
+} from "../../common/validators/exercise-description";
 import { hasStartedWeight } from "../../common/validators/has-started-weight";
 import { isPresent } from "../../common/validators/is-present";
 
@@ -46,49 +47,38 @@ import { isPresent } from "../../common/validators/is-present";
 // or not being able to express this dto's real shape at all. An
 // explicit class says plainly what this endpoint actually accepts.
 export class UpdateAssignedProgramExerciseDto {
-  // --- Snapshotted exercise fields, editable per patient -----------------
-  // Same validation shape as CreateExerciseDto's own fields — this is
-  // the same KIND of data, just stored per-assigned-program-exercise now
-  // rather than only on the shared exercise. All optional here (PATCH
-  // semantics: only touch what's provided), but a PROVIDED array still
-  // has to satisfy the same real-world minimums an exercise itself
-  // would — an exercise with a name but zero primary muscles or zero
-  // instructions isn't a meaningfully valid state just because it's a
-  // per-patient copy now.
+  // --- The program's own copy of the description, editable per patient -----
+  // The same rules as the library's exercises (exercise-description.ts —
+  // one definition shared by CreateExerciseDto, UpdateExerciseDto and this
+  // DTO): it is the same KIND of data, just this patient's copy of it.
+  //
+  // Each field optional (PATCH: only what is sent changes), but with
+  // @ValidateIf(isPresent), never @IsOptional(): the five columns are NOT
+  // NULL, and @IsOptional() let `{ "name": null }` through to Postgres — a
+  // 500, checked live 2026-10-14 for each of the five. Now `null` is a 400.
+  // For the two optional lists "none" is [] (the message says so), the one
+  // way to spell it — decided with the person, 2026-10-14. Also refused now:
+  // a blank name, and a blank item in any list (`primaryMuscles: ["  "]` used
+  // to satisfy "at least one primary muscle").
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
+  @ValidateIf(isPresent)
+  @IsExerciseName()
   name?: string;
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList("primaryMuscles")
   primaryMuscles?: string[];
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList("secondaryMuscles")
   secondaryMuscles?: string[];
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList("equipment")
   equipment?: string[];
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(50)
-  @IsString({ each: true })
-  @MaxLength(500, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList("instructions")
   instructions?: string[];
 
   // --- Per-patient prescription fields ------------------------------------

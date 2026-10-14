@@ -111,13 +111,17 @@ export function chooseSessionWorkout(
   )
 }
 
-// What a session's checklist row keeps of its program exercise (step 3b-0):
-// the name and the prescription AS THEY ARE when the session starts. The
-// program can change afterwards (a new prescription, a renamed exercise, a
-// removal) — this session's record of what it was given doesn't. A plain
-// copy, field by field: the create test checks every field of the inserted
-// row (toStrictEqual), so a field forgotten here fails it.
-function prescriptionSnapshot(programExercise: {
+// What a session's checklist row keeps of its program exercise: the name and
+// the prescription (step 3b-0), and the description — muscles, equipment,
+// instructions (2026-10-14, once a program's copy became editable per
+// patient) — AS THEY ARE when the session starts. The program can change
+// afterwards (a new prescription, a rewritten instruction, a removal) — this
+// session's record of what it was given doesn't. A plain copy, field by
+// field: the create test checks every field of the inserted row
+// (toStrictEqual), so a field forgotten here fails it — and the four
+// description columns have no default, so the database refuses a row
+// without them too.
+function exerciseSnapshot(programExercise: {
   name: string
   sets: number | null
   reps: number | null
@@ -125,6 +129,10 @@ function prescriptionSnapshot(programExercise: {
   weight: number | null
   weightUnit: 'kg' | 'lbs' | null
   notes: string | null
+  primaryMuscles: string[]
+  secondaryMuscles: string[]
+  equipment: string[]
+  instructions: string[]
 }) {
   return {
     name: programExercise.name,
@@ -134,6 +142,10 @@ function prescriptionSnapshot(programExercise: {
     weight: programExercise.weight,
     weightUnit: programExercise.weightUnit,
     notes: programExercise.notes,
+    primaryMuscles: programExercise.primaryMuscles,
+    secondaryMuscles: programExercise.secondaryMuscles,
+    equipment: programExercise.equipment,
+    instructions: programExercise.instructions,
   }
 }
 
@@ -250,9 +262,9 @@ export class SessionsService {
 
       // Today's checklist: the ACTIVE exercises of THAT workout, in their
       // order — a retired one was taken out of the program (step 3b-0). Each
-      // row points at its program exercise AND keeps a copy of its name and
-      // prescription as they are now (prescriptionSnapshot): the program
-      // says what to do from now on, each session what it was given.
+      // row points at its program exercise AND keeps a copy of its name,
+      // prescription and description as they are now (exerciseSnapshot): the
+      // program says what to do from now on, each session what it was given.
       // assigned_program_exercises, sessions, and session_exercises all
       // have RLS, so this whole insert running through withRlsContext isn't
       // just harmless, it's required — sessions_insert /
@@ -299,7 +311,7 @@ export class SessionsService {
         await tx.insert(sessionExercises).values({
           sessionId: session.id,
           assignedProgramExerciseId: pe.id,
-          ...prescriptionSnapshot(pe),
+          ...exerciseSnapshot(pe),
           completed: false,
           sortOrder: pe.sortOrder,
         })

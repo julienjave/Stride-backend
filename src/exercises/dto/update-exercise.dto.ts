@@ -17,12 +17,45 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { PartialType } from '@nestjs/mapped-types'
-import { CreateExerciseDto } from './create-exercise.dto'
+import { ValidateIf } from 'class-validator'
+import {
+  IsExerciseList,
+  IsExerciseName,
+} from '../../common/validators/exercise-description'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
-// PartialType generates a new DTO with every field from CreateExerciseDto
-// marked optional, while KEEPING each field's original validators (still a
-// string, still an array of strings) whenever it IS provided.
-export class UpdateExerciseDto extends PartialType(CreateExerciseDto) {}
+// A PATCH: every field optional — only what is sent changes. Written out,
+// no longer `PartialType(CreateExerciseDto)`: PartialType makes a field
+// optional by adding @IsOptional(), which skips every validator for `null`
+// as well as for a missing field — and all five columns are NOT NULL, so
+// `{ "name": null }` passed validation and failed in Postgres, a 500 (checked
+// live 2026-10-14, for each of the five). @ValidateIf(isPresent) skips only a
+// field that wasn't sent; `null` meets the rules and gets a 400.
+//
+// The rules are the ones CreateExerciseDto uses (exercise-description.ts), so
+// "valid when creating" and "valid when editing" can't drift apart. An empty
+// list is still refused for the two required ones (primaryMuscles,
+// instructions) and accepted for the two optional ones — [] = "none".
+export class UpdateExerciseDto {
+  @ValidateIf(isPresent)
+  @IsExerciseName()
+  name?: string
+
+  @ValidateIf(isPresent)
+  @IsExerciseList('primaryMuscles')
+  primaryMuscles?: string[]
+
+  @ValidateIf(isPresent)
+  @IsExerciseList('secondaryMuscles')
+  secondaryMuscles?: string[]
+
+  @ValidateIf(isPresent)
+  @IsExerciseList('equipment')
+  equipment?: string[]
+
+  @ValidateIf(isPresent)
+  @IsExerciseList('instructions')
+  instructions?: string[]
+}

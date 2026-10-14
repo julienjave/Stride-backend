@@ -152,6 +152,19 @@ export const sessionExercises = pgTable(
     weight: real('weight'),
     weightUnit: weightUnitEnum('weight_unit'),
     notes: text('notes'),
+    // ... and its DESCRIPTION (added 2026-10-14, migration 0034), once a
+    // program's copy of it became editable per patient: a practitioner who
+    // rewrites a step for one patient ("stop at 90°") changes what LATER
+    // sessions are told, never what an earlier session was told. All four
+    // NOT NULL like the program's columns — but with NO default, unlike
+    // there: every row is written by SessionsService.create (or the seed's
+    // copy), so a copy forgotten in some future insert must FAIL, not
+    // silently record "no instructions". Guarded by the same trigger as the
+    // prescription (0034 re-creates it with these columns).
+    primaryMuscles: text('primary_muscles').array().notNull(),
+    secondaryMuscles: text('secondary_muscles').array().notNull(),
+    equipment: text('equipment').array().notNull(),
+    instructions: text('instructions').array().notNull(),
     // --- What the patient DID -----------------------------------------------
     completed: boolean('completed').notNull().default(false),
     durationActualInSeconds: integer('duration_actual_in_seconds'),

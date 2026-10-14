@@ -268,6 +268,10 @@ describe('Program exercises (e2e)', () => {
     sortOrder: number
     retiredAt: string | null
     retiredBy: number | null
+    primaryMuscles: string[]
+    secondaryMuscles: string[]
+    equipment: string[]
+    instructions: string[]
   }
   interface Program {
     id: number
@@ -277,7 +281,8 @@ describe('Program exercises (e2e)', () => {
     retiredExercises: Exercise[]
   }
   // A session as GET /sessions/:id and POST /sessions answer: its checklist
-  // rows carry the copy of their prescription (step 3b-0).
+  // rows carry the copy of their prescription (step 3b-0) and description
+  // (2026-10-14).
   interface SessionBody {
     id: number
     exercises: {
@@ -286,6 +291,10 @@ describe('Program exercises (e2e)', () => {
       name: string
       sets: number | null
       reps: number | null
+      primaryMuscles: string[]
+      secondaryMuscles: string[]
+      equipment: string[]
+      instructions: string[]
     }[]
   }
   // A refusal's body (HttpExceptionFilter: `message` is always a list).
@@ -712,15 +721,19 @@ describe('Program exercises (e2e)', () => {
 
       // "How many SESSIONS", not how many checklist rows: a second row for
       // the same exercise in the same session (written here by the owner —
-      // the app writes one) still counts as one session. Rolled back.
+      // the app writes one) still counts as one session. Rolled back. (The
+      // copy of the description has no default since 0034: a row written by
+      // hand must carry it, like the app's.)
       it('counts sessions, not checklist rows', async () => {
         const client = await sessionPool.connect()
         try {
           await client.query('BEGIN')
           await client.query(
             `INSERT INTO session_exercises
-               (session_id, assigned_program_exercise_id, name, completed, sort_order)
-             VALUES ($1, $2, 'Exercises E2E Row', false, 9)`,
+               (session_id, assigned_program_exercise_id, name, primary_muscles,
+                secondary_muscles, equipment, instructions, completed, sort_order)
+             VALUES ($1, $2, 'Exercises E2E Row', ARRAY['back'], '{}', '{}',
+                     ARRAY['Do it'], false, 9)`,
             [sessionId, row.id],
           )
           const { rows } = await client.query<{
@@ -900,8 +913,10 @@ describe('Program exercises (e2e)', () => {
         )
         await client.query(
           `INSERT INTO session_exercises
-             (session_id, assigned_program_exercise_id, name, completed, sort_order)
-           VALUES ($1, $2, 'Exercises E2E Row', false, 0)`,
+             (session_id, assigned_program_exercise_id, name, primary_muscles,
+              secondary_muscles, equipment, instructions, completed, sort_order)
+           VALUES ($1, $2, 'Exercises E2E Row', ARRAY['back'], '{}', '{}',
+                   ARRAY['Do it'], false, 0)`,
           [s.id, row.id],
         )
         let answered = false
@@ -959,28 +974,156 @@ describe('Program exercises (e2e)', () => {
     })
   })
 
-  // --- 5. The session's copy of its prescription ---------------------------------------------------------------
+  // --- 5. The session's copy of its prescription and description -------------------------------------------
 
-  describe("a session's copy of its prescription", () => {
-    it('keeps what was prescribed when the session started, whatever the program says next', async () => {
+  describe("a session's copy of its prescription and description", () => {
+    // What the library's "Exercises E2E Row" says (beforeAll), copied by the
+    // program, then by the session.
+    const ROW_DESCRIPTION = {
+      primaryMuscles: ['back'],
+      secondaryMuscles: [],
+      equipment: [],
+      instructions: ['Do it'],
+    }
+
+    it('keeps what the session was given when it started, whatever the program says next', async () => {
       const program = await assign()
       const row = rowOf(program)
       const started = await startSession(program)
       expect(started.status).toBe(201)
+      // Copied when the session starts: the answer already carries it.
+      const rowOfSession = (body: SessionBody) =>
+        body.exercises.find((e) => e.assignedProgramExerciseId === row.id)
+      expect(rowOfSession(bodyOf<SessionBody>(started))).toMatchObject(
+        ROW_DESCRIPTION,
+      )
 
+      // The practitioner tailors the exercise for this patient — every
+      // copied field changes, so each one the session failed to keep would
+      // show below.
       const edited = await practitionerA
         .patch(`/assigned-programs/${program.id}/exercises/${row.id}`)
-        .send({ sets: 4, reps: 8, name: 'Bent-over row' })
+        .send({
+          sets: 4,
+          reps: 8,
+          name: 'Bent-over row',
+          primaryMuscles: ['lats'],
+          secondaryMuscles: ['biceps'],
+          equipment: ['dumbbell'],
+          instructions: ['Pull to the ribs', 'Stop if the back hurts'],
+        })
       expect(edited.status).toBe(200)
 
       const res = await patient.get(
         `/sessions/${bodyOf<SessionBody>(started).id}`,
       )
+      expect(rowOfSession(bodyOf<SessionBody>(res))).toMatchObject({
+        name: 'Exercises E2E Row',
+        sets: 2,
+        reps: 10,
+        ...ROW_DESCRIPTION,
+      })
+    })
+  })
+
+  // --- 5b. The description -------------------------------------------------------------------------------
+
+  // The program's own copy of the exercise's description, edited per
+  // patient (2026-10-14). The rules are exercise-description.ts's, checked in
+  // depth by its validation spec; here, over HTTP: every refusal is a 400
+  // (never a 500), changes nothing, and records nothing.
+  describe('the description', () => {
+    it.each([
+      // `null` for each of the five — each was a 500 (the null trap).
+      ['name', null, 'name must be a string'],
+      ['primaryMuscles', null, 'primaryMuscles must be a list'],
+      [
+        'secondaryMuscles',
+        null,
+        'secondaryMuscles must be a list: send [] for none',
+      ],
+      ['equipment', null, 'equipment must be a list: send [] for none'],
+      ['instructions', null, 'instructions must be a list'],
+      // Blank values — each used to be stored.
+      ['name', '   ', "The exercise's name can't be blank"],
+      ['primaryMuscles', ['  '], "A primary muscle can't be blank"],
+      ['instructions', ['Do it', ''], "An instruction step can't be blank"],
+      ['equipment', [''], "A piece of equipment can't be blank"],
+    ])(
+      'refuses %s = %j (%s), changing nothing and recording nothing',
+      async (field, value, message) => {
+        const program = await assign()
+        const row = rowOf(program)
+
+        const res = await practitionerA
+          .patch(`/assigned-programs/${program.id}/exercises/${row.id}`)
+          .send({ [field]: value })
+
+        expect(res.status).toBe(400)
+        // The FIRST message is the one that explains (a `null` also fails
+        // the field's other rules, listed after it).
+        expect(bodyOf<ErrorBody>(res).message[0]).toBe(message)
+        const after = await practitionerA.get(
+          `/assigned-programs/${program.id}`,
+        )
+        expect(rowOf(bodyOf<Program>(after))).toMatchObject({
+          name: 'Exercises E2E Row',
+          primaryMuscles: ['back'],
+          secondaryMuscles: [],
+          equipment: [],
+          instructions: ['Do it'],
+        })
+        expect(await changeEntries(program.id)).toEqual([])
+      },
+    )
+
+    it('records a real change, lists compared item by item; [] says "none"', async () => {
+      const program = await assign()
+      const row = rowOf(program)
+      // A step as long as the imported library's longest kind (they reach
+      // 744 characters; the limit is now 1,000).
+      const longStep = 'Slowly. '.repeat(100).trim()
+
+      const res = await practitionerA
+        .patch(`/assigned-programs/${program.id}/exercises/${row.id}`)
+        // primaryMuscles re-sent as stored: an EQUAL list (a new array, the
+        // same items) is not a change.
+        .send({
+          primaryMuscles: ['back'],
+          equipment: ['band'],
+          instructions: ['Do it', longStep],
+        })
+      expect(res.status).toBe(200)
+      // [] = no equipment: accepted, and recorded as a change too.
+      const cleared = await practitionerA
+        .patch(`/assigned-programs/${program.id}/exercises/${row.id}`)
+        .send({ equipment: [] })
+      expect(cleared.status).toBe(200)
+      expect(rowOf(bodyOf<Program>(cleared)).equipment).toEqual([])
+
       expect(
-        bodyOf<SessionBody>(res).exercises.find(
-          (e) => e.assignedProgramExerciseId === row.id,
-        ),
-      ).toMatchObject({ name: 'Exercises E2E Row', sets: 2, reps: 10 })
+        (await changeEntries(program.id)).map((e) => [e.action, e.details]),
+      ).toEqual([
+        [
+          'ASSIGNED_PROGRAM_EXERCISE_UPDATED',
+          {
+            exerciseRowId: row.id,
+            name: 'Exercises E2E Row',
+            changes: {
+              equipment: { from: [], to: ['band'] },
+              instructions: { from: ['Do it'], to: ['Do it', longStep] },
+            },
+          },
+        ],
+        [
+          'ASSIGNED_PROGRAM_EXERCISE_UPDATED',
+          {
+            exerciseRowId: row.id,
+            name: 'Exercises E2E Row',
+            changes: { equipment: { from: ['band'], to: [] } },
+          },
+        ],
+      ])
     })
   })
 
@@ -1259,7 +1402,7 @@ describe('Program exercises (e2e)', () => {
 
     // The patient updates their own checklist rows while doing the session
     // (the update policy) — what they DID, never what was prescribed.
-    it("refuses the patient changing a session's copy of the prescription", async () => {
+    it("refuses the patient changing a session's copy of the prescription and description", async () => {
       // Every guarded column, one at a time — so dropping any one of them
       // from the trigger's comparison fails a case.
       for (const assignment of [
@@ -1270,6 +1413,11 @@ describe('Program exercises (e2e)', () => {
         sql`weight = 1`,
         sql`weight_unit = 'lbs'`,
         sql`notes = 'skip'`,
+        // The description's copy (2026-10-14, migration 0034).
+        sql`primary_muscles = '{calves}'`,
+        sql`secondary_muscles = '{calves}'`,
+        sql`equipment = '{calves}'`,
+        sql`instructions = '{Skip it}'`,
         sql`assigned_program_exercise_id = ${active.id}`,
         sql`session_id = session_id + 1000000`,
       ]) {

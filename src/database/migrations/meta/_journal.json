@@ -239,6 +239,13 @@
       "when": 1791902345151,
       "tag": "0033_retired_exercise_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791973321412,
+      "tag": "0034_session_description_snapshot",
+      "breakpoints": true
     }
   ]
 }

@@ -119,6 +119,14 @@ describe('SessionsService.create', () => {
         weight: 20,
         weightUnit: 'kg',
         notes: 'Slowly',
+        primaryMuscles: ['quadriceps'],
+        secondaryMuscles: ['glutes'],
+        equipment: ['barbell'],
+        instructions: ['Stand tall.', 'Sit back.'],
+        // Not part of the copy: which workout, and retirement, belong to
+        // the program exercise — toStrictEqual below proves they're left out.
+        workoutId: 3,
+        retiredAt: null,
       },
       {
         id: 31,
@@ -130,6 +138,12 @@ describe('SessionsService.create', () => {
         weight: null,
         weightUnit: null,
         notes: null,
+        primaryMuscles: ['abdominals'],
+        secondaryMuscles: [],
+        equipment: [],
+        instructions: ['Hold.'],
+        workoutId: 3,
+        retiredAt: null,
       },
     ])
     db.insert.mockImplementation(() => ({
@@ -153,7 +167,8 @@ describe('SessionsService.create', () => {
     )
 
     // Each checklist row: which program exercise, a COPY of its name and
-    // prescription as they are now (step 3b-0), nothing done yet, its place.
+    // prescription (step 3b-0) and description (2026-10-14) as they are now,
+    // nothing done yet, its place.
     // toStrictEqual: no field more, none less.
     expect(sessionExerciseInserts).toStrictEqual([
       {
@@ -166,6 +181,10 @@ describe('SessionsService.create', () => {
         weight: 20,
         weightUnit: 'kg',
         notes: 'Slowly',
+        primaryMuscles: ['quadriceps'],
+        secondaryMuscles: ['glutes'],
+        equipment: ['barbell'],
+        instructions: ['Stand tall.', 'Sit back.'],
         completed: false,
         sortOrder: 0,
       },
@@ -179,6 +198,10 @@ describe('SessionsService.create', () => {
         weight: null,
         weightUnit: null,
         notes: null,
+        primaryMuscles: ['abdominals'],
+        secondaryMuscles: [],
+        equipment: [],
+        instructions: ['Hold.'],
         completed: false,
         sortOrder: 1,
       },

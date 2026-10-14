@@ -17,14 +17,12 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+import { ValidateIf } from 'class-validator'
 import {
-  IsArray,
-  ArrayMinSize,
-  ArrayMaxSize,
-  IsOptional,
-  IsString,
-  MaxLength,
-} from 'class-validator'
+  IsExerciseList,
+  IsExerciseName,
+} from '../../common/validators/exercise-description'
+import { isPresent } from '../../common/validators/is-present'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -32,36 +30,29 @@ import {
 // server-side (source is always 'custom' for anything created through this
 // endpoint; createdBy comes from the authenticated session, never the
 // request body).
+//
+// The rules for each field live in exercise-description.ts, shared with
+// UpdateExerciseDto and a program's own copy (UpdateAssignedProgramExerciseDto)
+// — one definition of "a valid exercise description". Here: the name and the
+// two required lists must be sent; the two optional lists may be left out
+// (the service stores [] — "none"), but not sent as `null`
+// (@ValidateIf(isPresent), not @IsOptional(): "none" is spelled [], one way
+// only — decided 2026-10-14).
 export class CreateExerciseDto {
-  @IsString()
-  @MaxLength(200)
+  @IsExerciseName()
   name!: string
 
-  @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @IsExerciseList('primaryMuscles')
   primaryMuscles!: string[]
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList('secondaryMuscles')
   secondaryMuscles?: string[]
 
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
+  @ValidateIf(isPresent)
+  @IsExerciseList('equipment')
   equipment?: string[]
 
-  @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(50)
-  @IsString({ each: true })
-  @MaxLength(500, { each: true })
+  @IsExerciseList('instructions')
   instructions!: string[]
 }

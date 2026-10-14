@@ -456,6 +456,115 @@ describe("Exercises (e2e)", () => {
 
   // --- Pagination (GET /exercises) ---
 
+  // --- The description rules (2026-10-14) ---
+
+  // The library shares its description rules with a program's own copy
+  // (src/common/validators/exercise-description.ts). Over HTTP: `null` was a
+  // 500 for each of the five fields on a PATCH (UpdateExerciseDto was a bare
+  // PartialType, whose @IsOptional() lets null through to the NOT NULL
+  // columns), and blank names and items were stored. Every refusal below is
+  // a 400 and changes nothing.
+  describe("the description rules", () => {
+    // Each read states the shape it expects instead of reading `any` (the
+    // project's known e2e lint category).
+    interface ExerciseBody {
+      id: number;
+      name: string;
+      primaryMuscles: string[];
+      secondaryMuscles: string[];
+      equipment: string[];
+      instructions: string[];
+    }
+    const exerciseOf = (res: request.Response) => res.body as ExerciseBody;
+    const messagesOf = (res: request.Response) =>
+      (res.body as { message: string[] }).message;
+
+    let exerciseId: number;
+    const AS_CREATED = {
+      name: "Description Rules Lunge",
+      primaryMuscles: ["shoulders"],
+      secondaryMuscles: [],
+      equipment: [],
+      instructions: ["Step one", "Step two"],
+    };
+
+    beforeAll(async () => {
+      const created = await createExercise(
+        practitionerA,
+        "Description Rules Lunge",
+      );
+      expect(created.status).toBe(201);
+      exerciseId = exerciseOf(created).id;
+    });
+
+    it.each([
+      ["name", null, "name must be a string"],
+      ["primaryMuscles", null, "primaryMuscles must be a list"],
+      [
+        "secondaryMuscles",
+        null,
+        "secondaryMuscles must be a list: send [] for none",
+      ],
+      ["equipment", null, "equipment must be a list: send [] for none"],
+      ["instructions", null, "instructions must be a list"],
+      ["name", "  ", "The exercise's name can't be blank"],
+      ["primaryMuscles", [" "], "A primary muscle can't be blank"],
+      ["instructions", [""], "An instruction step can't be blank"],
+    ])(
+      "refuses a PATCH of %s = %j (%s), changing nothing",
+      async (field, value, message) => {
+        const res = await practitionerA
+          .patch(`/exercises/${exerciseId}`)
+          .send({ [field]: value });
+        expect(res.status).toBe(400);
+        // The first message explains; a `null` also fails the field's
+        // other rules, listed after it.
+        expect(messagesOf(res)[0]).toBe(message);
+
+        const after = await practitionerA.get(`/exercises/${exerciseId}`);
+        expect(exerciseOf(after)).toMatchObject(AS_CREATED);
+      },
+    );
+
+    it("refuses creating an exercise with a blank name, or null for an optional list", async () => {
+      const blank = await practitionerA.post("/exercises").send({
+        name: "   ",
+        primaryMuscles: ["legs"],
+        instructions: ["Step one"],
+      });
+      expect(blank.status).toBe(400);
+      expect(messagesOf(blank)).toEqual(["The exercise's name can't be blank"]);
+
+      // "None" is [] — or leaving the list out — never null (it used to be
+      // read as [] when creating, but was a 500 when editing).
+      const nullList = await practitionerA.post("/exercises").send({
+        name: "Null Equipment Squat",
+        primaryMuscles: ["legs"],
+        instructions: ["Step one"],
+        equipment: null,
+      });
+      expect(nullList.status).toBe(400);
+      expect(messagesOf(nullList)[0]).toBe(
+        "equipment must be a list: send [] for none",
+      );
+    });
+
+    // The neighbours of the refusals: what IS allowed.
+    it("accepts [] for an optional list, and an instruction step past the old 500-character limit", async () => {
+      const longStep = "Keep the knee over the foot. ".repeat(25).trim();
+      expect(longStep.length).toBeGreaterThan(500);
+
+      const res = await practitionerA
+        .patch(`/exercises/${exerciseId}`)
+        .send({ equipment: [], instructions: ["Step one", longStep] });
+      expect(res.status).toBe(200);
+      expect(exerciseOf(res)).toMatchObject({
+        equipment: [],
+        instructions: ["Step one", longStep],
+      });
+    });
+  });
+
   describe("pagination", () => {
     // Scoped with a per-run "search" term so counts stay exact regardless of
     // exercises created by the other it() blocks in this file (or by
