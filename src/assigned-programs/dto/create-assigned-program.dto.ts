@@ -20,8 +20,6 @@
 import {
   IsInt,
   IsOptional,
-  IsString,
-  MaxLength,
   IsArray,
   ArrayMaxSize,
   ValidateNested,
@@ -31,6 +29,7 @@ import { Type } from 'class-transformer'
 import { AssignedExerciseInputDto } from './assigned-exercise-input.dto'
 import { NewProgramScheduleDto } from './schedule-input.dto'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
+import { IsProgramTitle } from './program-title.decorator'
 
 // --- DATA TRANSFER OBJECT -----------------------------------------------------------------------------------
 
@@ -70,8 +69,9 @@ export class CreateAssignedProgramDto {
   @Type(() => AssignedExerciseInputDto)
   exercises?: AssignedExerciseInputDto[]
 
-  @IsString()
-  @MaxLength(200)
+  // A string of at most 200 characters, not blank (program-title.decorator.ts
+  // — the same rule as renaming, written once).
+  @IsProgramTitle()
   title!: string
 
   // Calendar dates (YYYY-MM-DD), not timestamps — was @IsDateString(),

@@ -984,7 +984,68 @@ describe('Program exercises (e2e)', () => {
     })
   })
 
-  // --- 6. The end date ---------------------------------------------------------------------------------------
+  // --- 6. The title -------------------------------------------------------------------------------------------
+
+  // Step 3b-2: a program's title can't be blank — renaming (PATCH) and
+  // creating (POST) share one rule (program-title.decorator.ts). Both used
+  // to store '' and '   '.
+  describe('the title', () => {
+    it('refuses a blank title on a PATCH, changing nothing and recording nothing', async () => {
+      const program = await assign()
+      for (const title of ['', '   ']) {
+        const res = await practitionerA
+          .patch(`/assigned-programs/${program.id}`)
+          .send({ title })
+        expect(res.status).toBe(400)
+        expect(bodyOf<ErrorBody>(res).message).toEqual([
+          "The program's title can't be blank",
+        ])
+      }
+      const after = await practitionerA.get(`/assigned-programs/${program.id}`)
+      expect(bodyOf<{ title: string }>(after).title).toBe('Exercises Program')
+      // A refused request writes no entry (the pipe refuses it before the
+      // service runs).
+      expect(await changeEntries(program.id)).toEqual([])
+    })
+
+    it('records a real rename, before → after', async () => {
+      const program = await assign()
+      const res = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ title: 'Knee Rehab — Pat, phase 2' })
+      expect(res.status).toBe(200)
+      const entries = await changeEntries(program.id)
+      expect(entries.map((entry) => [entry.action, entry.details])).toEqual([
+        [
+          'ASSIGNED_PROGRAM_UPDATED',
+          {
+            changes: {
+              title: {
+                from: 'Exercises Program',
+                to: 'Knee Rehab — Pat, phase 2',
+              },
+            },
+          },
+        ],
+      ])
+    })
+
+    it('refuses creating a program with a blank title', async () => {
+      const res = await practitionerA.post('/assigned-programs').send({
+        patientId,
+        basedOnTemplateId: templateId,
+        title: '   ',
+        startDate: today,
+        schedule: EVERY_DAY_A,
+      })
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        "The program's title can't be blank",
+      ])
+    })
+  })
+
+  // --- 7. The end date ---------------------------------------------------------------------------------------
 
   describe('the end date', () => {
     // Started 10 days ago: an end 3 days ago is after the start — so the
@@ -1007,7 +1068,7 @@ describe('Program exercises (e2e)', () => {
     })
   })
 
-  // --- 7. The database's own guarantees ----------------------------------------------------------------------
+  // --- 8. The database's own guarantees ----------------------------------------------------------------------
 
   // What node-postgres reports, through Drizzle's wrapper (the original
   // error is in `cause`) — the code and, when there is one, the constraint.
