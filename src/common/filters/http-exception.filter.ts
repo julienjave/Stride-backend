@@ -19,6 +19,7 @@
 
 import {
   ArgumentsHost,
+  BadRequestException,
   Catch,
   ConflictException,
   ExceptionFilter,
@@ -30,8 +31,11 @@ import { Request, Response } from 'express'
 import {
   ASSIGNED_PROGRAM_CLOSED,
   ASSIGNED_PROGRAM_EXERCISE_RETIRED,
+  ASSIGNED_PROGRAMS_TITLE_NOT_BLANK,
+  PROGRAM_TEMPLATES_TITLE_NOT_BLANK,
   isCheckViolation,
 } from '../../database/pg-errors'
+import { blankTitleMessage } from '../validators/title'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -49,14 +53,29 @@ export const CLOSED_PROGRAM_MESSAGE =
 export const RETIRED_EXERCISE_MESSAGE =
   'This exercise was removed from the program, so it can no longer change'
 
-// The database refusals that mean "the request is fine, but the data it
-// targets can't change any more" — each turned into its 409.
+// The database refusals a client can cause, each turned into the answer the
+// app's own checks would have given:
+// - "the request is fine, but the data it targets can't change any more" —
+//   a 409;
+// - a blank title (migration 0035's CHECKs) — the 400 of the DTOs' IsTitle()
+//   rule, in its words (blankTitleMessage). The DTOs refuse a blank title
+//   first, so today nothing reaches these CHECKs through the API; if a
+//   future write path ever skipped the DTOs, the client would still get a
+//   400 that says what's wrong, not a 500.
+// Every other database error stays a 500: it means a bug, not a request to
+// fix.
 function translateDatabaseRefusal(caught: unknown): unknown {
   if (isCheckViolation(caught, ASSIGNED_PROGRAM_CLOSED)) {
     return new ConflictException(CLOSED_PROGRAM_MESSAGE)
   }
   if (isCheckViolation(caught, ASSIGNED_PROGRAM_EXERCISE_RETIRED)) {
     return new ConflictException(RETIRED_EXERCISE_MESSAGE)
+  }
+  if (isCheckViolation(caught, PROGRAM_TEMPLATES_TITLE_NOT_BLANK)) {
+    return new BadRequestException(blankTitleMessage('template'))
+  }
+  if (isCheckViolation(caught, ASSIGNED_PROGRAMS_TITLE_NOT_BLANK)) {
+    return new BadRequestException(blankTitleMessage('program'))
   }
   return caught
 }

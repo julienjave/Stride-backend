@@ -49,15 +49,32 @@ export const programStatusEnum = pgEnum("program_status", [
   "cancelled",
 ]);
 
-export const programTemplates = pgTable("program_templates", {
-  id: serial("id").primaryKey(),
-  practitionerId: integer("practitioner_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
-  title: varchar("title", { length: 255 }).notNull(),
-  description: text("description"),
-  isArchived: boolean("is_archived").notNull().default(false),
-});
+export const programTemplates = pgTable(
+  "program_templates",
+  {
+    id: serial("id").primaryKey(),
+    practitionerId: integer("practitioner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    title: varchar("title", { length: 255 }).notNull(),
+    description: text("description"),
+    isArchived: boolean("is_archived").notNull().default(false),
+  },
+  (table) => ({
+    // A title must hold something visible — the database's half of the DTOs'
+    // IsTitle() rule (common/validators/title.ts), as the workouts' names
+    // have *_name_not_blank. btrim() removes spaces at both ends; a title
+    // made only of spaces becomes '', of length 0. (btrim's default is the
+    // space character only: a title of tabs alone would pass HERE — the
+    // DTOs, whose \S covers every whitespace, refuse it first. Same choice
+    // as the workouts' CHECKs.) Added by migration 0035, which renamed the
+    // existing blank titles first ("Untitled template").
+    titleNotBlank: check(
+      "program_templates_title_not_blank",
+      sql`length(btrim(${table.title})) > 0`,
+    ),
+  }),
+);
 
 // A WORKOUT is one set of exercises done together in a session — "upper
 // body", "lower body" (decisions §5, "Settled 2026-10-10", point 1). A
@@ -228,6 +245,13 @@ export const assignedPrograms = pgTable(
     notBasedOnItself: check(
       "assigned_programs_not_based_on_itself",
       sql`${table.basedOnProgramId} IS NULL OR ${table.basedOnProgramId} <> ${table.id}`,
+    ),
+    // A title must hold something visible — see program_templates' CHECK
+    // above (migration 0035; existing blank titles became "Untitled
+    // program").
+    titleNotBlank: check(
+      "assigned_programs_title_not_blank",
+      sql`length(btrim(${table.title})) > 0`,
     ),
   }),
 );

@@ -18,25 +18,29 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsString, MaxLength, IsOptional } from 'class-validator'
+import { IsTitle } from '../../common/validators/title'
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
 
-// Exported so ProgramsService.duplicate() can trim a copy's generated
-// title ("Copy of ...") to exactly the same limit this DTO enforces on
-// every title a person types — one number, one place. If it were
-// hard-coded separately in both files, raising it here someday would
-// quietly leave duplicates trimming to the OLD limit.
-export const TEMPLATE_TITLE_MAX_LENGTH = 200
+// A description may be long (a few paragraphs about who the template is for)
+// but not unbounded. Exported for UpdateTemplateDto: one number, one place.
+export const TEMPLATE_DESCRIPTION_MAX_LENGTH = 2000
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class CreateTemplateDto {
-  @IsString()
-  @MaxLength(TEMPLATE_TITLE_MAX_LENGTH)
+  // A string of at most 200 characters, not blank — the rule every title
+  // follows, templates' and programs' (common/validators/title.ts). Until
+  // 2026-10-14 this was @IsString() + @MaxLength() only, so '' and '   '
+  // were stored. The limit (TITLE_MAX_LENGTH) lives there too, and
+  // ProgramsService.duplicate() trims its "Copy of …" title to it.
+  @IsTitle('template')
   title!: string
 
+  // Nullable column: "no description" is a real value, so @IsOptional() is
+  // right here (it skips the checks for undefined AND null).
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(TEMPLATE_DESCRIPTION_MAX_LENGTH)
   description?: string
 }

@@ -25,7 +25,7 @@ import {
 
 // The filter shapes every error response. Here: the database errors it
 // translates (the closed-program guard, migration 0031; the retired-exercise
-// guard, 0033) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
+// guard, 0033; the blank-title CHECKs, 0035) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
 // status() and json() calls are recorded.
 describe('HttpExceptionFilter', () => {
   function run(exception: unknown) {
@@ -75,13 +75,38 @@ describe('HttpExceptionFilter', () => {
     })
   })
 
+  // The blank-title CHECKs: the same 400, in the same words, as the DTOs'
+  // IsTitle() rule — whichever layer refuses, the client reads one answer.
+  // The full body is asserted (toStrictEqual, timestamp aside), so an
+  // extra or missing key fails too.
+  it.each([
+    [
+      'program_templates_title_not_blank',
+      "The template's title can't be blank",
+    ],
+    ['assigned_programs_title_not_blank', "The program's title can't be blank"],
+  ])("answers 400 for %s, in the DTO's words", (constraint, message) => {
+    const { status, body } = run(databaseError('23514', constraint))
+    expect(status).toBe(400)
+    expect({ ...body, timestamp: 'any' }).toStrictEqual({
+      statusCode: 400,
+      message: [message],
+      error: 'BadRequestException',
+      timestamp: 'any',
+      path: '/sessions',
+    })
+  })
+
   // Any other CHECK failure is still an unexpected error: a 500, its details
-  // kept out of the response.
-  it('leaves other database errors as a 500', () => {
+  // kept out of the response. The second case is a neighbour of the title
+  // CHECKs — another CHECK on the same table — so a translation that
+  // matched on the TABLE instead of the constraint would fail here.
+  it.each([
+    'assigned_programs_ends_after_start',
+    'assigned_programs_not_based_on_itself',
+  ])('leaves other database errors (%s) as a 500', (constraint) => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined)
-    const { status, body } = run(
-      databaseError('23514', 'assigned_programs_ends_after_start'),
-    )
+    const { status, body } = run(databaseError('23514', constraint))
     expect(status).toBe(500)
     expect(body.message).toEqual(['Internal server error'])
   })

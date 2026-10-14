@@ -1133,7 +1133,7 @@ describe('Program exercises (e2e)', () => {
   // creating (POST) share one rule (program-title.decorator.ts). Both used
   // to store '' and '   '.
   describe('the title', () => {
-    it('refuses a blank title on a PATCH, changing nothing and recording nothing', async () => {
+    it('refuses a blank or null title on a PATCH, changing nothing and recording nothing', async () => {
       const program = await assign()
       for (const title of ['', '   ']) {
         const res = await practitionerA
@@ -1144,6 +1144,17 @@ describe('Program exercises (e2e)', () => {
           "The program's title can't be blank",
         ])
       }
+      // null too: the column is NOT NULL, so a 400, never a 500
+      // (@ValidateIf(isPresent)) — every rule it breaks is listed.
+      const nullRes = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ title: null })
+      expect(nullRes.status).toBe(400)
+      expect(bodyOf<ErrorBody>(nullRes).message).toEqual([
+        'title must be a string',
+        'title must be shorter than or equal to 200 characters',
+        "The program's title can't be blank",
+      ])
       const after = await practitionerA.get(`/assigned-programs/${program.id}`)
       expect(bodyOf<{ title: string }>(after).title).toBe('Exercises Program')
       // A refused request writes no entry (the pipe refuses it before the
@@ -1315,6 +1326,31 @@ describe('Program exercises (e2e)', () => {
         code: '23514',
         constraint: 'assigned_program_exercises_retired_together',
       })
+    })
+
+    // The title CHECKs (migration 0035): nothing visible = refused, on
+    // both tables, whoever writes — the owner included, who bypasses row
+    // security and the closed-program guard but never a CHECK.
+    it.each([
+      ['program_templates', 'program_templates_title_not_blank'],
+      ['assigned_programs', 'assigned_programs_title_not_blank'],
+    ])('refuses a blank title in %s (CHECK)', async (table, constraint) => {
+      const id = table === 'program_templates' ? templateId : program.id
+      for (const title of ['', '   ']) {
+        expect(
+          await asOwner(`UPDATE ${table} SET title = $2 WHERE id = $1`, [
+            id,
+            title,
+          ]),
+        ).toEqual({ code: '23514', constraint })
+      }
+      // The neighbour: spaces AROUND real words are a title. (rowCount 1:
+      // the row was found and changed — then rolled back.)
+      expect(
+        await asOwner(`UPDATE ${table} SET title = '  Knee  ' WHERE id = $1`, [
+          id,
+        ]),
+      ).toEqual({ rowCount: 1 })
     })
 
     it("keeps a session's exercise from being deleted (RESTRICT)", async () => {

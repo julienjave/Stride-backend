@@ -384,6 +384,85 @@ describe("Programs (e2e)", () => {
     expect(clearRes.body.title).toBe("Renamed");
   });
 
+  // "Blank titles refused everywhere" (2026-10-14): a template's title
+  // follows the same rule as a program's (common/validators/title.ts).
+  // Before, POST stored '' and '   ', and PATCH { title: null } reached the
+  // NOT NULL column — a 500 (UpdateTemplateDto was a PartialType, whose
+  // @IsOptional() lets null through).
+  describe("the title", () => {
+    const BLANK = ["The template's title can't be blank"];
+    // The bodies this block reads, typed — the rest of this file reads
+    // `res.body` untyped (any); new code doesn't add to that.
+    type ErrorBody = { message: string[] };
+    type TemplateBody = { id: number; title: string };
+
+    it("refuses creating a template with a blank title, storing nothing", async () => {
+      const titlesOf = async () =>
+        ((await practitionerA.get("/programs")).body as TemplateBody[]).map(
+          (template) => template.title,
+        );
+      const before = await titlesOf();
+
+      // "\t": a tab alone. The database's CHECK (btrim — spaces only) would
+      // let it through; the DTO's rule (\S — every whitespace) doesn't. So
+      // this case shows the DTO itself refuses — the other two would get
+      // the same 400 from the CHECK, translated by the exception filter.
+      for (const title of ["", "   ", "\t"]) {
+        const res = await practitionerA.post("/programs").send({ title });
+        expect(res.status).toBe(400);
+        expect((res.body as ErrorBody).message).toEqual(BLANK);
+      }
+      expect(await titlesOf()).toEqual(before);
+    });
+
+    it("refuses a blank or null title on a PATCH, changing nothing", async () => {
+      const createRes = await practitionerA
+        .post("/programs")
+        .send({ title: "Keep My Title" });
+      expect(createRes.status).toBe(201);
+      const templateId = (createRes.body as TemplateBody).id;
+
+      for (const title of ["", "   ", "\t"]) {
+        const res = await practitionerA
+          .patch(`/programs/${templateId}`)
+          .send({ title });
+        expect(res.status).toBe(400);
+        expect((res.body as ErrorBody).message).toEqual(BLANK);
+      }
+      // null: a 400 that lists every rule it breaks — never the 500 it was.
+      const nullRes = await practitionerA
+        .patch(`/programs/${templateId}`)
+        .send({ title: null });
+      expect(nullRes.status).toBe(400);
+      expect((nullRes.body as ErrorBody).message).toEqual([
+        "title must be a string",
+        "title must be shorter than or equal to 200 characters",
+        ...BLANK,
+      ]);
+
+      const after = await practitionerA.get(`/programs/${templateId}`);
+      expect((after.body as TemplateBody).title).toBe("Keep My Title");
+    });
+
+    // The neighbours: what IS still a title. Spaces around real words are
+    // harmless (stored as sent — the screens trim), and 200 characters is
+    // the limit, inclusive.
+    it("accepts a title with spaces around it, and one of exactly 200 characters", async () => {
+      const spaced = await practitionerA
+        .post("/programs")
+        .send({ title: "  Spaced Template  " });
+      expect(spaced.status).toBe(201);
+      const spacedBody = spaced.body as TemplateBody;
+      expect(spacedBody.title).toBe("  Spaced Template  ");
+
+      const renamed = await practitionerA
+        .patch(`/programs/${spacedBody.id}`)
+        .send({ title: "t".repeat(200) });
+      expect(renamed.status).toBe(200);
+      expect((renamed.body as TemplateBody).title).toBe("t".repeat(200));
+    });
+  });
+
   it("validates reorder as an exact permutation of the current template exercises", async () => {
     const createRes = await practitionerA
       .post("/programs")

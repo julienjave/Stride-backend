@@ -20,7 +20,7 @@
 import { IsBoolean, IsOptional, ValidateIf } from 'class-validator'
 import { isPresent } from '../../common/validators/is-present'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
-import { IsProgramTitle } from './program-title.decorator'
+import { IsTitle } from '../../common/validators/title'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -39,13 +39,13 @@ import { IsProgramTitle } from './program-title.decorator'
 // there ("no end date any more": the program becomes open-ended), so it
 // keeps @IsOptional().
 //
-// The title: the same rule as when creating (program-title.decorator.ts) —
+// The title: the same rule as when creating (common/validators/title.ts) —
 // not blank, at most 200 characters. Before step 3b-2 a PATCH could store ''
 // or '   ' (nothing refused them, and the program page's rename was about to
 // make the route easy to reach).
 export class UpdateAssignedProgramDto {
   @ValidateIf(isPresent)
-  @IsProgramTitle()
+  @IsTitle('program')
   title?: string
 
   @ValidateIf(isPresent)

@@ -103,6 +103,16 @@ export const SESSION_EXERCISES_PROGRAM_EXERCISE_FK =
 export const ASSIGNED_PROGRAM_EXERCISE_RETIRED =
   'assigned_program_exercise_retired'
 
+// A title must hold something visible (programs.schema.ts, migration 0035) —
+// the database's half of the DTOs' IsTitle() rule. Reached through the API
+// only by a write that skipped the DTOs (none does today); HttpExceptionFilter
+// turns it into the DTOs' own 400, so the client can't tell which layer
+// refused.
+export const PROGRAM_TEMPLATES_TITLE_NOT_BLANK =
+  'program_templates_title_not_blank'
+export const ASSIGNED_PROGRAMS_TITLE_NOT_BLANK =
+  'assigned_programs_title_not_blank'
+
 // --- HELPER ------------------------------------------------------------------------------------------------
 
 // The shape we read off a Postgres error. node-postgres's DatabaseError

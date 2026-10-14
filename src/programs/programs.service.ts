@@ -33,10 +33,8 @@ import {
   templateWorkouts,
   exercises,
 } from "../database/schema";
-import {
-  CreateTemplateDto,
-  TEMPLATE_TITLE_MAX_LENGTH,
-} from "./dto/create-template.dto";
+import { CreateTemplateDto } from "./dto/create-template.dto";
+import { TITLE_MAX_LENGTH } from "../common/validators/title";
 import { UpdateTemplateDto } from "./dto/update-template.dto";
 import { AddTemplateExerciseDto } from "./dto/add-template-exercise.dto";
 import { UpdateTemplateExerciseDto } from "./dto/update-template-exercise.dto";
@@ -623,7 +621,8 @@ export class ProgramsService {
   // === HELPER FUNCTIONS =================================================================
 
   // "Copy of " + the original title, trimmed so the result never exceeds
-  // TEMPLATE_TITLE_MAX_LENGTH. The column itself (varchar 255) would
+  // TITLE_MAX_LENGTH (common/validators/title.ts — the one limit for every
+  // template and program title). The column itself (varchar 255) would
   // accept a longer one — but the frontend's edit form validates against
   // the DTO's 200, so an over-long generated title would open as
   // "invalid" before the practitioner had typed anything.
@@ -632,7 +631,7 @@ export class ProgramsService {
   // unit: a plain .slice() on the string could cut an emoji (two code
   // units) in half, leaving a broken, unpaired half-character at the end.
   private buildDuplicateTitle(title: string) {
-    const room = TEMPLATE_TITLE_MAX_LENGTH - DUPLICATE_TITLE_PREFIX.length;
+    const room = TITLE_MAX_LENGTH - DUPLICATE_TITLE_PREFIX.length;
     return DUPLICATE_TITLE_PREFIX + Array.from(title).slice(0, room).join("");
   }
 
