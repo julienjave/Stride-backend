@@ -191,12 +191,10 @@ describe('MedicalFiles (e2e)', () => {
       role: 'patient',
     })
     await activateAccount(sessionPool, `patient-b-${stamp}@example.com`)
-    await patientB
-      .post('/auth/login')
-      .send({
-        email: `patient-b-${stamp}@example.com`,
-        password: 'password123',
-      })
+    await patientB.post('/auth/login').send({
+      email: `patient-b-${stamp}@example.com`,
+      password: 'password123',
+    })
   })
 
   afterAll(async () => {
@@ -212,12 +210,10 @@ describe('MedicalFiles (e2e)', () => {
   })
 
   it('rejects a practitioner creating an entry for a patient they do not manage', async () => {
-    const res = await practitionerB
-      .post('/medical-files')
-      .send({
-        patientId: patientAId,
-        clinicalData: { note: 'should not work' },
-      })
+    const res = await practitionerB.post('/medical-files').send({
+      patientId: patientAId,
+      clinicalData: { note: 'should not work' },
+    })
     expect(res.status).toBe(403)
   })
 
@@ -312,12 +308,10 @@ describe('MedicalFiles (e2e)', () => {
   })
 
   it('exposes no update or delete route at all — clinical entries are append-only', async () => {
-    const createRes = await practitionerA
-      .post('/medical-files')
-      .send({
-        patientId: patientAId,
-        clinicalData: { note: 'append only check' },
-      })
+    const createRes = await practitionerA.post('/medical-files').send({
+      patientId: patientAId,
+      clinicalData: { note: 'append only check' },
+    })
     const entryId = createRes.body.id
 
     const patchRes = await admin

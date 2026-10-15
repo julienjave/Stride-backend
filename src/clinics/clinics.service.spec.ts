@@ -804,16 +804,14 @@ describe('ClinicsService.listMembers', () => {
       .mockReturnValueOnce({
         from: jest.fn().mockReturnValue({
           innerJoin: jest.fn().mockReturnValue({
-            where: jest
-              .fn()
-              .mockResolvedValue([
-                {
-                  id: 10,
-                  email: 'member@example.com',
-                  firstName: 'Mem',
-                  lastName: 'Ber',
-                },
-              ]),
+            where: jest.fn().mockResolvedValue([
+              {
+                id: 10,
+                email: 'member@example.com',
+                firstName: 'Mem',
+                lastName: 'Ber',
+              },
+            ]),
           }),
         }),
       })

@@ -198,12 +198,10 @@ describe('AssignedPrograms (e2e)', () => {
       role: 'patient',
     })
     await activateAccount(sessionPool, `patient-b-${stamp}@example.com`)
-    await patientB
-      .post('/auth/login')
-      .send({
-        email: `patient-b-${stamp}@example.com`,
-        password: 'password123',
-      })
+    await patientB.post('/auth/login').send({
+      email: `patient-b-${stamp}@example.com`,
+      password: 'password123',
+    })
 
     const exerciseRes = await practitionerA.post('/exercises').send({
       name: 'AP E2E Squat',

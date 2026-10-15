@@ -694,12 +694,10 @@ describe('Users (e2e)', () => {
     // licenseNumber became admin-only (design decisions §4): a professional
     // credential, set or verified by an admin — no longer self-editable.
     it('refuses a practitioner changing their own licenseNumber, and changes nothing — not even the other field sent with it', async () => {
-      const res = await practitionerA
-        .patch(`/users/${practitionerAId}`)
-        .send({
-          licenseNumber: `PT-A-SELF-${Date.now()}`,
-          specialties: ['should not apply'],
-        })
+      const res = await practitionerA.patch(`/users/${practitionerAId}`).send({
+        licenseNumber: `PT-A-SELF-${Date.now()}`,
+        specialties: ['should not apply'],
+      })
       expect(res.status).toBe(403)
 
       // Read back with a separate GET: the response to a refused request
