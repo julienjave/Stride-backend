@@ -896,6 +896,28 @@ describe('Workouts (e2e)', () => {
       expect(await changeEntries()).toEqual([])
     })
 
+    // The program LIST carries each program's workouts too (the patient
+    // home names a day's workout from it — Phase 4), in the program's
+    // order: after B is moved first, B comes first — by position, not by id
+    // (A's id is the smaller). Read as the patient, through the policies.
+    it("lists each program's workouts, in order, to the patient", async () => {
+      const [a, b] = program.workouts
+      const moved = await practitionerA
+        .patch(`/assigned-programs/${program.id}/workouts`)
+        .send({ order: [b.id, a.id] })
+      expect(moved.status).toBe(200)
+
+      const res = await patient.get('/assigned-programs')
+      expect(res.status).toBe(200)
+      const row = (
+        res.body as { id: number; workouts: { id: number; name: string }[] }[]
+      ).find((p) => p.id === program.id)
+      expect(row?.workouts.map((w) => [w.id, w.name])).toEqual([
+        [b.id, 'Lower body'],
+        [a.id, a.name],
+      ])
+    })
+
     it('reorders the workouts, recording both orders', async () => {
       const [a, b] = program.workouts
       const res = await practitionerA

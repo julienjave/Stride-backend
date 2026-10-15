@@ -95,6 +95,7 @@ function summarize(input: {
   sessions?: { id: number; localDate: string; workoutId: number }[]
   attempts?: SummaryAttempt[]
   today: string
+  through?: string
 }): ScheduleSummary {
   const full: ScheduleSummaryInput = {
     startDate: d(input.start),
@@ -103,6 +104,7 @@ function summarize(input: {
     sessions: input.sessions ?? [],
     attempts: input.attempts,
     today: d(input.today),
+    through: input.through === undefined ? undefined : d(input.through),
   }
   return summarizeSchedule(full)
 }
@@ -1702,5 +1704,85 @@ describe('attempts (skipped and stopped sessions — labels only)', () => {
     expect(s.days.map((day) => day.attempts)).toEqual([[], [], []])
     expect(s.otherAttempts).toEqual([])
     expect(s.totals).toMatchObject({ skipped: 0, incomplete: 0 })
+  })
+})
+
+describe('through (covering further ahead — the patient home)', () => {
+  // Open-ended, Mon/Wed/Fri from Monday 12: program weeks run Monday to
+  // Sunday. Today is Wednesday 14, so by default the summary stops on Sunday
+  // 18, the end of the current program week.
+  const openEnded = (through?: string, today = '14') =>
+    summarize({ start: '12', versions: [weekdays(MWF, '12')], today, through })
+
+  it.each<[string, string | undefined, string]>([
+    ['by default: the end of the current program week', undefined, '18'],
+    ['a day in the next week: to the end of THAT week', '21', '25'],
+    ['the first day of the next week: that whole week', '19', '25'],
+    ["the current week's last day: no further", '18', '18'],
+    ['an earlier day never shortens the summary', '13', '18'],
+  ])('%s', (_label, through, lastDay) => {
+    expect(openEnded(through).lastDay).toBe(d(lastDay))
+  })
+
+  it('lists the further scheduled days as upcoming, and judges the rest as before', () => {
+    expect(dayRows(openEnded('21'))).toStrictEqual([
+      ['12', 'missed'],
+      ['14', 'due'],
+      ['16', 'upcoming'],
+      ['19', 'upcoming'],
+      ['21', 'upcoming'],
+      ['23', 'upcoming'],
+    ])
+  })
+
+  it("doesn't change what's next", () => {
+    expect(openEnded('21').nextWorkout).toStrictEqual(openEnded().nextWorkout)
+  })
+
+  it('never goes past an end date', () => {
+    const s = summarize({
+      start: '12',
+      end: '20',
+      versions: [weekdays(MWF, '12')],
+      today: '14',
+      through: '28',
+    })
+    expect(s.lastDay).toBe(d('20'))
+    expect(dayRows(s).map(([day]) => day)).toStrictEqual([
+      '12',
+      '14',
+      '16',
+      '19',
+    ])
+  })
+
+  it("counts from a program's start when it hasn't started yet", () => {
+    // Starts Monday 19; today Wednesday 14. By default: its first week (to
+    // Sunday 25). Through Wednesday 28: its second week too.
+    const notStarted = (through?: string) =>
+      summarize({
+        start: '19',
+        versions: [weekdays(MWF, '19')],
+        today: '14',
+        through,
+      })
+    expect(notStarted().lastDay).toBe(d('25'))
+    // Its week 2 runs Monday 26 to Sunday 1 November (past the helper's
+    // October, hence the full date).
+    expect(notStarted('28').lastDay).toBe('2026-11-01')
+  })
+
+  it('adds the coming weeks of an N-a-week program as upcoming, with no total', () => {
+    const s = summarize({
+      start: '12',
+      versions: [perWeek(3, '12')],
+      today: '14',
+      through: '21',
+    })
+    expect(weekRows(s)).toStrictEqual([
+      ['12', '18', 3, 0, 'in_progress'],
+      ['19', '25', 3, 0, 'upcoming'],
+    ])
+    expect(s.totals.expected).toBeNull()
   })
 })

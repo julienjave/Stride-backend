@@ -679,6 +679,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
       programScheduleDays: { findMany: jest.Mock }
       programScheduleRotation: { findMany: jest.Mock }
       programSchedules: { findMany: jest.Mock }
+      programWorkouts: { findMany: jest.Mock }
     }
     select: jest.Mock
     execute: jest.Mock
@@ -700,6 +701,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
         programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
         programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
         programSchedules: { findMany: jest.fn().mockResolvedValue([]) },
+        programWorkouts: { findMany: jest.fn().mockResolvedValue([]) },
       },
       select: jest.fn(() => ({ from: () => ({ where: assignerWhere }) })),
       execute: jest.fn().mockResolvedValue(undefined),
@@ -783,18 +785,21 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
         assignedBy: 7,
         assigner: { id: 7, firstName: 'Alex', lastName: 'Moreau' },
         schedules: [],
+        workouts: [],
       },
       {
         id: 2,
         assignedBy: 8,
         assigner: { id: 8, firstName: 'Sam', lastName: 'Okafor' },
         schedules: [],
+        workouts: [],
       },
       {
         id: 3,
         assignedBy: 7,
         assigner: { id: 7, firstName: 'Alex', lastName: 'Moreau' },
         schedules: [],
+        workouts: [],
       },
     ])
     // One query for three programs — not one per program.
@@ -831,13 +836,49 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
     expect(db.query.programSchedules.findMany).toHaveBeenCalledTimes(1)
   })
 
-  it("doesn't look for schedules when there are no programs", async () => {
+  it("doesn't look for schedules or workouts when there are no programs", async () => {
     db.query.assignedPrograms.findMany.mockResolvedValue([])
 
     await expect(
       service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN }),
     ).resolves.toEqual([])
     expect(db.query.programSchedules.findMany).not.toHaveBeenCalled()
+    expect(db.query.programWorkouts.findMany).not.toHaveBeenCalled()
+  })
+
+  // As for the versions: the query's answer interleaves the programs AND
+  // lists each program's workouts out of order — grouping must follow
+  // assignedProgramId, and each program's list must be put in order
+  // (position, then id on a tie: 51 and 52 share position 1).
+  it("adds each program's workouts, grouped and in order, from ONE query", async () => {
+    db.query.assignedPrograms.findMany.mockResolvedValue([
+      { id: 1, assignedBy: 7 },
+      { id: 2, assignedBy: 7 },
+      { id: 3, assignedBy: 7 },
+    ])
+    db.query.programWorkouts.findMany.mockResolvedValue([
+      { id: 52, assignedProgramId: 1, name: null, sortOrder: 1 },
+      { id: 60, assignedProgramId: 2, name: 'Strength', sortOrder: 0 },
+      { id: 50, assignedProgramId: 1, name: 'Mobility', sortOrder: 0 },
+      { id: 51, assignedProgramId: 1, name: null, sortOrder: 1 },
+    ])
+
+    const result = await service.findAllForCurrentUser({
+      id: 1,
+      activeRole: UserRole.ADMIN,
+    })
+
+    expect(result.map((p) => [p.id, p.workouts.map((w) => w.id)])).toEqual([
+      [1, [50, 51, 52]],
+      [2, [60]],
+      // None in the answer → [], never undefined.
+      [3, []],
+    ])
+    // The rows themselves, untouched (names included).
+    expect(result[1].workouts).toStrictEqual([
+      { id: 60, assignedProgramId: 2, name: 'Strength', sortOrder: 0 },
+    ])
+    expect(db.query.programWorkouts.findMany).toHaveBeenCalledTimes(1)
   })
 
   describe('with patientId', () => {
@@ -3159,6 +3200,84 @@ describe('AssignedProgramsService.summary', () => {
       },
     ])
   })
+
+  // Phase 4, the patient home: the session in progress rides along — read
+  // by the same query, never given to the module (it would otherwise count
+  // nowhere and label nothing — nothing to see), so the totals and weeks
+  // are those of the completed session alone.
+  it('adds the session in progress as openSession, apart from what counts', async () => {
+    sessionsWhere.mockResolvedValue([
+      {
+        id: 31,
+        localDate: start,
+        workoutId: 1,
+        countsFor: null,
+        status: 'completed',
+        endReason: null,
+      },
+      {
+        id: 33,
+        localDate: today,
+        workoutId: 1,
+        countsFor: null,
+        status: 'in_progress',
+        endReason: null,
+      },
+    ])
+
+    const result = await service.summary(900, practitioner, today)
+
+    expect(result.openSession).toStrictEqual({
+      sessionId: 33,
+      localDate: today,
+      workoutId: 1,
+    })
+    expect(result.totals).toMatchObject({ done: 1, incomplete: 0, skipped: 0 })
+    expect(result.weeks[0].sessionIds).toEqual([31])
+    expect(result.weeks[0].attempts).toStrictEqual([])
+    expect(result.extraSessions).toStrictEqual([])
+  })
+
+  it('says openSession null when no session is in progress', async () => {
+    const result = await service.summary(900, practitioner, today)
+    expect(result.openSession).toBeNull()
+  })
+
+  // `through` reaches the module: the program is open-ended (default: the
+  // current program week only), so a later `through` covers more weeks.
+  it('covers up to `through` when asked', async () => {
+    const through = addDays(today, 14)
+    const plain = await service.summary(900, practitioner, today)
+    const further = await service.summary(900, practitioner, today, through)
+    expect(further.lastDay > plain.lastDay).toBe(true)
+    expect(further.lastDay >= through).toBe(true)
+  })
+
+  it('accepts `through` up to a year after today — and today itself', async () => {
+    await expect(
+      service.summary(900, practitioner, today, addDays(today, 366)),
+    ).resolves.toBeDefined()
+    await expect(
+      service.summary(900, practitioner, today, today),
+    ).resolves.toBeDefined()
+  })
+
+  it.each([
+    ['before today', -1, 'through must be on or after today'],
+    [
+      'more than a year ahead',
+      367,
+      'through can be at most a year after today',
+    ],
+  ])(
+    'refuses a `through` %s, before reading anything',
+    async (_label, offset, message) => {
+      await expect(
+        service.summary(900, practitioner, today, addDays(today, offset)),
+      ).rejects.toThrow(new BadRequestException(message))
+      expect(db.transaction).not.toHaveBeenCalled()
+    },
+  )
 
   it("refuses a today that can't be today anywhere, before reading anything", async () => {
     await expect(

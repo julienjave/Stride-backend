@@ -40,7 +40,10 @@ import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
-import { ScheduleSummaryQueryDto } from './dto/schedule-summary-query.dto'
+import {
+  ProgramSummaryQueryDto,
+  ScheduleSummaryQueryDto,
+} from './dto/schedule-summary-query.dto'
 import { ProgramSessionsQueryDto } from './dto/program-sessions-query.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
@@ -214,9 +217,14 @@ export class AssignedProgramsController {
   summary(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: CurrentUser,
-    @Query() query: ScheduleSummaryQueryDto,
+    @Query() query: ProgramSummaryQueryDto,
   ) {
-    return this.assignedProgramsService.summary(id, user, query.today)
+    return this.assignedProgramsService.summary(
+      id,
+      user,
+      query.today,
+      query.through,
+    )
   }
 
   @Get(':id')

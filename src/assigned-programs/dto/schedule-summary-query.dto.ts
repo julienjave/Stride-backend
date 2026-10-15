@@ -17,6 +17,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+import { IsOptional } from 'class-validator'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
@@ -32,4 +33,23 @@ import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 export class ScheduleSummaryQueryDto {
   @IsCalendarDate()
   today!: string
+}
+
+// GET /assigned-programs/:id/summary only: `today`, plus an optional
+// `through=YYYY-MM-DD` — cover at least up to that day (the patient home
+// reads "upcoming" two weeks ahead; an open-ended program's summary
+// otherwise stops at the end of the current program week). Its range is
+// checked by the service (on or after today, at most a year ahead).
+//
+// A subclass, not a field on ScheduleSummaryQueryDto: the closing preview
+// uses that one too, and with `forbidNonWhitelisted` a `through` sent there
+// is refused (400) instead of silently meaning nothing.
+//
+// @IsOptional() is safe here (unlike on a body's NOT NULL field — the null
+// trap): a query string has no null, only absent or text, and an EMPTY
+// `?through=` is text — refused by @IsCalendarDate().
+export class ProgramSummaryQueryDto extends ScheduleSummaryQueryDto {
+  @IsOptional()
+  @IsCalendarDate()
+  through?: string
 }

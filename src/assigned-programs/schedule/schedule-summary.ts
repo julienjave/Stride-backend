@@ -130,6 +130,14 @@ export interface ScheduleSummaryInput {
   attempts?: SummaryAttempt[]
   // The viewer's today (a calendar date sent by their app).
   today: string
+  // Optional (added for the patient home, Phase 4): cover AT LEAST up to
+  // this day — for an open-ended program, whose summary otherwise stops at
+  // the end of the current program week, so "upcoming" can be read further
+  // ahead. Rounded up to the end of ITS program week (a summary covers whole
+  // program weeks, the unit weekly counts are judged in). Never beyond an
+  // end date, and never shorter than the default: it only extends. The
+  // service bounds it (assertThroughInRange).
+  through?: string
 }
 
 // An attempt as the summary reports it — on a scheduled day (whose date it
@@ -297,11 +305,15 @@ function versionOn(
 
 // The last day the summary covers. With an end date: the end date. Open-
 // ended: the last day of the program week containing today (so the current
-// week is complete), or the first week if the program hasn't started.
+// week is complete), or the first week if the program hasn't started — or,
+// when `through` is later, the last day of ITS program week.
+// ('YYYY-MM-DD' strings compare as dates, so the larger is the later day.)
 function lastDayCovered(input: ScheduleSummaryInput): string {
   if (input.endDate !== null) return input.endDate
-  const reference =
-    input.today < input.startDate ? input.startDate : input.today
+  let reference = input.today < input.startDate ? input.startDate : input.today
+  if (input.through !== undefined && input.through > reference) {
+    reference = input.through
+  }
   const weekIndex = Math.floor(daysBetween(input.startDate, reference) / 7)
   return addDays(input.startDate, weekIndex * 7 + 6)
 }

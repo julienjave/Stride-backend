@@ -72,7 +72,12 @@ import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
-import { addDays, isPossibleToday, utcToday } from '../common/calendar-date'
+import {
+  addDays,
+  daysBetween,
+  isPossibleToday,
+  utcToday,
+} from '../common/calendar-date'
 import { summarizeSchedule } from './schedule/schedule-summary'
 import { AuditService } from '../audit/audit.service'
 import { StorageService } from '../storage/storage.service'
@@ -315,6 +320,23 @@ function assertPossibleToday(today: string) {
     throw new BadRequestException(
       "today must be today's date in your time zone",
     )
+  }
+}
+
+// The summary's optional `through` (the patient home's "upcoming", Phase 4):
+// on or after `today` — an earlier day asks for nothing the summary doesn't
+// already cover, so it's a mistake worth saying — and at most a year ahead.
+// The bound is about cost, not meaning: the schedule module walks the
+// program one day at a time, and `through=9999-12-31` would make ONE request
+// walk three million days. A year is far more than any screen shows.
+export const SUMMARY_THROUGH_MAX_DAYS = 366
+
+function assertThroughInRange(today: string, through: string) {
+  if (through < today) {
+    throw new BadRequestException('through must be on or after today')
+  }
+  if (daysBetween(today, through) > SUMMARY_THROUGH_MAX_DAYS) {
+    throw new BadRequestException('through can be at most a year after today')
   }
 }
 
@@ -710,9 +732,16 @@ export class AssignedProgramsService {
   //
   // ...and with its `schedules` (every version, oldest first), so a list row
   // can say "3× a week · weeks start Thursday" — loaded the same batched way.
+  //
+  // ...and with its `workouts` (in order — the patient home, Phase 4), so a
+  // screen can name a day's workout ("B · Strength") from the list, without
+  // asking for every program in full (exercises and signed photo URLs).
   async findAllForCurrentUser(currentUser: CurrentUser, patientId?: number) {
     const programs = await this.findProgramRows(currentUser, patientId)
-    return this.withSchedules(currentUser, await this.withAssigners(programs))
+    return this.withWorkouts(
+      currentUser,
+      await this.withSchedules(currentUser, await this.withAssigners(programs)),
+    )
   }
 
   private async findProgramRows(
@@ -828,6 +857,37 @@ export class AssignedProgramsService {
     return programs.map((p) => ({ ...p, schedules: byProgram.get(p.id) ?? [] }))
   }
 
+  // Adds `workouts` to each program: ONE query for the whole list, grouped
+  // by program in memory, each program's put in order with orderWorkouts —
+  // the one ordering rule every workout list uses (position, then id). The
+  // same batching as withSchedules, and for the same reason in the caller's
+  // RLS context: program_workouts' policies show only workouts of programs
+  // the caller may see — exactly the ones asked for.
+  private async withWorkouts<T extends { id: number }>(
+    currentUser: CurrentUser,
+    programs: T[],
+  ) {
+    if (programs.length === 0) return []
+    const rows = await withRlsContext(this.db, currentUser, (tx) =>
+      tx.query.programWorkouts.findMany({
+        where: inArray(
+          programWorkouts.assignedProgramId,
+          programs.map((p) => p.id),
+        ),
+      }),
+    )
+    const byProgram = new Map<number, typeof rows>()
+    for (const row of rows) {
+      const workouts = byProgram.get(row.assignedProgramId) ?? []
+      workouts.push(row)
+      byProgram.set(row.assignedProgramId, workouts)
+    }
+    return programs.map((p) => ({
+      ...p,
+      workouts: orderWorkouts(byProgram.get(p.id) ?? []),
+    }))
+  }
+
   async findOne(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
@@ -844,8 +904,25 @@ export class AssignedProgramsService {
   // Same people as viewing the program (assertCanView): the care team, the
   // patient, an admin. The reads run in their RLS context — sessions and
   // schedule versions have policies of their own, which agree.
-  async summary(id: number, currentUser: CurrentUser, today: string) {
+  //
+  // `through` (optional): cover at least up to that day — see
+  // ScheduleSummaryInput.through. Checked before anything is read.
+  //
+  // The answer adds `openSession` (Phase 4, the patient home): the program's
+  // session IN PROGRESS — `{ sessionId, localDate, workoutId }` — or null.
+  // The module never sees it (an open session neither counts nor labels
+  // anything yet); it rides along so a screen can offer "Resume" instead of
+  // "Start" without a second request. At most one exists (the partial unique
+  // index sessions_one_open_per_program); its `localDate` may be an earlier
+  // day (left open — the next start will close it).
+  async summary(
+    id: number,
+    currentUser: CurrentUser,
+    today: string,
+    through?: string,
+  ) {
     assertPossibleToday(today)
+    if (through !== undefined) assertThroughInRange(today, through)
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
 
@@ -859,8 +936,9 @@ export class AssignedProgramsService {
           // done, how it ended), for the sessions that ENDED: completed ones
           // count ("done" means completed — decided 2026-10-09); skipped and
           // stopped ones are labels (step 1b, 2026-10-15). An OPEN session
-          // is neither yet. The index on (assigned_program_id, local_date)
-          // serves this read.
+          // is neither yet — it's read in the same query for `openSession`
+          // only, and kept away from the module below. The index on
+          // (assigned_program_id, local_date) serves this read.
           await tx
             .select({
               id: sessions.id,
@@ -879,13 +957,15 @@ export class AssignedProgramsService {
                   'completed',
                   'skipped',
                   'incomplete',
+                  'in_progress',
                 ]),
               ),
             ),
         ] as const,
     )
 
-    return summarizeSchedule({
+    const open = rows.find((row) => row.status === 'in_progress')
+    const summary = summarizeSchedule({
       startDate: program.startDate,
       endDate: program.endDate,
       versions,
@@ -912,7 +992,18 @@ export class AssignedProgramsService {
           : [],
       ),
       today,
+      through,
     })
+    return {
+      ...summary,
+      openSession: open
+        ? {
+            sessionId: open.id,
+            localDate: open.localDate,
+            workoutId: open.workoutId,
+          }
+        : null,
+    }
   }
 
   // GET /assigned-programs/:id/sessions?from=&to= (Phase 4 step 1b, decided

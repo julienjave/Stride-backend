@@ -17,7 +17,12 @@ import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
 import { getAppDatabaseUrl, getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
-import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
+import {
+  addDays,
+  daysBetween,
+  isoWeekday,
+  utcToday,
+} from '../src/common/calendar-date'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -1952,9 +1957,126 @@ describe('Sessions (e2e)', () => {
       expect(summary.otherAttempts).toEqual([])
     })
 
+    // The patient home (Phase 4): the summary names the session in progress
+    // — the one planted today — for every reader of the program, while still
+    // not counting it (the test above).
+    it('names the session in progress, for the patient and the care team', async () => {
+      for (const reader of [patientA, practitionerA]) {
+        const res = await reader.get(
+          `/assigned-programs/${program.id}/summary?today=${today}`,
+        )
+        expect(res.status).toBe(200)
+        expect(bodyOf<{ openSession: unknown }>(res).openSession).toStrictEqual(
+          {
+            sessionId: ids.open,
+            localDate: today,
+            workoutId: program.workouts[0].id,
+          },
+        )
+      }
+    })
+
     // GET /sessions (every session the caller could see, unfiltered) is gone.
     it('has no GET /sessions any more', async () => {
       expect((await patientA.get('/sessions')).status).toBe(404)
+    })
+  })
+
+  // --- 11b. The summary, for the patient home (Phase 4) ------------------------------
+
+  describe('the summary for the patient home', () => {
+    const summaryOf = async (programId: number, query = '') =>
+      patientA.get(
+        `/assigned-programs/${programId}/summary?today=${today}${query}`,
+      )
+
+    // Started → named; completed → gone (nothing in progress), and the
+    // completed session counts instead.
+    it('names the open session while it is open, and nothing once it ends', async () => {
+      const program = await newProgram()
+      expect(
+        bodyOf<{ openSession: unknown }>(await summaryOf(program.id))
+          .openSession,
+      ).toBeNull()
+
+      const started = await start(program.id)
+      expect(started.status).toBe(201)
+      const sessionId = bodyOf<SessionBody>(started).id
+      expect(
+        bodyOf<{ openSession: unknown }>(await summaryOf(program.id))
+          .openSession,
+      ).toStrictEqual({
+        sessionId,
+        localDate: today,
+        workoutId: program.workouts[0].id,
+      })
+
+      const completed = await patientA
+        .post(`/sessions/${sessionId}/complete`)
+        .send({})
+      expect(completed.status).toBe(200)
+      const after = bodyOf<{
+        openSession: unknown
+        totals: { done: number }
+      }>(await summaryOf(program.id))
+      expect(after.openSession).toBeNull()
+      expect(after.totals.done).toBe(1)
+    })
+
+    // newProgram is open-ended: by default the summary stops at the end of
+    // the current program week; `through` two weeks ahead covers further,
+    // to the end of THAT program week (whole weeks).
+    it('covers up to `through` on an open-ended program, rounded to its program week', async () => {
+      const program = await newProgram()
+      const plain = bodyOf<{ lastDay: string }>(await summaryOf(program.id))
+      const through = addDays(today, 14)
+      const res = await summaryOf(program.id, `&through=${through}`)
+      expect(res.status).toBe(200)
+      const further = bodyOf<{ lastDay: string; days: { date: string }[] }>(res)
+      // Program weeks start on the start date (a week ago): every covered
+      // span ends 6 days after a multiple of 7 from it.
+      expect(further.lastDay >= through).toBe(true)
+      expect(further.lastDay < addDays(through, 7)).toBe(true)
+      expect(daysBetween(addDays(today, -7), further.lastDay) % 7).toBe(6)
+      expect(further.lastDay > plain.lastDay).toBe(true)
+      // Every day is scheduled: the days run to the last covered day.
+      expect(further.days.at(-1)?.date).toBe(further.lastDay)
+    })
+
+    it.each([
+      [
+        'before today',
+        () => addDays(today, -1),
+        'through must be on or after today',
+      ],
+      [
+        'more than a year ahead',
+        () => addDays(today, 367),
+        'through can be at most a year after today',
+      ],
+      [
+        'not a date',
+        () => '2026-13-01',
+        'through must be a date written as YYYY-MM-DD',
+      ],
+    ])('refuses a `through` %s', async (_label, through, message) => {
+      const program = await newProgram()
+      const res = await summaryOf(program.id, `&through=${through()}`)
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([message])
+    })
+
+    // The closing preview shares `today` with the summary, not `through`:
+    // sent there, it's refused rather than silently meaning nothing.
+    it("isn't accepted by the closing preview", async () => {
+      const program = await newProgram()
+      const res = await practitionerA.get(
+        `/assigned-programs/${program.id}/closing?today=${today}&through=${today}`,
+      )
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        'property through should not exist',
+      ])
     })
   })
 
