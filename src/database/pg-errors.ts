@@ -113,6 +113,19 @@ export const PROGRAM_TEMPLATES_TITLE_NOT_BLANK =
 export const ASSIGNED_PROGRAMS_TITLE_NOT_BLANK =
   'assigned_programs_title_not_blank'
 
+// Sessions (Phase 4 step 1, migrations 0037 / 0038). The two partial unique
+// indexes: one OPEN session per program (two starts racing — the second
+// gets 23505, which SessionsService.create turns into a 409), and one SKIP
+// per program per day (two skips racing — SessionsService.skip, the same).
+export const SESSIONS_ONE_OPEN_PER_PROGRAM = 'sessions_one_open_per_program'
+export const SESSIONS_ONE_SKIP_PER_DAY = 'sessions_one_skip_per_day'
+// The trigger refusing a change to a FINISHED session's checklist (0038) —
+// reachable through the API by a tick racing a Finish: the service's own
+// check passed before the Finish committed, and the trigger, which waits
+// for it, refuses. HttpExceptionFilter turns it into the service's 409.
+export const SESSION_EXERCISE_SESSION_FINISHED =
+  'session_exercise_session_finished'
+
 // --- HELPER ------------------------------------------------------------------------------------------------
 
 // The shape we read off a Postgres error. node-postgres's DatabaseError

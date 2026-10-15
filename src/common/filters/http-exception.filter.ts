@@ -33,9 +33,11 @@ import {
   ASSIGNED_PROGRAM_EXERCISE_RETIRED,
   ASSIGNED_PROGRAMS_TITLE_NOT_BLANK,
   PROGRAM_TEMPLATES_TITLE_NOT_BLANK,
+  SESSION_EXERCISE_SESSION_FINISHED,
   isCheckViolation,
 } from '../../database/pg-errors'
 import { blankTitleMessage } from '../validators/title'
+import { SESSION_FINISHED_MESSAGE } from '../../sessions/session-rules'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -70,6 +72,13 @@ function translateDatabaseRefusal(caught: unknown): unknown {
   }
   if (isCheckViolation(caught, ASSIGNED_PROGRAM_EXERCISE_RETIRED)) {
     return new ConflictException(RETIRED_EXERCISE_MESSAGE)
+  }
+  // A tick of a session's checklist racing its Finish (migration 0038): the
+  // service's own check passed before the Finish committed; the trigger
+  // waited for it, then refused. The same 409, in the same words, as the
+  // service's assertSessionOpen.
+  if (isCheckViolation(caught, SESSION_EXERCISE_SESSION_FINISHED)) {
+    return new ConflictException(SESSION_FINISHED_MESSAGE)
   }
   if (isCheckViolation(caught, PROGRAM_TEMPLATES_TITLE_NOT_BLANK)) {
     return new BadRequestException(blankTitleMessage('template'))

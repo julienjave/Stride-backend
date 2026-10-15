@@ -1332,8 +1332,8 @@ describe('Workouts (e2e)', () => {
     it("refuses a session of another program's workout", async () => {
       expect(
         await asOwner(
-          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id, scheduled_date, local_date)
-           VALUES ($1, $2, $3, now(), $4)`,
+          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id, scheduled_date, local_date, status, started_at)
+           VALUES ($1, $2, $3, now(), $4, 'in_progress', now())`,
           [program.id, otherProgram.workouts[0].id, patientId, today],
         ),
       ).toEqual({ code: '23503', constraint: 'sessions_workout_fk' })
@@ -1343,8 +1343,8 @@ describe('Workouts (e2e)', () => {
     it("accepts a session of the program's own workout", async () => {
       expect(
         await asOwner(
-          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id, scheduled_date, local_date)
-           VALUES ($1, $2, $3, now(), $4)`,
+          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id, scheduled_date, local_date, status, started_at)
+           VALUES ($1, $2, $3, now(), $4, 'in_progress', now())`,
           [program.id, program.workouts[0].id, patientId, today],
         ),
       ).toEqual({})

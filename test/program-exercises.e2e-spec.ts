@@ -853,6 +853,12 @@ describe('Program exercises (e2e)', () => {
       })
 
       it("leaves it out of a new session's checklist", async () => {
+        // One open session per program (2026-10-15): the session that used
+        // the exercise is stopped first, so today can start another.
+        const stopped = await patient
+          .post(`/sessions/${sessionId}/stop`)
+          .send({ reason: 'other' })
+        expect(stopped.status).toBe(200)
         const res = await startSession(program)
         expect(res.status).toBe(201)
         const ids = bodyOf<SessionBody>(res).exercises.map(
@@ -910,8 +916,8 @@ describe('Program exercises (e2e)', () => {
           rows: [s],
         } = await client.query<{ id: number }>(
           `INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
-             scheduled_date, local_date, status)
-           VALUES ($1, $2, $3, now(), $4, 'pending') RETURNING id`,
+             scheduled_date, local_date, status, started_at)
+           VALUES ($1, $2, $3, now(), $4, 'in_progress', now()) RETURNING id`,
           [program.id, workoutA(program), patientId, today],
         )
         await client.query(

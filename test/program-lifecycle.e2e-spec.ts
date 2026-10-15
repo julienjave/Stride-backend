@@ -298,12 +298,10 @@ describe('Program lifecycle (e2e)', () => {
       .post('/sessions')
       .send({ assignedProgramId: programId, localDate: today, ...body })
     if (complete && res.status === 201) {
-      for (const status of ['in_progress', 'completed']) {
-        const step = await patient
-          .patch(`/sessions/${res.body.id}`)
-          .send({ status })
-        expect(step.status).toBe(200)
-      }
+      const finished = await patient
+        .post(`/sessions/${res.body.id}/complete`)
+        .send({})
+      expect(finished.status).toBe(200)
     }
     return res
   }
@@ -1175,11 +1173,15 @@ describe('Program lifecycle (e2e)', () => {
       },
     )
 
+    // A SKIP (a new row that isn't open): the cancelled program still has
+    // its session in progress (beforeAll), and a second OPEN one would be
+    // refused by the one-open-per-program index first (2026-10-15) — this
+    // test is about the guard.
     it("refuses the patient's new session on a closed program", async () => {
       const insert = (p: Program) => sql`
         INSERT INTO sessions
-          (assigned_program_id, workout_id, patient_id, scheduled_date, local_date, status)
-        VALUES (${p.id}, ${p.workouts[0].id}, ${patientId}, now(), ${today}, 'pending')`
+          (assigned_program_id, workout_id, patient_id, scheduled_date, local_date, status, ended_at, end_reason)
+        VALUES (${p.id}, ${p.workouts[0].id}, ${patientId}, now(), ${today}, 'skipped', now(), 'other')`
       expect(await run(asPatient(), insert(cancelled))).toEqual(refused)
       expect(await run(asPatient(), insert(open))).toHaveProperty('rows')
     })
@@ -1193,12 +1195,11 @@ describe('Program lifecycle (e2e)', () => {
         )
         .send({ completed: true })
       expect(tick.status).toBe(200)
-      for (const status of ['in_progress', 'completed']) {
-        const res = await patient
-          .patch(`/sessions/${unfinishedSessionId}`)
-          .send({ status })
-        expect(res.status).toBe(200)
-      }
+      const finished = await patient
+        .post(`/sessions/${unfinishedSessionId}/complete`)
+        .send({})
+      expect(finished.status).toBe(200)
+      expect(finished.body.status).toBe('completed')
     })
 
     // The program row: no way back to active; archiving a completed program

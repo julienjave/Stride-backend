@@ -21,6 +21,7 @@ import 'reflect-metadata'
 import { validate } from 'class-validator'
 import { plainToInstance } from 'class-transformer'
 import { UpdateSessionDto } from '../../sessions/dto/update-session.dto'
+import { CompleteSessionDto } from '../../sessions/dto/complete-session.dto'
 import { UpdateSessionExerciseDto } from '../../sessions/dto/update-session-exercise.dto'
 import { UpdateTemplateExerciseDto } from '../../programs/dto/update-template-exercise.dto'
 
@@ -30,6 +31,11 @@ import { UpdateTemplateExerciseDto } from '../../programs/dto/update-template-ex
 // stays "unchanged". Its NEIGHBOURS — the nullable fields of the same DTOs —
 // must keep accepting `null`, which means "clear it": a fix that refused
 // every `null` would pass the first half and break those.
+//
+// (2026-10-15: UpdateSessionDto no longer has `status` — a session's status
+// changes only through its own routes, POST …/complete, …/stop and
+// /sessions/skip. Its nullable fields moved with Finish to
+// CompleteSessionDto; the PATCH keeps the pain check-in, nullable.)
 
 // "a class whose instances are objects" — plainToInstance can't take a
 // union of constructors (TS2769).
@@ -41,7 +47,6 @@ async function propertiesWithErrors(dto: Dto, body: object) {
 }
 
 describe.each([
-  ['UpdateSessionDto', UpdateSessionDto, 'status', 'completed'],
   ['UpdateSessionExerciseDto', UpdateSessionExerciseDto, 'completed', true],
   ['UpdateTemplateExerciseDto', UpdateTemplateExerciseDto, 'sortOrder', 2],
 ] as const)('%s — %s, a NOT NULL column', (_name, dto, field, valid) => {
@@ -63,8 +68,9 @@ describe.each([
 })
 
 describe.each([
-  ['UpdateSessionDto', UpdateSessionDto, 'totalDurationInSeconds'],
-  ['UpdateSessionDto', UpdateSessionDto, 'sessionFeedback'],
+  ['UpdateSessionDto', UpdateSessionDto, 'painBefore'],
+  ['CompleteSessionDto', CompleteSessionDto, 'totalDurationInSeconds'],
+  ['CompleteSessionDto', CompleteSessionDto, 'sessionFeedback'],
   [
     'UpdateSessionExerciseDto',
     UpdateSessionExerciseDto,

@@ -260,6 +260,20 @@
       "when": 1791998258906,
       "tag": "0036_remove_blank_instruction_steps",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1792066101559,
+      "tag": "0037_session_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792066143681,
+      "tag": "0038_session_guards",
+      "breakpoints": true
     }
   ]
 }

@@ -30,6 +30,8 @@ import {
   foreignKey,
   varchar,
   real,
+  smallint,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { users } from './users.schema'
@@ -40,11 +42,43 @@ import {
   programWorkouts,
 } from './programs.schema'
 
+// How a session stands (Phase 4 step 1, decided 2026-10-15). A row exists
+// only once the patient acts — starting or skipping — so there is no
+// "pending": what hasn't been done yet is worked out from the schedule
+// (the summary's due / upcoming days), never stored.
+//   - in_progress: started, still open. The only status that can change.
+//   - completed:   finished. Counts for the schedule. Final.
+//   - incomplete:  started, never finished — stopped by the patient, or
+//                  closed by the app (a newer session started, or the
+//                  program closed). Doesn't count. Final.
+//   - skipped:     never started — the patient said "not today", with a
+//                  reason. Doesn't count. Final.
+// What may follow what is the service's table (session-rules.ts) AND the
+// database's trigger (migration 0038).
 export const sessionStatusEnum = pgEnum('session_status', [
-  'pending',
   'in_progress',
   'completed',
+  'incomplete',
   'skipped',
+])
+
+// Why a session ended without being completed. The first four are the
+// PATIENT's to choose (stopping or skipping); the last two are written only
+// by the app itself — a new session closing an old unfinished one, a program
+// closing its open one — and are refused from any client (the DTOs' enum
+// AND, for a skip, the CHECK below). A category, not only free text, so the
+// practitioner's alerts can later find "stopped for pain".
+export const PATIENT_END_REASONS = [
+  'pain',
+  'illness',
+  'no_time',
+  'other',
+] as const
+export type PatientEndReason = (typeof PATIENT_END_REASONS)[number]
+export const sessionEndReasonEnum = pgEnum('session_end_reason', [
+  ...PATIENT_END_REASONS,
+  'not_finished_in_time',
+  'program_closed',
 ])
 
 export const sessions = pgTable(
@@ -82,11 +116,34 @@ export const sessions = pgTable(
     // same program week, its workout), and the schedule module judges the
     // rest (was that day already done by then?).
     countsFor: date('counts_for'),
+    // The three moments, all written by the server with the DATABASE's clock
+    // (`now()`), never sent by a client: when it started (NULL for a skip —
+    // nothing started), when it was completed, when it ended otherwise
+    // (stopped, closed by the app, or skipped). Which ones a row has follows
+    // from its status — the `sessions_status_moments` CHECK below.
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
     totalDurationInSeconds: integer('total_duration_in_seconds'),
-    status: sessionStatusEnum('status').notNull().default('pending'),
+    // No default (changed 2026-10-15; it was 'pending'): every insert says
+    // what it writes — starting writes 'in_progress', skipping 'skipped'.
+    status: sessionStatusEnum('status').notNull(),
     sessionFeedback: text('session_feedback'),
+    // Why it ended without being completed (incomplete or skipped only), and
+    // the patient's optional words about it.
+    endReason: sessionEndReasonEnum('end_reason'),
+    endNote: varchar('end_note', { length: 500 }),
+    // Pain and mobility (decisions §6): all optional, never blocking.
+    //   - pain_before: the pain check-in when starting (0 = no pain, the
+    //     clinical Numeric Rating Scale) — or, for a skip whose reason is
+    //     pain, the pain that made the patient skip (decided 2026-10-15);
+    //   - pain_after, mobility_after: the check-out — when completing, or
+    //     when stopping (someone stopping for pain is exactly the case where
+    //     they matter). Mobility is self-assessed, 10 = moving freely.
+    // smallint: 0–10 needs 2 bytes, not integer's 4.
+    painBefore: smallint('pain_before'),
+    painAfter: smallint('pain_after'),
+    mobilityAfter: smallint('mobility_after'),
   },
   (table) => ({
     patientIdIdx: index('sessions_patient_id_idx').on(table.patientId),
@@ -116,6 +173,74 @@ export const sessions = pgTable(
       'sessions_counts_for_other_day',
       sql`${table.countsFor} IS NULL OR ${table.countsFor} <> ${table.localDate}`,
     ),
+    // --- The shape of a row follows its status (2026-10-15) ----------------
+    // Each rule is its own CHECK, so a refusal names WHICH rule failed.
+    //
+    // Which moments a status has: started (all but a skip), completed (only
+    // completed), ended (incomplete and skipped).
+    statusMoments: check(
+      'sessions_status_moments',
+      sql`CASE ${table.status}
+        WHEN 'in_progress' THEN ${table.startedAt} IS NOT NULL AND ${table.completedAt} IS NULL AND ${table.endedAt} IS NULL
+        WHEN 'completed' THEN ${table.startedAt} IS NOT NULL AND ${table.completedAt} IS NOT NULL AND ${table.endedAt} IS NULL
+        WHEN 'incomplete' THEN ${table.startedAt} IS NOT NULL AND ${table.completedAt} IS NULL AND ${table.endedAt} IS NOT NULL
+        WHEN 'skipped' THEN ${table.startedAt} IS NULL AND ${table.completedAt} IS NULL AND ${table.endedAt} IS NOT NULL
+      END`,
+    ),
+    // A reason exactly when the session ended without being completed; a
+    // skip's reason is always the patient's own (the app never skips).
+    endReasonMatchesStatus: check(
+      'sessions_end_reason_matches_status',
+      sql`(${table.endReason} IS NOT NULL) = (${table.status} IN ('incomplete', 'skipped'))
+        AND (${table.status} <> 'skipped' OR ${table.endReason} IN ('pain', 'illness', 'no_time', 'other'))`,
+    ),
+    // A note explains a reason: none without one.
+    endNoteNeedsReason: check(
+      'sessions_end_note_needs_reason',
+      sql`${table.endNote} IS NULL OR ${table.endReason} IS NOT NULL`,
+    ),
+    // The check-out (pain after, mobility) belongs to a session that was
+    // done, completely or in part — never to one still open or skipped.
+    checkOutWhenEnded: check(
+      'sessions_check_out_when_ended',
+      sql`(${table.painAfter} IS NULL AND ${table.mobilityAfter} IS NULL)
+        OR ${table.status} IN ('completed', 'incomplete')`,
+    ),
+    // A skip did nothing: no duration, no feedback — and a pain level only
+    // when pain was the reason for skipping.
+    skipRecordsNoWork: check(
+      'sessions_skip_records_no_work',
+      sql`${table.status} <> 'skipped' OR (
+        ${table.totalDurationInSeconds} IS NULL
+        AND ${table.sessionFeedback} IS NULL
+        AND (${table.painBefore} IS NULL OR ${table.endReason} = 'pain')
+      )`,
+    ),
+    painBeforeRange: check(
+      'sessions_pain_before_range',
+      sql`${table.painBefore} IS NULL OR ${table.painBefore} BETWEEN 0 AND 10`,
+    ),
+    painAfterRange: check(
+      'sessions_pain_after_range',
+      sql`${table.painAfter} IS NULL OR ${table.painAfter} BETWEEN 0 AND 10`,
+    ),
+    mobilityAfterRange: check(
+      'sessions_mobility_after_range',
+      sql`${table.mobilityAfter} IS NULL OR ${table.mobilityAfter} BETWEEN 0 AND 10`,
+    ),
+    // --- At most one at a time (2026-10-15) --------------------------------
+    // ONE open session per program: starting a new one closes the older one
+    // first (in the same transaction), and a second start racing the first
+    // fails here with 23505 instead of leaving two open — a guarantee no
+    // "check, then insert" in the service could give.
+    oneOpenPerProgram: uniqueIndex('sessions_one_open_per_program')
+      .on(table.assignedProgramId)
+      .where(sql`${table.status} = 'in_progress'`),
+    // ONE skip per program per day: a double tap on "Skip today" records
+    // one decision, not two.
+    oneSkipPerDay: uniqueIndex('sessions_one_skip_per_day')
+      .on(table.assignedProgramId, table.localDate)
+      .where(sql`${table.status} = 'skipped'`),
   }),
 )
 

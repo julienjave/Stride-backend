@@ -17,8 +17,9 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional, IsDateString } from 'class-validator'
+import { IsInt, IsOptional } from 'class-validator'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
+import { IsScore } from './session-fields'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -33,11 +34,6 @@ export class CreateSessionDto {
   @IsOptional()
   @IsInt()
   workoutId?: number | null
-
-  // Defaults to now if omitted
-  @IsOptional()
-  @IsDateString()
-  scheduledDate?: string
 
   // The patient's own calendar day, from their device (decisions §5,
   // point 4): what the schedule judges ("was Monday done?"). Required —
@@ -55,4 +51,15 @@ export class CreateSessionDto {
   @IsOptional()
   @IsCalendarDate()
   countsFor?: string | null
+
+  // The pain check-in (decisions §6): 0–10, optional — the app asks one
+  // question before starting and never blocks on it. Can be corrected while
+  // the session is open (PATCH /sessions/:id).
+  //
+  // (`scheduledDate` was removed on 2026-10-15: it let the client choose the
+  // row's moment — any date at all. The server now writes it, as every
+  // timestamp; sending it is a 400, like any unknown field.)
+  @IsOptional()
+  @IsScore()
+  painBefore?: number | null
 }

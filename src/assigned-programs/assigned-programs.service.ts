@@ -36,6 +36,7 @@ import {
   sql,
 } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
+import { changedFields } from '../common/changed-fields'
 import {
   assignedPrograms,
   assignedProgramExercises,
@@ -182,34 +183,6 @@ function versionForAudit(version: ScheduleVersion) {
     createdBy: version.createdBy,
     createdAt: version.createdAt,
   }
-}
-
-// Two stored values are "the same" for an audit entry: equal scalars, or
-// arrays with the same items in the same order. Arrays need their own case
-// because `===` compares arrays by IDENTITY — a re-sent `primaryMuscles:
-// ["legs"]` is a different array object than the stored ["legs"], and would
-// otherwise be reported as a change that isn't one. (The array columns here
-// hold strings, so comparing items with `===` is enough.)
-function sameValue(a: unknown, b: unknown) {
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((item, i) => item === b[i])
-  }
-  return a === b
-}
-
-// The fields a PATCH really changed, as { field: { from, to } } — a field
-// sent with the value it already had isn't a change, and isn't listed.
-function changedFields(
-  before: Record<string, unknown>,
-  dto: Record<string, unknown>,
-) {
-  const changes: Record<string, { from: unknown; to: unknown }> = {}
-  for (const [field, to] of Object.entries(dto)) {
-    if (to !== undefined && !sameValue(before[field], to)) {
-      changes[field] = { from: before[field], to }
-    }
-  }
-  return changes
 }
 
 // A program exercise as an audit entry records it — everything that says

@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing'
-import { DrizzleQueryError } from 'drizzle-orm'
+import { DrizzleQueryError, SQL } from 'drizzle-orm'
 import {
   BadRequestException,
   ConflictException,
@@ -13,9 +13,31 @@ import {
 } from './sessions.service'
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
-import { SessionStatus } from './dto/update-session.dto'
+import { AuditService } from '../audit/audit.service'
+import {
+  SESSION_FINISHED_MESSAGE,
+  SESSION_OPEN_TODAY_MESSAGE,
+} from './session-rules'
 import { UserRole } from '../users/dto/create-user.dto'
 import { addDays, utcToday } from '../common/calendar-date'
+
+// The audit service: a double each test module receives, so a test can read
+// the entries a write records (logInTransaction's second argument).
+let audit: { logInTransaction: jest.Mock }
+beforeEach(() => {
+  audit = { logInTransaction: jest.fn().mockResolvedValue(undefined) }
+})
+
+// Closing an unfinished session of another day (SessionsService.create's
+// first write): an UPDATE … RETURNING whose rows these tests choose — none,
+// unless a test says otherwise.
+function updateReturning(rows: () => unknown[]) {
+  return jest.fn(() => ({
+    set: () => ({
+      where: () => ({ returning: () => Promise.resolve(rows()) }),
+    }),
+  }))
+}
 
 // An active program of patient 20 — the only kind that takes a new session
 // (a completed, cancelled or archived one is closed: program-state.ts).
@@ -37,12 +59,14 @@ describe('SessionsService.create', () => {
       sessionExercises: { findMany: jest.Mock }
     }
     insert: jest.Mock
+    update: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
 
   beforeEach(async () => {
     db = {
+      update: updateReturning(() => []),
       query: {
         assignedPrograms: { findFirst: jest.fn() },
         // A one-workout program (workout 950) with one exercise, unless a
@@ -73,6 +97,7 @@ describe('SessionsService.create', () => {
         SessionsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile()
 
@@ -147,18 +172,20 @@ describe('SessionsService.create', () => {
       },
     ])
     db.insert.mockImplementation(() => ({
-      values: jest.fn().mockImplementation((values: any) => {
-        if (
-          values.assignedProgramId !== undefined &&
-          values.status === 'pending'
-        ) {
-          return {
-            returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+      values: jest
+        .fn()
+        .mockImplementation((values: Record<string, unknown>) => {
+          if (
+            values.assignedProgramId !== undefined &&
+            values.status === 'in_progress'
+          ) {
+            return {
+              returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
+            }
           }
-        }
-        sessionExerciseInserts.push(values)
-        return Promise.resolve(undefined)
-      }),
+          sessionExerciseInserts.push(values)
+          return Promise.resolve(undefined)
+        }),
     }))
 
     const result = await service.create(
@@ -219,7 +246,7 @@ describe('SessionsService.create', () => {
       values: jest
         .fn()
         .mockImplementation((values: Record<string, unknown>) => {
-          if (values.status === 'pending') {
+          if (values.status === 'in_progress') {
             return {
               returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
             }
@@ -258,7 +285,7 @@ describe('SessionsService.create', () => {
     })
     db.insert.mockImplementation(() => ({
       values: jest.fn().mockImplementation((values: Record<string, unknown>) =>
-        values.status === 'pending'
+        values.status === 'in_progress'
           ? {
               returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
             }
@@ -282,7 +309,7 @@ describe('SessionsService.create', () => {
       values: jest
         .fn()
         .mockImplementation((values: Record<string, unknown>) => {
-          if (values.status === 'pending') {
+          if (values.status === 'in_progress') {
             sessionInserts.push(values)
             return {
               returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
@@ -327,7 +354,7 @@ describe('SessionsService.create', () => {
       values: jest
         .fn()
         .mockImplementation((values: Record<string, unknown>) => {
-          if (values.status === 'pending') {
+          if (values.status === 'in_progress') {
             sessionInserts.push(values)
             return {
               returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
@@ -456,6 +483,7 @@ describe('SessionsService.assertCanView (via findOne)', () => {
         SessionsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: usersService },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile()
 
@@ -495,150 +523,287 @@ describe('SessionsService.assertCanView (via findOne)', () => {
   })
 })
 
-describe('SessionsService.update (state machine + assertIsOwner)', () => {
+// Starting (Phase 4 step 1, 2026-10-15): the session is created OPEN, its
+// moments written by the database's clock, the start audited as ONE entry;
+// an unfinished session of another day is closed first, in the patient's
+// name; one still open today is the index's 409.
+describe('SessionsService.create — the start', () => {
   let service: SessionsService
+  let sessionInserts: Record<string, unknown>[]
+  let closedRows: Record<string, unknown>[]
+  let insertFailure: Error | undefined
   let db: {
-    query: { sessions: { findFirst: jest.Mock } }
+    query: Record<string, { findFirst?: jest.Mock; findMany?: jest.Mock }>
+    insert: jest.Mock
     update: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
-  let setArgs: any
+  const patient = { id: 20, activeRole: UserRole.PATIENT }
 
   beforeEach(async () => {
-    setArgs = undefined
+    sessionInserts = []
+    closedRows = []
+    insertFailure = undefined
     db = {
-      query: { sessions: { findFirst: jest.fn() } },
-      update: jest.fn().mockReturnValue({
-        set: jest.fn().mockImplementation((values: any) => {
-          setArgs = values
-          return {
-            where: jest.fn().mockReturnValue({
+      query: {
+        assignedPrograms: {
+          findFirst: jest.fn().mockResolvedValue(OPEN_PROGRAM),
+        },
+        programWorkouts: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ id: 950, name: null, sortOrder: 0 }]),
+        },
+        assignedProgramExercises: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 30,
+              sortOrder: 0,
+              name: 'Squat',
+              sets: 3,
+              reps: 10,
+              durationInSeconds: null,
+              weight: 20,
+              weightUnit: 'kg',
+              notes: 'Slowly',
+              primaryMuscles: ['quadriceps'],
+              secondaryMuscles: [],
+              equipment: [],
+              instructions: ['Sit back.'],
+            },
+          ]),
+        },
+        sessions: {
+          findFirst: jest.fn().mockResolvedValue({ id: 500, patientId: 20 }),
+        },
+        // The checklist read back — for the closed session's entry, and the
+        // answer.
+        sessionExercises: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 41,
+              name: 'Plank',
+              completed: true,
+              durationActualInSeconds: 40,
+              difficultyRating: 6,
+              feedback: null,
+              sortOrder: 0,
+            },
+          ]),
+        },
+      },
+      update: updateReturning(() => closedRows),
+      insert: jest.fn(() => ({
+        values: jest.fn((values: Record<string, unknown>) => {
+          if (values.status === 'in_progress') {
+            sessionInserts.push(values)
+            // Read into a constant: inside the arrow below, TypeScript no
+            // longer remembers the `if` (the variable could change).
+            const failure = insertFailure
+            if (failure) {
+              return { returning: () => Promise.reject(failure) }
+            }
+            return {
               returning: jest.fn().mockResolvedValue([{ id: 500, ...values }]),
-            }),
+            }
           }
+          return Promise.resolve(undefined)
         }),
-      }),
+      })),
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
-
     const moduleRef = await Test.createTestingModule({
       providers: [
         SessionsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile()
-
     service = moduleRef.get(SessionsService)
   })
 
-  it('rejects a managing practitioner from writing to a session, even one they can view', async () => {
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: null,
+  it('creates the session open, its moments from the database clock, with the pain check-in', async () => {
+    const today = utcToday()
+
+    await service.create(patient, {
+      assignedProgramId: 5,
+      localDate: today,
+      painBefore: 4,
+    })
+
+    // toStrictEqual: no field more (no scheduledDate from the client, no
+    // 'pending'), none less. The two moments are SQL — now(), written by
+    // the database — never a Date computed here.
+    expect(sessionInserts).toStrictEqual([
+      {
+        assignedProgramId: 5,
+        workoutId: 950,
+        patientId: 20,
+        scheduledDate: expect.any(SQL) as unknown,
+        localDate: today,
+        countsFor: null,
+        status: 'in_progress',
+        startedAt: expect.any(SQL) as unknown,
+        painBefore: 4,
+      },
+    ])
+  })
+
+  it('stores no pain check-in when none is given (null, not undefined)', async () => {
+    await service.create(patient, {
+      assignedProgramId: 5,
+      localDate: utcToday(),
+    })
+
+    expect(sessionInserts[0].painBefore).toBeNull()
+  })
+
+  it('records ONE entry for the start: the session and what it was given', async () => {
+    const today = utcToday()
+
+    await service.create(patient, {
+      assignedProgramId: 5,
+      localDate: today,
+      painBefore: 4,
+    })
+
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [tx, entry] = audit.logInTransaction.mock.calls[0] as [
+      unknown,
+      { details: { session: Record<string, unknown> } },
+    ]
+    // In the start's own transaction (tx === db in these tests).
+    expect(tx).toBe(db)
+    expect(entry).toStrictEqual({
+      performedBy: 20,
+      action: 'SESSION_STARTED',
+      targetUserId: 20,
+      entityType: 'sessions',
+      entityId: 500,
+      details: {
+        session: expect.objectContaining({
+          assignedProgramId: 5,
+          workoutId: 950,
+          localDate: today,
+          countsFor: null,
+          status: 'in_progress',
+          painBefore: 4,
+        }) as unknown,
+        exercises: [
+          {
+            assignedProgramExerciseId: 30,
+            name: 'Squat',
+            sets: 3,
+            reps: 10,
+            durationInSeconds: null,
+            weight: 20,
+            weightUnit: 'kg',
+            notes: 'Slowly',
+          },
+        ],
+      },
+    })
+  })
+
+  // An unfinished session of another day is closed BEFORE the new one is
+  // inserted (one open session per program), and its closing is audited in
+  // the name of the patient starting — with what was done in it.
+  it('closes an unfinished session of another day first, and audits it in the patient’s name', async () => {
+    closedRows = [
+      {
+        id: 480,
+        patientId: 20,
+        assignedProgramId: 5,
+        workoutId: 950,
+        localDate: addDays(utcToday(), -3),
+        countsFor: null,
+        status: 'incomplete',
+        endReason: 'not_finished_in_time',
+      },
+    ]
+
+    await service.create(patient, {
+      assignedProgramId: 5,
+      localDate: utcToday(),
+    })
+
+    const actions = audit.logInTransaction.mock.calls.map(
+      ([, entry]) => (entry as { action: string }).action,
+    )
+    expect(actions).toEqual(['SESSION_STOPPED', 'SESSION_STARTED'])
+    expect(
+      (audit.logInTransaction.mock.calls[0] as unknown[])[1],
+    ).toStrictEqual({
+      performedBy: 20,
+      action: 'SESSION_STOPPED',
+      targetUserId: 20,
+      entityType: 'sessions',
+      entityId: 480,
+      details: {
+        session: expect.objectContaining({
+          status: 'incomplete',
+          endReason: 'not_finished_in_time',
+        }) as unknown,
+        exercises: [
+          {
+            exerciseRowId: 41,
+            name: 'Plank',
+            completed: true,
+            durationActualInSeconds: 40,
+            difficultyRating: 6,
+            feedback: null,
+          },
+        ],
+      },
+    })
+    // Closed first, then the new session inserted.
+    expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
+      db.insert.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('answers 409 when a session of this program is still open today (the index)', async () => {
+    insertFailure = new DrizzleQueryError(
+      'insert into "sessions" ...',
+      [],
+      Object.assign(new Error('duplicate key'), {
+        code: '23505',
+        constraint: 'sessions_one_open_per_program',
+      }),
+    )
+
+    await expect(
+      service.create(patient, { assignedProgramId: 5, localDate: utcToday() }),
+    ).rejects.toThrow(new ConflictException(SESSION_OPEN_TODAY_MESSAGE))
+  })
+
+  // Only THAT index: another unique violation is a bug, not this case.
+  it('lets another unique violation through unchanged', async () => {
+    insertFailure = Object.assign(new Error('duplicate key'), {
+      code: '23505',
+      constraint: 'sessions_one_skip_per_day',
     })
 
     await expect(
-      service.update(
-        500,
-        { id: 7, activeRole: UserRole.PRACTITIONER },
-        { status: SessionStatus.IN_PROGRESS },
-      ),
-    ).rejects.toThrow(ForbiddenException)
-  })
-
-  it('rejects an admin from writing to a session too — assertIsOwner has no admin override', async () => {
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: null,
-    })
-
-    await expect(
-      service.update(
-        500,
-        { id: 1, activeRole: UserRole.ADMIN },
-        { status: SessionStatus.IN_PROGRESS },
-      ),
-    ).rejects.toThrow(ForbiddenException)
-  })
-
-  it('rejects a different patient from writing to a session that is not theirs', async () => {
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: null,
-    })
-
-    await expect(
-      service.update(
-        500,
-        { id: 999, activeRole: UserRole.PATIENT },
-        { status: SessionStatus.IN_PROGRESS },
-      ),
-    ).rejects.toThrow(ForbiddenException)
-  })
-
-  it('server-sets startedAt on the pending -> in_progress transition', async () => {
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: null,
-    })
-
-    await service.update(
-      500,
-      { id: 20, activeRole: UserRole.PATIENT },
-      { status: SessionStatus.IN_PROGRESS },
-    )
-
-    expect(setArgs.startedAt).toBeInstanceOf(Date)
-  })
-
-  it('does not overwrite an already-set startedAt on a repeated in_progress update', async () => {
-    const existingStartedAt = new Date('2026-01-01T00:00:00Z')
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: existingStartedAt,
-    })
-
-    await service.update(
-      500,
-      { id: 20, activeRole: UserRole.PATIENT },
-      { status: SessionStatus.IN_PROGRESS },
-    )
-
-    expect(setArgs.startedAt).toBeUndefined()
-  })
-
-  it('server-sets completedAt on the -> completed transition', async () => {
-    db.query.sessions.findFirst.mockResolvedValue({
-      id: 500,
-      patientId: 20,
-      startedAt: new Date(),
-    })
-
-    await service.update(
-      500,
-      { id: 20, activeRole: UserRole.PATIENT },
-      { status: SessionStatus.COMPLETED },
-    )
-
-    expect(setArgs.completedAt).toBeInstanceOf(Date)
+      service.create(patient, { assignedProgramId: 5, localDate: utcToday() }),
+    ).rejects.toBe(insertFailure)
   })
 })
 
-describe('SessionsService IDOR check (updateExercise)', () => {
+// Every write is the session's own patient's (assertIsOwner): anyone else —
+// a practitioner or an admin who can SEE the session, another patient — is
+// refused before any change is attempted (no lock, no UPDATE).
+describe('SessionsService writes — the owning patient only', () => {
   let service: SessionsService
   let db: {
     query: {
       sessions: { findFirst: jest.Mock }
       sessionExercises: { findFirst: jest.Mock }
     }
+    select: jest.Mock
     update: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
@@ -648,29 +813,121 @@ describe('SessionsService IDOR check (updateExercise)', () => {
     db = {
       query: {
         sessions: {
-          findFirst: jest.fn().mockResolvedValue({ id: 500, patientId: 20 }),
-        },
-        sessionExercises: { findFirst: jest.fn() },
-      },
-      update: jest.fn().mockReturnValue({
-        set: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            returning: jest.fn().mockResolvedValue([{ id: 30 }]),
+          findFirst: jest.fn().mockResolvedValue({
+            id: 500,
+            patientId: 20,
+            status: 'in_progress',
           }),
-        }),
-      }),
+        },
+        sessionExercises: {
+          findFirst: jest.fn().mockResolvedValue({ id: 30, sessionId: 500 }),
+        },
+      },
+      select: jest.fn(),
+      update: jest.fn(),
       execute: jest.fn().mockResolvedValue(undefined),
       transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
     }
-
     const moduleRef = await Test.createTestingModule({
       providers: [
         SessionsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile()
+    service = moduleRef.get(SessionsService)
+  })
 
+  type User = { id: number; activeRole: UserRole }
+  const writes: [string, (s: SessionsService, u: User) => Promise<unknown>][] =
+    [
+      ['complete', (s, u) => s.complete(500, u, {})],
+      ['stop', (s, u) => s.stop(500, u, { reason: 'pain' })],
+      ['update', (s, u) => s.update(500, u, { painBefore: 3 })],
+      [
+        'updateExercise',
+        (s, u) => s.updateExercise(500, 30, u, { completed: true }),
+      ],
+    ]
+
+  describe.each(writes)('%s', (_name, write) => {
+    it.each([
+      ['a managing practitioner', { id: 7, activeRole: UserRole.PRACTITIONER }],
+      ['an admin', { id: 1, activeRole: UserRole.ADMIN }],
+      ['another patient', { id: 999, activeRole: UserRole.PATIENT }],
+    ])('refuses %s, before any write', async (_who, user) => {
+      await expect(write(service, user)).rejects.toThrow(
+        new ForbiddenException('You can only modify your own sessions'),
+      )
+      expect(db.select).not.toHaveBeenCalled()
+      expect(db.update).not.toHaveBeenCalled()
+      expect(audit.logInTransaction).not.toHaveBeenCalled()
+    })
+  })
+})
+
+// A checklist row: only in this session (IDOR — another session's row is a
+// 404), only while the session is open, and only what really changed is
+// written and audited. The answer is the whole session.
+describe('SessionsService.updateExercise', () => {
+  let service: SessionsService
+  let session: Record<string, unknown>
+  let lockedRow: Record<string, unknown>
+  let setArgs: unknown[]
+  let db: {
+    query: {
+      sessions: { findFirst: jest.Mock }
+      sessionExercises: { findFirst: jest.Mock; findMany: jest.Mock }
+    }
+    select: jest.Mock
+    update: jest.Mock
+    execute: jest.Mock
+    transaction: jest.Mock
+  }
+  const patient = { id: 20, activeRole: UserRole.PATIENT }
+
+  beforeEach(async () => {
+    session = { id: 500, patientId: 20, status: 'in_progress' }
+    lockedRow = {
+      id: 30,
+      sessionId: 500,
+      name: 'Squat',
+      completed: false,
+      difficultyRating: 4,
+    }
+    setArgs = []
+    db = {
+      query: {
+        sessions: { findFirst: jest.fn(() => Promise.resolve(session)) },
+        sessionExercises: {
+          findFirst: jest.fn().mockResolvedValue({ id: 30, sessionId: 500 }),
+          findMany: jest.fn().mockResolvedValue([{ id: 30, name: 'Squat' }]),
+        },
+      },
+      // The row, locked (SELECT … FOR UPDATE).
+      select: jest.fn(() => ({
+        from: () => ({
+          where: () => ({ for: () => Promise.resolve([lockedRow]) }),
+        }),
+      })),
+      update: jest.fn(() => ({
+        set: (values: unknown) => {
+          setArgs.push(values)
+          return { where: () => Promise.resolve(undefined) }
+        },
+      })),
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(db)),
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        SessionsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: audit },
+      ],
+    }).compile()
     service = moduleRef.get(SessionsService)
   })
 
@@ -678,29 +935,70 @@ describe('SessionsService IDOR check (updateExercise)', () => {
     db.query.sessionExercises.findFirst.mockResolvedValue(undefined)
 
     await expect(
-      service.updateExercise(
-        500,
-        999,
-        { id: 20, activeRole: UserRole.PATIENT },
-        { completed: true },
-      ),
-    ).rejects.toThrow(NotFoundException)
+      service.updateExercise(500, 999, patient, { completed: true }),
+    ).rejects.toThrow(
+      new NotFoundException('Exercise 999 not found in this session'),
+    )
+    expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('updates the row once it is confirmed to belong to this session', async () => {
-    db.query.sessionExercises.findFirst.mockResolvedValue({
-      id: 30,
-      sessionId: 500,
+  it.each(['completed', 'incomplete', 'skipped'])(
+    'refuses a %s session with a 409, before any write',
+    async (status) => {
+      session = { ...session, status }
+
+      await expect(
+        service.updateExercise(500, 30, patient, { completed: true }),
+      ).rejects.toThrow(new ConflictException(SESSION_FINISHED_MESSAGE))
+      expect(db.select).not.toHaveBeenCalled()
+      expect(db.update).not.toHaveBeenCalled()
+    },
+  )
+
+  it('writes the change and audits only what changed, with the row’s name', async () => {
+    await service.updateExercise(500, 30, patient, {
+      completed: true,
+      difficultyRating: 4,
     })
 
+    expect(setArgs).toStrictEqual([{ completed: true, difficultyRating: 4 }])
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    expect(audit.logInTransaction.mock.calls[0]).toStrictEqual([
+      db,
+      {
+        performedBy: 20,
+        action: 'SESSION_EXERCISE_UPDATED',
+        targetUserId: 20,
+        entityType: 'sessions',
+        entityId: 500,
+        details: {
+          exerciseRowId: 30,
+          name: 'Squat',
+          changes: { completed: { from: false, to: true } },
+        },
+      },
+    ])
+  })
+
+  it('writes nothing and records nothing when nothing changed', async () => {
+    await service.updateExercise(500, 30, patient, {
+      completed: false,
+      difficultyRating: 4,
+    })
+
+    expect(db.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
+
+  it('answers the whole session, with its exercises', async () => {
     await expect(
-      service.updateExercise(
-        500,
-        30,
-        { id: 20, activeRole: UserRole.PATIENT },
-        { completed: true },
-      ),
-    ).resolves.toEqual({ id: 30 })
+      service.updateExercise(500, 30, patient, { completed: true }),
+    ).resolves.toStrictEqual({
+      id: 500,
+      patientId: 20,
+      status: 'in_progress',
+      exercises: [{ id: 30, name: 'Squat' }],
+    })
   })
 })
 
@@ -721,6 +1019,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
     query: Record<string, { findFirst?: jest.Mock; findMany?: jest.Mock }>
     select: jest.Mock
     insert: jest.Mock
+    update: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
@@ -768,9 +1067,10 @@ describe('SessionsService.create — closed programs and swaps', () => {
         .mockImplementation(() => ({
           from: () => ({ where: () => Promise.resolve(dayRows) }),
         })),
+      update: updateReturning(() => []),
       insert: jest.fn(() => ({
         values: jest.fn((values: Record<string, unknown>) => {
-          if (values.status === 'pending') sessionInserts.push(values)
+          if (values.status === 'in_progress') sessionInserts.push(values)
           return {
             returning: jest.fn().mockResolvedValue([{ id: 500 }]),
           }
@@ -784,6 +1084,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
         SessionsService,
         { provide: DRIZZLE, useValue: db },
         { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: audit },
       ],
     }).compile()
     service = moduleRef.get(SessionsService)

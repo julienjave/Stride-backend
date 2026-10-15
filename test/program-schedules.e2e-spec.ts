@@ -1176,9 +1176,10 @@ describe('Program schedules (e2e)', () => {
         workoutId: a,
       })
       expect(started.status).toBe(201)
-      await patient
-        .patch(`/sessions/${started.body.id}`)
-        .send({ status: 'completed' })
+      const completed = await patient
+        .post(`/sessions/${started.body.id}/complete`)
+        .send({})
+      expect(completed.status).toBe(200)
 
       const res = await summaryOf(practitionerA, program.id)
       expect(res.body.totals).toMatchObject({ done: 0, extra: 1 })
@@ -1202,7 +1203,7 @@ describe('Program schedules (e2e)', () => {
       expect(res.body.pauses).toEqual([{ from: today, to: null }])
     })
 
-    // A real session through the real endpoints: started → not done;
+    // A real session through the real endpoints: started (open) → not done;
     // completed → done. (A started-and-abandoned session must never count.)
     it('counts a session only once it is completed', async () => {
       const program = await createProgram({
@@ -1213,16 +1214,15 @@ describe('Program schedules (e2e)', () => {
         .post('/sessions')
         .send({ assignedProgramId: program.id, localDate: today })
       expect(started.status).toBe(201)
-      await patient
-        .patch(`/sessions/${started.body.id}`)
-        .send({ status: 'in_progress' })
+      expect(started.body.status).toBe('in_progress')
 
       const before = await summaryOf(practitionerA, program.id)
       expect(before.body.totals.done).toBe(0)
 
-      await patient
-        .patch(`/sessions/${started.body.id}`)
-        .send({ status: 'completed' })
+      const completed = await patient
+        .post(`/sessions/${started.body.id}/complete`)
+        .send({})
+      expect(completed.status).toBe(200)
       const after = await summaryOf(practitionerA, program.id)
       expect(after.body.totals.done).toBe(1)
       expect(after.body.weeks[0].sessionIds).toEqual([started.body.id])

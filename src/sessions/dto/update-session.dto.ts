@@ -17,45 +17,23 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import {
-  IsOptional,
-  IsEnum,
-  IsInt,
-  IsString,
-  MaxLength,
-  Min,
-  ValidateIf,
-} from 'class-validator'
-import { isPresent } from '../../common/validators/is-present'
+import { IsOptional } from 'class-validator'
+import { IsScore } from './session-fields'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
-export enum SessionStatus {
-  PENDING = 'pending',
-  IN_PROGRESS = 'in_progress',
-  COMPLETED = 'completed',
-  SKIPPED = 'skipped',
-}
-
+// PATCH /sessions/:id — what may change while a session is OPEN, and nothing
+// else (Phase 4 step 1, decided 2026-10-15). Today that is the pain check-in
+// alone: correcting the number given when starting. `null` clears it (the
+// column is nullable).
+//
+// The STATUS is no longer sent here — it changed through this PATCH before,
+// which let any status follow any other (a completed session sent back to
+// pending and re-rated). Each change of status is now its own action
+// (POST …/complete, …/stop, /sessions/skip), with its own rules and audit
+// entry; sending `status` here is a 400 like any unknown field.
 export class UpdateSessionDto {
-  // `status` is a NOT NULL column: @ValidateIf(isPresent), not @IsOptional()
-  // — @IsOptional() skips every check for `null` too, so `{ "status": null }`
-  // reached Postgres and came back a 500 (the null trap — is-present.ts;
-  // found live 2026-10-14). Not sent = unchanged; `null` = a 400. The other
-  // fields are nullable columns, where `null` means "clear it": they keep
-  // @IsOptional(). (WHICH status changes are allowed is the Phase 4 session
-  // flow's question — today any value of the enum is accepted.)
-  @ValidateIf(isPresent)
-  @IsEnum(SessionStatus)
-  status?: SessionStatus
-
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  totalDurationInSeconds?: number
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  sessionFeedback?: string
+  @IsScore()
+  painBefore?: number | null
 }
