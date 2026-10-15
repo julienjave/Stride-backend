@@ -45,9 +45,10 @@ import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
 //   4. ASSIGN AGAIN — a new program continuing a closed one;
 //   5. the database's own guarantees for the new columns.
 //
-// Its own file (not program-schedules.e2e-spec.ts) partly for the rate
-// limit: the throttler allows 60 requests a minute PER ROUTE, and that file
-// already creates many programs. Dates come from the real clock (utcToday).
+// Its own file (not program-schedules.e2e-spec.ts) — first partly for the
+// rate limit (60 requests a minute per route), off in the e2e suites since
+// 2026-10-15 (test/support/e2e-env.ts). Dates come from the real clock
+// (utcToday).
 //
 // Logins: 3 (practitioner A, practitioner C, the patient) — the admin's
 // session comes from register-clinic.

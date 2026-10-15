@@ -44,12 +44,11 @@ import { addDays, utcToday } from '../src/common/calendar-date'
 //   5. the database's own guarantees: the composite foreign keys and the
 //      CHECKs (as the owner), and row-level security (as the app's role).
 //
-// Rate limits: 3 logins (5 per minute allowed) — the admin's session comes
-// from register-clinic. And the global limit, 60 requests per minute PER
-// ROUTE (the throttler counts each route separately): the program-side tests
-// all assign ONE shared two-workout template (sharedTemplate, built once)
-// instead of building their own, which keeps POST /programs/:id/exercises —
-// three calls per two-workout template — well under it.
+// Logins: 3 — the admin's session comes from register-clinic. The
+// program-side tests all assign ONE shared two-workout template
+// (sharedTemplate, built once) — first to stay under the limit of 60
+// requests a minute per route (off in the e2e suites since 2026-10-15:
+// test/support/e2e-env.ts); it also keeps the file fast.
 describe('Workouts (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
@@ -68,7 +67,7 @@ describe('Workouts (e2e)', () => {
   let patientId: number
   let exerciseId: number
   // A two-workout template, built once, never changed: what the program-side
-  // tests assign (see the rate limits above).
+  // tests assign (see above).
   let sharedTemplate: WithWorkouts
 
   const today = utcToday()

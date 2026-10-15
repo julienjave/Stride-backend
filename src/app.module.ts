@@ -19,7 +19,7 @@
 
 import { Module } from '@nestjs/common'
 import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core'
-import { ThrottlerModule, ThrottlerGuard, seconds } from '@nestjs/throttler'
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler'
 import { LoggerModule } from 'nestjs-pino'
 import { DrizzleModule } from './database/drizzle.module'
 import { StorageModule } from './storage/storage.module'
@@ -38,6 +38,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
 import { HttpExceptionFilter } from './common/filters/http-exception.filter'
 import { MedicalFilesModule } from './medical-files/medical-files.module'
 import { HealthModule } from './health/health.module'
+import { throttlerOptions } from './config/rate-limits'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
@@ -71,13 +72,10 @@ import { HealthModule } from './health/health.module'
         },
       },
     }),
-    ThrottlerModule.forRoot([
-      {
-        name: 'default',
-        ttl: seconds(60),
-        limit: 60, // baseline: 60 requests/minute per IP, across the whole API
-      },
-    ]),
+    // The limits (60 a minute per route and IP) and the RATE_LIMITS switch
+    // live in config/rate-limits.ts. forRootAsync: the factory runs when the
+    // module is BUILT, so an e2e file that sets RATE_LIMITS first decides.
+    ThrottlerModule.forRootAsync({ useFactory: () => throttlerOptions() }),
     DrizzleModule,
     StorageModule,
     UsersModule,

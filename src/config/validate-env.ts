@@ -16,6 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { getEmailTransportKind } from '../email/email-transport.config'
+import { rateLimitsEnabled } from './rate-limits'
 
 // Called as the very first thing bootstrap() does, before NestFactory.create()
 // even runs — nothing about this app should construct a single module if a
@@ -53,6 +54,13 @@ export function validateEnv(): void {
   // at boot, before any module is built — same principle as everything
   // else in this function.
   getEmailTransportKind()
+
+  // Rate limits: RATE_LIMITS must be 'on' (or absent) or 'off', and 'off' is
+  // refused in production. The rules live in config/rate-limits.ts, called
+  // here so a bad value stops the app at boot, and by the throttler's
+  // factory for the e2e tests (built without main.ts) — the same split as
+  // the email transport above.
+  rateLimitsEnabled()
 
   // Same reasoning, applied to MFA secret encryption — validated for both
   // presence AND correct shape (64 hex characters = 32 bytes = AES-256's

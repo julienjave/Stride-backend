@@ -34,8 +34,10 @@ import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
 //   database (migration 0037's CHECKs and indexes, 0038's triggers) — the
 //   last sections test the database's half on its own.
 //
-// Rate limits: the throttler allows 60 requests a minute PER ROUTE. This
-// file starts about 30 sessions and assigns about 25 programs.
+// This file starts about 30 sessions and assigns about 25 programs — more
+// than the 60-a-minute limit per route allowed in a run, which is why the
+// limits are off in the e2e suites since 2026-10-15
+// (test/support/e2e-env.ts; proven by test/rate-limits.e2e-spec.ts).
 describe('Sessions (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
@@ -474,8 +476,7 @@ describe('Sessions (e2e)', () => {
   }
 
   // A program shared by the tests whose requests are all REFUSED before
-  // anything is written — so they needn't each assign one (the 60-a-minute
-  // limit on POST /assigned-programs).
+  // anything is written — so they needn't each assign one.
   let refusalsOnly: { id: number; workouts: { id: number }[] }
   beforeAll(async () => {
     refusalsOnly = await newProgram()
@@ -1794,9 +1795,8 @@ describe('Sessions (e2e)', () => {
   // --- 11. Reading a program's sessions (step 1b) -----------------------------------
 
   // Planted as the owner on chosen days, in an order the answer must NOT
-  // follow: every status, two on one day. Read by section 12 too (its open
-  // session must outlive another program's closing) — one program fewer to
-  // assign (the 60-a-minute limit).
+  // follow: every status, two on one day. Read by section 12 too: its open
+  // session must outlive another program's closing.
   let ids: Record<string, number>
 
   describe("reading a program's sessions", () => {

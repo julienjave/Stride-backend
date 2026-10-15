@@ -28,8 +28,7 @@ describe('MessagingGateway (e2e)', () => {
   // A single shared practitioner/patient/conversation, set up ONCE in
   // beforeAll and reused (read-only) by every test below that just needs
   // "some real, authenticated participant of some real conversation" — see
-  // the comment on POST /auth/login's rate limit further down for why this
-  // matters, not just for speed.
+  // the comment further down for why it was shared.
   let sharedPractitionerCookie: string
   let sharedConversationId: number
 
@@ -138,17 +137,14 @@ describe('MessagingGateway (e2e)', () => {
     //    ForbiddenException the instant any admin already exists anywhere
     //    in the database (see AuthService.registerClinic). It can only
     //    ever be called ONCE per test run, here.
-    // 2. POST /auth/login is throttled to 5 requests per 60 seconds PER IP
-    //    (@Throttle on AuthController.login) — a real, deliberate
-    //    brute-force protection, not a bug. Every test in this file shares
-    //    127.0.0.1, so their login calls all draw from the SAME budget.
-    //    That's why this is a single shared practitioner/patient/
-    //    conversation set up once here (2 logins total), rather than each
-    //    test minting its own fresh pair (which independently worked, but
-    //    blew through the 5/60s budget once enough tests did it in the
-    //    same run). Only the "no relationship to this conversation" test
-    //    below needs one additional, genuinely distinct identity, and logs
-    //    in exactly once for it — 3 logins total across the whole file.
+    // 2. POST /auth/login is throttled to 5 requests a minute per IP
+    //    (@Throttle on AuthController.login) — real brute-force
+    //    protection. When this file was written the e2e suites ran under
+    //    it, hence one shared practitioner/patient/conversation set up
+    //    once here. Since 2026-10-15 the limits are OFF in the e2e suites
+    //    (test/support/e2e-env.ts) and proven by
+    //    test/rate-limits.e2e-spec.ts; the shared set stays — it is also
+    //    faster.
     const stamp = Date.now()
     const bootstrapRes = await post('/auth/register-clinic', {
       clinicName: 'WS Bootstrap Clinic',

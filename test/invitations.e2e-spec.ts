@@ -40,10 +40,10 @@ import { activateAccount } from './support/accounts'
 //                   the state an invited, not-yet-accepted account is in
 // plus one open invitation for the patient, sent by practitionerA.
 //
-// Its own file (not auth.e2e-spec.ts) partly because the auth suite is
-// already at the rate limits for login and forgot-password (5 per minute
-// each, per app instance — deferred-improvements.md). Each e2e file builds
-// its own app, so this one starts with fresh counts.
+// Its own file (not auth.e2e-spec.ts) — first because the auth suite was at
+// the login and forgot-password limits. Since 2026-10-15 the limits are OFF
+// in the e2e suites (test/support/e2e-env.ts) and proven by
+// test/rate-limits.e2e-spec.ts.
 describe('Invitations (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
@@ -724,11 +724,9 @@ describe('Invitations (e2e)', () => {
   // scenario gets its OWN passwordless account, so the tests don't depend on
   // one another's leftovers.
   //
-  // Rate limits, per app instance (this file's): accept allows 5 calls a
-  // minute, lookup 10, login 5. Counted here — accept: expired 1,
-  // deactivated 1, main flow 1, race 2 = 5; lookup: 7; login: setup 1,
-  // section 1's test 1, B 1, after accepting 1 = 4. A new test using one of these routes must stay within
-  // them, or go in its own file.
+  // (These tests used to count their calls against accept's, lookup's and
+  // login's limits; the limits are off in the e2e suites since 2026-10-15 —
+  // test/support/e2e-env.ts.)
   describe('invitation endpoints', () => {
     let practitionerB: ReturnType<typeof agent>
 

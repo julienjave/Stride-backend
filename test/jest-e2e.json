@@ -7,6 +7,7 @@
     "^.+\\.(t|j)s$": "ts-jest"
   },
   "maxWorkers": 1,
+  "setupFiles": ["<rootDir>/support/e2e-env.ts"],
   "transformIgnorePatterns": [
     "node_modules/(?!(otplib|@otplib|@scure|@noble)/)"
   ]

@@ -49,8 +49,8 @@ import { addDays, utcToday } from '../src/common/calendar-date'
 // constants: the rules are about "the past", so fixed dates would start
 // failing as time passes.
 //
-// Rate limits: 3 logins (5 per minute allowed) — the admin's session comes
-// from register-clinic.
+// Logins: 3 — the admin's session comes from register-clinic. (Rate limits
+// are off in the e2e suites since 2026-10-15: test/support/e2e-env.ts.)
 describe('Program schedules (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
@@ -244,8 +244,9 @@ describe('Program schedules (e2e)', () => {
   // Two programs started 30 days ago — Monday/Wednesday/Friday = A, and
   // three a week with the rotation [A] — for the tests that only read them,
   // change them inside rolled-back transactions, or need "another
-  // program's workout". Created once: POST /assigned-programs allows 60
-  // requests a minute, and this file creates many programs.
+  // program's workout". Created once — first for the limit on POST
+  // /assigned-programs (off in the e2e suites since 2026-10-15); shared
+  // fixtures also keep the file fast.
   let sharedMwf: Program
   let sharedPerWeek: Program
 

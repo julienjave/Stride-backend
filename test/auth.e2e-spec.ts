@@ -27,10 +27,9 @@ import { activateAccount } from './support/accounts'
 // Signing in: the one-time first setup (register-clinic), sessions, and
 // choosing a role at login. MFA and password recovery are in
 // auth-recovery.e2e-spec.ts — split (2026-10-07) when public registration
-// was removed: the tests that used to get a signed-in account from
-// /auth/register now need a login each, and login allows 5 calls a minute
-// per app instance. Each file builds its own app, so each gets its own 5.
-// This file uses 4.
+// was removed, back when the e2e suites ran under the login limit (5 a
+// minute). Since 2026-10-15 the limits are OFF in the e2e suites
+// (test/support/e2e-env.ts) and proven by test/rate-limits.e2e-spec.ts.
 describe('Auth (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool

@@ -47,9 +47,9 @@ import { addDays, utcToday } from '../src/common/calendar-date'
 //   4. the end date never moves into the past;
 //   5. the database's own guarantees (migrations 0032 and 0033).
 //
-// Its own file for the rate limits: the throttler allows 60 requests a
-// minute PER ROUTE, and the other program suites already create many
-// programs. Dates come from the real clock (utcToday).
+// Its own file — first for the rate limits (60 requests a minute per route),
+// off in the e2e suites since 2026-10-15 (test/support/e2e-env.ts). Dates
+// come from the real clock (utcToday).
 //
 // Logins: 3 (practitioner A, practitioner C, the patient) — the admin's
 // session comes from register-clinic.

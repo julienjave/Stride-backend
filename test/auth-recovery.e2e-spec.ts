@@ -33,10 +33,10 @@ import { activateAccount } from './support/accounts'
 // DEDICATED stride_test database (via POSTGRES_DB=stride_test), never the
 // real dev database — see test:e2e:fresh in package.json.
 // MFA and password recovery: the two-step MFA login, forgot-password and
-// reset-password. Split from auth.e2e-spec.ts (2026-10-07) for the login
-// and forgot-password rate limits — see the comment at the top of that file.
-// This file uses 3 logins and 5 forgot-password calls (5 allowed per minute
-// each): a new test here using either must fit, or go in its own file.
+// reset-password. Split from auth.e2e-spec.ts (2026-10-07), back when the
+// e2e suites ran under the login and forgot-password limits. Since
+// 2026-10-15 the limits are OFF in the e2e suites (test/support/e2e-env.ts)
+// and proven by test/rate-limits.e2e-spec.ts.
 describe('Auth — MFA and password recovery (e2e)', () => {
   let app: INestApplication
   let sessionPool: Pool
@@ -417,9 +417,9 @@ describe('Auth — MFA and password recovery (e2e)', () => {
   // while emails went to Resend — nothing could read the link back.
   //
   // Proves the new password took effect by checking the stored hash, not by
-  // logging in: this file's login calls already use the route's full
-  // allowance (5 per minute, @Throttle on AuthController.login), and a
-  // sixth would fail with 429 for reasons unrelated to this test.
+  // logging in — written when this file's logins used the route's whole
+  // allowance (the limits are off in the e2e suites since 2026-10-15); the
+  // stored hash stays the more direct proof.
   it('emails a working reset link that sets the new password, ends existing sessions, and only works once', async () => {
     const email = 'reset-flow@example.com'
     const oldPassword = 'password123'

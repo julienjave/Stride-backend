@@ -634,9 +634,9 @@ describe('Users (e2e)', () => {
 
     // Proves the INSERT genuinely committed under user_roles' real RLS
     // policy, not just that the HTTP response looked right — patient2's
-    // ALREADY-authenticated session (no fresh login, deliberately: /auth/
-    // login is throttled to 5/60s and this file's beforeAll already spends
-    // most of that budget) can now switch to the newly-granted role.
+    // ALREADY-authenticated session (no fresh login, deliberately: the
+    // point is that an existing session sees the new role) can now switch
+    // to the newly-granted role.
     // switchRole() only allows switching to a role deserializeUser()'s own
     // fresh reload (UsersService.findOne() -> getRolesForUser(), a genuinely
     // separate connection from grantRole()'s own transaction) actually
