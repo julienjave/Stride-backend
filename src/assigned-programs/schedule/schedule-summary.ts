@@ -189,14 +189,24 @@ export interface CountedWeek {
   // timesPerWeek, scaled when the stretch is shorter than 7 days.
   target: number
   // The rotation positions this stretch needs — `target` of them, in
-  // rotation order — and the session that did each (null = not yet).
-  workouts: { workoutId: number; sessionId: number | null }[]
+  // rotation order — and the session that did each (null = not yet), with
+  // that session's day (null = not yet). The day lets a screen tell "done
+  // TODAY" (the patient home, Phase 4: a second session the same day would
+  // count for nothing — 'same_day') without another request.
+  workouts: WeeklySlot[]
   // Positions done (the sessions that count).
   done: number
   state: WeekState
   sessionIds: number[]
   // The sessions skipped or stopped within the stretch, oldest first.
   attempts: DatedAttempt[]
+}
+
+// One position of a weekly stretch's rotation (CountedWeek.workouts).
+export interface WeeklySlot {
+  workoutId: number
+  sessionId: number | null
+  date: string | null
 }
 
 export type ExtraReason =
@@ -631,12 +641,13 @@ export function summarizeSchedule(
     // service refuses one — but an empty one must not divide by zero here:
     // it simply needs nothing.)
     const rotation = version.rotation
-    const slots: { workoutId: number; sessionId: number | null }[] =
+    const slots: WeeklySlot[] =
       rotation.length === 0
         ? []
         : Array.from({ length: target }, (_, i) => ({
             workoutId: rotation[(first + i) % rotation.length],
             sessionId: null,
+            date: null,
           }))
 
     // Each day with sessions, in order: the session that fills the
@@ -654,6 +665,7 @@ export function summarizeSchedule(
       const slot = openSlot(chosen)
       if (slot) {
         slot.sessionId = chosen.id
+        slot.date = chosen.localDate
         counted.push(chosen)
       } else if (slots.every((s) => s.sessionId !== null)) {
         extra(chosen, 'beyond_target')

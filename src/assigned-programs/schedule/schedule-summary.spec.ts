@@ -865,11 +865,31 @@ describe('N per week with a rotation', () => {
       today: '19',
     })
     expect(weekRows(s)).toEqual([['12', '18', 3, 3, 'met']])
-    expect(s.weeks[0].workouts).toEqual([
-      { workoutId: A, sessionId: 2 },
-      { workoutId: B, sessionId: 3 },
-      { workoutId: C, sessionId: 1 },
+    // Each slot names the session that filled it AND its day — the slot's
+    // own order (A, B, C) is the rotation's, not the order things were done.
+    expect(s.weeks[0].workouts).toStrictEqual([
+      { workoutId: A, sessionId: 2, date: d('13') },
+      { workoutId: B, sessionId: 3, date: d('15') },
+      { workoutId: C, sessionId: 1, date: d('12') },
     ])
+  })
+
+  // A slot still open has no session and no day; one filled has the day of
+  // the session that COUNTED — not a same-day extra's (both are on the
+  // 13th here, so the extra is a later id: the earliest counts).
+  it('dates only the slots that a counted session filled', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [perWeek(2, '12', [A, B])],
+      sessions: sessions(['13', A], ['13', A]),
+      today: '14',
+    })
+    expect(s.weeks[0].workouts).toStrictEqual([
+      { workoutId: A, sessionId: 1, date: d('13') },
+      { workoutId: B, sessionId: null, date: null },
+    ])
+    expect(extraRows(s)).toStrictEqual([['13', 'same_day']])
   })
 
   // The case from the decision: A, A, B = 2 of 3 — the second A is a

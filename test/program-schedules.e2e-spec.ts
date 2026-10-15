@@ -1153,6 +1153,7 @@ describe('Program schedules (e2e)', () => {
           workouts: [a, a, a].map((workoutId) => ({
             workoutId,
             sessionId: null,
+            date: null,
           })),
           attempts: [],
         },
