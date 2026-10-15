@@ -17,7 +17,11 @@
 
 import { addDays } from '../../src/common/calendar-date'
 import { summarizeSchedule } from '../../src/assigned-programs/schedule/schedule-summary'
-import { seedSessionDays, seedSessionWorkouts } from './session-history'
+import {
+  seedAttempts,
+  seedSessionDays,
+  seedSessionWorkouts,
+} from './session-history'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -249,6 +253,12 @@ describe('the seed dataset', () => {
           assignment.history,
         )
         const workouts = seedSessionWorkouts(start, content, sessions)
+        const attempts = seedAttempts(
+          start,
+          today,
+          schedule,
+          assignment.history,
+        )
         const summary = summarizeSchedule({
           startDate: start,
           endDate: null,
@@ -259,9 +269,16 @@ describe('the seed dataset', () => {
             workoutId: workouts[index],
             countsFor: session.countsFor,
           })),
+          attempts: attempts.map((attempt, index) => ({
+            id: 100 + index,
+            localDate: attempt.day,
+            status: attempt.status,
+            endReason: attempt.reason,
+          })),
           today,
         })
         expect(summary.extraSessions).toEqual([])
+        expect(summary.otherAttempts).toEqual([])
         if (assignment.patient === 'pat') {
           expect(summary.totals).toMatchObject({
             done: 4,
@@ -270,7 +287,19 @@ describe('the seed dataset', () => {
             swapped: 2,
             missed: 1,
             extra: 0,
+            skipped: 1,
+            incomplete: 1,
           })
+          // The skip labels the MISSED day; the stop, the day MADE UP.
+          const labelled = summary.days
+            .filter((day) => day.attempts.length > 0)
+            .map((day) => [day.state, day.attempts.map((a) => a.endReason)])
+          expect(labelled).toEqual([
+            ['made_up', ['pain']],
+            ['missed', ['illness']],
+          ])
+        } else {
+          expect(attempts).toEqual([])
         }
       }
     },

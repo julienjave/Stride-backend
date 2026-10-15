@@ -1133,6 +1133,8 @@ describe('Program schedules (e2e)', () => {
         swapped: 0,
         missed: 0,
         extra: 0,
+        skipped: 0,
+        incomplete: 0,
       })
       // Three slots, each for the rotation's next workout — A every time
       // (one workout) — and A is what's next.
@@ -1151,6 +1153,7 @@ describe('Program schedules (e2e)', () => {
             workoutId,
             sessionId: null,
           })),
+          attempts: [],
         },
       ])
       expect(res.body.nextWorkout).toEqual({

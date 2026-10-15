@@ -3039,9 +3039,16 @@ describe('AssignedProgramsService.summary', () => {
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) }
     // One completed session, of workout 1 — the one the rotation asks for.
-    sessionsWhere = jest
-      .fn()
-      .mockResolvedValue([{ id: 31, localDate: start, workoutId: 1 }])
+    sessionsWhere = jest.fn().mockResolvedValue([
+      {
+        id: 31,
+        localDate: start,
+        workoutId: 1,
+        countsFor: null,
+        status: 'completed',
+        endReason: null,
+      },
+    ])
     db = {
       query: {
         assignedPrograms: {
@@ -3109,9 +3116,48 @@ describe('AssignedProgramsService.summary', () => {
       swapped: 0,
       missed: 0,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
     expect(result.weeks[0].sessionIds).toEqual([31])
     expect(result.nextWorkout?.workoutId).toBe(1)
+  })
+
+  // Step 1b: a session that ENDED without being completed reaches the module
+  // as an attempt — a label, with its reason — never as a session that
+  // counts. (Which statuses are read is the query's business: e2e.)
+  it('passes a stopped session as an attempt, not as done', async () => {
+    sessionsWhere.mockResolvedValue([
+      {
+        id: 31,
+        localDate: start,
+        workoutId: 1,
+        countsFor: null,
+        status: 'completed',
+        endReason: null,
+      },
+      {
+        id: 32,
+        localDate: addDays(start, 1),
+        workoutId: 1,
+        countsFor: null,
+        status: 'incomplete',
+        endReason: 'pain',
+      },
+    ])
+
+    const result = await service.summary(900, practitioner, today)
+
+    expect(result.totals).toMatchObject({ done: 1, incomplete: 1, skipped: 0 })
+    expect(result.weeks[0].sessionIds).toEqual([31])
+    expect(result.weeks[0].attempts).toStrictEqual([
+      {
+        sessionId: 32,
+        status: 'incomplete',
+        endReason: 'pain',
+        date: addDays(start, 1),
+      },
+    ])
   })
 
   it("refuses a today that can't be today anywhere, before reading anything", async () => {
@@ -3244,6 +3290,10 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   let service: AssignedProgramsService
   let program: Record<string, unknown>
   let sessionRows: { localDate: string; status: string }[]
+  // What closing the program's OPEN sessions returns (step 1b): none,
+  // unless a test says otherwise — and their checklist rows.
+  let closedSessions: Record<string, unknown>[]
+  let checklistRows: Record<string, unknown>[]
   let calls: string[]
   let setValues: jest.Mock
   let db: Record<string, unknown> & { transaction: jest.Mock }
@@ -3265,7 +3315,19 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
       basedOnProgramId: null,
     }
     sessionRows = []
-    setValues = jest.fn((values: unknown) => {
+    closedSessions = []
+    checklistRows = []
+    setValues = jest.fn((values: Record<string, unknown>) => {
+      // The sessions' UPDATE (its `endedAt` is SQL — now() — so it isn't
+      // written out): recorded by what it does.
+      if (values.endReason === 'program_closed') {
+        calls.push('close open sessions')
+        return {
+          where: () => ({
+            returning: jest.fn().mockResolvedValue(closedSessions),
+          }),
+        }
+      }
       calls.push(`update ${JSON.stringify(values)}`)
       return {
         where: () =>
@@ -3309,6 +3371,11 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
             for: jest.fn(() => {
               calls.push('lock')
               return Promise.resolve([])
+            }),
+            // The closed sessions' checklists (one query for all).
+            orderBy: jest.fn(() => {
+              calls.push('read checklists')
+              return Promise.resolve(checklistRows)
             }),
           }),
         }),
@@ -3428,11 +3495,12 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
       await service.close(900, admin, 'cancel', today)
 
       // …then the full program is read for the answer.
-      expect(afterChecks().slice(0, 5)).toEqual([
+      expect(afterChecks().slice(0, 6)).toEqual([
         'lock',
         'read program',
         'read sessions',
         `update ${JSON.stringify({ status: 'cancelled', endDate: today })}`,
+        'close open sessions',
         'audit ASSIGNED_PROGRAM_CANCELLED',
       ])
       expect(auditService.logInTransaction).toHaveBeenCalledWith(db, {
@@ -3447,8 +3515,74 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
             status: { from: 'active', to: 'cancelled' },
             endDate: { from: null, to: today },
           },
+          closedSessionIds: [],
         },
       })
+    })
+
+    // Step 1b: its OPEN sessions are closed with it — AFTER the program's own
+    // UPDATE (the database's guard checks the program is closed), each with
+    // its own entry carrying what was done in it, then the program's entry
+    // listing them. (Which sessions the UPDATE matches is the database's
+    // business: e2e.)
+    it('closes its open sessions after itself, each with its own entry', async () => {
+      sessionRows = [{ localDate: addDays(today, -1), status: 'in_progress' }]
+      closedSessions = [
+        {
+          id: 70,
+          patientId: 20,
+          assignedProgramId: 900,
+          status: 'incomplete',
+          endReason: 'program_closed',
+        },
+      ]
+      checklistRows = [
+        { id: 7001, sessionId: 70, name: 'Squat', completed: true },
+        { id: 7002, sessionId: 71, name: 'Not this one', completed: false },
+      ]
+
+      await service.close(900, admin, 'cancel', today)
+
+      expect(afterChecks().slice(0, 8)).toEqual([
+        'lock',
+        'read program',
+        'read sessions',
+        `update ${JSON.stringify({ status: 'cancelled', endDate: addDays(today, -1) })}`,
+        'close open sessions',
+        'read checklists',
+        'audit SESSION_STOPPED',
+        'audit ASSIGNED_PROGRAM_CANCELLED',
+      ])
+      const entries = auditService.logInTransaction.mock.calls.map(
+        (call) => (call as unknown[])[1],
+      )
+      expect(entries[0]).toMatchObject({
+        performedBy: 1,
+        action: 'SESSION_STOPPED',
+        targetUserId: 20,
+        entityType: 'sessions',
+        entityId: 70,
+        details: {
+          session: { status: 'incomplete', endReason: 'program_closed' },
+          exercises: [{ exerciseRowId: 7001, name: 'Squat', completed: true }],
+        },
+      })
+      expect(
+        (entries[0] as { details: { exercises: unknown[] } }).details.exercises,
+      ).toHaveLength(1)
+      expect(entries[1]).toMatchObject({
+        action: 'ASSIGNED_PROGRAM_CANCELLED',
+        details: { closedSessionIds: [70] },
+      })
+    })
+
+    it('reads no checklist when no session was open', async () => {
+      sessionRows = [{ localDate: addDays(today, -1), status: 'completed' }]
+
+      await service.close(900, admin, 'complete', today)
+
+      expect(calls).not.toContain('read checklists')
+      expect(calls).toContain('close open sessions')
     })
 
     // The state that counts is the one read UNDER the lock: here the first

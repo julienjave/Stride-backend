@@ -79,12 +79,12 @@ import {
   SESSIONS_ONE_OPEN_PER_PROGRAM,
   SESSIONS_ONE_SKIP_PER_DAY,
 } from '../database/pg-errors'
+import { resultsForAudit, sessionForAudit } from './session-audit'
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
 
 type CurrentUser = { id: number; activeRole: UserRole }
 type SessionRow = typeof sessions.$inferSelect
-type SessionExerciseRow = typeof sessionExercises.$inferSelect
 
 // A session's local date must be the patient's TODAY. The server can't
 // know which day that is (it doesn't know their time zone), but it knows
@@ -178,52 +178,6 @@ function exerciseSnapshot(programExercise: {
     equipment: programExercise.equipment,
     instructions: programExercise.instructions,
   }
-}
-
-// --- AUDIT ENTRIES -----------------------------------------------------------------------------------------
-//
-// Every write to a session follows the audit convention (decided with the
-// person 2026-10-15): the route is tagged @AuditedByService(), and the
-// service writes ONE complete entry inside the change's own transaction —
-// no change without its entry, no entry without its change. Exercise ticks
-// included (about 50 entries a patient a week: nothing for Postgres, and
-// the viewer can group them), so even a session abandoned halfway leaves a
-// record of what was done. Entity 'sessions', target = the patient.
-// Plain copies, field by field (like exerciseForAudit in the programs
-// service), so an entry never depends on what the row type happens to carry.
-
-// What a session IS and how it ended — the part every entry about it shares.
-function sessionForAudit(session: SessionRow) {
-  return {
-    assignedProgramId: session.assignedProgramId,
-    workoutId: session.workoutId,
-    localDate: session.localDate,
-    countsFor: session.countsFor,
-    status: session.status,
-    startedAt: session.startedAt,
-    completedAt: session.completedAt,
-    endedAt: session.endedAt,
-    endReason: session.endReason,
-    endNote: session.endNote,
-    painBefore: session.painBefore,
-    painAfter: session.painAfter,
-    mobilityAfter: session.mobilityAfter,
-    totalDurationInSeconds: session.totalDurationInSeconds,
-    sessionFeedback: session.sessionFeedback,
-  }
-}
-
-// What the patient DID with each exercise — the results, by checklist row
-// (the prescription is in the SESSION_STARTED entry, and fixed: 0033).
-function resultsForAudit(rows: SessionExerciseRow[]) {
-  return rows.map((row) => ({
-    exerciseRowId: row.id,
-    name: row.name,
-    completed: row.completed,
-    durationActualInSeconds: row.durationActualInSeconds,
-    difficultyRating: row.difficultyRating,
-    feedback: row.feedback,
-  }))
 }
 
 @Injectable()
@@ -559,33 +513,6 @@ export class SessionsService {
   }
 
   // --- GET ROUTES ---
-
-  async findAllForCurrentUser(currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) {
-      return withRlsContext(this.db, currentUser, (tx) =>
-        tx.query.sessions.findMany(),
-      )
-    }
-    if (currentUser.activeRole === UserRole.PATIENT) {
-      return withRlsContext(this.db, currentUser, (tx) =>
-        tx.query.sessions.findMany({
-          where: eq(sessions.patientId, currentUser.id),
-        }),
-      )
-    }
-    const managedPatients = await this.usersService.findPatientsForPractitioner(
-      currentUser.id,
-    )
-    const patientIds = managedPatients.map((p) => p.id)
-    if (patientIds.length === 0) {
-      return []
-    }
-    return withRlsContext(this.db, currentUser, (tx) =>
-      tx.query.sessions.findMany({
-        where: inArray(sessions.patientId, patientIds),
-      }),
-    )
-  }
 
   async findOne(id: number, currentUser: CurrentUser) {
     const session = await this.findSessionOrThrow(id, currentUser)

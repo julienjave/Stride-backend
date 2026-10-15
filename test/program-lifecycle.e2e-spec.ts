@@ -356,6 +356,7 @@ describe('Program lifecycle (e2e)', () => {
         madeUpBy: null,
         doneEarlyBy: null,
         swappedBy: { sessionId: res.body.id, date: today },
+        attempts: [],
       })
       // Today itself (A) is still to do: the swap didn't count for it.
       expect(summary.body.days[1]).toMatchObject({ date: today, state: 'due' })
@@ -392,6 +393,7 @@ describe('Program lifecycle (e2e)', () => {
         madeUpBy: null,
         doneEarlyBy: { sessionId: res.body.id, date: today },
         swappedBy: null,
+        attempts: [],
       })
       expect(summary.body.totals).toMatchObject({
         doneEarly: 1,
@@ -590,10 +592,10 @@ describe('Program lifecycle (e2e)', () => {
     // cancelled, kept, ending yesterday (today isn't a missed day).
     it('cancels a program with a session, ending it yesterday', async () => {
       const program = await createProgram({ startsIn: -3 })
-      expect(
-        (await startSession(program.id, { workoutId: program.workouts[0].id }))
-          .status,
-      ).toBe(201)
+      const started = await startSession(program.id, {
+        workoutId: program.workouts[0].id,
+      })
+      expect(started.status).toBe(201)
 
       const res = await close(practitionerA, program.id, 'cancel')
       expect(res.status).toBe(200)
@@ -615,6 +617,9 @@ describe('Program lifecycle (e2e)', () => {
           status: { from: 'active', to: 'cancelled' },
           endDate: { from: null, to: yesterday },
         },
+        // The session still in progress was closed with the program (step
+        // 1b) — its own entry is in sessions.e2e-spec.ts.
+        closedSessionIds: [started.body.id],
       })
     })
 
@@ -713,6 +718,7 @@ describe('Program lifecycle (e2e)', () => {
     interface ClosingPreviewBody {
       cancel: ClosingPlanBody
       complete: ClosingPlanBody
+      openSessions: number
     }
     interface CloseBody {
       outcome: string
@@ -735,6 +741,7 @@ describe('Program lifecycle (e2e)', () => {
       expect(res.body).toEqual({
         cancel: { outcome: 'archived', endDate: null },
         complete: { outcome: 'completed', endDate: yesterday },
+        openSessions: 0,
       })
     })
 
@@ -750,6 +757,8 @@ describe('Program lifecycle (e2e)', () => {
         outcome: 'cancelled',
         endDate: yesterday,
       })
+      // …and warns that closing will close it too.
+      expect(promised.openSessions).toBe(1)
 
       const done = (await close(practitionerA, program.id, 'cancel'))
         .body as CloseBody
@@ -770,6 +779,7 @@ describe('Program lifecycle (e2e)', () => {
       expect(res.body).toEqual({
         cancel: { outcome: 'cancelled', endDate: today },
         complete: { outcome: 'completed', endDate: today },
+        openSessions: 0,
       })
     })
 
@@ -1186,20 +1196,26 @@ describe('Program lifecycle (e2e)', () => {
       expect(await run(asPatient(), insert(open))).toHaveProperty('rows')
     })
 
-    // Decided with the person: the work really happened — a session started
-    // before the cancel can still be finished, its exercises ticked.
-    it('lets the patient finish a session that was in progress', async () => {
+    // Decided with the person on 2026-10-15 (Phase 4 step 1b), replacing the
+    // 2026-10-11 rule that a session in progress could still be finished: an
+    // open session in a closed program makes no sense — cancelling CLOSED it
+    // (incomplete, `program_closed`), so it is final like any finished one.
+    it('closed the session that was in progress with the program', async () => {
+      const read = await patient.get(`/sessions/${unfinishedSessionId}`)
+      expect(read.body).toMatchObject({
+        status: 'incomplete',
+        endReason: 'program_closed',
+      })
       const tick = await patient
         .patch(
           `/sessions/${unfinishedSessionId}/exercises/${unfinishedExerciseRowId}`,
         )
         .send({ completed: true })
-      expect(tick.status).toBe(200)
+      expect(tick.status).toBe(409)
       const finished = await patient
         .post(`/sessions/${unfinishedSessionId}/complete`)
         .send({})
-      expect(finished.status).toBe(200)
-      expect(finished.body.status).toBe('completed')
+      expect(finished.status).toBe(409)
     })
 
     // The program row: no way back to active; archiving a completed program

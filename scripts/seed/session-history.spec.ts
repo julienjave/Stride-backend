@@ -15,7 +15,11 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { seedSessionDays, seedSessionWorkouts } from './session-history'
+import {
+  seedAttempts,
+  seedSessionDays,
+  seedSessionWorkouts,
+} from './session-history'
 
 // October 2026: Mon 12, Wed 14, Fri 16, Mon 19, Wed 21, Fri 23, Mon 26.
 // Monday A, Wednesday B, Friday A (workout positions, as in the dataset).
@@ -342,5 +346,76 @@ describe('seedSessionWorkouts', () => {
         [on('15')],
       ),
     ).toThrow('A paused schedule has no sessions to seed')
+  })
+})
+
+// Phase 4 step 1b: the attempts a weekdays history asks for.
+describe('seedAttempts', () => {
+  const history = {
+    kind: 'weekdays' as const,
+    madeUpIndex: 1,
+    missedIndex: 3,
+    skippedMissed: 'illness' as const,
+    stoppedBeforeMakeUp: { reason: 'pain' as const, painAfter: 7 },
+  }
+
+  // Scheduled days before Mon 26: 12, 14, 16, 19, 21, 23 — index 1 (Wed 14)
+  // is made up, index 3 (Mon 19) missed. Given in day order whatever the
+  // order they're planned in.
+  it('stops a session on the day made up, and skips the missed day', () => {
+    expect(seedAttempts(d('12'), d('26'), MWF, history)).toStrictEqual([
+      { day: d('14'), status: 'incomplete', reason: 'pain', painAfter: 7 },
+      { day: d('19'), status: 'skipped', reason: 'illness', painAfter: null },
+    ])
+  })
+
+  // In day order even when the missed day comes first.
+  it('gives them in day order', () => {
+    expect(
+      seedAttempts(d('12'), d('26'), MWF, {
+        ...history,
+        madeUpIndex: 3,
+        missedIndex: 1,
+      }).map((a) => a.day),
+    ).toEqual([d('14'), d('19')])
+  })
+
+  it('gives none that a history does not ask for', () => {
+    expect(
+      seedAttempts(d('12'), d('26'), MWF, {
+        kind: 'weekdays',
+        madeUpIndex: 1,
+        missedIndex: 3,
+      }),
+    ).toEqual([])
+    expect(
+      seedAttempts(d('12'), d('26'), MWF, {
+        kind: 'days-after-start',
+        days: [0, 2],
+      }),
+    ).toEqual([])
+  })
+
+  // Only days before today: run on Tue 20, the missed Monday 19 is past —
+  // run on Mon 19 itself, it isn't (today is left for whoever tries the
+  // app).
+  it('stops before today', () => {
+    expect(
+      seedAttempts(d('12'), d('20'), MWF, history).map((a) => a.day),
+    ).toEqual([d('14'), d('19')])
+    expect(
+      seedAttempts(d('12'), d('19'), MWF, history).map((a) => a.day),
+    ).toEqual([d('14')])
+  })
+
+  it('refuses a weekdays history on a times-per-week schedule', () => {
+    expect(() =>
+      seedAttempts(
+        d('12'),
+        d('26'),
+        { type: 'times_per_week', timesPerWeek: 3 },
+        history,
+      ),
+    ).toThrow('A weekdays history needs a weekdays schedule')
   })
 })

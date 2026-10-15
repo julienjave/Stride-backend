@@ -88,11 +88,16 @@ made, through the app's own code); the seed announces it just before.
     Friday = A · Mobility, Wednesday = B · Strength**. Every scheduled day so
     far is done — each session with that day's workout — except:
     - week 1: the 2nd scheduled day, **made up** the next day (with the
-      missed day's workout);
-    - week 2: the 4th, **missed**, and the 5th, **done early** — on the free
-      day before it, a session saying it counts for that day (`countsFor`);
+      missed day's workout) — and on that day itself, a session **stopped
+      for pain** (pain 7/10 after, one exercise of two ticked): it shows as
+      a label on the day, not as done;
+    - week 2: the 4th, **missed** — and **skipped for illness** that
+      morning (a label on the missed day: still missed) — and the 5th,
+      **done early** — on the free day before it, a session saying it
+      counts for that day (`countsFor`);
     - week 3: a **swap** — the first two scheduled days doing different
       workouts exchange them, each session counting for the other day.
+    The summary's totals count them: **1 skipped, 1 incomplete**.
   - *Lower Back Mobility — Jo*, assigned by **Sam**, started **10 days
     before** the seed ran, **3 times a week** — so its program weeks start
     on the weekday it started, not on Monday. The template has a single

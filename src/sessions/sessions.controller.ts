@@ -118,13 +118,10 @@ export class SessionsController {
 
   // --- GET ROUTES ---
 
-  // Role-scoped inside the service, same as AssignedPrograms — every role
-  // is allowed, just to a different slice of data.
-  @Get()
-  findAll(@CurrentUser() user: CurrentUser) {
-    return this.sessionsService.findAllForCurrentUser(user)
-  }
-
+  // (`GET /sessions` — every session the caller could see, unfiltered and
+  // unordered — was removed on 2026-10-15: a program's sessions are read with
+  // `GET /assigned-programs/:id/sessions`, ranged and ordered, checked like
+  // the program.)
   @Get(':id')
   findOne(
     @Param('id', ParseIntPipe) id: number,

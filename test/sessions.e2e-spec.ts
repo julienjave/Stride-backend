@@ -49,6 +49,8 @@ describe('Sessions (e2e)', () => {
   let patientA: ReturnType<typeof agent>
   let patientB: ReturnType<typeof agent>
   let patientAId: number
+  let practitionerAId: number
+  let adminId: number
   let exerciseId: number
 
   const today = utcToday()
@@ -180,7 +182,13 @@ describe('Sessions (e2e)', () => {
     }
     const clinicId = clinicRes.body.clinicId
 
-    await admin.post('/users').send({
+    const { rows: adminRows } = await sessionPool.query<{ id: number }>(
+      'SELECT id FROM users WHERE email = $1',
+      [`admin-${stamp}@example.com`],
+    )
+    adminId = adminRows[0].id
+
+    const practitionerARes = await admin.post('/users').send({
       email: `practitioner-a-${stamp}@example.com`,
       role: 'practitioner',
       firstName: 'Practitioner',
@@ -188,6 +196,7 @@ describe('Sessions (e2e)', () => {
       licenseNumber: `PT-A-${stamp}`,
       clinicId,
     })
+    practitionerAId = bodyOf<{ id: number }>(practitionerARes).id
     await activateAccount(sessionPool, `practitioner-a-${stamp}@example.com`)
     await practitionerA.post('/auth/login').send({
       email: `practitioner-a-${stamp}@example.com`,
@@ -327,7 +336,8 @@ describe('Sessions (e2e)', () => {
        FROM assigned_program_exercises pe WHERE pe.assigned_program_id = $2`,
       [s.id, program.id],
     )
-    return s.id
+    // A bigint arrives from pg as a string; the API answers numbers.
+    return Number(s.id)
   }
 
   // Runs `send` while another connection holds an UNCOMMITTED write (as the
@@ -429,12 +439,12 @@ describe('Sessions (e2e)', () => {
   // As the APP's role, with the patient's context set the way
   // withRlsContext sets it. The statement's row count, or the error that
   // stopped it. Always rolled back.
-  async function asPatientA(statement: SQL) {
+  async function asActor(userId: number, role: string, statement: SQL) {
     try {
       await db.transaction(async (tx) => {
         await tx.execute(
-          sql`SELECT set_config('app.current_user_id', ${String(patientAId)}, true),
-                     set_config('app.current_role', 'patient', true)`,
+          sql`SELECT set_config('app.current_user_id', ${String(userId)}, true),
+                     set_config('app.current_role', ${role}, true)`,
         )
         const result = await tx.execute(statement)
         throw new RolledBack(result.rowCount ?? 0)
@@ -443,8 +453,10 @@ describe('Sessions (e2e)', () => {
       if (error instanceof RolledBack) return { rowCount: error.rowCount }
       return { error: pgError(error) }
     }
-    throw new Error('unreachable: asPatientA() always rolls back')
+    throw new Error('unreachable: asActor() always rolls back')
   }
+  const asPatientA = (statement: SQL) =>
+    asActor(patientAId, 'patient', statement)
   // As the tables' OWNER (no row-level security; the triggers exempt it —
   // never a CHECK). Always rolled back.
   async function asOwner(statement: string, params: unknown[] = []) {
@@ -1779,19 +1791,415 @@ describe('Sessions (e2e)', () => {
     expect(rows).toEqual([])
   })
 
-  // --- 11. Reading ----------------------------------------------------------------
+  // --- 11. Reading a program's sessions (step 1b) -----------------------------------
 
-  it('scopes GET /sessions by role: patient sees own, unrelated practitioner sees none, admin sees all', async () => {
-    const asPatient = await patientA.get('/sessions')
-    expect(asPatient.status).toBe(200)
-    expect(bodyOf<unknown[]>(asPatient).length).toBeGreaterThan(0)
+  // Planted as the owner on chosen days, in an order the answer must NOT
+  // follow: every status, two on one day. Read by section 12 too (its open
+  // session must outlive another program's closing) — one program fewer to
+  // assign (the 60-a-minute limit).
+  let ids: Record<string, number>
 
-    const asForeignPractitioner = await practitionerB.get('/sessions')
-    expect(asForeignPractitioner.status).toBe(200)
-    expect(asForeignPractitioner.body).toEqual([])
+  describe("reading a program's sessions", () => {
+    let program: { id: number; workouts: { id: number }[] }
+    beforeAll(async () => {
+      program = await newProgram()
+      // Each status's own moments: open = started; completed = started +
+      // completed; stopped = started + ended + a reason; skipped = ended + a
+      // reason, never started (the sessions_status_moments CHECK).
+      const MOMENTS = {
+        in_progress: 'now(), NULL, NULL, NULL',
+        completed: 'now(), now(), NULL, NULL',
+        incomplete: "now(), NULL, now(), 'pain'",
+        skipped: "NULL, NULL, now(), 'illness'",
+      }
+      const plant = async (daysAgo: number, status: keyof typeof MOMENTS) => {
+        const {
+          rows: [row],
+        } = await sessionPool.query<{ id: number }>(
+          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
+             scheduled_date, local_date, status,
+             started_at, completed_at, ended_at, end_reason)
+           VALUES ($1, $2, $3, now(), ($4::date - $5::int), $6, ${MOMENTS[status]})
+           RETURNING id`,
+          [
+            program.id,
+            program.workouts[0].id,
+            patientAId,
+            today,
+            daysAgo,
+            status,
+          ],
+        )
+        // A bigint id arrives from pg as a string; the API answers numbers.
+        return Number(row.id)
+      }
+      ids = {
+        stopped: await plant(3, 'incomplete'),
+        completed5: await plant(5, 'completed'),
+        skipped: await plant(3, 'skipped'),
+        open: await plant(0, 'in_progress'),
+      }
+    })
 
-    const asAdmin = await admin.get('/sessions')
-    expect(asAdmin.status).toBe(200)
-    expect(bodyOf<unknown[]>(asAdmin).length).toBeGreaterThan(0)
+    // Newest first: by the patient's day, then by creation within a day;
+    // every status; the rows only — no checklist.
+    it('lists every session, newest first, without checklists', async () => {
+      const res = await patientA.get(
+        `/assigned-programs/${program.id}/sessions`,
+      )
+      expect(res.status).toBe(200)
+      const rows = bodyOf<SessionBody[]>(res)
+      expect(rows.map((row) => row.id)).toEqual([
+        ids.open,
+        ids.skipped,
+        ids.stopped,
+        ids.completed5,
+      ])
+      expect(rows.map((row) => row.status)).toEqual([
+        'in_progress',
+        'skipped',
+        'incomplete',
+        'completed',
+      ])
+      expect(rows[2]).toMatchObject({ endReason: 'pain' })
+      expect(rows.every((row) => !('exercises' in row))).toBe(true)
+    })
+
+    // Both ends included; either may be left out.
+    it('keeps the days within from and to, both included', async () => {
+      const day = (n: number) => addDays(today, -n)
+      const list = async (query: string) =>
+        bodyOf<SessionBody[]>(
+          await patientA.get(
+            `/assigned-programs/${program.id}/sessions?${query}`,
+          ),
+        ).map((row) => row.id)
+      expect(await list(`from=${day(3)}&to=${day(3)}`)).toEqual([
+        ids.skipped,
+        ids.stopped,
+      ])
+      expect(await list(`from=${day(3)}`)).toEqual([
+        ids.open,
+        ids.skipped,
+        ids.stopped,
+      ])
+      expect(await list(`to=${day(4)}`)).toEqual([ids.completed5])
+      expect(await list(`from=${day(2)}&to=${day(1)}`)).toEqual([])
+    })
+
+    it('refuses a range that ends before it starts, and a date that is not one', async () => {
+      const backwards = await patientA.get(
+        `/assigned-programs/${program.id}/sessions?from=${today}&to=${addDays(today, -1)}`,
+      )
+      expect(backwards.status).toBe(400)
+      expect(bodyOf<ErrorBody>(backwards).message).toEqual([
+        'from must be on or before to',
+      ])
+      const notADate = await patientA.get(
+        `/assigned-programs/${program.id}/sessions?from=2026-13-01`,
+      )
+      expect(notADate.status).toBe(400)
+    })
+
+    // The people who may view the program: the patient, the care team, an
+    // admin. Anyone else: not found (row security hides the program) — never
+    // an empty list.
+    it('answers the patient, the care team and an admin — and nobody else', async () => {
+      for (const reader of [patientA, practitionerA, admin]) {
+        const res = await reader.get(
+          `/assigned-programs/${program.id}/sessions`,
+        )
+        expect(res.status).toBe(200)
+        expect(bodyOf<unknown[]>(res)).toHaveLength(4)
+      }
+      for (const outsider of [practitionerB, patientB]) {
+        const res = await outsider.get(
+          `/assigned-programs/${program.id}/sessions`,
+        )
+        expect(res.status).toBe(404)
+      }
+    })
+
+    // The same sessions in the summary: skips and stops are LABELS on their
+    // day — oldest first — counted in totals.skipped / totals.incomplete,
+    // never as done; the completed one is done; the open one isn't counted.
+    it("labels the summary's days with their skips and stops", async () => {
+      const res = await practitionerA.get(
+        `/assigned-programs/${program.id}/summary?today=${today}`,
+      )
+      expect(res.status).toBe(200)
+      const summary = bodyOf<{
+        days: { date: string; state: string; attempts: unknown[] }[]
+        totals: Record<string, number>
+        otherAttempts: unknown[]
+      }>(res)
+      const dayOf = (n: number) =>
+        summary.days.find((d) => d.date === addDays(today, -n))
+      expect(dayOf(3)).toMatchObject({
+        state: 'missed',
+        attempts: [
+          { sessionId: ids.stopped, status: 'incomplete', endReason: 'pain' },
+          { sessionId: ids.skipped, status: 'skipped', endReason: 'illness' },
+        ],
+      })
+      expect(dayOf(5)).toMatchObject({ state: 'done', attempts: [] })
+      expect(dayOf(0)).toMatchObject({ attempts: [] })
+      expect(summary.totals).toMatchObject({
+        done: 1,
+        skipped: 1,
+        incomplete: 1,
+      })
+      expect(summary.otherAttempts).toEqual([])
+    })
+
+    // GET /sessions (every session the caller could see, unfiltered) is gone.
+    it('has no GET /sessions any more', async () => {
+      expect((await patientA.get('/sessions')).status).toBe(404)
+    })
+  })
+
+  // --- 12. Closing a program closes its open sessions (step 1b) -----------------------
+
+  describe('closing a program', () => {
+    // Only its OPEN session: the one completed today keeps how it ended,
+    // and another program's open session is left alone.
+    it('closes its open session — incomplete, program_closed — recorded, and final', async () => {
+      const program = await newProgram()
+      const done = bodyOf<SessionBody>(await start(program.id))
+      await patientA.post(`/sessions/${done.id}/complete`).send({})
+      const doneBefore = await storedSession(done.id)
+      // Open since yesterday, half done: its entry must keep what was done.
+      const openId = await plantOpenSession(program, 1)
+      await sessionPool.query(
+        'UPDATE session_exercises SET completed = true WHERE session_id = $1',
+        [openId],
+      )
+      const { rows: checklist } = await sessionPool.query<{ id: number }>(
+        'SELECT id FROM session_exercises WHERE session_id = $1',
+        [openId],
+      )
+
+      const preview = await practitionerA.get(
+        `/assigned-programs/${program.id}/closing?today=${today}`,
+      )
+      expect(bodyOf<{ openSessions: number }>(preview).openSessions).toBe(1)
+
+      const before = await databaseNow()
+      const res = await practitionerA
+        .post(`/assigned-programs/${program.id}/cancel`)
+        .send({ today })
+      expect(res.status).toBe(200)
+
+      const closed = await storedSession(openId)
+      expect(closed).toMatchObject({
+        status: 'incomplete',
+        end_reason: 'program_closed',
+        completed_at: null,
+      })
+      expect((closed.ended_at as Date).getTime()).toBeGreaterThanOrEqual(
+        before.getTime(),
+      )
+      expect(await storedSession(done.id)).toEqual(doneBefore)
+      expect((await storedSession(ids.open)).status).toBe('in_progress')
+
+      // Its own entry, in the practitioner's name; the program's lists it.
+      const trail = await auditTrail(openId)
+      expect(trail.at(-1)).toMatchObject({
+        action: 'SESSION_STOPPED',
+        performed_by: practitionerAId,
+        target_user_id: patientAId,
+        details: {
+          session: { status: 'incomplete', endReason: 'program_closed' },
+          exercises: [
+            { exerciseRowId: Number(checklist[0].id), completed: true },
+          ],
+        },
+      })
+      const { rows } = await sessionPool.query<AuditRow>(
+        `SELECT action, performed_by, target_user_id, details FROM audit_logs
+         WHERE entity_type = 'assigned-programs' AND entity_id = $1
+           AND action = 'ASSIGNED_PROGRAM_CANCELLED'`,
+        [program.id],
+      )
+      expect(rows[0].details).toMatchObject({ closedSessionIds: [openId] })
+
+      // Final: the patient can no longer tick it.
+      const tick = await patientA
+        .patch(`/sessions/${openId}/exercises/${checklist[0].id}`)
+        .send({ completed: false })
+      expect(tick.status).toBe(409)
+    })
+
+    // The race: the patient's Finish is written, not committed, when the
+    // practitioner closes the program. Closing's UPDATE waits for the
+    // session's row, then re-checks `status = 'in_progress'` — the session
+    // finished meanwhile stays COMPLETED, and the program lists no session
+    // it closed.
+    it('leaves a session completed during the closing as completed', async () => {
+      const program = await newProgram()
+      const started = bodyOf<SessionBody>(await start(program.id))
+      const { waited, res } = await whileHolding(
+        appPool,
+        "UPDATE sessions SET status = 'completed', completed_at = now() WHERE id = $1",
+        [started.id],
+        () =>
+          practitionerA
+            .post(`/assigned-programs/${program.id}/cancel`)
+            .send({ today }),
+      )
+      expect(waited).toBe(true)
+      expect(res.status).toBe(200)
+      expect((await storedSession(started.id)).status).toBe('completed')
+      const { rows } = await sessionPool.query<AuditRow>(
+        `SELECT details FROM audit_logs
+         WHERE entity_type = 'assigned-programs' AND entity_id = $1
+           AND action = 'ASSIGNED_PROGRAM_CANCELLED'`,
+        [program.id],
+      )
+      expect(rows[0].details).toMatchObject({ closedSessionIds: [] })
+    })
+  })
+
+  // --- 13. The care team's one exception (0039, as the app) ---------------------------
+  //
+  // The care team and admins may UPDATE a session row (a new policy) — and
+  // the guard lets them make exactly one change: close an open session of a
+  // CLOSED program. Each case has a neighbour that passes.
+
+  describe('the care team closing a session (policy + guard, as the app)', () => {
+    let closedProgramSession: number
+    let finishedSession: number
+    let openProgramSession: number
+    beforeAll(async () => {
+      // A program cancelled with nothing open, then an open session planted
+      // in it by the owner (whom the closed-program guard exempts) — the
+      // state close() is in between its two UPDATEs.
+      const closed = await newProgram()
+      const done = bodyOf<SessionBody>(await start(closed.id))
+      await patientA.post(`/sessions/${done.id}/complete`).send({})
+      finishedSession = done.id
+      await practitionerA
+        .post(`/assigned-programs/${closed.id}/cancel`)
+        .send({ today })
+      closedProgramSession = await plantOpenSession(closed, 1)
+      const open = await newProgram()
+      openProgramSession = await plantOpenSession(open, 1)
+    })
+
+    const close = (id: number) =>
+      sql`UPDATE sessions SET status = 'incomplete', ended_at = now(), end_reason = 'program_closed' WHERE id = ${id}`
+    const refused = (constraint: string) => ({
+      error: { code: '23514', constraint },
+    })
+
+    it('lets the care team and an admin close an open session of a closed program', async () => {
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          close(closedProgramSession),
+        ),
+      ).toEqual({ rowCount: 1 })
+      expect(
+        await asActor(adminId, 'admin', close(closedProgramSession)),
+      ).toEqual({
+        rowCount: 1,
+      })
+    })
+
+    // Archived (what cancelling before any session does) counts as closed
+    // too. No session can be open in one through the app, so the owner
+    // archives the open program for this test only, and puts it back.
+    it('lets the care team close an open session of an archived program', async () => {
+      const archive = (on: boolean) =>
+        sessionPool.query(
+          'UPDATE assigned_programs SET is_archived = $1 WHERE id = (SELECT assigned_program_id FROM sessions WHERE id = $2)',
+          [on, openProgramSession],
+        )
+      await archive(true)
+      try {
+        expect(
+          await asActor(
+            practitionerAId,
+            'practitioner',
+            close(openProgramSession),
+          ),
+        ).toEqual({ rowCount: 1 })
+      } finally {
+        await archive(false)
+      }
+    })
+
+    it('refuses it while the program is still open', async () => {
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          close(openProgramSession),
+        ),
+      ).toEqual(refused('session_staff_close_only'))
+    })
+
+    // The one allowed change, plus or minus one thing.
+    it.each([
+      [
+        'another reason',
+        sql`status = 'incomplete', ended_at = now(), end_reason = 'other'`,
+      ],
+      ['another status', sql`status = 'completed', completed_at = now()`],
+      [
+        'another status, with the right reason',
+        sql`status = 'skipped', ended_at = now(), end_reason = 'program_closed'`,
+      ],
+      [
+        'a moment of its own',
+        sql`status = 'incomplete', ended_at = now() - interval '1 hour', end_reason = 'program_closed'`,
+      ],
+      [
+        'anything else as well',
+        sql`status = 'incomplete', ended_at = now(), end_reason = 'program_closed', pain_after = 3`,
+      ],
+      ['anything else alone', sql`pain_before = 3`],
+    ])('refuses any other change: %s', async (_label, change) => {
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE sessions SET ${change} WHERE id = ${closedProgramSession}`,
+        ),
+      ).toEqual(refused('session_staff_close_only'))
+    })
+
+    // Only an OPEN session: a finished one keeps how it ended, even in a
+    // closed program (the guard's own answer — before any CHECK's).
+    it('refuses to close a session that already ended', async () => {
+      expect(
+        await asActor(practitionerAId, 'practitioner', close(finishedSession)),
+      ).toEqual(refused('session_staff_close_only'))
+    })
+
+    // Outside the care team the new policy doesn't apply: the row isn't even
+    // seen by the UPDATE (0 rows, no error).
+    it("doesn't let a practitioner outside the care team touch it", async () => {
+      const { rows } = await sessionPool.query<{ id: number }>(
+        'SELECT id FROM users WHERE id <> ALL($1) AND id IN (SELECT user_id FROM user_roles WHERE role = $2)',
+        [[practitionerAId], 'practitioner'],
+      )
+      expect(
+        await asActor(rows[0].id, 'practitioner', close(closedProgramSession)),
+      ).toEqual({ rowCount: 0 })
+    })
+
+    // `program_closed` means the program closed it: never the patient's own.
+    it('refuses program_closed from the patient', async () => {
+      expect(await asPatientA(close(openProgramSession))).toEqual(
+        refused('session_program_closed_reason'),
+      )
+      expect(
+        await asPatientA(
+          sql`UPDATE sessions SET status = 'incomplete', ended_at = now(), end_reason = 'pain' WHERE id = ${openProgramSession}`,
+        ),
+      ).toEqual({ rowCount: 1 })
+    })
   })
 })

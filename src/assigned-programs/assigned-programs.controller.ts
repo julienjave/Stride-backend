@@ -41,6 +41,7 @@ import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-progr
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
 import { ScheduleSummaryQueryDto } from './dto/schedule-summary-query.dto'
+import { ProgramSessionsQueryDto } from './dto/program-sessions-query.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
 import { ReorderWorkoutsDto } from './dto/reorder-workouts.dto'
@@ -195,6 +196,18 @@ export class AssignedProgramsController {
     @CurrentUser() user: CurrentUser,
   ) {
     return this.assignedProgramsService.removalPreview(id, exerciseRowId, user)
+  }
+
+  // The program's sessions, newest first, without their checklists (Phase 4
+  // step 1b). A read: no @AuditedByService; any role reaches the service,
+  // which lets through the people who may view the program.
+  @Get(':id/sessions')
+  listSessions(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Query() query: ProgramSessionsQueryDto,
+  ) {
+    return this.assignedProgramsService.listSessions(id, user, query)
   }
 
   @Get(':id/summary')

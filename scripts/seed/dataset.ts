@@ -461,15 +461,18 @@ export const ASSIGNED_PROGRAMS: {
         { weekday: 5, workoutIndex: 0 },
       ],
     },
-    // Every scheduled day done, except: week 1, the 2nd (made up the next
-    // day); week 2, the 4th (missed) and the 5th (DONE EARLY, on the free
-    // day before it); week 3, two days that SWAP their workouts.
+    // Every scheduled day done, except: week 1, the 2nd (a session STOPPED
+    // for pain that day, then made up the next day); week 2, the 4th
+    // (SKIPPED for illness — missed) and the 5th (DONE EARLY, on the free day
+    // before it); week 3, two days that SWAP their workouts.
     history: {
       kind: 'weekdays',
       madeUpIndex: 1,
       missedIndex: 3,
       doneEarlyIndex: 4,
       swappedWeek: 2,
+      skippedMissed: 'illness',
+      stoppedBeforeMakeUp: { reason: 'pain', painAfter: 7 },
     },
   },
   {

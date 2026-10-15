@@ -29,14 +29,17 @@ import {
   and,
   count,
   countDistinct,
+  desc,
   eq,
   gte,
   inArray,
   isNull,
+  lte,
   sql,
 } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { changedFields } from '../common/changed-fields'
+import { resultsForAudit, sessionForAudit } from '../sessions/session-audit'
 import {
   assignedPrograms,
   assignedProgramExercises,
@@ -846,17 +849,18 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
 
-    const [versions, completed] = await withRlsContext(
+    const [versions, rows] = await withRlsContext(
       this.db,
       currentUser,
       async (tx) =>
         [
           await this.readScheduleVersions(tx, [id]),
           // Only what the module needs (id, the patient's day, the workout
-          // done), and only completed sessions: "done" means completed
-          // (decided 2026-10-09) — a session started and abandoned isn't
-          // done. The index on (assigned_program_id, local_date) serves this
-          // read.
+          // done, how it ended), for the sessions that ENDED: completed ones
+          // count ("done" means completed — decided 2026-10-09); skipped and
+          // stopped ones are labels (step 1b, 2026-10-15). An OPEN session
+          // is neither yet. The index on (assigned_program_id, local_date)
+          // serves this read.
           await tx
             .select({
               id: sessions.id,
@@ -864,12 +868,18 @@ export class AssignedProgramsService {
               workoutId: sessions.workoutId,
               // A swap's day (null for an ordinary session).
               countsFor: sessions.countsFor,
+              status: sessions.status,
+              endReason: sessions.endReason,
             })
             .from(sessions)
             .where(
               and(
                 eq(sessions.assignedProgramId, id),
-                eq(sessions.status, 'completed'),
+                inArray(sessions.status, [
+                  'completed',
+                  'skipped',
+                  'incomplete',
+                ]),
               ),
             ),
         ] as const,
@@ -879,9 +889,77 @@ export class AssignedProgramsService {
       startDate: program.startDate,
       endDate: program.endDate,
       versions,
-      sessions: completed,
+      sessions: rows
+        .filter((row) => row.status === 'completed')
+        .map(({ id, localDate, workoutId, countsFor }) => ({
+          id,
+          localDate,
+          workoutId,
+          countsFor,
+        })),
+      attempts: rows.flatMap((row) =>
+        row.status === 'skipped' || row.status === 'incomplete'
+          ? [
+              {
+                id: row.id,
+                localDate: row.localDate,
+                status: row.status,
+                // Never null for these two (the CHECK
+                // sessions_end_reason_matches_status).
+                endReason: row.endReason!,
+              },
+            ]
+          : [],
+      ),
       today,
     })
+  }
+
+  // GET /assigned-programs/:id/sessions?from=&to= (Phase 4 step 1b, decided
+  // 2026-10-15) — the program's sessions, for the patient's Sessions hub and
+  // the practitioner's program page: every status (an open one, a skip, a
+  // stopped one are part of the record), newest first — by the patient's
+  // day, then by creation (the id) within a day. The session rows only, no
+  // checklist: a list is read often and shows a line per session;
+  // `GET /sessions/:id` gives one session with its exercises.
+  //
+  // Same people as viewing the program (assertCanView): the patient, the
+  // care team, an admin — anyone else refused (a 404: row security hides
+  // the program from them), never an empty list (which would tell an
+  // outsider "no sessions"). Read under RLS, whose sessions
+  // policy agrees. The index on (assigned_program_id, local_date) serves the
+  // range.
+  async listSessions(
+    id: number,
+    currentUser: CurrentUser,
+    range: { from?: string; to?: string },
+  ) {
+    if (
+      range.from !== undefined &&
+      range.to !== undefined &&
+      range.from > range.to
+    ) {
+      throw new BadRequestException('from must be on or before to')
+    }
+    const program = await this.findProgramOrThrow(id, currentUser)
+    await this.assertCanView(program.patientId, currentUser)
+    return withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .select()
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.assignedProgramId, id),
+            range.from !== undefined
+              ? gte(sessions.localDate, range.from)
+              : undefined,
+            range.to !== undefined
+              ? lte(sessions.localDate, range.to)
+              : undefined,
+          ),
+        )
+        .orderBy(desc(sessions.localDate), desc(sessions.id)),
+    )
   }
 
   // --- PATCH ROUTES ---
@@ -1401,6 +1479,9 @@ export class AssignedProgramsService {
   // program: a closed one has nothing to preview (409, as close() would).
   // No lock: a preview is a moment's answer; close() decides again under
   // the lock.
+  //
+  // `openSessions` (step 1b): how many sessions are in progress — closing
+  // closes them as incomplete (either action), and the dialog says so.
   async closingPreview(id: number, currentUser: CurrentUser, today: string) {
     assertPossibleToday(today)
     const program = await this.findProgramOrThrow(id, currentUser)
@@ -1412,6 +1493,8 @@ export class AssignedProgramsService {
     return {
       cancel: planClosing('cancel', program, sessionDays, today),
       complete: planClosing('complete', program, sessionDays, today),
+      openSessions: sessionDays.filter((s) => s.status === 'in_progress')
+        .length,
     }
   }
 
@@ -1429,6 +1512,17 @@ export class AssignedProgramsService {
   // cancel and a complete, say) are taken one after the other, and the
   // second finds the program closed (409). The answer has one shape,
   // { outcome, program } — `program` null when archived (it's gone).
+  //
+  // Its OPEN sessions are closed with it (step 1b, decided 2026-10-15 — an
+  // open session in a closed program makes no sense): incomplete,
+  // `program_closed`, ended now — in the same transaction, AFTER the
+  // program's own UPDATE (the session guard checks the program is closed,
+  // and sees this transaction's change). Each gets its own SESSION_STOPPED
+  // entry (its trail says how it ended, and who closed it); the program's
+  // entry lists them. A patient finishing one at the same moment: that
+  // request holds the session's row lock, this UPDATE waits for it, and its
+  // `status = 'in_progress'` is re-checked after the wait — a session
+  // completed meanwhile stays completed.
   async close(
     id: number,
     currentUser: CurrentUser,
@@ -1478,6 +1572,7 @@ export class AssignedProgramsService {
           .update(assignedPrograms)
           .set({ status, endDate })
           .where(eq(assignedPrograms.id, id))
+        const closedSessions = await this.closeOpenSessions(tx, currentUser, id)
         // The same `changes` shape as a PATCH's entry: only what really
         // changed (the end date may stay).
         await this.auditService.logInTransaction(tx, {
@@ -1492,6 +1587,7 @@ export class AssignedProgramsService {
           details: {
             today,
             changes: changedFields(current, { status, endDate }),
+            closedSessionIds: closedSessions.map((session) => session.id),
           },
         })
         return status
@@ -1505,6 +1601,59 @@ export class AssignedProgramsService {
           ? null
           : await this.findProgramWithExercises(id, currentUser),
     }
+  }
+
+  // The program's open sessions, closed because the program is (close(),
+  // inside its transaction — after the program's own UPDATE). One UPDATE …
+  // RETURNING; then each closed session's entry, with what was done in it
+  // (its checklist, read in ONE query for all of them). Allowed for the care
+  // team and admins by migration 0039 — this change and no other.
+  private async closeOpenSessions(
+    tx: DrizzleDb,
+    currentUser: CurrentUser,
+    assignedProgramId: number,
+  ) {
+    const closed = await tx
+      .update(sessions)
+      .set({
+        status: 'incomplete',
+        endedAt: sql`now()`,
+        endReason: 'program_closed',
+      })
+      .where(
+        and(
+          eq(sessions.assignedProgramId, assignedProgramId),
+          eq(sessions.status, 'in_progress'),
+        ),
+      )
+      .returning()
+    if (closed.length === 0) return closed
+    const checklists = await tx
+      .select()
+      .from(sessionExercises)
+      .where(
+        inArray(
+          sessionExercises.sessionId,
+          closed.map((session) => session.id),
+        ),
+      )
+      .orderBy(sessionExercises.sortOrder)
+    for (const session of closed) {
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'SESSION_STOPPED',
+        targetUserId: session.patientId,
+        entityType: 'sessions',
+        entityId: session.id,
+        details: {
+          session: sessionForAudit(session),
+          exercises: resultsForAudit(
+            checklists.filter((row) => row.sessionId === session.id),
+          ),
+        },
+      })
+    }
+    return closed
   }
 
   async removeExercise(

@@ -19,6 +19,7 @@ import {
   summarizeSchedule,
   type ScheduleSummary,
   type ScheduleSummaryInput,
+  type SummaryAttempt,
   type SummaryScheduleVersion,
 } from './schedule-summary'
 
@@ -92,6 +93,7 @@ function summarize(input: {
   end?: string
   versions: SummaryScheduleVersion[]
   sessions?: { id: number; localDate: string; workoutId: number }[]
+  attempts?: SummaryAttempt[]
   today: string
 }): ScheduleSummary {
   const full: ScheduleSummaryInput = {
@@ -99,6 +101,7 @@ function summarize(input: {
     endDate: input.end ? d(input.end) : null,
     versions: input.versions,
     sessions: input.sessions ?? [],
+    attempts: input.attempts,
     today: d(input.today),
   }
   return summarizeSchedule(full)
@@ -156,6 +159,8 @@ describe('specific days (weekdays)', () => {
       swapped: 0,
       missed: 0,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
   })
 
@@ -251,6 +256,7 @@ describe('specific days (weekdays)', () => {
       madeUpBy: { sessionId: 1, date: d('13') },
       doneEarlyBy: null,
       swappedBy: null,
+      attempts: [],
     })
     expect(s.totals.madeUp).toBe(1)
   })
@@ -515,6 +521,8 @@ describe('N per week (times_per_week)', () => {
       swapped: 0,
       missed: 2,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
   })
 
@@ -674,6 +682,8 @@ describe('across schedule versions', () => {
       swapped: 0,
       missed: 3,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
   })
 
@@ -1216,6 +1226,8 @@ describe('swaps', () => {
       swapped: 2,
       missed: 0,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
   })
 
@@ -1241,6 +1253,8 @@ describe('swaps', () => {
       swapped: 0,
       missed: 0,
       extra: 0,
+      skipped: 0,
+      incomplete: 0,
     })
   })
 
@@ -1486,5 +1500,207 @@ describe('swaps', () => {
       forDay: d('16'),
       programWeek: null,
     })
+  })
+})
+
+// Phase 4 step 1b (decided 2026-10-15): sessions SKIPPED or STOPPED are
+// labels. Filed by the day they happened — the scheduled day, else the
+// weekly stretch around it, else apart — oldest first, all of them; they
+// never change what counts. 2026-10-12 is a Monday.
+describe('attempts (skipped and stopped sessions — labels only)', () => {
+  const skip = (
+    id: number,
+    day: string,
+    endReason = 'illness',
+  ): SummaryAttempt => ({ id, localDate: d(day), status: 'skipped', endReason })
+  const stop = (
+    id: number,
+    day: string,
+    endReason = 'pain',
+  ): SummaryAttempt => ({
+    id,
+    localDate: d(day),
+    status: 'incomplete',
+    endReason,
+  })
+
+  it('labels a missed scheduled day with its skip — still missed', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MWF, '12')],
+      sessions: sessions('12', '16'),
+      attempts: [skip(10, '14')],
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'done'],
+      ['14', 'missed'],
+      ['16', 'done'],
+    ])
+    expect(s.days[1].attempts).toStrictEqual([
+      { sessionId: 10, status: 'skipped', endReason: 'illness' },
+    ])
+    expect(s.days[0].attempts).toEqual([])
+    expect(s.days[2].attempts).toEqual([])
+    expect(s.otherAttempts).toEqual([])
+    expect(s.totals).toMatchObject({ missed: 1, skipped: 1, incomplete: 0 })
+  })
+
+  // Several on one day: all kept, oldest first (by day, then id — the input
+  // order doesn't matter). A day can be DONE and still carry an attempt: a
+  // session stopped, then another one finished.
+  it('keeps every attempt of a day, oldest first, whatever its state', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MWF, '12')],
+      sessions: sessions('12'),
+      attempts: [stop(21, '12', 'no_time'), skip(20, '12')],
+      today: '19',
+    })
+    expect(s.days[0].state).toBe('done')
+    expect(s.days[0].attempts).toStrictEqual([
+      { sessionId: 20, status: 'skipped', endReason: 'illness' },
+      { sessionId: 21, status: 'incomplete', endReason: 'no_time' },
+    ])
+    expect(s.totals).toMatchObject({ done: 1, skipped: 1, incomplete: 1 })
+  })
+
+  // A free day of a specific-days schedule (a catch-up stopped) is no
+  // scheduled day: the attempt goes apart — and the missed Monday is still
+  // waiting to be made up (an attempt never makes up anything).
+  it('puts an attempt on a free day apart, making nothing up', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MWF, '12')],
+      sessions: sessions('14', '16'),
+      attempts: [stop(30, '13')],
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'done'],
+      ['16', 'done'],
+    ])
+    expect(s.days.every((day) => day.attempts.length === 0)).toBe(true)
+    expect(s.otherAttempts).toStrictEqual([
+      { sessionId: 30, status: 'incomplete', endReason: 'pain', date: d('13') },
+    ])
+  })
+
+  // N a week: no day — the stretch around the attempt carries it, with its
+  // date; a stretch split by a version change gets only its own.
+  it('files a weekly attempt in its own stretch, with its date', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(3, '12'), perWeek(2, '15')],
+      sessions: sessions('12'),
+      attempts: [skip(40, '13'), stop(41, '16'), stop(42, '20')],
+      today: '26',
+    })
+    expect(weekRows(s)).toEqual([
+      ['12', '14', 1, 1, 'met'],
+      ['15', '18', 1, 0, 'missed'],
+      ['19', '25', 2, 0, 'missed'],
+    ])
+    expect(
+      s.weeks.map((w) => w.attempts.map((a) => [a.sessionId, a.date])),
+    ).toEqual([[[40, d('13')]], [[41, d('16')]], [[42, d('20')]]])
+    expect(s.weeks[1].attempts[0]).toStrictEqual({
+      sessionId: 41,
+      status: 'incomplete',
+      endReason: 'pain',
+      date: d('16'),
+    })
+    expect(s.otherAttempts).toEqual([])
+  })
+
+  // A stretch's first and last days are both inside it: an attempt on the
+  // edge goes to that stretch — never apart, never the neighbour.
+  it('files an attempt on the first or last day of a stretch in that stretch', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [perWeek(3, '12'), perWeek(2, '15')],
+      sessions: [],
+      attempts: [
+        skip(40, '14'),
+        stop(41, '15'),
+        stop(42, '18'),
+        skip(43, '19'),
+      ],
+      today: '26',
+    })
+    expect(s.weeks.map((w) => w.attempts.map((a) => a.sessionId))).toEqual([
+      [40],
+      [41, 42],
+      [43],
+    ])
+    expect(s.otherAttempts).toEqual([])
+  })
+
+  // A pause has no days and no stretches; neither has a day before the
+  // start or after the end. All apart, oldest first.
+  it('puts attempts during a pause or outside the program apart, oldest first', () => {
+    const s = summarize({
+      start: '12',
+      end: '25',
+      versions: [weekdays(MWF, '12'), paused('14'), weekdays(MWF, '19')],
+      attempts: [stop(52, '26'), skip(51, '16'), stop(50, '11')],
+      today: '27',
+    })
+    expect(s.otherAttempts.map((a) => [a.sessionId, a.date])).toEqual([
+      [50, d('11')],
+      [51, d('16')],
+      [52, d('26')],
+    ])
+    expect(s.days.every((day) => day.attempts.length === 0)).toBe(true)
+    expect(s.totals).toMatchObject({ skipped: 1, incomplete: 2 })
+  })
+
+  // The guarantee: the same history with and without attempts gives the
+  // same summary, apart from the labels themselves.
+  it('changes nothing else in the summary', () => {
+    const input = {
+      start: '12',
+      end: '25',
+      versions: [weekdays(MWF, '12'), perWeek(2, '19')],
+      sessions: sessions('12', '15', '19'),
+      today: '22',
+    }
+    const without = summarize(input)
+    const withAttempts = summarize({
+      ...input,
+      attempts: [
+        skip(60, '14'),
+        stop(61, '16'),
+        stop(62, '20'),
+        skip(63, '13'),
+      ],
+    })
+    const strip = (s: ScheduleSummary) => ({
+      ...s,
+      totals: { ...s.totals, skipped: 0, incomplete: 0 },
+      days: s.days.map((day) => ({ ...day, attempts: [] })),
+      weeks: s.weeks.map((week) => ({ ...week, attempts: [] })),
+      otherAttempts: [],
+    })
+    expect(strip(withAttempts)).toStrictEqual(without)
+    expect(withAttempts.totals).toMatchObject({ skipped: 2, incomplete: 2 })
+  })
+
+  it('has empty labels when no attempt is given', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [weekdays(MWF, '12')],
+      today: '19',
+    })
+    expect(s.days.map((day) => day.attempts)).toEqual([[], [], []])
+    expect(s.otherAttempts).toEqual([])
+    expect(s.totals).toMatchObject({ skipped: 0, incomplete: 0 })
   })
 })

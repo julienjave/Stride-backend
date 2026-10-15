@@ -62,7 +62,11 @@ import { AddWorkoutDto } from '../src/programs/dto/add-workout.dto'
 import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
 import { addDays, utcToday } from '../src/common/calendar-date'
-import { seedSessionDays, seedSessionWorkouts } from './seed/session-history'
+import {
+  seedAttempts,
+  seedSessionDays,
+  seedSessionWorkouts,
+} from './seed/session-history'
 import { CreateAssignedProgramDto } from '../src/assigned-programs/dto/create-assigned-program.dto'
 import type { CurrentUser } from '../src/common/decorators/current-user.decorator'
 import {
@@ -515,6 +519,85 @@ async function run(): Promise<void> {
              FROM assigned_program_exercises pe
              WHERE pe.id = $2`,
             [session.id, exercise.id],
+          )
+        }
+      }
+
+      // Attempts (Phase 4 step 1b): a session SKIPPED, or started and
+      // STOPPED, on a past day — written as the owner for the same reason
+      // (the API files sessions under today only), in the shapes the CHECKs
+      // ask for (0037): a skip has no start and no checklist, ends at 07:30
+      // UTC (before the day's usual session); a stopped session started at
+      // 17:30 and ended at 17:45, with its checklist — the first exercise
+      // ticked, the rest not — and the pain it was stopped with. Each does
+      // the day's workout (seedSessionWorkouts, as for a session done on
+      // its own day).
+      const attempts = seedAttempts(
+        startDate,
+        today,
+        assignment.schedule,
+        assignment.history,
+      )
+      const attemptWorkoutIds = seedSessionWorkouts(
+        startDate,
+        program.schedules[0],
+        attempts.map(({ day }) => ({ day, forDay: day, countsFor: null })),
+      )
+      for (const [index, attempt] of attempts.entries()) {
+        const workoutId = attemptWorkoutIds[index]
+        if (attempt.status === 'skipped') {
+          await owner.query(
+            `INSERT INTO sessions
+               (assigned_program_id, workout_id, patient_id, scheduled_date,
+                local_date, status, ended_at, end_reason)
+             VALUES ($1, $2, $3, $4::date + time '07:30' AT TIME ZONE 'UTC', $4,
+                     'skipped', $4::date + time '07:30' AT TIME ZONE 'UTC', $5)`,
+            [
+              program.id,
+              workoutId,
+              program.patientId,
+              attempt.day,
+              attempt.reason,
+            ],
+          )
+          continue
+        }
+        const {
+          rows: [stopped],
+        } = await owner.query<{ id: number }>(
+          `INSERT INTO sessions
+             (assigned_program_id, workout_id, patient_id, scheduled_date,
+              local_date, status, started_at, ended_at, end_reason, pain_after)
+           VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4,
+                   'incomplete', $4::date + time '17:30' AT TIME ZONE 'UTC',
+                   $4::date + time '17:45' AT TIME ZONE 'UTC', $5, $6)
+           RETURNING id`,
+          [
+            program.id,
+            workoutId,
+            program.patientId,
+            attempt.day,
+            attempt.reason,
+            attempt.painAfter,
+          ],
+        )
+        const checklist = program.exercises.filter(
+          (e) => e.workoutId === workoutId,
+        )
+        for (const [position, exercise] of checklist.entries()) {
+          await owner.query(
+            `INSERT INTO session_exercises
+               (session_id, assigned_program_exercise_id, name, sets, reps,
+                duration_in_seconds, weight, weight_unit, notes,
+                primary_muscles, secondary_muscles, equipment, instructions,
+                completed, sort_order)
+             SELECT $1, pe.id, pe.name, pe.sets, pe.reps,
+                    pe.duration_in_seconds, pe.weight, pe.weight_unit, pe.notes,
+                    pe.primary_muscles, pe.secondary_muscles, pe.equipment,
+                    pe.instructions, $3, pe.sort_order
+             FROM assigned_program_exercises pe
+             WHERE pe.id = $2`,
+            [stopped.id, exercise.id, position === 0],
           )
         }
       }

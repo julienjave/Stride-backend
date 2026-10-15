@@ -75,6 +75,15 @@ import { addDays, daysBetween, isoWeekday } from '../../common/calendar-date'
 //     extra ('already_done'). (The service checks, when the session starts,
 //     the rest of what was decided: the same program week, rearranging
 //     allowed.)
+//   - ATTEMPTS — sessions skipped or stopped (Phase 4 step 1b, decided
+//     2026-10-15): they never count (a skip or a stopped session is not done;
+//     the day is still missed, due or made up by the rules above), but they
+//     are LABELS the screens show — "Missed · skipped (illness)". Each is
+//     filed by the day it happened: on that scheduled day if there is one,
+//     else in the weekly stretch around it, else in `otherAttempts` (a free
+//     day, a pause, outside the program). Several on one day are all kept,
+//     oldest first — nothing to choose. Totals count them apart; `missed` is
+//     unchanged.
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -100,6 +109,15 @@ export interface SummarySession {
   countsFor?: string | null
 }
 
+// A session skipped or stopped (status `skipped` or `incomplete`): its id,
+// the patient's day, and why it ended (sessions.end_reason).
+export interface SummaryAttempt {
+  id: number
+  localDate: string
+  status: 'skipped' | 'incomplete'
+  endReason: string
+}
+
 export interface ScheduleSummaryInput {
   startDate: string
   endDate: string | null
@@ -107,8 +125,22 @@ export interface ScheduleSummaryInput {
   versions: SummaryScheduleVersion[]
   // COMPLETED sessions only (the caller filters); any order.
   sessions: SummarySession[]
+  // SKIPPED and INCOMPLETE sessions (the caller filters); any order. Absent
+  // = none. Labels only: they never change what counts.
+  attempts?: SummaryAttempt[]
   // The viewer's today (a calendar date sent by their app).
   today: string
+}
+
+// An attempt as the summary reports it — on a scheduled day (whose date it
+// is), or with its own date (in a week, or apart).
+export interface Attempt {
+  sessionId: number
+  status: 'skipped' | 'incomplete'
+  endReason: string
+}
+export interface DatedAttempt extends Attempt {
+  date: string
 }
 
 export type DayState =
@@ -130,6 +162,9 @@ export interface ScheduledDay {
   // The session that fulfilled it from another SCHEDULED day — half of a
   // swap, before or after the day (state 'swapped') — and that day.
   swappedBy: { sessionId: number; date: string } | null
+  // The sessions skipped or stopped ON that day, oldest first — labels
+  // ("Missed · skipped (illness)"), whatever the day's state.
+  attempts: Attempt[]
 }
 
 export type WeekState = 'met' | 'missed' | 'in_progress' | 'upcoming'
@@ -152,6 +187,8 @@ export interface CountedWeek {
   done: number
   state: WeekState
   sessionIds: number[]
+  // The sessions skipped or stopped within the stretch, oldest first.
+  attempts: DatedAttempt[]
 }
 
 export type ExtraReason =
@@ -221,10 +258,19 @@ export interface ScheduleSummary {
     swapped: number
     missed: number
     extra: number
+    // Sessions skipped / stopped (attempts), wherever they fall. Not part of
+    // `missed`: a skipped day is ALSO missed (or made up) — these say how
+    // many times the patient said "not today" or stopped.
+    skipped: number
+    incomplete: number
   }
   days: ScheduledDay[]
   weeks: CountedWeek[]
   extraSessions: ExtraSession[]
+  // Attempts on no scheduled day and in no weekly stretch: a free day of a
+  // specific-days schedule (a catch-up stopped, say), a pause, outside the
+  // program's dates. Oldest first.
+  otherAttempts: DatedAttempt[]
   pauses: Pause[]
   // null when nothing is left to do (the program is over, or paused with
   // nothing planned after the pause within the days covered).
@@ -429,6 +475,7 @@ export function summarizeSchedule(
           madeUpBy: null,
           doneEarlyBy: null,
           swappedBy: null,
+          attempts: [], // filled in step 8
         }
         days.push(entry)
         // A session done earlier for this day: it came first, so the day is
@@ -620,6 +667,7 @@ export function summarizeSchedule(
       done,
       state,
       sessionIds: counted.map((s) => s.id),
+      attempts: [], // filled in step 8
     }
   })
 
@@ -686,6 +734,34 @@ export function summarizeSchedule(
     a.date === b.date ? a.sessionId - b.sessionId : a.date < b.date ? -1 : 1,
   )
 
+  // --- 8. Attempts (labels only) ---
+  // Oldest first (day, then id — creation order). Each goes to the scheduled
+  // day of its date, else the weekly stretch around it, else apart. Done
+  // last, and on its own: nothing above reads them, so they can't change
+  // what counts.
+  const attempts = [...(input.attempts ?? [])].sort((a, b) =>
+    a.localDate === b.localDate
+      ? a.id - b.id
+      : a.localDate < b.localDate
+        ? -1
+        : 1,
+  )
+  const otherAttempts: DatedAttempt[] = []
+  for (const attempt of attempts) {
+    const label: Attempt = {
+      sessionId: attempt.id,
+      status: attempt.status,
+      endReason: attempt.endReason,
+    }
+    const day = days.find((d) => d.date === attempt.localDate)
+    const week = weeks.find(
+      (w) => w.start <= attempt.localDate && attempt.localDate <= w.end,
+    )
+    if (day) day.attempts.push(label)
+    else if (week) week.attempts.push({ ...label, date: attempt.localDate })
+    else otherAttempts.push({ ...label, date: attempt.localDate })
+  }
+
   return {
     firstDay: startDate,
     lastDay,
@@ -701,10 +777,13 @@ export function summarizeSchedule(
       swapped: count('swapped'),
       missed: count('missed') + weeklyMissed,
       extra: extraSessions.length,
+      skipped: attempts.filter((a) => a.status === 'skipped').length,
+      incomplete: attempts.filter((a) => a.status === 'incomplete').length,
     },
     days,
     weeks,
     extraSessions,
+    otherAttempts,
     pauses,
     nextWorkout: first?.next ?? null,
   }

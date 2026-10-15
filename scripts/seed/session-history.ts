@@ -21,6 +21,7 @@ import {
   isoWeekday,
 } from '../../src/common/calendar-date'
 import type { ScheduleContent } from '../../src/assigned-programs/schedule/schedule-content'
+import type { PatientEndReason } from '../../src/database/schema'
 import type { SeedSchedule } from './dataset'
 
 // Which days the seed gives a completed session, so the program pages have a
@@ -56,12 +57,19 @@ export type SeedHistory =
   // (Split 2026-10-12: one `swappedIndex` used to cover both, and could
   // even put a session on the day AFTER its day — catching up, a make-up's
   // job, refused since.)
+  //
+  // ATTEMPTS (Phase 4 step 1b — seedAttempts below): `skippedMissed` — the
+  // MISSED day was skipped, with that reason; `stoppedBeforeMakeUp` — on the
+  // day later MADE UP, a session was started and stopped (that reason, that
+  // pain after), then made up the next day.
   | {
       kind: 'weekdays'
       madeUpIndex: number
       missedIndex: number
       doneEarlyIndex?: number
       swappedWeek?: number
+      skippedMissed?: PatientEndReason
+      stoppedBeforeMakeUp?: { reason: PatientEndReason; painAfter: number }
     }
   // Any schedule: sessions on these days after the start (0 = the start).
   | { kind: 'days-after-start'; days: number[] }
@@ -98,10 +106,7 @@ export function seedSessionDays(
   const workoutOf = (day: string) =>
     schedule.days.find((d) => d.weekday === isoWeekday(day))!.workoutIndex
   const weekOf = (day: string) => Math.floor(daysBetween(startDate, day) / 7)
-  const scheduled: string[] = []
-  for (let day = startDate; day < today; day = addDays(day, 1)) {
-    if (weekdays.includes(isoWeekday(day))) scheduled.push(day)
-  }
+  const scheduled = scheduledDaysBefore(startDate, today, weekdays)
 
   // The swap's two days: in the chosen program week, the first two
   // consecutive scheduled days whose workouts differ.
@@ -167,6 +172,70 @@ export function seedSessionDays(
   // day between its neighbours (both checked above), and each half of a
   // swap on its own scheduled day.
   return result
+}
+
+// The scheduled days from the start up to, not including, today.
+function scheduledDaysBefore(
+  startDate: string,
+  today: string,
+  weekdays: number[],
+): string[] {
+  const scheduled: string[] = []
+  for (let day = startDate; day < today; day = addDays(day, 1)) {
+    if (weekdays.includes(isoWeekday(day))) scheduled.push(day)
+  }
+  return scheduled
+}
+
+// One seeded ATTEMPT (Phase 4 step 1b): a session skipped, or started and
+// stopped — on a past day, with the patient's reason (and, for a stopped
+// one, how much it hurt afterwards). They count for nothing; the summary
+// shows them as labels ("Missed · skipped (illness)").
+export interface SeedAttempt {
+  day: string
+  status: 'skipped' | 'incomplete'
+  reason: PatientEndReason
+  painAfter: number | null
+}
+
+// The attempts a weekdays history asks for (none for the others), in day
+// order: a stop on the day that is later MADE UP, and a skip on the MISSED
+// day — each only if that day is before today. Pure, like seedSessionDays.
+export function seedAttempts(
+  startDate: string,
+  today: string,
+  schedule: SeedSchedule,
+  history: SeedHistory,
+): SeedAttempt[] {
+  if (history.kind !== 'weekdays') return []
+  if (schedule.type !== 'weekdays') {
+    throw new Error('A weekdays history needs a weekdays schedule')
+  }
+  const scheduled = scheduledDaysBefore(
+    startDate,
+    today,
+    schedule.days.map((day) => day.weekday),
+  )
+  const result: SeedAttempt[] = []
+  const madeUpDay = scheduled[history.madeUpIndex]
+  if (history.stoppedBeforeMakeUp && madeUpDay !== undefined) {
+    result.push({
+      day: madeUpDay,
+      status: 'incomplete',
+      reason: history.stoppedBeforeMakeUp.reason,
+      painAfter: history.stoppedBeforeMakeUp.painAfter,
+    })
+  }
+  const missedDay = scheduled[history.missedIndex]
+  if (history.skippedMissed && missedDay !== undefined) {
+    result.push({
+      day: missedDay,
+      status: 'skipped',
+      reason: history.skippedMissed,
+      painAfter: null,
+    })
+  }
+  return result.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))
 }
 
 // The workout each seeded session did: the one the program's schedule asks
