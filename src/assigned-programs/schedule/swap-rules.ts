@@ -30,17 +30,25 @@ import type { ScheduleDay } from './schedule-content'
 //   - A SWAP: on another SCHEDULED day — Monday does Wednesday's workout,
 //     and Wednesday Monday's: the two days exchange workouts (each half is
 //     one session counting for the other day).
-// And one thing it is NOT: a session on a FREE day counting for an EARLIER
-// day. That's catching up a missed day — a make-up, which the schedule
-// module already infers (before the next scheduled day) without any link;
-// later than that, it would be a late make-up, a separate feature to design
-// with the patient's session flow (Phase 4), opt-in per program. Refused.
+// And a third kind (decided 2026-10-16, with late make-ups):
+//   - A LATE MAKE-UP: on a FREE day, for an EARLIER scheduled day that was
+//     missed — catching it up after its make-up window closed. Opt-in per
+//     program (`lateMakeUpDays`). Within the window it isn't one: that's an
+//     ordinary make-up, which the schedule module infers without any link.
+//     (Until 2026-10-16 this whole case — a free day counting for an
+//     earlier day — was refused, waiting for this design.)
 //
-// This file holds what can be checked WHEN THE SESSION STARTS, as one pure
-// function (plain values in, the workout or a 400 out), so every rule is a
-// unit test with no database. The one rule that can't be checked then —
-// "was that day already done by then?" — depends on sessions that may not
-// exist yet; the schedule module judges it (schedule-summary.ts).
+// The two switches: `allowSwaps` governs swaps and done early ("rearranging
+// the week"), `lateMakeUpDays` governs late make-ups — separate clinical
+// choices, so the request is CLASSIFIED first, then checked against its own.
+//
+// This file holds what can be checked from the program and its schedule
+// alone, as one pure function (plain values in, the kind and the workout or
+// a 400 out), so every rule is a unit test with no database. What depends
+// on the sessions — "was that day already done by then?" for a swap, "is
+// the day missed, and can it still be made up?" for a late make-up — is
+// the schedule module's (schedule-summary.ts); the service asks it
+// (assertLateMakeUpAllowed, session-rules.ts).
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -57,6 +65,7 @@ export interface SwapRequest {
     startDate: string
     endDate: string | null
     allowSwaps: boolean
+    lateMakeUpDays: number | null
   }
   // The program's versions starting on or before the later of the two days
   // (any order): enough to know the version in force on each of them.
@@ -98,24 +107,34 @@ function isScheduledDay(versions: SwapVersion[], day: string): boolean {
   )
 }
 
-// The workout a session for another day does: the one scheduled on
-// `countsFor`. Each check answers 400 with a sentence the app can show as
-// it is, in the order a person would think of them: is rearranging allowed
-// at all → is it another day of this program → the same program week → a
-// day with a workout → an earlier day only from a scheduled day → the
+// The three kinds of session for another day, told apart by where the
+// session is done: on a scheduled day — a swap (half of one); on a free day
+// for a LATER day — done early; on a free day for an EARLIER day — a late
+// make-up. ("Free" here = not a scheduled day: a pause or a weekly count
+// too, which the checks below then refuse as needed.)
+export type OtherDayKind = 'swap' | 'done_early' | 'late_make_up'
+
+export function otherDayKind(
+  versions: SwapVersion[],
+  localDate: string,
+  countsFor: string,
+): OtherDayKind {
+  if (isScheduledDay(versions, localDate)) return 'swap'
+  return countsFor > localDate ? 'done_early' : 'late_make_up'
+}
+
+// The kind of a session for another day, and the workout it does: the one
+// scheduled on `countsFor`. Each check answers 400 with a sentence the app
+// can show as it is, in the order a person would think of them: is it
+// another day of this program → which kind → is that kind allowed (and, for
+// a swap or done early, the same program week) → a day with a workout → the
 // workout named, if any, is that one.
-export function swapWorkoutId(request: SwapRequest): number {
+export function sessionForOtherDay(request: SwapRequest): {
+  kind: OtherDayKind
+  workoutId: number
+} {
   const { program, versions, localDate, countsFor } = request
 
-  // The practitioner's switch (`allow_swaps`) covers both kinds: it says
-  // whether the patient may rearrange the week. It governs NEW sessions
-  // only: those already recorded keep counting (the summary doesn't look
-  // at it).
-  if (!program.allowSwaps) {
-    throw new BadRequestException(
-      'Rearranging the week is turned off for this program: do the workout scheduled today, or ask your practitioner',
-    )
-  }
   // The database refuses it too (sessions_counts_for_other_day): a session
   // already counts for its own day.
   if (countsFor === localDate) {
@@ -129,39 +148,52 @@ export function swapWorkoutId(request: SwapRequest): number {
   ) {
     throw new BadRequestException('countsFor must be a day of the program')
   }
-  // The same PROGRAM week (weeks start on the program's start date, like
-  // the weekly counts): rearranging a week doesn't move a workout from one
-  // week into another. Math.floor also puts a localDate before the start
-  // (negative) in a different week from any day of the program.
-  const weekOf = (day: string) =>
-    Math.floor(daysBetween(program.startDate, day) / 7)
-  if (weekOf(countsFor) !== weekOf(localDate)) {
-    throw new BadRequestException(
-      'A session for another day stays within the program week: countsFor must be in the same week as today',
-    )
+
+  const kind = otherDayKind(versions, localDate, countsFor)
+  // A late make-up's own rules — the setting, how late, a free day, the day
+  // really missed — all depend on the summary, and are checked from it
+  // (assertLateMakeUpAllowed): the "is it still in its window?" answer must
+  // come first, whatever the setting, so a patient catching up on time is
+  // told to just start. No program-week limit: being ill can cross a week.
+  if (kind !== 'late_make_up') {
+    // The practitioner's switch (`allow_swaps`) covers both other kinds: it
+    // says whether the patient may rearrange the week. It governs NEW
+    // sessions only: those already recorded keep counting (the summary
+    // doesn't look at it).
+    if (!program.allowSwaps) {
+      throw new BadRequestException(
+        'Rearranging the week is turned off for this program: do the workout scheduled today, or ask your practitioner',
+      )
+    }
+    // The same PROGRAM week (weeks start on the program's start date, like
+    // the weekly counts): rearranging a week doesn't move a workout from
+    // one week into another. Math.floor also puts a localDate before the
+    // start (negative) in a different week from any day of the program.
+    const weekOf = (day: string) =>
+      Math.floor(daysBetween(program.startDate, day) / 7)
+    if (weekOf(countsFor) !== weekOf(localDate)) {
+      throw new BadRequestException(
+        'A session for another day stays within the program week: countsFor must be in the same week as today',
+      )
+    }
   }
-  // Only specific days have days to rearrange. With "N per week", any order
-  // within the week already counts; a paused day expects nothing.
+  // Only specific days have days to rearrange or make up. With "N per
+  // week", any order within the week already counts; a paused day expects
+  // nothing.
   const version = versionOn(versions, countsFor)
   if (version?.type !== 'weekdays') {
     throw new BadRequestException(
-      version?.type === 'times_per_week'
-        ? 'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts'
-        : `${countsFor} has no workout (the program is paused then)`,
+      version?.type !== 'times_per_week'
+        ? `${countsFor} has no workout (the program is paused then)`
+        : kind === 'late_make_up'
+          ? 'Only schedules with specific days have late make-ups: a weekly count starts again each week'
+          : 'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts',
     )
   }
   const day = version.days.find((d) => d.weekday === isoWeekday(countsFor))
   if (!day) {
     throw new BadRequestException(
       `${countsFor} isn't a scheduled day of this program`,
-    )
-  }
-  // An EARLIER day only from a scheduled day — the second half of a swap.
-  // From a free day it would be a make-up (inferred, no link needed) or a
-  // late make-up (not offered): see the top of this file.
-  if (countsFor < localDate && !isScheduledDay(versions, localDate)) {
-    throw new BadRequestException(
-      `A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up ${countsFor}, do its workout before the next scheduled day: it counts as a make-up`,
     )
   }
   // Naming the workout is optional — the day already says which one — but
@@ -174,5 +206,5 @@ export function swapWorkoutId(request: SwapRequest): number {
       `Workout ${request.requestedWorkoutId} isn't the workout scheduled on ${countsFor}`,
     )
   }
-  return day.workoutId
+  return { kind, workoutId: day.workoutId }
 }

@@ -125,6 +125,12 @@ export const SESSIONS_ONE_SKIP_PER_DAY = 'sessions_one_skip_per_day'
 // for it, refuses. HttpExceptionFilter turns it into the service's 409.
 export const SESSION_EXERCISE_SESSION_FINISHED =
   'session_exercise_session_finished'
+// The trigger refusing a session on a day that already has a COMPLETED one
+// of the same program (migration 0041, one session a day) — reachable
+// through the API by a start racing a Finish: SessionsService.create's own
+// check read the day before the Finish committed; the trigger waits for it,
+// then refuses. HttpExceptionFilter turns it into the service's 409.
+export const SESSION_ONE_COMPLETED_PER_DAY = 'session_one_completed_per_day'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

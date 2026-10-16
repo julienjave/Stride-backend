@@ -17,7 +17,15 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsBoolean, IsOptional, ValidateIf } from 'class-validator'
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  Max,
+  Min,
+  ValidateIf,
+} from 'class-validator'
+import { LATE_MAKE_UP_DAYS_MAX } from '../../database/schema'
 import { isPresent } from '../../common/validators/is-present'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
 import { IsTitle } from '../../common/validators/title'
@@ -62,4 +70,20 @@ export class UpdateAssignedProgramDto {
   @ValidateIf(isPresent)
   @IsBoolean()
   allowSwaps?: boolean
+
+  // Late make-ups (decided 2026-10-16): up to how many days after a missed
+  // day the patient may still make it up — 1 to 28 — or null: not allowed.
+  // The column is nullable and null MEANS something here (turning them
+  // off), so @IsOptional() — which lets null through — is right, as for
+  // endDate. Turning them off, or shortening the limit, stops NEW ones;
+  // those recorded still count.
+  @IsOptional()
+  @IsInt({ message: 'lateMakeUpDays must be a whole number of days, or null' })
+  @Min(1, {
+    message: 'lateMakeUpDays must be at least 1 (null turns late make-ups off)',
+  })
+  @Max(LATE_MAKE_UP_DAYS_MAX, {
+    message: `lateMakeUpDays can be at most ${LATE_MAKE_UP_DAYS_MAX}`,
+  })
+  lateMakeUpDays?: number | null
 }

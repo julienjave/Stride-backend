@@ -19,12 +19,19 @@ import { BadRequestException, ConflictException } from '@nestjs/common'
 import {
   assertCompletableOnItsDay,
   assertDurationPossible,
+  assertLateMakeUpAllowed,
   assertSessionOpen,
   assertSkipPain,
+  ONE_SESSION_A_DAY_MESSAGE,
   SESSION_FINISHED_MESSAGE,
   skippedWorkoutId,
 } from './session-rules'
 import type { SwapVersion } from '../assigned-programs/schedule/swap-rules'
+import type {
+  DayState,
+  LateMakeUpBlock,
+  ScheduledDay,
+} from '../assigned-programs/schedule/schedule-summary'
 
 // Clocks are pinned far from today (2031): a rule that ignored its `now`
 // and read the real clock would fail here instead of passing by luck.
@@ -263,5 +270,139 @@ describe('skippedWorkoutId', () => {
         localDate: '2031-03-12',
       }),
     ).toBe(11)
+  })
+})
+
+describe('assertLateMakeUpAllowed', () => {
+  // Monday 2031-03-03 (A) is the day to make up; Wednesday 2031-03-05 a
+  // second scheduled day. The summary is written by hand — the module's
+  // own rules are tested in schedule-summary.spec.ts; this is only about
+  // reading its answer.
+  const MONDAY = '2031-03-03'
+  const WEDNESDAY = '2031-03-05'
+  const day = (date: string, state: DayState): ScheduledDay => ({
+    date,
+    workoutId: 1,
+    state,
+    sessionId: null,
+    madeUpBy: null,
+    madeUpLateBy: null,
+    doneEarlyBy: null,
+    swappedBy: null,
+    attempts: [],
+  })
+  const summary = (
+    monday: DayState,
+    options: {
+      wednesday?: DayState
+      listed?: boolean
+      blockedToday?: LateMakeUpBlock | null
+    } = {},
+  ) => ({
+    days: [day(MONDAY, monday), day(WEDNESDAY, options.wednesday ?? 'done')],
+    lateMakeUps: {
+      days:
+        options.listed === false
+          ? []
+          : [{ forDay: MONDAY, workoutId: 1, until: '2031-03-09' }],
+      blockedToday: options.blockedToday ?? null,
+    },
+  })
+
+  it('lets a missed day, listed, be made up late today', () => {
+    expect(() =>
+      assertLateMakeUpAllowed(summary('missed'), MONDAY, 7),
+    ).not.toThrow()
+  })
+
+  // Still in its window: an ordinary make-up. Said even with late make-ups
+  // off — the patient on time is told simply to start.
+  it.each([7, null])(
+    'sends a day still in its window to an ordinary make-up (late make-ups: %p)',
+    (lateMakeUpDays) => {
+      expect(() =>
+        assertLateMakeUpAllowed(summary('due'), MONDAY, lateMakeUpDays),
+      ).toThrow(
+        new BadRequestException(
+          `${MONDAY} can still be made up on time: start the session without countsFor, before the next scheduled day`,
+        ),
+      )
+    },
+  )
+
+  it.each<DayState>([
+    'done',
+    'made_up',
+    'made_up_late',
+    'done_early',
+    'swapped',
+  ])('refuses a day already fulfilled (%s) with a 409', (state) => {
+    expect(() => assertLateMakeUpAllowed(summary(state), MONDAY, 7)).toThrow(
+      new ConflictException(
+        `${MONDAY} is already done: there is nothing to make up`,
+      ),
+    )
+  })
+
+  it('refuses when the program has no late make-ups', () => {
+    expect(() =>
+      assertLateMakeUpAllowed(summary('missed'), MONDAY, null),
+    ).toThrow(
+      new BadRequestException(
+        'Late make-ups are turned off for this program: ask your practitioner',
+      ),
+    )
+  })
+
+  // Not a free day — said before "too late": on such a day the summary may
+  // list nothing, and "too late" would be the wrong reason.
+  it("refuses on a day that isn't free, before saying it is too late", () => {
+    expect(() =>
+      assertLateMakeUpAllowed(
+        summary('missed', { listed: false, blockedToday: 'not_a_free_day' }),
+        MONDAY,
+        7,
+      ),
+    ).toThrow(
+      new BadRequestException(
+        'A late make-up is done on a day with nothing scheduled: not during a pause, nor on a weekly count',
+      ),
+    )
+  })
+
+  it('refuses a missed day the summary no longer lists', () => {
+    expect(() =>
+      assertLateMakeUpAllowed(summary('missed', { listed: false }), MONDAY, 7),
+    ).toThrow(
+      new BadRequestException(
+        `${MONDAY} is more than 7 days ago: it can no longer be made up`,
+      ),
+    )
+  })
+
+  it('refuses when a session was already completed today', () => {
+    expect(() =>
+      assertLateMakeUpAllowed(
+        summary('missed', { blockedToday: 'session_done_today' }),
+        MONDAY,
+        7,
+      ),
+    ).toThrow(new ConflictException(ONE_SESSION_A_DAY_MESSAGE))
+  })
+
+  // Wednesday can still be made up on time: that comes first, and the
+  // message names it.
+  it('sends the patient to the ordinary catch-up first', () => {
+    expect(() =>
+      assertLateMakeUpAllowed(
+        summary('missed', { wednesday: 'due', blockedToday: 'catch_up_first' }),
+        MONDAY,
+        7,
+      ),
+    ).toThrow(
+      new BadRequestException(
+        `Catch up ${WEDNESDAY} first: it can still be made up on time, before the next scheduled day`,
+      ),
+    )
   })
 })

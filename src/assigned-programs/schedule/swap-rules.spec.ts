@@ -17,7 +17,7 @@
 
 import { BadRequestException } from '@nestjs/common'
 import {
-  swapWorkoutId,
+  sessionForOtherDay,
   versionOn,
   type SwapRequest,
   type SwapVersion,
@@ -43,7 +43,12 @@ const MWF: SwapVersion = {
 
 function request(overrides: Partial<SwapRequest> = {}): SwapRequest {
   return {
-    program: { startDate: d('15'), endDate: d('31'), allowSwaps: true },
+    program: {
+      startDate: d('15'),
+      endDate: d('31'),
+      allowSwaps: true,
+      lateMakeUpDays: null,
+    },
     versions: [MWF],
     // Done on Monday 19, for Wednesday 21 (B).
     localDate: d('19'),
@@ -53,12 +58,20 @@ function request(overrides: Partial<SwapRequest> = {}): SwapRequest {
   }
 }
 
-describe('swapWorkoutId', () => {
+// The program fixture with some fields changed.
+const program = (changes: Partial<SwapRequest['program']>) => ({
+  ...request().program,
+  ...changes,
+})
+
+describe('sessionForOtherDay', () => {
   // The day's workout — whether or not the patient named it.
   it.each([undefined, null, B])(
     "answers the counted day's workout (workout sent: %p)",
     (requestedWorkoutId) => {
-      expect(swapWorkoutId(request({ requestedWorkoutId }))).toBe(B)
+      expect(sessionForOtherDay(request({ requestedWorkoutId }))).toStrictEqual(
+        { kind: 'swap', workoutId: B },
+      )
     },
   )
 
@@ -68,12 +81,51 @@ describe('swapWorkoutId', () => {
   // day — the same program week (15–21), though a calendar week would put
   // them apart.
   it('accepts an earlier day from a scheduled day (a swap)', () => {
-    expect(swapWorkoutId(request({ countsFor: d('16') }))).toBe(A)
+    expect(sessionForOtherDay(request({ countsFor: d('16') }))).toStrictEqual({
+      kind: 'swap',
+      workoutId: A,
+    })
   })
 
   // Done early on a FREE day: Tuesday 20 for Wednesday 21.
   it('accepts a later day from a free day (done early)', () => {
-    expect(swapWorkoutId(request({ localDate: d('20') }))).toBe(B)
+    expect(sessionForOtherDay(request({ localDate: d('20') }))).toStrictEqual({
+      kind: 'done_early',
+      workoutId: B,
+    })
+  })
+
+  // A FREE day for an EARLIER day — Tuesday 20 for Monday 19: a late
+  // make-up (refused as "case 3" from 2026-10-12 until late make-ups were
+  // designed, 2026-10-16). Whether it's allowed, and whether Monday really
+  // was missed, is the summary's to say (assertLateMakeUpAllowed): here it
+  // is only classified — even with late make-ups off.
+  it('classifies an earlier day from a free day as a late make-up', () => {
+    expect(
+      sessionForOtherDay(request({ localDate: d('20'), countsFor: d('19') })),
+    ).toStrictEqual({ kind: 'late_make_up', workoutId: A })
+  })
+
+  // Rearranging is one switch, late make-ups another: with swaps off, a
+  // late make-up still goes on to its own checks…
+  it("doesn't ask the swap switch about a late make-up", () => {
+    expect(
+      sessionForOtherDay(
+        request({
+          program: program({ allowSwaps: false }),
+          localDate: d('20'),
+          countsFor: d('19'),
+        }),
+      ),
+    ).toStrictEqual({ kind: 'late_make_up', workoutId: A })
+  })
+
+  // …and isn't held to one program week: Thursday 22 (week 22–28) making
+  // up Monday 19 (week 15–21) — being ill can cross a week.
+  it('lets a late make-up cross into the next program week', () => {
+    expect(
+      sessionForOtherDay(request({ localDate: d('22'), countsFor: d('19') })),
+    ).toStrictEqual({ kind: 'late_make_up', workoutId: A })
   })
 
   // Which version says whether TODAY is scheduled: the one in force today,
@@ -89,20 +141,40 @@ describe('swapWorkoutId', () => {
   }
   it("judges today by today's version: Tuesday 20 is scheduled under the new one", () => {
     expect(
-      swapWorkoutId(
+      sessionForOtherDay(
         request({
           versions: [MWF, TUE_THU],
           localDate: d('20'),
           countsFor: d('16'),
         }),
       ),
-    ).toBe(A)
+    ).toStrictEqual({ kind: 'swap', workoutId: A })
+  })
+
+  // …and the other way: under Tue/Thu from Monday 19, Wednesday 21 is
+  // free — though the counted day's version (MWF) schedules it — so a
+  // session there for Friday 16 is a late make-up, not a swap.
+  it("judges today by today's version: Wednesday 21 is free under the new one", () => {
+    expect(
+      sessionForOtherDay(
+        request({
+          versions: [MWF, TUE_THU],
+          localDate: d('21'),
+          countsFor: d('16'),
+        }),
+      ),
+    ).toStrictEqual({ kind: 'late_make_up', workoutId: A })
   })
 
   it.each<[string, Partial<SwapRequest>, string]>([
     [
-      'swaps turned off',
-      { program: { startDate: d('15'), endDate: d('31'), allowSwaps: false } },
+      'a swap when swaps are turned off',
+      { program: program({ allowSwaps: false }) },
+      'Rearranging the week is turned off for this program: do the workout scheduled today, or ask your practitioner',
+    ],
+    [
+      'done early when swaps are turned off',
+      { program: program({ allowSwaps: false }), localDate: d('20') },
       'Rearranging the week is turned off for this program: do the workout scheduled today, or ask your practitioner',
     ],
     [
@@ -118,7 +190,7 @@ describe('swapWorkoutId', () => {
     [
       'a day after the end',
       {
-        program: { startDate: d('15'), endDate: d('20'), allowSwaps: true },
+        program: program({ endDate: d('20') }),
         countsFor: d('21'),
       },
       'countsFor must be a day of the program',
@@ -140,6 +212,17 @@ describe('swapWorkoutId', () => {
       'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts',
     ],
     [
+      'a late make-up on a weekly-count schedule',
+      {
+        versions: [
+          { type: 'times_per_week', days: [], effectiveFrom: d('15') },
+        ],
+        localDate: d('20'),
+        countsFor: d('19'),
+      },
+      'Only schedules with specific days have late make-ups: a weekly count starts again each week',
+    ],
+    [
       'a paused day',
       // Paused from Tuesday 20: Wednesday 21 has no workout, though the
       // first version (in force on Monday, today) gives it one.
@@ -151,27 +234,13 @@ describe('swapWorkoutId', () => {
       { countsFor: d('20') },
       "2026-10-20 isn't a scheduled day of this program",
     ],
-    // A FREE day for an earlier day — Tuesday 20 for Monday 19: catching
-    // up is a make-up, not a link (case 3, refused on 2026-10-12).
-    [
-      'an earlier day from a free day',
-      { localDate: d('20'), countsFor: d('19') },
-      "A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up 2026-10-19, do its workout before the next scheduled day: it counts as a make-up",
-    ],
-    // …judged by TODAY's version: under Tue/Thu from Monday 19, Wednesday
-    // 21 is free — though the counted day's version (MWF) schedules it.
-    [
-      "an earlier day from a day free under today's version",
-      { versions: [MWF, TUE_THU], localDate: d('21'), countsFor: d('16') },
-      "A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up 2026-10-16, do its workout before the next scheduled day: it counts as a make-up",
-    ],
     [
       "another workout than the day's",
       { requestedWorkoutId: A },
       "Workout 11 isn't the workout scheduled on 2026-10-21",
     ],
   ])('refuses %s', (_label, overrides, message) => {
-    expect(() => swapWorkoutId(request(overrides))).toThrow(
+    expect(() => sessionForOtherDay(request(overrides))).toThrow(
       new BadRequestException(message),
     )
   })
@@ -179,12 +248,8 @@ describe('swapWorkoutId', () => {
   // An open-ended program has no last day to be after.
   it('accepts any day of an open-ended program', () => {
     expect(
-      swapWorkoutId(
-        request({
-          program: { startDate: d('15'), endDate: null, allowSwaps: true },
-        }),
-      ),
-    ).toBe(B)
+      sessionForOtherDay(request({ program: program({ endDate: null }) })),
+    ).toStrictEqual({ kind: 'swap', workoutId: B })
   })
 })
 

@@ -1,0 +1,2 @@
+ALTER TABLE "assigned_programs" ADD COLUMN "late_make_up_days" smallint;--> statement-breakpoint
+ALTER TABLE "assigned_programs" ADD CONSTRAINT "assigned_programs_late_make_up_days_range" CHECK ("assigned_programs"."late_make_up_days" IS NULL OR "assigned_programs"."late_make_up_days" BETWEEN 1 AND 28);

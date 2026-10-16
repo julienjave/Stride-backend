@@ -92,10 +92,16 @@ function summarize(input: {
   start: string
   end?: string
   versions: SummaryScheduleVersion[]
-  sessions?: { id: number; localDate: string; workoutId: number }[]
+  sessions?: {
+    id: number
+    localDate: string
+    workoutId: number
+    countsFor?: string | null
+  }[]
   attempts?: SummaryAttempt[]
   today: string
   through?: string
+  lateMakeUpDays?: number | null
 }): ScheduleSummary {
   const full: ScheduleSummaryInput = {
     startDate: d(input.start),
@@ -105,6 +111,7 @@ function summarize(input: {
     attempts: input.attempts,
     today: d(input.today),
     through: input.through === undefined ? undefined : d(input.through),
+    lateMakeUpDays: input.lateMakeUpDays,
   }
   return summarizeSchedule(full)
 }
@@ -157,6 +164,7 @@ describe('specific days (weekdays)', () => {
       expected: 3,
       done: 3,
       madeUp: 0,
+      madeUpLate: 0,
       doneEarly: 0,
       swapped: 0,
       missed: 0,
@@ -256,6 +264,7 @@ describe('specific days (weekdays)', () => {
       state: 'made_up',
       sessionId: null,
       madeUpBy: { sessionId: 1, date: d('13') },
+      madeUpLateBy: null,
       doneEarlyBy: null,
       swappedBy: null,
       attempts: [],
@@ -519,6 +528,7 @@ describe('N per week (times_per_week)', () => {
       expected: 6,
       done: 4,
       madeUp: 0,
+      madeUpLate: 0,
       doneEarly: 0,
       swapped: 0,
       missed: 2,
@@ -680,6 +690,7 @@ describe('across schedule versions', () => {
       expected: 5,
       done: 2,
       madeUp: 0,
+      madeUpLate: 0,
       doneEarly: 0,
       swapped: 0,
       missed: 3,
@@ -1804,5 +1815,527 @@ describe('through (covering further ahead — the patient home)', () => {
       ['19', '25', 3, 0, 'upcoming'],
     ])
     expect(s.totals.expected).toBeNull()
+  })
+})
+
+// --- One session a day, across every kind of session (decided 2026-10-16) ----------------------------------
+
+// Sessions as [id, day done, workout, the day it counts for (null = an
+// ordinary session)] — the ids say which was created first.
+const linked = (...rows: [number, string, number, string | null][]) =>
+  rows.map(([id, day, workoutId, countsFor]) => ({
+    id,
+    localDate: d(day),
+    workoutId,
+    countsFor: countsFor === null ? null : d(countsFor),
+  }))
+
+// Monday = A, Wednesday = B, Friday = A.
+const MWF_ABA = [
+  weekdays(
+    [
+      [1, A],
+      [3, B],
+      [5, A],
+    ],
+    '12',
+  ),
+]
+
+describe('one session a day', () => {
+  // The gap found 2026-10-16: on Tuesday (free), Wednesday's B done early
+  // AND an A making up Monday — both used to count. Now the one created
+  // first does. The two cases below are the same day with the ids swapped:
+  // the rule is "created first", not "the link first" or "the make-up first".
+  it('on a free day, counts the session done early when it came first', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '13', B, '14'], [2, '13', A, null]),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'done_early'],
+      ['16', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['13', 'same_day']])
+  })
+
+  it('on a free day, counts the make-up when it came first', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '13', A, null], [2, '13', B, '14']),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'made_up', '13'],
+      ['14', 'missed'],
+      ['16', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['13', 'same_day']])
+  })
+
+  // On a scheduled day: Monday's own A and a swap half (Wednesday's B).
+  it('on a scheduled day, counts the swap half when it came first', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '12', B, '14'], [2, '12', A, null]),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'swapped'],
+      ['16', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['12', 'same_day']])
+  })
+
+  it("on a scheduled day, counts the day's own session when it came first", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '12', A, null], [2, '12', B, '14']),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'done'],
+      ['14', 'missed'],
+      ['16', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['12', 'same_day']])
+  })
+
+  // Two sessions for two DIFFERENT later days, done the same day: still one.
+  it('counts one of two sessions done early the same day', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '13', B, '14'], [2, '13', A, '16']),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([
+      ['12', 'missed'],
+      ['14', 'done_early'],
+      ['16', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['13', 'same_day']])
+  })
+
+  // Two sessions done the same day for the SAME later day: the second can't
+  // count for that day anyway — it's taken — and its reason says so, not
+  // merely "another session that day".
+  it("says why a second session for the same day can't count", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '13', B, '14'], [2, '13', B, '14']),
+      today: '19',
+    })
+    expect(dayRows(s)[1]).toEqual(['14', 'done_early'])
+    expect(extraRows(s)).toEqual([['13', 'swap_not_counted']])
+  })
+
+  // A week changing kind on Wednesday: Monday–Tuesday "2 a week" (A), then
+  // Wednesday = B. On Tuesday a weekly session and Wednesday's B done early.
+  const weeklyThenWednesday = [perWeek(2, '12'), weekdays([[3, B]], '14')]
+
+  it("on a weekly day, lets the day's own session come first", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: weeklyThenWednesday,
+      sessions: linked([1, '13', B, '14'], [2, '13', A, null]),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([['14', 'missed']])
+    expect(s.weeks[0].sessionIds).toEqual([2])
+    expect(extraRows(s)).toEqual([['13', 'same_day']])
+  })
+
+  it('on a weekly day with no session of its own, counts a session done early', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: weeklyThenWednesday,
+      sessions: linked([1, '13', B, '14']),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([['14', 'done_early']])
+    expect(extraRows(s)).toEqual([])
+  })
+
+  // A paused day's own session never counts, so a session done early there
+  // has nothing to compete with.
+  it('on a paused day, counts a session done early beside a paused one', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [paused('12'), weekdays([[3, B]], '14')],
+      sessions: linked([1, '13', A, null], [2, '13', B, '14']),
+      today: '19',
+    })
+    expect(dayRows(s)).toEqual([['14', 'done_early']])
+    expect(extraRows(s)).toEqual([['13', 'paused']])
+  })
+})
+
+// --- Late make-ups (decided 2026-10-16) --------------------------------------------------------------------
+
+describe('late make-ups', () => {
+  // Monday 12 (A) missed: its window ends Tuesday 13 — Wednesday closes it.
+  // Wednesday's B and Friday's A are done on their days in most cases, so
+  // the only question is Monday.
+  const onTime: [number, string, number, string | null][] = [
+    [10, '14', B, null],
+    [11, '16', A, null],
+  ]
+
+  it('makes up a missed day late, from a free day after its window', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked(...onTime, [12, '15', A, '12']),
+      today: '19',
+    })
+    expect(s.days[0]).toStrictEqual({
+      date: d('12'),
+      workoutId: A,
+      state: 'made_up_late',
+      sessionId: null,
+      madeUpBy: null,
+      madeUpLateBy: { sessionId: 12, date: d('15') },
+      doneEarlyBy: null,
+      swappedBy: null,
+      attempts: [],
+    })
+    // Counted apart: never in madeUp, no longer missed. (No lateMakeUpDays
+    // given: the setting governs new sessions, never recorded ones.)
+    expect(s.totals).toMatchObject({
+      done: 2,
+      madeUp: 0,
+      madeUpLate: 1,
+      missed: 0,
+      extra: 0,
+    })
+  })
+
+  it("doesn't count one done while the day's window is still open", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked(...onTime, [12, '13', A, '12']),
+      today: '19',
+    })
+    // Not reinterpreted as an ordinary make-up either: links are explicit.
+    expect(s.days[0].state).toBe('missed')
+    expect(extraRows(s)).toEqual([['13', 'swap_not_counted']])
+  })
+
+  it("doesn't count one of another workout than the day's", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked(...onTime, [12, '15', B, '12']),
+      today: '19',
+    })
+    expect(s.days[0].state).toBe('missed')
+    expect(extraRows(s)).toEqual([['15', 'swap_not_counted']])
+  })
+
+  it("doesn't count one for a day already done", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '12', A, null], ...onTime, [12, '15', A, '12']),
+      today: '19',
+    })
+    expect(dayRows(s)[0]).toEqual(['12', 'done'])
+    expect(extraRows(s)).toEqual([['15', 'swap_not_counted']])
+  })
+
+  it('counts only the first of two for the same day', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked(...onTime, [12, '15', A, '12'], [13, '17', A, '12']),
+      today: '19',
+    })
+    expect(s.days[0].madeUpLateBy).toEqual({ sessionId: 12, date: d('15') })
+    expect(extraRows(s)).toEqual([['17', 'swap_not_counted']])
+  })
+
+  // Only from a free day of SPECIFIC days: Thursday paused here.
+  it("doesn't count one done during a pause", () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: [...MWF_ABA, paused('15')],
+      sessions: linked([10, '14', B, null], [12, '15', A, '12']),
+      today: '19',
+    })
+    expect(s.days[0].state).toBe('missed')
+    expect(extraRows(s)).toEqual([['15', 'swap_not_counted']])
+  })
+
+  // …and from a free day, not a scheduled one: from a scheduled day, a
+  // session for an earlier day is a swap half — judged as one.
+  it('judges one done on a scheduled day as a swap', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([10, '14', B, null], [12, '16', A, '12']),
+      today: '19',
+    })
+    expect(s.days[0].state).toBe('swapped')
+    expect(s.days[0].madeUpLateBy).toBeNull()
+  })
+
+  // One session a day applies: Wednesday missed too, and on Thursday (inside
+  // Wednesday's window) both an ordinary B and Monday's late A. Ids swapped
+  // between the two cases.
+  it('on a free day, lets the ordinary make-up count when it came first', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '15', B, null], [2, '15', A, '12']),
+      today: '19',
+    })
+    expect(dayRows(s).slice(0, 2)).toEqual([
+      ['12', 'missed'],
+      ['14', 'made_up', '15'],
+    ])
+    expect(extraRows(s)).toEqual([['15', 'same_day']])
+  })
+
+  it('on a free day, lets the late make-up count when it came first', () => {
+    const s = summarize({
+      start: '12',
+      end: '18',
+      versions: MWF_ABA,
+      sessions: linked([1, '15', A, '12'], [2, '15', B, null]),
+      today: '19',
+    })
+    expect(dayRows(s).slice(0, 2)).toEqual([
+      ['12', 'made_up_late'],
+      ['14', 'missed'],
+    ])
+    expect(extraRows(s)).toEqual([['15', 'same_day']])
+  })
+})
+
+// --- What can still be made up late (lateMakeUps) ----------------------------------------------------------
+
+describe('lateMakeUps', () => {
+  // Monday 12 (A) missed; Wednesday 14 done unless a case says otherwise.
+  const wednesday: [number, string, number, string | null] = [10, '14', B, null]
+  const wednesdayDone = linked(wednesday)
+
+  it('lists nothing when the program has no late make-ups', () => {
+    for (const lateMakeUpDays of [undefined, null]) {
+      const s = summarize({
+        start: '12',
+        versions: MWF_ABA,
+        sessions: wednesdayDone,
+        today: '15',
+        lateMakeUpDays,
+      })
+      expect(s.lateMakeUps).toStrictEqual({ days: [], blockedToday: null })
+    }
+  })
+
+  // 12 + 7 = Monday 19, a scheduled day: the last free day is Sunday 18.
+  it('lists a missed day with the last free day it can be done on', () => {
+    const s = summarize({
+      start: '12',
+      versions: MWF_ABA,
+      sessions: wednesdayDone,
+      today: '15',
+      lateMakeUpDays: 7,
+    })
+    expect(s.lateMakeUps).toStrictEqual({
+      days: [{ forDay: d('12'), workoutId: A, until: d('18') }],
+      blockedToday: null,
+    })
+  })
+
+  // 12 + 3 = Thursday 15: still possible on the 15th, not on the 16th; 12 + 2
+  // = Wednesday 14 is already past on the 15th.
+  it('counts the limit from the missed day, the last day included', () => {
+    const at = (today: string, lateMakeUpDays: number) =>
+      summarize({
+        start: '12',
+        versions: MWF_ABA,
+        sessions: wednesdayDone,
+        today,
+        lateMakeUpDays,
+      }).lateMakeUps.days
+    expect(at('15', 3)).toEqual([
+      { forDay: d('12'), workoutId: A, until: d('15') },
+    ])
+    expect(at('16', 3)).toEqual([])
+    expect(at('15', 2)).toEqual([])
+  })
+
+  it('never offers a day after the end date', () => {
+    const s = summarize({
+      start: '12',
+      end: '17',
+      versions: MWF_ABA,
+      sessions: wednesdayDone,
+      today: '15',
+      lateMakeUpDays: 7,
+    })
+    expect(s.lateMakeUps.days).toEqual([
+      { forDay: d('12'), workoutId: A, until: d('17') },
+    ])
+  })
+
+  // Monday 12 and Wednesday 14 missed, Friday done; on Saturday both are
+  // listed, the one that runs out first first. (14 + 7 = Wednesday 21,
+  // scheduled → Tuesday 20.)
+  it('lists several missed days, oldest first', () => {
+    const s = summarize({
+      start: '12',
+      versions: MWF_ABA,
+      sessions: linked([11, '16', A, null]),
+      today: '17',
+      lateMakeUpDays: 7,
+    })
+    expect(s.lateMakeUps.days).toEqual([
+      { forDay: d('12'), workoutId: A, until: d('18') },
+      { forDay: d('14'), workoutId: B, until: d('20') },
+    ])
+  })
+
+  it('no longer lists a day made up late, nor one still in its window', () => {
+    // Monday made up late on Thursday; on Saturday, Friday (missed — no
+    // session) is still in its window: due, not listed.
+    const s = summarize({
+      start: '12',
+      versions: MWF_ABA,
+      sessions: linked(wednesday, [12, '15', A, '12']),
+      today: '17',
+      lateMakeUpDays: 7,
+    })
+    expect(s.lateMakeUps.days).toEqual([])
+  })
+
+  // Why none can be started TODAY. Each block is checked where the others
+  // don't apply, and in the order that decides when two do.
+  describe('blockedToday', () => {
+    const blocked = (input: {
+      today: string
+      sessions?: ReturnType<typeof linked>
+      versions?: SummaryScheduleVersion[]
+      end?: string
+    }) =>
+      summarize({
+        start: '12',
+        end: input.end,
+        versions: input.versions ?? MWF_ABA,
+        sessions: input.sessions ?? wednesdayDone,
+        today: input.today,
+        lateMakeUpDays: 7,
+      }).lateMakeUps
+
+    it('is not_a_free_day on a scheduled day — the days are still listed', () => {
+      expect(blocked({ today: '16' })).toStrictEqual({
+        days: [{ forDay: d('12'), workoutId: A, until: d('18') }],
+        blockedToday: 'not_a_free_day',
+      })
+    })
+
+    it('is not_a_free_day during a pause, before the start and after the end', () => {
+      expect(
+        blocked({ today: '15', versions: [...MWF_ABA, paused('15')] })
+          .blockedToday,
+      ).toBe('not_a_free_day')
+      // Before the start — even under a version starting earlier (the
+      // module doesn't rely on the first version starting on the start
+      // date: it takes any input).
+      expect(
+        blocked({
+          today: '11',
+          versions: [
+            weekdays(
+              [
+                [1, A],
+                [3, B],
+                [5, A],
+              ],
+              '05',
+            ),
+          ],
+        }).blockedToday,
+      ).toBe('not_a_free_day')
+      expect(blocked({ today: '18', end: '17' }).blockedToday).toBe(
+        'not_a_free_day',
+      )
+    })
+
+    it('is not_a_free_day on a weekly count', () => {
+      expect(
+        blocked({
+          today: '15',
+          versions: [...MWF_ABA, perWeek(2, '15')],
+        }).blockedToday,
+      ).toBe('not_a_free_day')
+    })
+
+    it('is session_done_today when a session was completed today', () => {
+      // Thursday's session counts for nothing (no missed day open) — it
+      // still uses up the day.
+      expect(
+        blocked({
+          today: '15',
+          sessions: linked(wednesday, [12, '15', A, null]),
+        }),
+      ).toStrictEqual({
+        days: [{ forDay: d('12'), workoutId: A, until: d('18') }],
+        blockedToday: 'session_done_today',
+      })
+    })
+
+    it('is catch_up_first while another missed day can be made up on time', () => {
+      // No Wednesday session: on Thursday, Wednesday is due (its window runs
+      // to Thursday), Monday is missed.
+      expect(blocked({ today: '15', sessions: [] })).toStrictEqual({
+        days: [{ forDay: d('12'), workoutId: A, until: d('18') }],
+        blockedToday: 'catch_up_first',
+      })
+    })
+
+    it('says a session done today before an open catch-up', () => {
+      // Wednesday due, and a session of the wrong workout (A) done today.
+      expect(
+        blocked({ today: '15', sessions: linked([12, '15', A, null]) })
+          .blockedToday,
+      ).toBe('session_done_today')
+    })
+
+    it('says not_a_free_day before a session done today', () => {
+      expect(
+        blocked({
+          today: '16',
+          sessions: linked(wednesday, [11, '16', A, null]),
+        }).blockedToday,
+      ).toBe('not_a_free_day')
+    })
   })
 })

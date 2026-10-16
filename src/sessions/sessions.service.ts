@@ -60,18 +60,21 @@ import { changedFields } from '../common/changed-fields'
 import { workoutLabel, type WorkoutRow } from '../common/workout-rules'
 import { assertProgramOpen } from '../assigned-programs/program-state'
 import {
-  swapWorkoutId,
+  sessionForOtherDay,
   type SwapVersion,
 } from '../assigned-programs/schedule/swap-rules'
 import {
   assertCompletableOnItsDay,
   assertDurationPossible,
+  assertLateMakeUpAllowed,
   assertSessionOpen,
   assertSkipPain,
   DAY_HAS_SESSION_MESSAGE,
+  ONE_SESSION_A_DAY_MESSAGE,
   SESSION_OPEN_TODAY_MESSAGE,
   skippedWorkoutId,
 } from './session-rules'
+import { summarizeProgram } from '../assigned-programs/program-summary'
 import {
   isForeignKeyViolation,
   isUniqueViolation,
@@ -217,13 +220,36 @@ export class SessionsService {
     // started with it, and a retired exercise is exactly one kept for the
     // sessions that used it.)
     const sessionId = await withRlsContext(this.db, currentUser, async (tx) => {
+      // ONE SESSION A DAY (decided 2026-10-16): a day that already has a
+      // COMPLETED session of this program takes no other — not the same
+      // workout again, not a swap half, not a make-up. Asked first: it
+      // answers every start that day, whatever else the request says. (A
+      // STOPPED session doesn't count: the day is still to do. An OPEN one
+      // today is the unique index's 409, below.) The database says the same
+      // (migration 0041's trigger), which also closes the race this read
+      // can't: a completion committing between this read and the insert.
+      const [completedToday] = await tx
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.assignedProgramId, dto.assignedProgramId),
+            eq(sessions.localDate, dto.localDate),
+            eq(sessions.status, 'completed'),
+          ),
+        )
+        .limit(1)
+      if (completedToday) {
+        throw new ConflictException(ONE_SESSION_A_DAY_MESSAGE)
+      }
+
       // The patient can read their own program's workouts (program_workouts'
       // SELECT policy follows the program's).
       const workouts = await tx.query.programWorkouts.findMany({
         where: eq(programWorkouts.assignedProgramId, dto.assignedProgramId),
       })
-      // A session for another day (done early, or half of a swap): the
-      // workout is the one scheduled on `countsFor`, after the rules in
+      // A session for another day (a swap half, done early, a late make-up):
+      // the workout is the one scheduled on `countsFor`, after the rules in
       // swap-rules.ts (400 if any fails). They need the schedule on TWO days
       // — the counted day (its workout) and today (is it a scheduled day?)
       // — each judged by the version in force on it: so every version
@@ -232,13 +258,25 @@ export class SessionsService {
       if (dto.countsFor != null) {
         const lastDay =
           dto.countsFor > dto.localDate ? dto.countsFor : dto.localDate
-        requested = swapWorkoutId({
+        const other = sessionForOtherDay({
           program,
           versions: await this.readVersions(tx, dto.assignedProgramId, lastDay),
           localDate: dto.localDate,
           countsFor: dto.countsFor,
           requestedWorkoutId: dto.workoutId,
         })
+        // A late make-up is judged on the program's SUMMARY for today — the
+        // one the home and the start page read (summarizeProgram), so the
+        // button and this answer can't disagree. In this transaction, as
+        // the patient: their policies show them all of their program.
+        if (other.kind === 'late_make_up') {
+          assertLateMakeUpAllowed(
+            await summarizeProgram(tx, program, dto.localDate),
+            dto.countsFor,
+            program.lateMakeUpDays,
+          )
+        }
+        requested = other.workoutId
       }
       const workoutId = chooseSessionWorkout(requested, workouts)
 

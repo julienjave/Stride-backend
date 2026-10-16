@@ -26,6 +26,7 @@ import {
   pgEnum,
   index,
   real,
+  smallint,
   check,
   unique,
   foreignKey,
@@ -184,6 +185,11 @@ export const templateExercises = pgTable(
   }),
 )
 
+// The most days late a missed session may be made up (the CHECK
+// assigned_programs_late_make_up_days_range says the same; the DTO reads
+// this constant).
+export const LATE_MAKE_UP_DAYS_MAX = 28
+
 export const assignedPrograms = pgTable(
   'assigned_programs',
   {
@@ -226,6 +232,14 @@ export const assignedPrograms = pgTable(
     // (sessions.counts_for)? On by default; the practitioner can turn it off.
     // It governs NEW swaps only — swaps already recorded keep counting.
     allowSwaps: boolean('allow_swaps').notNull().default(true),
+    // Late make-ups (decided 2026-10-16): how many days after a MISSED day
+    // the patient may still make it up late — a session on a free day with
+    // `counts_for` = that day (schedule-summary.ts). NULL = not allowed, the
+    // default: opt-in, because it is the practitioner's clinical call. One
+    // nullable column rather than a boolean plus a number, so a
+    // contradiction ("off, but 7 days") can't be stored. Like allowSwaps, it
+    // governs NEW late make-ups only.
+    lateMakeUpDays: smallint('late_make_up_days'),
   },
   (table) => ({
     // findAllForCurrentUser() filters on this directly (patient) or via
@@ -252,6 +266,14 @@ export const assignedPrograms = pgTable(
     titleNotBlank: check(
       'assigned_programs_title_not_blank',
       sql`length(btrim(${table.title})) > 0`,
+    ),
+    // 1 to 28 days (LATE_MAKE_UP_DAYS_MAX — written out here: a CHECK is
+    // DDL, and an interpolated value would become a query parameter). Zero
+    // would mean "not allowed", which NULL already says; four weeks is
+    // already far from the plan.
+    lateMakeUpDaysRange: check(
+      'assigned_programs_late_make_up_days_range',
+      sql`${table.lateMakeUpDays} IS NULL OR ${table.lateMakeUpDays} BETWEEN 1 AND 28`,
     ),
   }),
 )

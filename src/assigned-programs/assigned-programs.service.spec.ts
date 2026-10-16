@@ -602,6 +602,12 @@ describe('AssignedProgramsService.create', () => {
         endDate: '2026-12-15',
         basedOnTemplateId: null,
         basedOnProgramId: null,
+        // The practitioner's settings, as the row holds them. An ordinary
+        // assignment inserts neither — the column defaults apply (swaps on,
+        // late make-ups off) — and this mock's row holds only what was
+        // inserted; "Assign again" copying them is an e2e test.
+        allowSwaps: undefined,
+        lateMakeUpDays: undefined,
         // What .returning() gave back for the schedule row (the mock
         // answers every insert with id 900 and no createdAt).
         schedule: {
@@ -3153,6 +3159,7 @@ describe('AssignedProgramsService.summary', () => {
       expected: null,
       done: 1,
       madeUp: 0,
+      madeUpLate: 0,
       doneEarly: 0,
       swapped: 0,
       missed: 0,

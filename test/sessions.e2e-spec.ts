@@ -2236,6 +2236,280 @@ describe('Sessions (e2e)', () => {
   // the guard lets them make exactly one change: close an open session of a
   // CLOSED program. Each case has a neighbour that passes.
 
+  // --- One session a day (decided 2026-10-16) -----------------------------------
+
+  describe('one session a day', () => {
+    // The patient's words (session-rules.ts), literal: a changed message is
+    // a changed promise to the patient.
+    const ONE_A_DAY = [
+      "You've already completed a session of this program today. Only one session a day counts, because sessions too close together can be too much for your body: do the next one on another day",
+    ]
+
+    // A COMPLETED session of an earlier day (0 = today), as only the owner
+    // can write one on another day.
+    async function plantCompletedSession(
+      program: { id: number; workouts: { id: number }[] },
+      daysAgo: number,
+    ) {
+      const {
+        rows: [s],
+      } = await sessionPool.query<{ id: number }>(
+        `INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
+           scheduled_date, local_date, status, started_at, completed_at)
+         VALUES ($1, $2, $3, now() - make_interval(days => $4),
+                 ($5::date - $4::int), 'completed',
+                 now() - make_interval(days => $4), now() - make_interval(days => $4))
+         RETURNING id`,
+        [program.id, program.workouts[0].id, patientAId, daysAgo, today],
+      )
+      return Number(s.id)
+    }
+
+    // A session's row the app would insert to START one today — for the
+    // trigger tests, which write without the service.
+    const startRow = (program: { id: number; workouts: { id: number }[] }) =>
+      sql`INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
+            scheduled_date, local_date, status, started_at)
+          VALUES (${program.id}, ${program.workouts[0].id}, ${patientAId},
+                  now(), ${today}, 'in_progress', now())`
+
+    it('refuses another session the day one was completed, and stores nothing', async () => {
+      const program = await newProgram()
+      const first = await start(program.id)
+      expect(first.status).toBe(201)
+      const done = await patientA
+        .post(`/sessions/${bodyOf<SessionBody>(first).id}/complete`)
+        .send({})
+      expect(done.status).toBe(200)
+
+      const again = await start(program.id)
+      expect(again.status).toBe(409)
+      expect(bodyOf<ErrorBody>(again).message).toEqual(ONE_A_DAY)
+      const { rows } = await sessionPool.query(
+        'SELECT id FROM sessions WHERE assigned_program_id = $1',
+        [program.id],
+      )
+      expect(rows).toHaveLength(1)
+    })
+
+    // A STOPPED session doesn't count: the day is still to do.
+    it('lets the patient start again after stopping', async () => {
+      const program = await newProgram()
+      const first = await start(program.id)
+      const stopped = await patientA
+        .post(`/sessions/${bodyOf<SessionBody>(first).id}/stop`)
+        .send({ reason: 'pain' })
+      expect(stopped.status).toBe(200)
+
+      expect((await start(program.id)).status).toBe(201)
+    })
+
+    // Per program, per day: another program's session today, or this
+    // program's session yesterday, doesn't block a start.
+    it("counts only this program's sessions of this day", async () => {
+      const other = await newProgram()
+      await plantCompletedSession(other, 0)
+      const program = await newProgram()
+      await plantCompletedSession(program, 1)
+
+      expect((await start(program.id)).status).toBe(201)
+    })
+
+    // The database's half (migration 0041), without the service: as the
+    // app, a session on a day with a completed one is refused with the
+    // trigger's name — and only then: a stopped one, or one on another day,
+    // lets the row in. The owner is exempt.
+    it('is refused by the database too, as the app — the owner exempt', async () => {
+      const done = await newProgram()
+      await plantCompletedSession(done, 0)
+      expect(await asPatientA(startRow(done))).toEqual({
+        error: {
+          code: '23514',
+          constraint: 'session_one_completed_per_day',
+        },
+      })
+      expect(
+        await asOwner(
+          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
+             scheduled_date, local_date, status, started_at)
+           VALUES ($1, $2, $3, now(), $4, 'in_progress', now())`,
+          [done.id, done.workouts[0].id, patientAId, today],
+        ),
+      ).toEqual({ rowCount: 1 })
+
+      const yesterdayOnly = await newProgram()
+      await plantCompletedSession(yesterdayOnly, 1)
+      expect(await asPatientA(startRow(yesterdayOnly))).toEqual({
+        rowCount: 1,
+      })
+
+      const stoppedToday = await newProgram()
+      const first = await start(stoppedToday.id)
+      await patientA
+        .post(`/sessions/${bodyOf<SessionBody>(first).id}/stop`)
+        .send({ reason: 'pain' })
+      expect(await asPatientA(startRow(stoppedToday))).toEqual({
+        rowCount: 1,
+      })
+    })
+
+    // THE RACE the service's own read can't close: the session is being
+    // completed (held, uncommitted, by the patient's other request) while a
+    // new one starts. The start must WAIT for the completion, then be
+    // refused — not slip in as a second session of the day.
+    it('waits for a completion in progress, then refuses the start', async () => {
+      const program = await newProgram()
+      const open = bodyOf<SessionBody>(await start(program.id))
+
+      const { waited, res } = await whileHolding(
+        appPool,
+        "UPDATE sessions SET status = 'completed', completed_at = now() WHERE id = $1",
+        [open.id],
+        () => start(program.id),
+      )
+      expect(waited).toBe(true)
+      expect(res.status).toBe(409)
+      expect(bodyOf<ErrorBody>(res).message).toEqual(ONE_A_DAY)
+    })
+  })
+
+  // --- Late make-ups (decided 2026-10-16) ----------------------------------------
+
+  describe('late make-ups', () => {
+    // Three days ago and two days ago are scheduled; today isn't. Three
+    // days ago was MISSED: two days ago closed its make-up window — and was
+    // done (planted), so nothing else can be made up on time. Today, a free
+    // day, may make up three days ago late.
+    const threeDaysAgo = addDays(today, -3)
+    const twoDaysAgo = addDays(today, -2)
+    const SCHEDULE = {
+      type: 'weekdays',
+      days: [threeDaysAgo, twoDaysAgo].map((day) => ({
+        weekday: isoWeekday(day),
+        workoutIndex: 0,
+      })),
+    }
+
+    // The program, two days ago done unless said otherwise, and late
+    // make-ups set as asked (null = left off).
+    async function lateProgram(
+      lateMakeUpDays: number | null,
+      twoDaysAgoDone = true,
+    ) {
+      const program = await newProgram(SCHEDULE)
+      if (twoDaysAgoDone) {
+        await sessionPool.query(
+          `INSERT INTO sessions (assigned_program_id, workout_id, patient_id,
+             scheduled_date, local_date, status, started_at, completed_at)
+           VALUES ($1, $2, $3, now() - interval '2 days', $4, 'completed',
+                   now() - interval '2 days', now() - interval '2 days')`,
+          [program.id, program.workouts[0].id, patientAId, twoDaysAgo],
+        )
+      }
+      if (lateMakeUpDays !== null) {
+        const set = await practitionerA
+          .patch(`/assigned-programs/${program.id}`)
+          .send({ lateMakeUpDays })
+        expect(set.status).toBe(200)
+      }
+      return program
+    }
+    const summaryOf = (programId: number) =>
+      patientA.get(`/assigned-programs/${programId}/summary?today=${today}`)
+    interface LateSummary {
+      days: { date: string; state: string; madeUpLateBy: unknown }[]
+      totals: { madeUpLate: number; madeUp: number; missed: number }
+      lateMakeUps: { days: unknown[]; blockedToday: string | null }
+    }
+
+    // The offer: three days ago, until its last free day — 3 days ago + 7
+    // = 4 days from now, a scheduled day, so 3 days from now.
+    it('is offered on the summary, until its last free day', async () => {
+      const program = await lateProgram(7)
+      const res = await summaryOf(program.id)
+      expect(res.status).toBe(200)
+      expect(bodyOf<LateSummary>(res).lateMakeUps).toEqual({
+        days: [
+          {
+            forDay: threeDaysAgo,
+            workoutId: program.workouts[0].id,
+            until: addDays(today, 3),
+          },
+        ],
+        blockedToday: null,
+      })
+    })
+
+    it('is recorded, and counted apart once completed', async () => {
+      const program = await lateProgram(7)
+      const res = await start(program.id, { countsFor: threeDaysAgo })
+      expect(res.status).toBe(201)
+      const session = bodyOf<SessionBody>(res)
+      expect(session).toMatchObject({
+        workoutId: program.workouts[0].id,
+        countsFor: threeDaysAgo,
+        localDate: today,
+      })
+      const done = await patientA
+        .post(`/sessions/${session.id}/complete`)
+        .send({})
+      expect(done.status).toBe(200)
+
+      const summary = bodyOf<LateSummary>(await summaryOf(program.id))
+      expect(summary.days.find((d) => d.date === threeDaysAgo)).toMatchObject({
+        state: 'made_up_late',
+        madeUpLateBy: { sessionId: session.id, date: today },
+      })
+      expect(summary.totals).toMatchObject({
+        madeUpLate: 1,
+        madeUp: 0,
+        missed: 0,
+      })
+      // Nothing left to make up — and today is used up.
+      expect(summary.lateMakeUps).toEqual({
+        days: [],
+        blockedToday: 'session_done_today',
+      })
+    })
+
+    it.each<[string, () => ReturnType<typeof lateProgram>, string]>([
+      [
+        'when the program has none',
+        () => lateProgram(null),
+        'Late make-ups are turned off for this program: ask your practitioner',
+      ],
+      [
+        'past the limit',
+        () => lateProgram(2),
+        `${threeDaysAgo} is more than 2 days ago: it can no longer be made up`,
+      ],
+      // Two days ago NOT done: still in its window (until the next
+      // scheduled day), so it comes first.
+      [
+        'while another day can be made up on time',
+        () => lateProgram(7, false),
+        `Catch up ${twoDaysAgo} first: it can still be made up on time, before the next scheduled day`,
+      ],
+    ])('is refused %s, recording nothing', async (_label, make, message) => {
+      const program = await make()
+      const res = await start(program.id, { countsFor: threeDaysAgo })
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([message])
+      const { rows } = await sessionPool.query(
+        'SELECT 1 FROM sessions WHERE assigned_program_id = $1 AND local_date = $2',
+        [program.id, today],
+      )
+      expect(rows).toEqual([])
+    })
+
+    // The summary says why, for the screens: catch up first.
+    it('says on the summary when an on-time catch-up comes first', async () => {
+      const program = await lateProgram(7, false)
+      const summary = bodyOf<LateSummary>(await summaryOf(program.id))
+      expect(summary.lateMakeUps.blockedToday).toBe('catch_up_first')
+    })
+  })
+
   describe('the care team closing a session (policy + guard, as the app)', () => {
     let closedProgramSession: number
     let finishedSession: number

@@ -281,6 +281,20 @@
       "when": 1792073179482,
       "tag": "0039_close_sessions_with_program",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1792166518271,
+      "tag": "0040_late_make_up_days",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1792166560926,
+      "tag": "0041_one_session_a_day",
+      "breakpoints": true
     }
   ]
 }

@@ -23,6 +23,7 @@ import {
   versionOn,
   type SwapVersion,
 } from '../assigned-programs/schedule/swap-rules'
+import type { ScheduleSummary } from '../assigned-programs/schedule/schedule-summary'
 import type { PatientEndReason } from '../database/schema'
 
 // A SESSION'S LIFE (Phase 4 step 1, decided with the person 2026-10-15):
@@ -61,6 +62,14 @@ export const SESSION_OPEN_TODAY_MESSAGE =
 // Skipping a day that already has a session — started, done or skipped.
 export const DAY_HAS_SESSION_MESSAGE =
   'Today already has a session for this program, so it can no longer be skipped'
+
+// Starting a session on a day that already has a COMPLETED one of the same
+// program (decided 2026-10-16, with the person: blocked, not just left
+// uncounted). It says what happened and why — the patient may well have
+// meant well. Shared with HttpExceptionFilter, which gives the database's
+// refusal of the same thing (migration 0041) these words too.
+export const ONE_SESSION_A_DAY_MESSAGE =
+  "You've already completed a session of this program today. Only one session a day counts, because sessions too close together can be too much for your body: do the next one on another day"
 
 // --- THE RULES ---------------------------------------------------------------------------------------------
 
@@ -166,4 +175,67 @@ export function skippedWorkoutId(input: {
     )
   }
   return day.workoutId
+}
+
+// A LATE MAKE-UP (decided 2026-10-16): may the patient start, today, a
+// session making up `countsFor` late? Asked of the program's SUMMARY for
+// today — the same answer the home and the start page read — so what the
+// screens offer and what this accepts can't disagree. sessionForOtherDay
+// (swap-rules.ts) has already checked the rest: `countsFor` is an earlier
+// scheduled day of the program, the workout is its own, and today isn't a
+// scheduled day. Checked in the order a person would think of it: does the
+// day still need making up at all → may it be made up late here → is it
+// too late → can it be today.
+export function assertLateMakeUpAllowed(
+  summary: Pick<ScheduleSummary, 'days' | 'lateMakeUps'>,
+  countsFor: string,
+  lateMakeUpDays: number | null,
+) {
+  // (Always found: an earlier scheduled day of the program is among the
+  // days the summary covers — from the start date up to today at least.)
+  const day = summary.days.find((d) => d.date === countsFor)
+  // Its window is still open: an ordinary make-up, which needs no link —
+  // answered first, whatever the setting, so a patient on time is told
+  // simply to start.
+  if (day?.state === 'due') {
+    throw new BadRequestException(
+      `${countsFor} can still be made up on time: start the session without countsFor, before the next scheduled day`,
+    )
+  }
+  if (day?.state !== 'missed') {
+    throw new ConflictException(
+      `${countsFor} is already done: there is nothing to make up`,
+    )
+  }
+  if (lateMakeUpDays === null) {
+    throw new BadRequestException(
+      'Late make-ups are turned off for this program: ask your practitioner',
+    )
+  }
+  const { blockedToday } = summary.lateMakeUps
+  // Before "too late": on a day that isn't free, no missed day may be
+  // listed at all (the summary looks for a free day to do it on), and
+  // "too late" would be the wrong reason.
+  if (blockedToday === 'not_a_free_day') {
+    throw new BadRequestException(
+      'A late make-up is done on a day with nothing scheduled: not during a pause, nor on a weekly count',
+    )
+  }
+  if (!summary.lateMakeUps.days.some((late) => late.forDay === countsFor)) {
+    throw new BadRequestException(
+      `${countsFor} is more than ${lateMakeUpDays} days ago: it can no longer be made up`,
+    )
+  }
+  if (blockedToday === 'session_done_today') {
+    throw new ConflictException(ONE_SESSION_A_DAY_MESSAGE)
+  }
+  if (blockedToday === 'catch_up_first') {
+    // The day that can still be made up on time. (Only an earlier day can
+    // be 'due' here: a due day TODAY would make today a scheduled day,
+    // answered above as not_a_free_day.)
+    const due = summary.days.find((d) => d.state === 'due')
+    throw new BadRequestException(
+      `Catch up ${due?.date} first: it can still be made up on time, before the next scheduled day`,
+    )
+  }
 }

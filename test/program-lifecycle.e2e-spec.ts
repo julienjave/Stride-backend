@@ -246,6 +246,7 @@ describe('Program lifecycle (e2e)', () => {
     status: string
     isArchived: boolean
     allowSwaps: boolean
+    lateMakeUpDays: number | null
     startDate: string
     endDate: string | null
     basedOnTemplateId: number | null
@@ -355,6 +356,7 @@ describe('Program lifecycle (e2e)', () => {
         state: 'swapped',
         sessionId: null,
         madeUpBy: null,
+        madeUpLateBy: null,
         doneEarlyBy: null,
         swappedBy: { sessionId: res.body.id, date: today },
         attempts: [],
@@ -392,6 +394,7 @@ describe('Program lifecycle (e2e)', () => {
         state: 'done_early',
         sessionId: null,
         madeUpBy: null,
+        madeUpLateBy: null,
         doneEarlyBy: { sessionId: res.body.id, date: today },
         swappedBy: null,
         attempts: [],
@@ -440,16 +443,28 @@ describe('Program lifecycle (e2e)', () => {
         { countsFor: addDays(today, 6) },
         'A session for another day stays within the program week: countsFor must be in the same week as today',
       ],
+      // Tomorrow from a weekly-count day: done early, which the swap
+      // switch governs.
       [
         'a weekly-count schedule',
         () => createProgram({ schedule: TWICE_A_WEEK }),
-        { countsFor: yesterday },
+        { countsFor: tomorrow },
         'Only schedules with specific days can be rearranged: with a weekly count, any order within the week already counts',
       ],
-      // Today free, yesterday scheduled: counting for yesterday would be
-      // catching up a missed day — a make-up, not a link (2026-10-12).
+      // Yesterday from a weekly-count day: a late make-up — none with a
+      // weekly count (2026-10-16).
       [
-        'an earlier day, from a free day',
+        'a late make-up on a weekly-count schedule',
+        () => createProgram({ schedule: TWICE_A_WEEK }),
+        { countsFor: yesterday },
+        'Only schedules with specific days have late make-ups: a weekly count starts again each week',
+      ],
+      // Today free, yesterday scheduled and still in its make-up window:
+      // catching it up is an ordinary make-up, which needs no link (refused
+      // as a link since 2026-10-12; since late make-ups, 2026-10-16, with
+      // this answer).
+      [
+        'an earlier day still in its window, from a free day',
         () =>
           createProgram({
             schedule: {
@@ -458,7 +473,7 @@ describe('Program lifecycle (e2e)', () => {
             },
           }),
         { countsFor: yesterday },
-        `A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up ${yesterday}, do its workout before the next scheduled day: it counts as a make-up`,
+        `${yesterday} can still be made up on time: start the session without countsFor, before the next scheduled day`,
       ],
       [
         'today itself',
@@ -557,6 +572,108 @@ describe('Program lifecycle (e2e)', () => {
       expect(trail[1].details).toEqual({
         changes: { allowSwaps: { from: true, to: false } },
       })
+    })
+  })
+
+  // --- 1b. Late make-ups: the practitioner's setting (2026-10-16) ----------------------------------------
+
+  describe('late make-ups: the setting', () => {
+    // Off on a new program (opt-in); on and off again with a PATCH, each
+    // change audited before → after; the creation records the defaults.
+    it('is off on a new program, and the practitioner sets it, audited', async () => {
+      const program = await createProgram()
+      expect(program.lateMakeUpDays).toBeNull()
+
+      const on = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ lateMakeUpDays: 7 })
+      expect(on.status).toBe(200)
+      expect(on.body.lateMakeUpDays).toBe(7)
+      const off = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ lateMakeUpDays: null })
+      expect(off.status).toBe(200)
+      expect(off.body.lateMakeUpDays).toBeNull()
+
+      const trail = await auditTrail(program.id)
+      expect(trail.map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+        'ASSIGNED_PROGRAM_UPDATED',
+        'ASSIGNED_PROGRAM_UPDATED',
+      ])
+      expect(trail[0].details).toMatchObject({
+        allowSwaps: true,
+        lateMakeUpDays: null,
+      })
+      expect(trail[1].details).toEqual({
+        changes: { lateMakeUpDays: { from: null, to: 7 } },
+      })
+      expect(trail[2].details).toEqual({
+        changes: { lateMakeUpDays: { from: 7, to: null } },
+      })
+    })
+
+    // The limits, at their edges: 1 and 28 kept, 0 / 29 / 1.5 refused —
+    // and a refused value changes nothing.
+    it('keeps 1 and 28', async () => {
+      const program = await createProgram()
+      for (const lateMakeUpDays of [1, 28]) {
+        const res = await practitionerA
+          .patch(`/assigned-programs/${program.id}`)
+          .send({ lateMakeUpDays })
+        expect(res.status).toBe(200)
+        expect(res.body.lateMakeUpDays).toBe(lateMakeUpDays)
+      }
+    })
+
+    it.each<[unknown, string]>([
+      [0, 'lateMakeUpDays must be at least 1 (null turns late make-ups off)'],
+      [29, 'lateMakeUpDays can be at most 28'],
+      [1.5, 'lateMakeUpDays must be a whole number of days, or null'],
+    ])('refuses %p, changing nothing', async (lateMakeUpDays, message) => {
+      const program = await createProgram()
+      const res = await practitionerA
+        .patch(`/assigned-programs/${program.id}`)
+        .send({ lateMakeUpDays })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([message])
+      const { rows } = await sessionPool.query<{
+        late_make_up_days: number | null
+      }>('SELECT late_make_up_days FROM assigned_programs WHERE id = $1', [
+        program.id,
+      ])
+      expect(rows[0].late_make_up_days).toBeNull()
+    })
+
+    // The database's half (the CHECK), proved as the owner — no DTO in
+    // front: its limits are the DTO's.
+    it('is kept between 1 and 28 by the database too', async () => {
+      const program = await createProgram()
+      const tryValue = async (value: number) => {
+        const client = await sessionPool.connect()
+        try {
+          await client.query('BEGIN')
+          await client.query(
+            'UPDATE assigned_programs SET late_make_up_days = $1 WHERE id = $2',
+            [value, program.id],
+          )
+          return 'stored'
+        } catch (error) {
+          const { code, constraint } = error as {
+            code?: string
+            constraint?: string
+          }
+          return `${code} ${constraint}`
+        } finally {
+          await client.query('ROLLBACK')
+          client.release()
+        }
+      }
+      const refused = '23514 assigned_programs_late_make_up_days_range'
+      expect(await tryValue(0)).toBe(refused)
+      expect(await tryValue(29)).toBe(refused)
+      expect(await tryValue(1)).toBe('stored')
+      expect(await tryValue(28)).toBe('stored')
     })
   })
 
@@ -868,6 +985,29 @@ describe('Program lifecycle (e2e)', () => {
         schedule: TWICE_A_WEEK,
         ...extra,
       })
+
+    // Continuing a program continues the practitioner's choices for this
+    // patient (2026-10-16): rearranging the week and late make-ups — in the
+    // new program and in its creation's audit entry.
+    it("carries over the practitioner's settings", async () => {
+      const source = await createProgram()
+      const set = await practitionerA
+        .patch(`/assigned-programs/${source.id}`)
+        .send({ allowSwaps: false, lateMakeUpDays: 5 })
+      expect(set.status).toBe(200)
+      // A session, so cancelling keeps the program (cancelled, not archived).
+      await startSession(source.id, { workoutId: source.workouts[0].id }, true)
+      await close(practitionerA, source.id, 'cancel')
+
+      const res = await assignAgain(source.id)
+      expect(res.status).toBe(201)
+      expect(res.body).toMatchObject({ allowSwaps: false, lateMakeUpDays: 5 })
+      const [created] = await auditTrail((res.body as Program).id)
+      expect(created.details).toMatchObject({
+        allowSwaps: false,
+        lateMakeUpDays: 5,
+      })
+    })
 
     // The TAILORED program is what continues: B's sets were changed on the
     // program (5, the template says 2) — the copy has 5.
@@ -1342,6 +1482,7 @@ describe('Program lifecycle (e2e)', () => {
     const program = await createProgram()
     expect(program).toMatchObject({
       allowSwaps: true,
+      lateMakeUpDays: null,
       basedOnProgramId: null,
     })
   })

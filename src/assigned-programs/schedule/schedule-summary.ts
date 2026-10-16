@@ -75,6 +75,31 @@ import { addDays, daysBetween, isoWeekday } from '../../common/calendar-date'
 //     extra ('already_done'). (The service checks, when the session starts,
 //     the rest of what was decided: the same program week, rearranging
 //     allowed.)
+//   - A LATE MAKE-UP (decided 2026-10-16, with the person): a session on a
+//     FREE day of a specific-days schedule with `countsFor` = an EARLIER
+//     scheduled day D whose make-up window had already CLOSED — D was
+//     missed, and the patient catches it up later. D becomes
+//     'made_up_late', counted apart from 'made_up' (`totals.madeUpLate`) so
+//     a late catch-up never looks like an on-time one. Explicit only: the
+//     module never infers one. Done while D's window is still open, it
+//     doesn't count ('swap_not_counted'): that's an ordinary make-up, which
+//     needs no link (the service refuses to record it). Whether the
+//     practitioner allows late make-ups, and how late, governs NEW sessions
+//     only — the service checks it; recorded ones keep counting, like swaps.
+//     `lateMakeUps` says which missed days can still be made up late, and
+//     whether one can be started today — the screens offer it, and the
+//     service refuses a start that isn't in it, so the two never disagree.
+//   - ONE SESSION A DAY (decided 2026-10-10; made true across every kind of
+//     session 2026-10-16): on any day, at most ONE session counts. When two
+//     of a day's sessions could each count — the day's own session and a
+//     swap half done the same day, a make-up and a session done early, … —
+//     the one created FIRST counts and the other is extra ('same_day').
+//     (Before 2026-10-16 the sessions for other days were judged apart from
+//     the day's own ones, so both could count. The app refuses a second
+//     session on a day that has a completed one since then — the service,
+//     and the database's trigger in migration 0041; this rule is how the
+//     module judges such rows anyway: a pure function has an answer for any
+//     input.)
 //   - ATTEMPTS — sessions skipped or stopped (Phase 4 step 1b, decided
 //     2026-10-15): they never count (a skip or a stopped session is not done;
 //     the day is still missed, due or made up by the rules above), but they
@@ -138,6 +163,12 @@ export interface ScheduleSummaryInput {
   // end date, and never shorter than the default: it only extends. The
   // service bounds it (assertThroughInRange).
   through?: string
+  // The program's late make-ups (assigned_programs.late_make_up_days): how
+  // many days after a missed day it may still be made up late. Absent or
+  // null = not allowed: `lateMakeUps.days` is then empty. Used ONLY for
+  // `lateMakeUps` (what may be started now) — never to judge a session
+  // already recorded.
+  lateMakeUpDays?: number | null
 }
 
 // An attempt as the summary reports it — on a scheduled day (whose date it
@@ -152,7 +183,14 @@ export interface DatedAttempt extends Attempt {
 }
 
 export type DayState =
-  'done' | 'made_up' | 'done_early' | 'swapped' | 'missed' | 'due' | 'upcoming'
+  | 'done'
+  | 'made_up'
+  | 'made_up_late'
+  | 'done_early'
+  | 'swapped'
+  | 'missed'
+  | 'due'
+  | 'upcoming'
 
 // A scheduled day of a 'weekdays' schedule.
 export interface ScheduledDay {
@@ -164,6 +202,9 @@ export interface ScheduledDay {
   sessionId: number | null
   // The session that made it up (state 'made_up'), and its day.
   madeUpBy: { sessionId: number; date: string } | null
+  // The session that made it up LATE — after its window had closed, on a
+  // free day, explicitly (state 'made_up_late') — and its day.
+  madeUpLateBy: { sessionId: number; date: string } | null
   // The session that fulfilled it AHEAD of time, on a free day before it
   // (state 'done_early'), and its day.
   doneEarlyBy: { sessionId: number; date: string } | null
@@ -227,7 +268,10 @@ export type ExtraReason =
   | 'paused'
   // A session for another day that couldn't count: its day was already
   // fulfilled, isn't a scheduled day expecting that workout (any more), or
-  // — for an earlier day — it was done on a free day.
+  // — for an earlier day — it was done neither on a scheduled day (a swap)
+  // nor as a late make-up (on a free day of specific days, after the
+  // day's window had closed). The name predates done early and late
+  // make-ups; it covers every session for another day.
   | 'swap_not_counted'
   // On a scheduled day already fulfilled — earlier — by a session for it
   // (done early, or half of a swap).
@@ -256,6 +300,30 @@ export interface NextWorkout {
   programWeek: number | null
 }
 
+// A missed day that may still be made up late: the day, its workout, and
+// the LAST day it can be done — the latest free day of a specific-days
+// schedule on or before "the missed day + lateMakeUpDays" (and the end
+// date), which is what a patient needs to read: "until Sun 18", not "until
+// Mon 19" when Monday 19 is itself a scheduled day.
+export interface LateMakeUp {
+  forDay: string
+  workoutId: number
+  until: string
+}
+
+// Why no late make-up can be STARTED today (whatever `days` holds):
+//   - not_a_free_day     — today is a scheduled day, a pause, a weekly
+//                          count, or outside the program: a late make-up
+//                          is done on a free day of specific days, so it
+//                          never adds a second session to a scheduled day;
+//   - session_done_today — a session of this program was already completed
+//                          today (one session a day);
+//   - catch_up_first     — a missed day can still be made up the ordinary
+//                          way (its window is open): that comes first
+//                          (decided 2026-10-16).
+export type LateMakeUpBlock =
+  'not_a_free_day' | 'session_done_today' | 'catch_up_first'
+
 export interface ScheduleSummary {
   // The days covered: the start date up to the end date — or, for an
   // open-ended program, up to the end of the current program week.
@@ -272,6 +340,9 @@ export interface ScheduleSummary {
     // them apart.
     done: number
     madeUp: number
+    // Made up after the window, explicitly — counted apart, never in
+    // `madeUp`: the practitioner sees how much was caught up late.
+    madeUpLate: number
     doneEarly: number
     swapped: number
     missed: number
@@ -293,6 +364,15 @@ export interface ScheduleSummary {
   // null when nothing is left to do (the program is over, or paused with
   // nothing planned after the pause within the days covered).
   nextWorkout: NextWorkout | null
+  // Late make-ups (decided 2026-10-16): the missed days that may still be
+  // made up late, oldest first (the first one runs out first), and why none
+  // can be started TODAY — null when one can. `days` is empty when the
+  // program doesn't allow them. The home and the start page offer what this
+  // says; POST /sessions refuses what it doesn't.
+  lateMakeUps: {
+    days: LateMakeUp[]
+    blockedToday: LateMakeUpBlock | null
+  }
 }
 
 // --- HELPERS -----------------------------------------------------------------------------------------------
@@ -431,42 +511,123 @@ export function summarizeSchedule(
   const fulfilled = (entry: ScheduledDay) =>
     entry.state === 'done' ||
     entry.state === 'made_up' ||
+    entry.state === 'made_up_late' ||
     entry.state === 'done_early' ||
     entry.state === 'swapped'
-  // The sessions for another day done on `day`. One for a day already
-  // walked (done late) counts now — only from a scheduled day (the second
-  // half of a swap), only for a day still unfulfilled; one for a later day
-  // waits in `earlySessions` (only the first for a given day: a second one
-  // can't count).
-  const applySessionsForOtherDays = (day: string, dayIsScheduled: boolean) => {
+
+  // The workout scheduled ON `day` by the version in force that day —
+  // undefined when it isn't a scheduled day. Asked of days the walk hasn't
+  // reached yet too (a session done early): versions are known for every
+  // day, so a later day's expectation is known now.
+  const scheduledWorkoutOn = (day: string): number | undefined => {
+    const version = versionOn(versions, day)
+    return version?.type === 'weekdays'
+      ? version.days.find((d) => d.weekday === isoWeekday(day))?.workoutId
+      : undefined
+  }
+
+  // ONE SESSION A DAY. A day's sessions are judged in two steps: first,
+  // every session that COULD count on this day becomes a candidate — with
+  // what counting it would do (`apply`), not done yet; then `settle` lets
+  // the one created first count (sessions ids grow with creation) and makes
+  // the others 'same_day'. Deciding before applying is what makes the rule
+  // hold across kinds: the day's own session, a make-up, a swap half, a
+  // session done early and a late make-up are all candidates of one list.
+  interface Candidate {
+    session: SummarySession
+    apply: () => void
+  }
+  const settle = (candidates: (Candidate | null)[]) => {
+    const [first, ...others] = candidates
+      .filter((candidate): candidate is Candidate => candidate !== null)
+      .sort((a, b) => a.session.id - b.session.id)
+    first?.apply()
+    others.forEach((candidate) => extra(candidate.session, 'same_day'))
+  }
+
+  // What kind of day a session for another day was DONE on — which decides
+  // what it can be: on a scheduled day, half of a swap (or done early from
+  // it); on a free day of specific days, done early or a late make-up; on
+  // any other day (a weekly count, a pause), only done early.
+  type DoneOn = 'scheduled' | 'free' | 'other'
+
+  // The sessions for another day done on `day`, as candidates. One that
+  // can't count is extra ('swap_not_counted') at once. `claimed`: a day
+  // already targeted by an earlier candidate of this same day can't be
+  // targeted twice.
+  const otherDayCandidates = (day: string, doneOn: DoneOn): Candidate[] => {
+    const candidates: Candidate[] = []
+    const claimed = new Set<string>()
     for (const session of swapsOnDay.get(day) ?? []) {
       const target = session.countsFor!
-      if (target > day) {
-        if (earlySessions.has(target)) extra(session, 'swap_not_counted')
-        else
-          earlySessions.set(target, {
-            session,
-            fromScheduledDay: dayIsScheduled,
-          })
-        continue
-      }
-      const entry = days.find((d) => d.date === target)
-      if (
-        !dayIsScheduled ||
-        !entry ||
-        entry.workoutId !== session.workoutId ||
-        fulfilled(entry)
-      ) {
+      const apply = otherDayApply(session, target, day, doneOn, claimed)
+      if (apply) {
+        claimed.add(target)
+        candidates.push({ session, apply })
+      } else {
         extra(session, 'swap_not_counted')
-        continue
       }
-      entry.state = 'swapped'
-      entry.swappedBy = { sessionId: session.id, date: day }
-      // No make-up window to close here: `day` is a scheduled day, and the
-      // walk closes the open window on every scheduled day, right after
-      // this. (Before 2026-10-12, a late link from a FREE day could leave
-      // the day it fulfilled open for a make-up, and this cleared it.)
     }
+    return candidates
+  }
+
+  // What counting this session for `target` would do — or null if it can't
+  // count.
+  const otherDayApply = (
+    session: SummarySession,
+    target: string,
+    day: string,
+    doneOn: DoneOn,
+    claimed: Set<string>,
+  ): (() => void) | null => {
+    // A link to its OWN day never counts: the database refuses one
+    // (sessions_counts_for_other_day), and the module, which takes any
+    // input, doesn't fulfil a day "by link" on that very day either.
+    if (target === day || claimed.has(target)) return null
+    if (target > day) {
+      // EARLY (done early, or the first half of a swap): it waits for the
+      // walk to reach its day. It can count if that day is inside the days
+      // covered, scheduled with this workout, and not already waited for by
+      // an earlier session — nothing else can fulfil a day before it comes.
+      if (
+        earlySessions.has(target) ||
+        target > lastDay ||
+        scheduledWorkoutOn(target) !== session.workoutId
+      ) {
+        return null
+      }
+      return () =>
+        earlySessions.set(target, {
+          session,
+          fromScheduledDay: doneOn === 'scheduled',
+        })
+    }
+    // LATE (an earlier day, already walked): the day must expect this
+    // workout and still need fulfilling…
+    const entry = days.find((d) => d.date === target)
+    if (!entry || entry.workoutId !== session.workoutId || fulfilled(entry)) {
+      return null
+    }
+    // …from a scheduled day: the second half of a swap.
+    if (doneOn === 'scheduled') {
+      return () => {
+        entry.state = 'swapped'
+        entry.swappedBy = { sessionId: session.id, date: day }
+        // No make-up window to close here: `day` is a scheduled day, and
+        // the walk closes the open window on every scheduled day.
+      }
+    }
+    // …from a free day of specific days, once the day's make-up window has
+    // CLOSED (windowEnd is set when a window closes): a late make-up. While
+    // the window is open it's an ordinary make-up's job — a session for
+    // that day without a link — so this doesn't count.
+    if (doneOn === 'free' && windowEnd.has(entry)) {
+      return () => {
+        entry.state = 'made_up_late'
+        entry.madeUpLateBy = { sessionId: session.id, date: day }
+      }
+    }
+    return null
   }
 
   for (let day = startDate; day <= lastDay; day = addDays(day, 1)) {
@@ -476,10 +637,6 @@ export function summarizeSchedule(
       version?.type === 'weekdays'
         ? version.days.find((d) => d.weekday === isoWeekday(day))
         : undefined
-    // The day's sessions for other days first: a late one (from a
-    // scheduled day) fulfils its day before this day is judged; an early
-    // one is set aside until the walk reaches its day.
-    applySessionsForOtherDays(day, scheduled !== undefined)
 
     if (version?.type === 'weekdays') {
       if (scheduled) {
@@ -495,14 +652,16 @@ export function summarizeSchedule(
           state: 'upcoming', // settled in step 3 unless done now
           sessionId: null,
           madeUpBy: null,
+          madeUpLateBy: null,
           doneEarlyBy: null,
           swappedBy: null,
           attempts: [], // filled in step 8
         }
         days.push(entry)
         // A session done earlier for this day: it came first, so the day is
-        // already fulfilled — if it did this day's workout. Done on a
-        // scheduled day: half of a swap; on a free day: done early.
+        // already fulfilled. (It was accepted only if it does this day's
+        // workout — otherDayApply.) Done on a scheduled day: half of a swap;
+        // on a free day: done early.
         const early = earlySessions.get(day)
         if (early) {
           earlySessions.delete(day)
@@ -510,9 +669,7 @@ export function summarizeSchedule(
             sessionId: early.session.id,
             date: early.session.localDate,
           }
-          if (early.session.workoutId !== scheduled.workoutId) {
-            extra(early.session, 'swap_not_counted')
-          } else if (early.fromScheduledDay) {
+          if (early.fromScheduledDay) {
             entry.state = 'swapped'
             entry.swappedBy = by
           } else {
@@ -520,6 +677,12 @@ export function summarizeSchedule(
             entry.doneEarlyBy = by
           }
         }
+        // The candidates: the sessions done today for other days, and the
+        // day's own session.
+        const candidates: (Candidate | null)[] = otherDayCandidates(
+          day,
+          'scheduled',
+        )
         if (list.length > 0) {
           const { chosen, others } = pickSession(
             list,
@@ -536,42 +699,70 @@ export function summarizeSchedule(
                 : 'wrong_workout',
             )
           } else if (chosen.workoutId === scheduled.workoutId) {
-            entry.state = 'done'
-            entry.sessionId = chosen.id
+            candidates.push({
+              session: chosen,
+              apply: () => {
+                entry.state = 'done'
+                entry.sessionId = chosen.id
+              },
+            })
           } else {
             extra(chosen, 'wrong_workout')
           }
         }
+        settle(candidates)
         if (!fulfilled(entry)) openMissed = entry
-      } else if (list.length > 0) {
+      } else {
         // An unscheduled day: a session of the open missed day's workout
-        // makes it up; any other session is extra.
-        const missed: ScheduledDay | null = openMissed
-        if (missed) {
-          const { chosen, others } = pickSession(
-            list,
-            (s) => s.workoutId === missed.workoutId,
-          )
-          others.forEach((s) => extra(s, 'same_day'))
-          if (chosen.workoutId === missed.workoutId) {
-            missed.state = 'made_up'
-            missed.madeUpBy = { sessionId: chosen.id, date: day }
-            openMissed = null
+        // makes it up; any other session is extra. Sessions done today for
+        // other days compete with it (one session a day).
+        const candidates: (Candidate | null)[] = otherDayCandidates(day, 'free')
+        if (list.length > 0) {
+          const missed: ScheduledDay | null = openMissed
+          if (missed) {
+            const { chosen, others } = pickSession(
+              list,
+              (s) => s.workoutId === missed.workoutId,
+            )
+            others.forEach((s) => extra(s, 'same_day'))
+            if (chosen.workoutId === missed.workoutId) {
+              candidates.push({
+                session: chosen,
+                apply: () => {
+                  missed.state = 'made_up'
+                  missed.madeUpBy = { sessionId: chosen.id, date: day }
+                  openMissed = null
+                },
+              })
+            } else {
+              extra(chosen, 'wrong_workout')
+            }
           } else {
-            extra(chosen, 'wrong_workout')
+            extra(list[0], 'no_missed_day')
+            list.slice(1).forEach((s) => extra(s, 'same_day'))
           }
-        } else {
-          extra(list[0], 'no_missed_day')
-          list.slice(1).forEach((s) => extra(s, 'same_day'))
         }
+        settle(candidates)
       }
       continue
     }
 
     // Not a 'weekdays' day: any open make-up window ends here.
     closeWindow(day)
+    // A session done here for another day can only be done early (a later
+    // day of specific days — the schedule changes within the week).
+    const candidates = otherDayCandidates(day, 'other')
 
     if (version?.type === 'times_per_week') {
+      // The day's own sessions are counted later, by the week (step 4), so
+      // whether one of them counts isn't known yet. Rare as it is (a
+      // schedule changing kind within a week), the day's own sessions come
+      // first: with any, a session done early here is 'same_day'.
+      if (list.length > 0) {
+        candidates.forEach((candidate) => extra(candidate.session, 'same_day'))
+      } else {
+        settle(candidates)
+      }
       const programWeek = Math.floor(daysBetween(startDate, day) / 7) + 1
       const current = stretches[stretches.length - 1]
       // Same program week and same version → the same stretch. (Versions
@@ -596,24 +787,25 @@ export function summarizeSchedule(
           sessionDays: list.length > 0 ? [list] : [],
         })
       }
-    } else if (list.length > 0) {
+    } else {
       // Paused — or no version in force (not possible inside a program).
-      const reason: ExtraReason =
-        version?.type === 'paused' ? 'paused' : 'no_missed_day'
-      extra(list[0], reason)
-      list.slice(1).forEach((s) => extra(s, 'same_day'))
+      // The day's own sessions never count, so nothing competes.
+      settle(candidates)
+      if (list.length > 0) {
+        const reason: ExtraReason =
+          version?.type === 'paused' ? 'paused' : 'no_missed_day'
+        extra(list[0], reason)
+        list.slice(1).forEach((s) => extra(s, 'same_day'))
+      }
     }
   }
   // A window still open at the end of the walk runs to the last day covered
   // (the end date). For an open-ended program the next scheduled day lies
   // beyond lastDay, which is never before today — so it's still open.
   if (openMissed) windowEnd.set(openMissed, lastDay)
-  // A session done early still waiting: the walk reached its day and found
-  // no scheduled day there (the schedule changed since), or never reached
-  // it (past the end date). Either way it couldn't count.
-  for (const { session } of earlySessions.values()) {
-    extra(session, 'swap_not_counted')
-  }
+  // (No session done early is left waiting here: otherDayApply accepted
+  // only those whose day is scheduled with their workout within the days
+  // covered, so the walk reached each one's day.)
 
   // --- 3. Settle the specific days that weren't fulfilled ---
   for (const entry of days) {
@@ -748,6 +940,51 @@ export function summarizeSchedule(
     a.when < b.when ? -1 : a.when > b.when ? 1 : 0,
   )
 
+  // --- 6b. Late make-ups ---
+  // A free day of specific days — inside the program, not scheduled, not a
+  // pause or a weekly count: the only kind of day a late make-up is done on.
+  const isFreeDay = (day: string) =>
+    day >= startDate &&
+    (endDate === null || day <= endDate) &&
+    versionOn(versions, day)?.type === 'weekdays' &&
+    scheduledWorkoutOn(day) === undefined
+  const lateMakeUpDays = input.lateMakeUpDays ?? null
+  const lateDays: LateMakeUp[] = []
+  if (lateMakeUpDays !== null) {
+    for (const entry of days) {
+      // Only a MISSED day: its window has closed and nothing fulfilled it.
+      // (A day still 'due' is an ordinary make-up's.)
+      if (entry.state !== 'missed') continue
+      // Its last chance: the latest free day from today up to the missed
+      // day + N (and the end date — isFreeDay). None left → not offered.
+      // At most N + 1 days are looked at (N ≤ 28, the column's CHECK).
+      const deadline = addDays(entry.date, lateMakeUpDays)
+      let until: string | null = null
+      for (let day = deadline; day >= today; day = addDays(day, -1)) {
+        if (isFreeDay(day)) {
+          until = day
+          break
+        }
+      }
+      if (until !== null) {
+        lateDays.push({ forDay: entry.date, workoutId: entry.workoutId, until })
+      }
+    }
+  }
+  // Why none can be started today, in the order a patient would hear it.
+  // Computed whatever `lateDays` holds: a screen may say "you can make it up
+  // on another free day" while today is blocked. Any COMPLETED session
+  // today counts here — counted or extra: one session a day.
+  let blockedToday: LateMakeUpBlock | null = null
+  if (!isFreeDay(today)) blockedToday = 'not_a_free_day'
+  else if (input.sessions.some((s) => s.localDate === today)) {
+    blockedToday = 'session_done_today'
+  } else if (days.some((day) => day.state === 'due')) {
+    // (An earlier day: a day due TODAY would make today a scheduled day —
+    // not_a_free_day, above.)
+    blockedToday = 'catch_up_first'
+  }
+
   // --- 7. Totals ---
   const count = (state: DayState) =>
     days.filter((d) => d.state === state).length
@@ -797,6 +1034,7 @@ export function summarizeSchedule(
           : days.length + weeks.reduce((sum, w) => sum + w.target, 0),
       done: count('done') + weeks.reduce((sum, w) => sum + w.done, 0),
       madeUp: count('made_up'),
+      madeUpLate: count('made_up_late'),
       doneEarly: count('done_early'),
       swapped: count('swapped'),
       missed: count('missed') + weeklyMissed,
@@ -810,5 +1048,6 @@ export function summarizeSchedule(
     otherAttempts,
     pauses,
     nextWorkout: first?.next ?? null,
+    lateMakeUps: { days: lateDays, blockedToday },
   }
 }

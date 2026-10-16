@@ -22,6 +22,7 @@ import {
   HttpExceptionFilter,
   RETIRED_EXERCISE_MESSAGE,
 } from './http-exception.filter'
+import { ONE_SESSION_A_DAY_MESSAGE } from '../../sessions/session-rules'
 
 // The filter shapes every error response. Here: the database errors it
 // translates (the closed-program guard, migration 0031; the retired-exercise
@@ -60,6 +61,20 @@ describe('HttpExceptionFilter', () => {
       message: [CLOSED_PROGRAM_MESSAGE],
       error: 'ConflictException',
       path: '/sessions',
+    })
+  })
+
+  // One session a day (migration 0041): a start that raced a Finish gets
+  // the service's own 409, in its words.
+  it("answers 409 for the one-session-a-day guard, in the service's own words", () => {
+    const { status, body } = run(
+      databaseError('23514', 'session_one_completed_per_day'),
+    )
+    expect(status).toBe(409)
+    expect(body).toMatchObject({
+      statusCode: 409,
+      message: [ONE_SESSION_A_DAY_MESSAGE],
+      error: 'ConflictException',
     })
   })
 

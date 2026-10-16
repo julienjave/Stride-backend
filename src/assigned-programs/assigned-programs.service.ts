@@ -65,7 +65,6 @@ import {
   contentFromNewSchedule,
   contentFromVersionInput,
   type ScheduleContent,
-  type ScheduleDay,
 } from './schedule/schedule-content'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
@@ -78,7 +77,11 @@ import {
   isPossibleToday,
   utcToday,
 } from '../common/calendar-date'
-import { summarizeSchedule } from './schedule/schedule-summary'
+import {
+  readScheduleVersions,
+  summarizeProgram,
+  type ScheduleVersion,
+} from './program-summary'
 import { AuditService } from '../audit/audit.service'
 import { StorageService } from '../storage/storage.service'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
@@ -146,21 +149,17 @@ interface ResolvedSource {
   // and the program it continues ("Assign again"), or null.
   basedOnTemplateId: number | null
   basedOnProgramId: number | null
+  // The practitioner's settings to carry over — only when assigning AGAIN
+  // (decided 2026-10-16): continuing a program continues the clinical
+  // choices made for this patient (rearranging the week, late make-ups).
+  // Null = the column defaults (swaps on, late make-ups off).
+  settings: { allowSwaps: boolean; lateMakeUpDays: number | null } | null
 }
 
 // A workout as an audit entry records it (a plain copy, like
 // versionForAudit below).
 function workoutForAudit(workout: typeof programWorkouts.$inferSelect) {
   return { id: workout.id, name: workout.name, sortOrder: workout.sortOrder }
-}
-
-// A schedule version as the API returns it and the schedule module reads
-// it: the program_schedules row plus its content from the two child tables
-// — `days` (weekday → workout, in weekday order) and `rotation` (workout
-// ids, position 0 first). Empty arrays when the type has none.
-export type ScheduleVersion = typeof programSchedules.$inferSelect & {
-  days: ScheduleDay[]
-  rotation: number[]
 }
 
 // A schedule version as an audit entry records it: everything needed to
@@ -423,6 +422,7 @@ export class AssignedProgramsService {
           title: dto.title,
           startDate: dto.startDate,
           endDate: dto.endDate,
+          ...(source.settings ?? {}),
         })
         .returning()
 
@@ -506,6 +506,8 @@ export class AssignedProgramsService {
           endDate: program.endDate,
           basedOnTemplateId: program.basedOnTemplateId,
           basedOnProgramId: program.basedOnProgramId,
+          allowSwaps: program.allowSwaps,
+          lateMakeUpDays: program.lateMakeUpDays,
           schedule: versionForAudit(firstVersion),
           workouts: workouts.map(workoutForAudit),
           exercises: sourceExercises.map((ex) => ({
@@ -663,7 +665,7 @@ export class AssignedProgramsService {
         // replaced — after this transaction, the audit log is the only place
         // they still exist. (A DELETE … RETURNING would return the version
         // rows only; their children go by cascade.)
-        const replaced = (await this.readScheduleVersions(tx, [id])).filter(
+        const replaced = (await readScheduleVersions(tx, [id])).filter(
           (version) => version.effectiveFrom >= dto.effectiveFrom,
         )
         await tx
@@ -841,7 +843,7 @@ export class AssignedProgramsService {
   ) {
     if (programs.length === 0) return []
     const rows = await withRlsContext(this.db, currentUser, (tx) =>
-      this.readScheduleVersions(
+      readScheduleVersions(
         tx,
         programs.map((p) => p.id),
       ),
@@ -926,84 +928,9 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
 
-    const [versions, rows] = await withRlsContext(
-      this.db,
-      currentUser,
-      async (tx) =>
-        [
-          await this.readScheduleVersions(tx, [id]),
-          // Only what the module needs (id, the patient's day, the workout
-          // done, how it ended), for the sessions that ENDED: completed ones
-          // count ("done" means completed — decided 2026-10-09); skipped and
-          // stopped ones are labels (step 1b, 2026-10-15). An OPEN session
-          // is neither yet — it's read in the same query for `openSession`
-          // only, and kept away from the module below. The index on
-          // (assigned_program_id, local_date) serves this read.
-          await tx
-            .select({
-              id: sessions.id,
-              localDate: sessions.localDate,
-              workoutId: sessions.workoutId,
-              // A swap's day (null for an ordinary session).
-              countsFor: sessions.countsFor,
-              status: sessions.status,
-              endReason: sessions.endReason,
-            })
-            .from(sessions)
-            .where(
-              and(
-                eq(sessions.assignedProgramId, id),
-                inArray(sessions.status, [
-                  'completed',
-                  'skipped',
-                  'incomplete',
-                  'in_progress',
-                ]),
-              ),
-            ),
-        ] as const,
+    return withRlsContext(this.db, currentUser, (tx) =>
+      summarizeProgram(tx, program, today, through),
     )
-
-    const open = rows.find((row) => row.status === 'in_progress')
-    const summary = summarizeSchedule({
-      startDate: program.startDate,
-      endDate: program.endDate,
-      versions,
-      sessions: rows
-        .filter((row) => row.status === 'completed')
-        .map(({ id, localDate, workoutId, countsFor }) => ({
-          id,
-          localDate,
-          workoutId,
-          countsFor,
-        })),
-      attempts: rows.flatMap((row) =>
-        row.status === 'skipped' || row.status === 'incomplete'
-          ? [
-              {
-                id: row.id,
-                localDate: row.localDate,
-                status: row.status,
-                // Never null for these two (the CHECK
-                // sessions_end_reason_matches_status).
-                endReason: row.endReason!,
-              },
-            ]
-          : [],
-      ),
-      today,
-      through,
-    })
-    return {
-      ...summary,
-      openSession: open
-        ? {
-            sessionId: open.id,
-            localDate: open.localDate,
-            workoutId: open.workoutId,
-          }
-        : null,
-    }
   }
 
   // GET /assigned-programs/:id/sessions?from=&to= (Phase 4 step 1b, decided
@@ -1104,7 +1031,7 @@ export class AssignedProgramsService {
           }
         | undefined
       if (newStartDate !== null) {
-        const versions = await this.readScheduleVersions(tx, [id])
+        const versions = await readScheduleVersions(tx, [id])
         const plan = planStartDateMove(versions, newStartDate)
         // The version the program would START with: the one re-created on
         // the new date, or the one already starting exactly there. A pause
@@ -1977,6 +1904,7 @@ export class AssignedProgramsService {
         exercises: exercisesToCopy,
         basedOnTemplateId: dto.basedOnTemplateId,
         basedOnProgramId: null,
+        settings: null,
       }
     }
 
@@ -2019,6 +1947,7 @@ export class AssignedProgramsService {
       exercises: exercisesToCopy,
       basedOnTemplateId: null,
       basedOnProgramId: null,
+      settings: null,
     }
   }
 
@@ -2110,6 +2039,10 @@ export class AssignedProgramsService {
       exercises: exercisesToCopy,
       basedOnTemplateId: source.basedOnTemplateId,
       basedOnProgramId: sourceId,
+      settings: {
+        allowSwaps: source.allowSwaps,
+        lateMakeUpDays: source.lateMakeUpDays,
+      },
     }
   }
 
@@ -2136,7 +2069,7 @@ export class AssignedProgramsService {
         return [
           await this.findWorkouts(tx, id),
           rows,
-          await this.readScheduleVersions(tx, [id]),
+          await readScheduleVersions(tx, [id]),
           await this.libraryImageKeys(tx, rows),
         ] as const
       })
@@ -2265,58 +2198,6 @@ export class AssignedProgramsService {
       )
     }
     return row
-  }
-
-  // The schedule versions of these programs, each with its content: the
-  // version rows (oldest first within a program), then their days and
-  // rotation positions — THREE queries whatever the number of programs or
-  // versions (`IN (…)` lists, grouped in memory), not one per version.
-  // Always called with a transaction carrying the caller's RLS context: the
-  // children's policies show only rows of versions the caller may see.
-  private async readScheduleVersions(
-    tx: DrizzleDb,
-    programIds: number[],
-  ): Promise<ScheduleVersion[]> {
-    if (programIds.length === 0) return []
-    const rows = await tx.query.programSchedules.findMany({
-      where: inArray(programSchedules.assignedProgramId, programIds),
-      orderBy: (row, { asc }) => [
-        asc(row.assignedProgramId),
-        asc(row.effectiveFrom),
-      ],
-    })
-    if (rows.length === 0) return []
-    const versionIds = rows.map((row) => row.id)
-    const [dayRows, rotationRows] = [
-      await tx.query.programScheduleDays.findMany({
-        where: inArray(programScheduleDays.scheduleId, versionIds),
-        orderBy: (row, { asc }) => [asc(row.weekday)],
-      }),
-      await tx.query.programScheduleRotation.findMany({
-        where: inArray(programScheduleRotation.scheduleId, versionIds),
-        orderBy: (row, { asc }) => [asc(row.position)],
-      }),
-    ]
-    // Grouped by version; each list keeps the order it was read in.
-    const days = new Map<number, ScheduleDay[]>()
-    for (const row of dayRows) {
-      days.set(row.scheduleId, [
-        ...(days.get(row.scheduleId) ?? []),
-        { weekday: row.weekday, workoutId: row.workoutId },
-      ])
-    }
-    const rotation = new Map<number, number[]>()
-    for (const row of rotationRows) {
-      rotation.set(row.scheduleId, [
-        ...(rotation.get(row.scheduleId) ?? []),
-        row.workoutId,
-      ])
-    }
-    return rows.map((row) => ({
-      ...row,
-      days: days.get(row.id) ?? [],
-      rotation: rotation.get(row.id) ?? [],
-    }))
   }
 
   // Writes ONE schedule version with its content: the version row, then

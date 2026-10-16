@@ -1130,6 +1130,7 @@ describe('Program schedules (e2e)', () => {
         expected: null,
         done: 0,
         madeUp: 0,
+        madeUpLate: 0,
         doneEarly: 0,
         swapped: 0,
         missed: 0,

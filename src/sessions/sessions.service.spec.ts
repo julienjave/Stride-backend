@@ -15,18 +15,67 @@ import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { AuditService } from '../audit/audit.service'
 import {
+  ONE_SESSION_A_DAY_MESSAGE,
   SESSION_FINISHED_MESSAGE,
   SESSION_OPEN_TODAY_MESSAGE,
 } from './session-rules'
 import { UserRole } from '../users/dto/create-user.dto'
 import { addDays, utcToday } from '../common/calendar-date'
+import {
+  programScheduleDays,
+  programSchedules,
+  sessions,
+} from '../database/schema'
+import { summarizeProgram } from '../assigned-programs/program-summary'
+
+// The program's summary, as a late make-up reads it (summarizeProgram):
+// stubbed — the summary's own rules are tested with plain values
+// (schedule-summary.spec.ts), and its reads in the e2e tests. Here, only
+// how the service USES it.
+jest.mock('../assigned-programs/program-summary', () => ({
+  summarizeProgram: jest.fn(),
+}))
+const summarizeProgramMock = summarizeProgram as jest.MockedFunction<
+  typeof summarizeProgram
+>
 
 // The audit service: a double each test module receives, so a test can read
 // the entries a write records (logInTransaction's second argument).
 let audit: { logInTransaction: jest.Mock }
+// "A completed session of this program today?" (one session a day): none,
+// unless a test says otherwise.
+let completedToday: { id: number }[]
 beforeEach(() => {
   audit = { logInTransaction: jest.fn().mockResolvedValue(undefined) }
+  completedToday = []
+  summarizeProgramMock.mockReset()
 })
+
+// The select() chains create() runs, each answered by the TABLE it reads —
+// not by call order, which shifts whenever a query is added:
+//   - sessions: one session a day — …where().limit();
+//   - programSchedules: the schedule versions — …where();
+//   - programScheduleDays: their days — …where().
+function selectByTable(
+  answers: { versions?: jest.Mock; days?: jest.Mock } = {},
+) {
+  return jest.fn(() => ({
+    from: (table: unknown) => {
+      if (table === sessions) {
+        return {
+          where: () => ({ limit: () => Promise.resolve(completedToday) }),
+        }
+      }
+      if (table === programSchedules) {
+        return { where: answers.versions ?? (() => Promise.resolve([])) }
+      }
+      if (table === programScheduleDays) {
+        return { where: answers.days ?? (() => Promise.resolve([])) }
+      }
+      throw new Error("A select() from a table these tests don't expect")
+    },
+  }))
+}
 
 // Closing an unfinished session of another day (SessionsService.create's
 // first write): an UPDATE … RETURNING whose rows these tests choose — none,
@@ -60,6 +109,7 @@ describe('SessionsService.create', () => {
     }
     insert: jest.Mock
     update: jest.Mock
+    select: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
@@ -67,6 +117,7 @@ describe('SessionsService.create', () => {
   beforeEach(async () => {
     db = {
       update: updateReturning(() => []),
+      select: selectByTable(),
       query: {
         assignedPrograms: { findFirst: jest.fn() },
         // A one-workout program (workout 950) with one exercise, unless a
@@ -536,6 +587,7 @@ describe('SessionsService.create — the start', () => {
     query: Record<string, { findFirst?: jest.Mock; findMany?: jest.Mock }>
     insert: jest.Mock
     update: jest.Mock
+    select: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
@@ -546,6 +598,7 @@ describe('SessionsService.create — the start', () => {
     closedRows = []
     insertFailure = undefined
     db = {
+      select: selectByTable(),
       query: {
         assignedPrograms: {
           findFirst: jest.fn().mockResolvedValue(OPEN_PROGRAM),
@@ -791,6 +844,23 @@ describe('SessionsService.create — the start', () => {
       service.create(patient, { assignedProgramId: 5, localDate: utcToday() }),
     ).rejects.toBe(insertFailure)
   })
+
+  // One session a day (decided 2026-10-16): a completed session of this
+  // program today refuses the start — before anything else is read or
+  // written: no workout chosen, no older session closed, nothing inserted.
+  // (Which sessions the query finds — completed only, this program, this
+  // day — is the e2e tests' to prove, against the real database.)
+  it('refuses a start on a day with a completed session, before writing', async () => {
+    completedToday = [{ id: 499 }]
+
+    await expect(
+      service.create(patient, { assignedProgramId: 5, localDate: utcToday() }),
+    ).rejects.toThrow(new ConflictException(ONE_SESSION_A_DAY_MESSAGE))
+    expect(db.query.programWorkouts.findMany).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+    expect(sessionInserts).toEqual([])
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
 })
 
 // Every write is the session's own patient's (assertIsOwner): anyone else —
@@ -1015,6 +1085,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
   let versionRows: { id: number; type: string; effectiveFrom: string }[]
   let dayRows: { scheduleId: number; weekday: number; workoutId: number }[]
   let versionWhere: jest.Mock
+  let daysWhere: jest.Mock
   let db: {
     query: Record<string, { findFirst?: jest.Mock; findMany?: jest.Mock }>
     select: jest.Mock
@@ -1042,6 +1113,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
     ]
     dayRows = []
     versionWhere = jest.fn(() => Promise.resolve(versionRows))
+    daysWhere = jest.fn(() => Promise.resolve(dayRows))
     db = {
       query: {
         assignedPrograms: { findFirst: jest.fn().mockResolvedValue(program) },
@@ -1057,16 +1129,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
         sessions: { findFirst: jest.fn().mockResolvedValue({ id: 500 }) },
         sessionExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
-      // The first select is the versions query, the second the days query
-      // (each awaited after where()).
-      select: jest
-        .fn()
-        .mockImplementationOnce(() => ({
-          from: () => ({ where: versionWhere }),
-        }))
-        .mockImplementation(() => ({
-          from: () => ({ where: () => Promise.resolve(dayRows) }),
-        })),
+      select: selectByTable({ versions: versionWhere, days: daysWhere }),
       update: updateReturning(() => []),
       insert: jest.fn(() => ({
         values: jest.fn((values: Record<string, unknown>) => {
@@ -1133,6 +1196,8 @@ describe('SessionsService.create — closed programs and swaps', () => {
       expect.objectContaining({ workoutId: 951, countsFor: yesterday }),
     ])
     expect(versionWhere).toHaveBeenCalledTimes(1)
+    // A swap is judged without the summary.
+    expect(summarizeProgramMock).not.toHaveBeenCalled()
   })
 
   // An ordinary session stores no swap — and reads no schedule.
@@ -1146,7 +1211,8 @@ describe('SessionsService.create — closed programs and swaps', () => {
     expect(sessionInserts).toEqual([
       expect.objectContaining({ workoutId: 950, countsFor: null }),
     ])
-    expect(db.select).not.toHaveBeenCalled()
+    expect(versionWhere).not.toHaveBeenCalled()
+    expect(summarizeProgramMock).not.toHaveBeenCalled()
   })
 
   // The swap rules' refusal reaches the patient, and nothing is written.
@@ -1163,27 +1229,99 @@ describe('SessionsService.create — closed programs and swaps', () => {
     expect(sessionInserts).toEqual([])
   })
 
-  // Today is a FREE day: counting for yesterday would be catching up a
-  // missed day — a make-up, not a link. The rule needs today's schedule,
-  // which the service reads with the counted day's.
-  it('refuses a session on a free day for an earlier day, before writing', async () => {
+  // Today is a FREE day, counting for yesterday: a LATE MAKE-UP (decided
+  // 2026-10-16). Judged on the program's summary for today — the one the
+  // screens read — called with this transaction, the program and today.
+  describe('a late make-up', () => {
     const yesterday = addDays(today, -1)
-    dayRows = [
-      { scheduleId: 77, weekday: isoWeekdayOf(yesterday), workoutId: 951 },
-    ]
+    const lateProgram = { ...program, lateMakeUpDays: 7 }
+    // The summary's parts the rule reads: yesterday, and whether it may be
+    // made up late today.
+    const summaryWith = (state: 'missed' | 'due') =>
+      ({
+        days: [
+          {
+            date: yesterday,
+            workoutId: 951,
+            state,
+            sessionId: null,
+            madeUpBy: null,
+            madeUpLateBy: null,
+            doneEarlyBy: null,
+            swappedBy: null,
+            attempts: [],
+          },
+        ],
+        lateMakeUps: {
+          days:
+            state === 'missed'
+              ? [{ forDay: yesterday, workoutId: 951, until: today }]
+              : [],
+          blockedToday: null,
+        },
+      }) as unknown as Awaited<ReturnType<typeof summarizeProgram>>
 
-    await expect(
-      service.create(patient, {
+    beforeEach(() => {
+      db.query.assignedPrograms.findFirst!.mockResolvedValue(lateProgram)
+      dayRows = [
+        { scheduleId: 77, weekday: isoWeekdayOf(yesterday), workoutId: 951 },
+      ]
+    })
+
+    it("records one the summary allows, with the missed day's workout", async () => {
+      summarizeProgramMock.mockResolvedValue(summaryWith('missed'))
+
+      await service.create(patient, {
         assignedProgramId: 5,
         localDate: today,
         countsFor: yesterday,
-      }),
-    ).rejects.toThrow(
-      new BadRequestException(
-        `A session can count for an earlier day only when it's done on a scheduled day, as a swap. To catch up ${yesterday}, do its workout before the next scheduled day: it counts as a make-up`,
-      ),
-    )
-    expect(sessionInserts).toEqual([])
+      })
+
+      expect(summarizeProgramMock).toHaveBeenCalledWith(db, lateProgram, today)
+      expect(sessionInserts).toEqual([
+        expect.objectContaining({ workoutId: 951, countsFor: yesterday }),
+      ])
+    })
+
+    it('refuses one the summary refuses, before writing', async () => {
+      // Yesterday still in its window: an ordinary make-up.
+      summarizeProgramMock.mockResolvedValue(summaryWith('due'))
+
+      await expect(
+        service.create(patient, {
+          assignedProgramId: 5,
+          localDate: today,
+          countsFor: yesterday,
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          `${yesterday} can still be made up on time: start the session without countsFor, before the next scheduled day`,
+        ),
+      )
+      expect(sessionInserts).toEqual([])
+    })
+
+    // The program's own setting is what the rule is given: off here.
+    it("passes the program's setting to the rule", async () => {
+      db.query.assignedPrograms.findFirst!.mockResolvedValue({
+        ...program,
+        lateMakeUpDays: null,
+      })
+      summarizeProgramMock.mockResolvedValue(summaryWith('missed'))
+
+      await expect(
+        service.create(patient, {
+          assignedProgramId: 5,
+          localDate: today,
+          countsFor: yesterday,
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Late make-ups are turned off for this program: ask your practitioner',
+        ),
+      )
+      expect(sessionInserts).toEqual([])
+    })
   })
 
   // Each version gets ITS days: the rows are matched by scheduleId. Two
@@ -1222,12 +1360,14 @@ describe('SessionsService.create — closed programs and swaps', () => {
         countsFor: addDays(today, 1),
       }),
     ).rejects.toThrow(BadRequestException)
-    expect(db.select).toHaveBeenCalledTimes(1)
+    expect(versionWhere).toHaveBeenCalledTimes(1)
+    expect(daysWhere).not.toHaveBeenCalled()
   })
 
   // The days of THE version in force — its type passed on: a weekly-count
-  // version means no rearranging at all.
-  it('refuses a swap under a weekly-count version, whatever its days', async () => {
+  // version means no rearranging at all. (Done early — tomorrow — so the
+  // request is one the swap switch governs.)
+  it('refuses done early under a weekly-count version, whatever its days', async () => {
     versionRows = [
       { id: 78, type: 'times_per_week', effectiveFrom: program.startDate },
     ]
@@ -1236,7 +1376,7 @@ describe('SessionsService.create — closed programs and swaps', () => {
       service.create(patient, {
         assignedProgramId: 5,
         localDate: today,
-        countsFor: addDays(today, -1),
+        countsFor: addDays(today, 1),
       }),
     ).rejects.toThrow(
       new BadRequestException(
