@@ -25,6 +25,7 @@ import { SkipSessionDto } from './skip-session.dto'
 import { CompleteSessionDto } from './complete-session.dto'
 import { StopSessionDto } from './stop-session.dto'
 import { UpdateSessionDto } from './update-session.dto'
+import { UpdateSessionExerciseDto } from './update-session-exercise.dto'
 
 // The session DTOs' value rules (session-fields.ts), run through the real
 // class-validator engine. The limits and messages are written out HERE, not
@@ -126,5 +127,37 @@ describe.each([
 
   it.each([undefined, null])('accepts no note (%s)', async (note) => {
     expect(await messages(dto, { ...base, note })).toEqual([])
+  })
+})
+
+// --- Feedback (an exercise's, the whole session's) ---------------------------
+// Refused when blank since 2026-10-16 — the end note's rule, its own noun.
+
+describe.each([
+  ['UpdateSessionExerciseDto', UpdateSessionExerciseDto, 'feedback'],
+  ['CompleteSessionDto', CompleteSessionDto, 'sessionFeedback'],
+] as const)('%s — %s', (_name, dto, field) => {
+  it('accepts 2,000 characters', async () => {
+    expect(await messages(dto, { [field]: 'a'.repeat(2000) })).toEqual([])
+  })
+
+  it('refuses 2,001', async () => {
+    expect(await messages(dto, { [field]: 'a'.repeat(2001) })).toEqual([
+      `${field} must be shorter than or equal to 2000 characters`,
+    ])
+  })
+
+  it.each(['', '   ', '\t\n'])('refuses blank feedback (%j)', async (value) => {
+    expect(await messages(dto, { [field]: value })).toEqual([
+      "The feedback can't be blank: leave it out instead",
+    ])
+  })
+
+  it('accepts words with spaces around them', async () => {
+    expect(await messages(dto, { [field]: '  felt easy  ' })).toEqual([])
+  })
+
+  it.each([undefined, null])('accepts no feedback (%s)', async (value) => {
+    expect(await messages(dto, { [field]: value })).toEqual([])
   })
 })

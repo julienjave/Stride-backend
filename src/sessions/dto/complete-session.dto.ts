@@ -17,8 +17,8 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator'
-import { IsScore } from './session-fields'
+import { IsInt, IsOptional, Min } from 'class-validator'
+import { IsFeedback, IsScore } from './session-fields'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -44,8 +44,9 @@ export class CompleteSessionDto {
   @Min(0)
   totalDurationInSeconds?: number | null
 
+  // The patient's words about the whole session: optional, never blank
+  // (IsFeedback).
   @IsOptional()
-  @IsString()
-  @MaxLength(2000)
+  @IsFeedback()
   sessionFeedback?: string | null
 }

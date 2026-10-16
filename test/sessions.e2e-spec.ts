@@ -86,6 +86,7 @@ describe('Sessions (e2e)', () => {
       id: number
       completed: boolean
       difficultyRating: number | null
+      feedback: string | null
     }[]
   }
   interface ErrorBody {
@@ -874,6 +875,31 @@ describe('Sessions (e2e)', () => {
       })
     })
 
+    // Blank session feedback (2026-10-16): refused BEFORE anything happens —
+    // the session stays open (a refused Finish must not finish it).
+    it('refuses blank session feedback, leaving the session open', async () => {
+      const program = await newProgram()
+      const started = bodyOf<SessionBody>(await start(program.id))
+
+      const res = await patientA
+        .post(`/sessions/${started.id}/complete`)
+        .send({ painAfter: 2, sessionFeedback: '\t ' })
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        "The feedback can't be blank: leave it out instead",
+      ])
+      const readBack = bodyOf<SessionBody>(
+        await patientA.get(`/sessions/${started.id}`),
+      )
+      expect(readBack).toMatchObject({
+        status: 'in_progress',
+        painAfter: null,
+        sessionFeedback: null,
+      })
+      const trail = await auditTrail(started.id)
+      expect(trail.map((entry) => entry.action)).toEqual(['SESSION_STARTED'])
+    })
+
     // A completed session is FINAL: no status change, no new value, no tick
     // — each a 409, and nothing stored changes.
     it('keeps a completed session final', async () => {
@@ -1332,6 +1358,28 @@ describe('Sessions (e2e)', () => {
         await patientA.get(`/sessions/${started.id}`),
       )
       expect(readBack.exercises[0].completed).toBe(false)
+    })
+
+    // Blank feedback (2026-10-16): "nothing to say" is spelled by leaving it
+    // out. A 400 with the rule's own words, nothing stored, nothing audited.
+    it('refuses blank feedback on an exercise, storing nothing', async () => {
+      const program = await newProgram()
+      const started = bodyOf<SessionBody>(await start(program.id))
+      const rowId = started.exercises[0].id
+
+      const res = await patientA
+        .patch(`/sessions/${started.id}/exercises/${rowId}`)
+        .send({ feedback: '   ' })
+      expect(res.status).toBe(400)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        "The feedback can't be blank: leave it out instead",
+      ])
+      const readBack = bodyOf<SessionBody>(
+        await patientA.get(`/sessions/${started.id}`),
+      )
+      expect(readBack.exercises[0].feedback).toBeNull()
+      const trail = await auditTrail(started.id)
+      expect(trail.map((entry) => entry.action)).toEqual(['SESSION_STARTED'])
     })
 
     // THE RACE, made deterministic: a tick sent while the session is being

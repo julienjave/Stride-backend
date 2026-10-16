@@ -21,13 +21,12 @@ import {
   IsOptional,
   IsBoolean,
   IsInt,
-  IsString,
-  MaxLength,
   Min,
   Max,
   ValidateIf,
 } from 'class-validator'
 import { isPresent } from '../../common/validators/is-present'
+import { IsFeedback } from './session-fields'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -53,8 +52,9 @@ export class UpdateSessionExerciseDto {
   @Max(10)
   difficultyRating?: number
 
+  // The patient's words about this exercise: never blank (IsFeedback);
+  // `null` clears a note written earlier.
   @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  feedback?: string
+  @IsFeedback()
+  feedback?: string | null
 }

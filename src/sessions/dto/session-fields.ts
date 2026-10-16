@@ -54,15 +54,33 @@ export function IsPatientEndReason() {
   )
 }
 
-// The patient's optional words about stopping or skipping — at most 500
-// characters (the column is varchar(500)), and not blank: "no note" is
-// spelled by leaving it out (or null), one way only — the rule titles and
-// exercise names follow.
-export const END_NOTE_MAX_LENGTH = 500
-export function IsEndNote() {
+// The patient's own words — a note, some feedback. Optional, but never
+// BLANK: "nothing to say" is spelled by leaving it out (or null), one way
+// only — the rule titles and exercise names follow. `noun` names the field
+// in the message, so each DTO's refusal says what was blank.
+function isPatientText(noun: string, maxLength: number) {
   return applyDecorators(
     IsString(),
-    MaxLength(END_NOTE_MAX_LENGTH),
-    Matches(/\S/, { message: "The note can't be blank: leave it out instead" }),
+    MaxLength(maxLength),
+    Matches(/\S/, {
+      message: `The ${noun} can't be blank: leave it out instead`,
+    }),
   )
+}
+
+// Why the patient stopped or skipped, in their words — at most 500
+// characters (the column is varchar(500)).
+export const END_NOTE_MAX_LENGTH = 500
+export function IsEndNote() {
+  return isPatientText('note', END_NOTE_MAX_LENGTH)
+}
+
+// How an exercise or a whole session went, in the patient's words — at most
+// 2,000 characters (the columns are `text`; the limit is the API's). Blank
+// was accepted until 2026-10-16 (found while planning the session flow):
+// "   " was stored as feedback, which the practitioner would then see as a
+// comment with nothing in it.
+export const FEEDBACK_MAX_LENGTH = 2000
+export function IsFeedback() {
+  return isPatientText('feedback', FEEDBACK_MAX_LENGTH)
 }
