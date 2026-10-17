@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsNumber,
@@ -124,4 +125,15 @@ export class UpdateAssignedProgramExerciseDto {
   @ValidateIf(isPresent)
   @IsInt()
   workoutId?: number
+
+  // --- Which photos the patient sees (decided 2026-10-17) -----------------
+  // true = the library exercise's photos (read live); false = this
+  // exercise's own photos (uploaded for this patient, or copied from the
+  // library — the …/images routes), possibly none. Switching keeps the own
+  // photos either way. @ValidateIf(isPresent), not @IsOptional(): the column
+  // is NOT NULL, so `null` must be a 400, not a 500 (is-present.ts).
+  // @IsBoolean() refuses "false" as a STRING too — a JSON body says false.
+  @ValidateIf(isPresent)
+  @IsBoolean()
+  useLibraryImages?: boolean
 }

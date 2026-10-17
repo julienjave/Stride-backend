@@ -327,11 +327,10 @@ export const programWorkouts = pgTable(
 // extended to the exercise's own descriptive fields, snapshotted at the
 // moment an exercise is added (whether via copying a template or adding
 // one directly) and independently editable afterward per patient — same
-// as sets/reps always have been. Deliberately NOT extended to
-// mediaUrls/photos yet — see deferred-improvements.md for why that's a
-// materially bigger, deferred piece of work (no copy-object capability
-// in StorageService today, plus an ongoing per-assignment storage cost
-// the text fields don't have).
+// as sets/reps always have been. Photos are NOT copied by default: a
+// program exercise shows the LIBRARY's photos, read live (decided
+// 2026-10-14) — unless the practitioner chooses photos of its own for this
+// patient (use_library_images / media_urls below, decided 2026-10-17).
 export const assignedProgramExercises = pgTable(
   'assigned_program_exercises',
   {
@@ -380,11 +379,40 @@ export const assignedProgramExercises = pgTable(
     retiredBy: integer('retired_by').references(() => users.id, {
       onDelete: 'restrict',
     }),
+    // PROGRAM-SPECIFIC PHOTOS (decided 2026-10-17). Which photos this
+    // patient sees for this exercise:
+    //   - true (the default, and every row that existed before): the
+    //     library exercise's photos, read live;
+    //   - false: this row's OWN photos, below — possibly none, which is how
+    //     a practitioner chooses "no photos" on purpose.
+    // Switching back to the library keeps the own photos (switching again
+    // brings them back): the two columns are independent on purpose.
+    useLibraryImages: boolean('use_library_images').notNull().default(true),
+    // This row's own photos: storage object keys, in display order (the
+    // first is the cover), like exercises.media_urls. Uploaded for THIS
+    // patient (a photo of their own chair) or copied from the library — a
+    // copy is an independent file, so a later change in the library can't
+    // reach it. Such a photo may show the patient: it is health data,
+    // reachable only through the program's answer (row-level security), as
+    // short-lived signed URLs. Keys: patients/<patientId>/exercise-photos/
+    // <uuid>.<ext> (program-photos.ts).
+    mediaUrls: text('media_urls').array().notNull().default([]),
   },
   (table) => ({
     assignedProgramIdIdx: index(
       'assigned_program_exercises_assigned_program_id_idx',
     ).on(table.assignedProgramId),
+    // At most 10 own photos — the same number as PROGRAM_EXERCISE_PHOTO_LIMIT
+    // (program-photos.ts). The service checks first, under the row's lock,
+    // and answers with how many more fit; this is the database's half of
+    // the rule ("every rule exists twice"), translated into a 409 by
+    // HttpExceptionFilter if anything ever reaches it. cardinality() counts
+    // an array's elements (0 for an empty one; array_length() would give
+    // NULL, which a CHECK lets through).
+    photoLimit: check(
+      'assigned_program_exercises_photo_limit',
+      sql`cardinality(${table.mediaUrls}) <= 10`,
+    ),
     retiredTogether: check(
       'assigned_program_exercises_retired_together',
       sql`(${table.retiredAt} IS NULL) = (${table.retiredBy} IS NULL)`,

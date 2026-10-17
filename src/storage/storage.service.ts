@@ -28,6 +28,7 @@ import {
   HeadBucketCommand,
   CreateBucketCommand,
   PutObjectCommand,
+  CopyObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
@@ -106,6 +107,41 @@ export class StorageService implements OnModuleInit {
       }),
     )
     return objectKey
+  }
+
+  // Copies an object to a new key INSIDE storage — S3's CopyObject: the
+  // storage server duplicates the bytes itself, so they never travel through
+  // this backend (no download, no re-upload, no buffer in memory). Used for
+  // a program exercise's own photos: copying the library's photos into a
+  // patient's set, and "Assign again" copying a program's photos to the new
+  // program. Each program then owns its files outright — removing one
+  // never affects the other, and no file is shared between rows (nothing to
+  // reference-count before deleting).
+  //
+  // CopySource is "<bucket>/<key>", URL-encoded — the S3 API carries it in a
+  // request HEADER (x-amz-copy-source), where a space or a non-ASCII
+  // character must be percent-encoded. Each path SEGMENT is encoded on its
+  // own, so the "/" between folders stays a "/". The keys this app builds
+  // are plain ASCII today; the encoding keeps a library key from an import
+  // (any file name) from breaking the copy.
+  //
+  // The object's metadata, its Content-Type included, is copied with it
+  // (MetadataDirective defaults to COPY), so the copy is served as the same
+  // kind of image. No size check like upload()'s: the source was already
+  // stored through upload(), under its limit.
+  async copy(sourceKey: string, destinationKey: string): Promise<string> {
+    const encodedSource = sourceKey
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')
+    await this.client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        Key: destinationKey,
+        CopySource: `${this.bucket}/${encodedSource}`,
+      }),
+    )
+    return destinationKey
   }
 
   // --- GET ROUTES ---

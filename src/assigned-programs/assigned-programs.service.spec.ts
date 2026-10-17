@@ -31,6 +31,11 @@ beforeEach(() => {
 // WHICH order, reached the response — no storage, no clock.
 const storageService = {
   getPresignedUrl: jest.fn((key: string) => Promise.resolve(`signed:${key}`)),
+  // The writes of program-specific photos (2026-10-17): each test that
+  // reaches them gives them their behaviour (the "own photos" tests).
+  upload: jest.fn(),
+  copy: jest.fn(),
+  deleteUnreferenced: jest.fn<Promise<void>, [string]>(() => Promise.resolve()),
 }
 import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
@@ -343,6 +348,10 @@ describe('AssignedProgramsService.create', () => {
       weight: 62.5,
       weightUnit: 'kg',
       sortOrder: 0,
+      // From a template: the library's photos, no own ones (the column
+      // defaults, written out).
+      useLibraryImages: true,
+      mediaUrls: [],
       notes: undefined,
     })
   })
@@ -633,6 +642,8 @@ describe('AssignedProgramsService.create', () => {
             weightUnit: null,
             sortOrder: 0,
             notes: null,
+            useLibraryImages: true,
+            ownPhotos: [],
           },
         ],
       },
@@ -1033,12 +1044,17 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
   }
   const admin = { id: 1, activeRole: UserRole.ADMIN }
 
-  // A program exercise row, with only what the read and the ordering use.
+  // A program exercise row, with only what the read and the ordering use —
+  // showing the library's photos, with no own ones, unless a test says so.
   const row = (
     id: number,
     exerciseId: number,
     sortOrder: number,
     retiredAt: Date | null = null,
+    photos: { useLibraryImages: boolean; mediaUrls: string[] } = {
+      useLibraryImages: true,
+      mediaUrls: [],
+    },
   ) => ({
     id,
     assignedProgramId: 900,
@@ -1046,6 +1062,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
     exerciseId,
     sortOrder,
     retiredAt,
+    ...photos,
   })
 
   beforeEach(async () => {
@@ -1111,6 +1128,70 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       [32, []],
       [33, [{ url: 'signed:exercises/7/x.jpg' }]],
     ])
+  })
+
+  // Program-specific photos (2026-10-17): a row that doesn't use the
+  // library's shows its OWN — even when its library exercise has photos
+  // (exercise 5 here) — and every row lists its own photos WITH their keys
+  // in `ownImages`, whichever is chosen (switching back keeps them).
+  it("shows a row's own photos when it doesn't use the library's, and lists them with keys either way", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(31, 5, 0, null, {
+        useLibraryImages: false,
+        mediaUrls: ['patients/20/b.png', 'patients/20/a.png'],
+      }),
+      row(32, 7, 1, null, {
+        useLibraryImages: true,
+        mediaUrls: ['patients/20/kept.png'],
+      }),
+      // "No photos", chosen: not the library's, and none of its own.
+      row(33, 5, 2, null, { useLibraryImages: false, mediaUrls: [] }),
+    ])
+    const program = await service.findOne(900, admin)
+    expect(
+      program.exercises.map(({ id, images, ownImages }) => ({
+        id,
+        images,
+        ownImages,
+      })),
+    ).toStrictEqual([
+      {
+        id: 31,
+        images: [
+          { url: 'signed:patients/20/b.png' },
+          { url: 'signed:patients/20/a.png' },
+        ],
+        ownImages: [
+          { objectKey: 'patients/20/b.png', url: 'signed:patients/20/b.png' },
+          { objectKey: 'patients/20/a.png', url: 'signed:patients/20/a.png' },
+        ],
+      },
+      {
+        id: 32,
+        images: [{ url: 'signed:exercises/7/x.jpg' }],
+        ownImages: [
+          {
+            objectKey: 'patients/20/kept.png',
+            url: 'signed:patients/20/kept.png',
+          },
+        ],
+      },
+      { id: 33, images: [], ownImages: [] },
+    ])
+    // The raw column is never sent.
+    expect(
+      program.exercises.map((exercise) => 'mediaUrls' in exercise),
+    ).toEqual([false, false, false])
+  })
+
+  // Only rows that SHOW the library's photos need them: when none does,
+  // the library isn't queried at all.
+  it("doesn't read the library when no row shows its photos", async () => {
+    db.query.assignedProgramExercises.findMany.mockResolvedValue([
+      row(31, 5, 0, null, { useLibraryImages: false, mediaUrls: [] }),
+    ])
+    await service.findOne(900, admin)
+    expect(db.query.exercises.findMany).not.toHaveBeenCalled()
   })
 
   // A removed (retired) exercise is still the record of what sessions did —
@@ -1354,7 +1435,16 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
     notes: null,
     retiredAt: null,
     retiredBy: null,
+    useLibraryImages: true,
+    mediaUrls: [] as string[],
   }
+  // A stored row as a program ANSWER shows it (findProgramWithExercises):
+  // the raw `mediaUrls` replaced by `ownImages` (none here), and `images` —
+  // the library's photos, none in these mocks.
+  const answered = <T extends { mediaUrls: string[] }>({
+    mediaUrls: _mediaUrls,
+    ...row
+  }: T) => ({ ...row, images: [], ownImages: [] })
   // What the row as an audit entry records (exerciseForAudit): everything
   // but the program id and the retirement columns.
   const storedRowForAudit = {
@@ -1373,6 +1463,8 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
     weightUnit: null,
     sortOrder: 1,
     notes: null,
+    useLibraryImages: true,
+    ownPhotos: [],
   }
 
   beforeEach(async () => {
@@ -1617,7 +1709,7 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
         patientId: 20,
         workouts,
         // Every exercise carries its library photos (none in these mocks).
-        exercises: [{ ...storedRow, images: [] }],
+        exercises: [answered(storedRow)],
         retiredExercises: [],
         schedules: [],
       })
@@ -1756,8 +1848,8 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
         patientId: 20,
         workouts,
         exercises: [
-          { ...storedRow, id: 30, sets: 2, images: [] },
-          { ...storedRow, sets: 4, images: [] },
+          answered({ ...storedRow, id: 30, sets: 2 }),
+          answered({ ...storedRow, sets: 4 }),
         ],
         retiredExercises: [],
         schedules: [],
@@ -1900,11 +1992,8 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
 
       const result = await service.removeExercise(900, 31, practitioner)
 
-      expect(result.exercises).toEqual([{ ...storedRow, id: 30, images: [] }])
-      expect(result.retiredExercises).toEqual([
-        { ...early, images: [] },
-        { ...late, images: [] },
-      ])
+      expect(result.exercises).toEqual([answered({ ...storedRow, id: 30 })])
+      expect(result.retiredExercises).toEqual([answered(early), answered(late)])
     })
   })
 
@@ -1975,6 +2064,395 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
       expect(db.select).not.toHaveBeenCalled()
     })
   })
+
+  // --- Program-specific photos (decided 2026-10-17) --------------------------------------------------------
+  //
+  // The ORDER of storage calls and database writes is the point here: files
+  // stored before the transaction, the room checked before storing AND under
+  // the lock, a file deleted only after the row stopped pointing at it, and
+  // every stored file deleted again when the transaction fails. The storage
+  // mocks record into `writes` too, so one list shows the whole sequence.
+  // The real thing — moto, Postgres, the triggers — is
+  // test/program-exercise-photos.e2e-spec.ts.
+  describe('own photos', () => {
+    const KEY =
+      /^patients\/20\/exercise-photos\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\./
+    const file = (name: string, mimetype: string) =>
+      ({
+        originalname: name,
+        mimetype,
+        buffer: Buffer.from(name),
+      }) as Express.Multer.File
+    const own = (count: number) =>
+      Array.from({ length: count }, (_, index) => `patients/20/p${index}.png`)
+    // What a storage call recorded: [kind, key].
+    const stored = (kind: string) =>
+      writes.filter(([k]) => k === kind).map(([, key]) => key as string)
+
+    beforeEach(() => {
+      storageService.upload.mockReset()
+      storageService.upload.mockImplementation((key: string) => {
+        writes.push(['upload', key])
+        return Promise.resolve(key)
+      })
+      storageService.copy.mockReset()
+      storageService.copy.mockImplementation((source: string, key: string) => {
+        writes.push(['copy', [source, key]])
+        return Promise.resolve(key)
+      })
+      storageService.deleteUnreferenced.mockReset()
+      storageService.deleteUnreferenced.mockImplementation((key: string) => {
+        writes.push(['deleteFile', key])
+        return Promise.resolve()
+      })
+      lockedRow = { ...storedRow, mediaUrls: own(1) }
+    })
+
+    describe('addImages', () => {
+      it('stores each file under a new key of the patient, THEN appends them under the lock, with one entry', async () => {
+        await service.addImages(900, 31, practitioner, [
+          file('chair.png', 'image/png'),
+          file('band.jpg', 'image/jpeg'),
+        ])
+
+        const keys = stored('upload')
+        expect(keys).toHaveLength(2)
+        // The extension from the CHECKED type, never the file's own name.
+        expect(keys[0]).toMatch(new RegExp(KEY.source + 'png$'))
+        expect(keys[1]).toMatch(new RegExp(KEY.source + 'jpg$'))
+        expect(storageService.upload).toHaveBeenCalledWith(
+          keys[0],
+          Buffer.from('chair.png'),
+          'image/png',
+        )
+        expect(writes).toEqual([
+          ['upload', keys[0]],
+          ['upload', keys[1]],
+          ['update', { mediaUrls: ['patients/20/p0.png', ...keys] }],
+          [
+            'audit',
+            entry('ASSIGNED_PROGRAM_EXERCISE_PHOTOS_ADDED', {
+              exerciseRowId: 31,
+              name: 'Squat',
+              added: keys,
+              source: 'upload',
+            }),
+          ],
+        ])
+        // Read once without a lock (before storing), then once locked.
+        expect(forCalls).toEqual(['update'])
+      })
+
+      it('refuses past the limit BEFORE storing anything', async () => {
+        lockedRow = { ...storedRow, mediaUrls: own(9) }
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+            file('b.png', 'image/png'),
+          ]),
+        ).rejects.toThrow(
+          new ConflictException(
+            'A program exercise can have at most 10 photos: this one has 9, so 1 more can be added',
+          ),
+        )
+        expect(writes).toEqual([])
+      })
+
+      it('refuses a retired exercise before storing anything', async () => {
+        lockedRow = { ...storedRow, retiredAt: new Date(), retiredBy: 7 }
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+          ]),
+        ).rejects.toThrow(
+          new ConflictException(
+            'This exercise was removed from the program, so it can no longer change',
+          ),
+        )
+        expect(writes).toEqual([])
+      })
+
+      // Another addition took the room WHILE this one was uploading: the
+      // check under the lock refuses, and the files just stored are deleted
+      // — nothing will ever point at them.
+      it('checks again under the lock, and deletes its files when the room is gone', async () => {
+        storageService.upload.mockImplementation((key: string) => {
+          writes.push(['upload', key])
+          lockedRow = { ...storedRow, mediaUrls: own(10) }
+          return Promise.resolve(key)
+        })
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+          ]),
+        ).rejects.toThrow(ConflictException)
+        const [key] = stored('upload')
+        expect(writes).toEqual([
+          ['upload', key],
+          ['deleteFile', key],
+        ])
+      })
+
+      // Removed (retired) WHILE the files were uploading: the check under the
+      // lock refuses, and the files go.
+      it('checks the exercise is still in the program under the lock', async () => {
+        storageService.upload.mockImplementation((key: string) => {
+          writes.push(['upload', key])
+          lockedRow = { ...storedRow, retiredAt: new Date(), retiredBy: 7 }
+          return Promise.resolve(key)
+        })
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+          ]),
+        ).rejects.toThrow(
+          new ConflictException(
+            'This exercise was removed from the program, so it can no longer change',
+          ),
+        )
+        const [key] = stored('upload')
+        expect(writes).toEqual([
+          ['upload', key],
+          ['deleteFile', key],
+        ])
+      })
+
+      // A failure INSIDE the transaction (here its audit entry; for real, a
+      // trigger refusing a program closed meanwhile): rolled back, files
+      // deleted, the error goes on.
+      it('deletes its files when the transaction fails', async () => {
+        const failure = new Error('refused')
+        auditService.logInTransaction.mockRejectedValue(failure)
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+          ]),
+        ).rejects.toBe(failure)
+        const [key] = stored('upload')
+        expect(stored('deleteFile')).toEqual([key])
+      })
+
+      // The second upload fails: the first file is deleted, nothing is
+      // written, and the storage error reaches the client (a 500 — storage
+      // being down is not the request's fault).
+      it('deletes the files already stored when an upload fails', async () => {
+        const failure = new Error('storage down')
+        storageService.upload
+          .mockImplementationOnce((key: string) => {
+            writes.push(['upload', key])
+            return Promise.resolve(key)
+          })
+          .mockImplementationOnce(() => Promise.reject(failure))
+
+        await expect(
+          service.addImages(900, 31, practitioner, [
+            file('a.png', 'image/png'),
+            file('b.png', 'image/png'),
+          ]),
+        ).rejects.toBe(failure)
+        const [key] = stored('upload')
+        expect(writes).toEqual([
+          ['upload', key],
+          ['deleteFile', key],
+        ])
+      })
+    })
+
+    describe('addLibraryImages', () => {
+      it("copies the library's photos in its order, with their extensions, and records where each came from", async () => {
+        db.query.exercises.findFirst.mockResolvedValue({
+          mediaUrls: ['exercises/5/1.jpg', 'exercises/5/0.webp'],
+        })
+
+        await service.addLibraryImages(900, 31, practitioner)
+
+        const copies = stored('copy') as unknown as [string, string][]
+        expect(copies.map(([source]) => source)).toEqual([
+          'exercises/5/1.jpg',
+          'exercises/5/0.webp',
+        ])
+        const keys = copies.map(([, key]) => key)
+        expect(keys[0]).toMatch(new RegExp(KEY.source + 'jpg$'))
+        expect(keys[1]).toMatch(new RegExp(KEY.source + 'webp$'))
+        expect(writes.slice(2)).toEqual([
+          ['update', { mediaUrls: ['patients/20/p0.png', ...keys] }],
+          [
+            'audit',
+            entry('ASSIGNED_PROGRAM_EXERCISE_PHOTOS_ADDED', {
+              exerciseRowId: 31,
+              name: 'Squat',
+              added: keys,
+              source: 'library',
+              copiedFrom: ['exercises/5/1.jpg', 'exercises/5/0.webp'],
+            }),
+          ],
+        ])
+        // The LIBRARY exercise of this row — its id, as the row stores it.
+        expect(db.query.exercises.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({ columns: { mediaUrls: true } }),
+        )
+      })
+
+      it('refuses when the library has no photos, copying nothing', async () => {
+        db.query.exercises.findFirst.mockResolvedValue({ mediaUrls: [] })
+
+        await expect(
+          service.addLibraryImages(900, 31, practitioner),
+        ).rejects.toThrow(
+          new ConflictException(
+            'This exercise has no photos in the library to copy',
+          ),
+        )
+        expect(writes).toEqual([])
+      })
+
+      it('refuses past the limit before copying', async () => {
+        lockedRow = { ...storedRow, mediaUrls: own(9) }
+        db.query.exercises.findFirst.mockResolvedValue({
+          mediaUrls: ['exercises/5/0.jpg', 'exercises/5/1.jpg'],
+        })
+
+        await expect(
+          service.addLibraryImages(900, 31, practitioner),
+        ).rejects.toThrow(
+          new ConflictException(
+            'A program exercise can have at most 10 photos: this one has 9, so 1 more can be added',
+          ),
+        )
+        expect(writes).toEqual([])
+      })
+    })
+
+    describe('reorderImages', () => {
+      beforeEach(() => {
+        lockedRow = { ...storedRow, mediaUrls: own(3) }
+      })
+
+      it('writes the new order with the old one in its entry', async () => {
+        const order = [
+          'patients/20/p2.png',
+          'patients/20/p0.png',
+          'patients/20/p1.png',
+        ]
+
+        await service.reorderImages(900, 31, practitioner, order)
+
+        expect(forCalls).toEqual(['update'])
+        expect(writes).toEqual([
+          ['update', { mediaUrls: order }],
+          [
+            'audit',
+            entry('ASSIGNED_PROGRAM_EXERCISE_PHOTOS_REORDERED', {
+              exerciseRowId: 31,
+              name: 'Squat',
+              from: own(3),
+              to: order,
+            }),
+          ],
+        ])
+      })
+
+      it('writes nothing for the order it already has', async () => {
+        await service.reorderImages(900, 31, practitioner, own(3))
+
+        expect(writes).toEqual([])
+      })
+
+      it('refuses a list that is not the same photos', async () => {
+        await expect(
+          service.reorderImages(900, 31, practitioner, own(2)),
+        ).rejects.toThrow(BadRequestException)
+        expect(writes).toEqual([])
+      })
+    })
+
+    describe('removeImage', () => {
+      beforeEach(() => {
+        lockedRow = { ...storedRow, mediaUrls: own(3) }
+      })
+
+      it('stops listing the photo, records it, and only THEN deletes its file', async () => {
+        await service.removeImage(900, 31, practitioner, 'patients/20/p1.png')
+
+        expect(writes).toEqual([
+          [
+            'update',
+            { mediaUrls: ['patients/20/p0.png', 'patients/20/p2.png'] },
+          ],
+          [
+            'audit',
+            entry('ASSIGNED_PROGRAM_EXERCISE_PHOTO_REMOVED', {
+              exerciseRowId: 31,
+              name: 'Squat',
+              objectKey: 'patients/20/p1.png',
+            }),
+          ],
+          ['deleteFile', 'patients/20/p1.png'],
+        ])
+      })
+
+      it("refuses a photo that isn't one of the row's own, deleting nothing", async () => {
+        await expect(
+          service.removeImage(900, 31, practitioner, 'exercises/5/0.jpg'),
+        ).rejects.toThrow(NotFoundException)
+        expect(writes).toEqual([])
+      })
+
+      // The transaction failed: the row still lists the photo, so its file
+      // must still exist.
+      it('keeps the file when the transaction fails', async () => {
+        auditService.logInTransaction.mockRejectedValue(new Error('refused'))
+
+        await expect(
+          service.removeImage(900, 31, practitioner, 'patients/20/p1.png'),
+        ).rejects.toThrow('refused')
+        expect(stored('deleteFile')).toEqual([])
+      })
+    })
+
+    describe('removing the exercise', () => {
+      beforeEach(() => {
+        lockedRow = { ...storedRow, mediaUrls: own(2) }
+      })
+
+      it('deletes its own files AFTER a DELETE, and the entry lists them', async () => {
+        await service.removeExercise(900, 31, practitioner)
+
+        expect(writes).toEqual([
+          ['delete', null],
+          [
+            'audit',
+            entry('ASSIGNED_PROGRAM_EXERCISE_REMOVED', {
+              exercise: { ...storedRowForAudit, ownPhotos: own(2) },
+            }),
+          ],
+          ['deleteFile', 'patients/20/p0.png'],
+          ['deleteFile', 'patients/20/p1.png'],
+        ])
+      })
+
+      // Retired: the row stays for its sessions, and so do its photos.
+      it('keeps them when the exercise is RETIRED', async () => {
+        deleteError = new DrizzleQueryError(
+          'delete from "assigned_program_exercises" ...',
+          [],
+          Object.assign(new Error('fk'), {
+            code: '23503',
+            constraint: 'session_exercises_program_exercise_fk',
+          }),
+        )
+
+        await service.removeExercise(900, 31, practitioner)
+
+        expect(stored('deleteFile')).toEqual([])
+      })
+    })
+  })
 })
 
 describe('AssignedProgramsService.reorderExercises', () => {
@@ -2021,9 +2499,13 @@ describe('AssignedProgramsService.reorderExercises', () => {
           findMany: jest.fn().mockResolvedValue(PROGRAM_WORKOUTS),
         },
         assignedProgramExercises: {
-          findMany: jest
-            .fn()
-            .mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]),
+          findMany: jest.fn().mockResolvedValue(
+            [1, 2, 3].map((id) => ({
+              id,
+              useLibraryImages: true,
+              mediaUrls: [],
+            })),
+          ),
         },
         programScheduleDays: { findMany: jest.fn().mockResolvedValue([]) },
         programScheduleRotation: { findMany: jest.fn().mockResolvedValue([]) },
@@ -3930,6 +4412,60 @@ describe('AssignedProgramsService.create — assigning again (step 2b-iii)', () 
       service.create(practitioner, { ...dto, ...extra }),
     ).rejects.toThrow(error)
     expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  // Program-specific photos (2026-10-17): the old program's own photos are
+  // COPIED to new files of the patient before the transaction — and if the
+  // transaction then fails, the copies are deleted (nothing points at them).
+  // The successful copy, end to end: test/program-exercise-photos.e2e-spec.ts.
+  it('copies the own photos first, and deletes the copies when the transaction fails', async () => {
+    const copies: [string, string][] = []
+    storageService.copy.mockReset()
+    storageService.copy.mockImplementation((from: string, to: string) => {
+      copies.push([from, to])
+      return Promise.resolve(to)
+    })
+    storageService.deleteUnreferenced.mockClear()
+    ;(
+      db.query.assignedProgramExercises as { findMany: jest.Mock }
+    ).findMany.mockResolvedValue([
+      {
+        id: 31,
+        workoutId: 850,
+        sortOrder: 0,
+        useLibraryImages: false,
+        mediaUrls: ['patients/20/exercise-photos/old-a.png'],
+      },
+      {
+        id: 32,
+        workoutId: 850,
+        sortOrder: 1,
+        useLibraryImages: true,
+        mediaUrls: ['patients/20/exercise-photos/old-b.jpg'],
+      },
+    ])
+    const failure = new Error('insert refused')
+    db.insert.mockImplementation(() => {
+      throw failure
+    })
+
+    await expect(service.create(practitioner, dto)).rejects.toBe(failure)
+
+    // Both rows' own photos — kept even where the library is shown — each
+    // to a new key of the patient, with its own extension.
+    expect(copies.map(([from]) => from)).toEqual([
+      'patients/20/exercise-photos/old-a.png',
+      'patients/20/exercise-photos/old-b.jpg',
+    ])
+    expect(copies[0][1]).toMatch(
+      /^patients\/20\/exercise-photos\/[0-9a-f-]{36}\.png$/,
+    )
+    expect(copies[1][1]).toMatch(
+      /^patients\/20\/exercise-photos\/[0-9a-f-]{36}\.jpg$/,
+    )
+    expect(storageService.deleteUnreferenced.mock.calls).toEqual(
+      copies.map(([, to]) => [to]),
+    )
   })
 
   it("refuses a program the caller can't see (404)", async () => {

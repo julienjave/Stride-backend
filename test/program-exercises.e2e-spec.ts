@@ -444,6 +444,10 @@ describe('Program exercises (e2e)', () => {
           weightUnit: null,
           sortOrder: 6,
           notes: null,
+          // Program-specific photos (2026-10-17): an added exercise shows
+          // the library's, with no own photos.
+          useLibraryImages: true,
+          ownPhotos: [],
         },
       })
     })

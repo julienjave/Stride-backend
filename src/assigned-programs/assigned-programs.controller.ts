@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -29,9 +30,12 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
+import { FilesInterceptor } from '@nestjs/platform-express'
 import { AssignedProgramsService } from './assigned-programs.service'
 import { CreateAssignedProgramDto } from './dto/create-assigned-program.dto'
 import { UpdateAssignedProgramDto } from './dto/update-assigned-program.dto'
@@ -55,6 +59,12 @@ import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
+import { imageUploadOptions } from '../common/config/image-upload.config'
+// The library's own photo DTOs, reused on purpose: the same request shapes
+// ({ order: keys } and { objectKey }), so the frontend talks to both photo
+// pages the same way.
+import { ReorderImagesDto } from '../exercises/dto/reorder-images.dto'
+import { RemoveImageDto } from '../exercises/dto/remove-image.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
@@ -281,6 +291,96 @@ export class AssignedProgramsController {
       user,
       dto.order,
       dto.workoutId,
+    )
+  }
+
+  // --- A PROGRAM EXERCISE'S OWN PHOTOS (decided 2026-10-17) ---
+  //
+  // Photos uploaded for THIS patient, or copied from the library. The same
+  // roles as every change to a program (the service checks the care team on
+  // top); each changes the patient's program, so each follows the audit
+  // convention — @AuditedByService(), ONE entry written by the service.
+  // Which photos the patient sees (library or own) is `useLibraryImages`, on
+  // PATCH :id/exercises/:exerciseRowId. Each answers with the full program.
+
+  // Multipart, field "files", up to 5 per request — the library's route,
+  // with the same image rules (imageUploadOptions: JPEG / PNG / WebP, 5 MB
+  // each). 201: photos were created.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Post(':id/exercises/:exerciseRowId/images')
+  @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
+  addExerciseImages(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
+    @UploadedFiles() files: Express.Multer.File[],
+    @CurrentUser() user: CurrentUser,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files uploaded')
+    }
+    return this.assignedProgramsService.addImages(
+      id,
+      exerciseRowId,
+      user,
+      files,
+    )
+  }
+
+  // Copies the library exercise's current photos into this exercise's own.
+  // No body. 201 like the upload: photos were created.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Post(':id/exercises/:exerciseRowId/images/from-library')
+  addExerciseLibraryImages(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.assignedProgramsService.addLibraryImages(
+      id,
+      exerciseRowId,
+      user,
+    )
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Patch(':id/exercises/:exerciseRowId/images')
+  reorderExerciseImages(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
+    @Body() dto: ReorderImagesDto,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.assignedProgramsService.reorderImages(
+      id,
+      exerciseRowId,
+      user,
+      dto.order,
+    )
+  }
+
+  // A DELETE with a body, like the library's: an object key holds slashes,
+  // awkward in a URL path.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Delete(':id/exercises/:exerciseRowId/images')
+  removeExerciseImage(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('exerciseRowId', ParseIntPipe) exerciseRowId: number,
+    @Body() dto: RemoveImageDto,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.assignedProgramsService.removeImage(
+      id,
+      exerciseRowId,
+      user,
+      dto.objectKey,
     )
   }
 

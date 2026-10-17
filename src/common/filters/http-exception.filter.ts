@@ -31,6 +31,7 @@ import { Request, Response } from 'express'
 import {
   ASSIGNED_PROGRAM_CLOSED,
   ASSIGNED_PROGRAM_EXERCISE_RETIRED,
+  ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT,
   ASSIGNED_PROGRAMS_TITLE_NOT_BLANK,
   PROGRAM_TEMPLATES_TITLE_NOT_BLANK,
   SESSION_EXERCISE_SESSION_FINISHED,
@@ -42,6 +43,7 @@ import {
   ONE_SESSION_A_DAY_MESSAGE,
   SESSION_FINISHED_MESSAGE,
 } from '../../sessions/session-rules'
+import { PHOTO_LIMIT_MESSAGE } from '../../assigned-programs/program-photos'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -89,6 +91,12 @@ function translateDatabaseRefusal(caught: unknown): unknown {
   // check.
   if (isCheckViolation(caught, SESSION_ONE_COMPLETED_PER_DAY)) {
     return new ConflictException(ONE_SESSION_A_DAY_MESSAGE)
+  }
+  // A program exercise's 11th photo (migration 0042's CHECK). The service
+  // counts under the row's lock first, so through the API this is only a
+  // safety net — but a net that answers like the service: a 409.
+  if (isCheckViolation(caught, ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT)) {
+    return new ConflictException(PHOTO_LIMIT_MESSAGE)
   }
   if (isCheckViolation(caught, PROGRAM_TEMPLATES_TITLE_NOT_BLANK)) {
     return new BadRequestException(blankTitleMessage('template'))

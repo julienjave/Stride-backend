@@ -90,6 +90,20 @@ describe('HttpExceptionFilter', () => {
     })
   })
 
+  // A program exercise's photo limit (migration 0042): the service counts
+  // first, so this is the safety net — a 409 like the service's, never a 500.
+  it('answers 409 for the photo-limit CHECK', () => {
+    const { status, body } = run(
+      databaseError('23514', 'assigned_program_exercises_photo_limit'),
+    )
+    expect(status).toBe(409)
+    expect(body).toMatchObject({
+      statusCode: 409,
+      message: ['A program exercise can have at most 10 photos'],
+      error: 'ConflictException',
+    })
+  })
+
   // The blank-title CHECKs: the same 400, in the same words, as the DTOs'
   // IsTitle() rule — whichever layer refuses, the client reads one answer.
   // The full body is asserted (toStrictEqual, timestamp aside), so an

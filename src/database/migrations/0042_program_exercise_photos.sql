@@ -1,0 +1,3 @@
+ALTER TABLE "assigned_program_exercises" ADD COLUMN "use_library_images" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "assigned_program_exercises" ADD COLUMN "media_urls" text[] DEFAULT '{}' NOT NULL;--> statement-breakpoint
+ALTER TABLE "assigned_program_exercises" ADD CONSTRAINT "assigned_program_exercises_photo_limit" CHECK (cardinality("assigned_program_exercises"."media_urls") <= 10);

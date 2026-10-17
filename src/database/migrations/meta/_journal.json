@@ -295,6 +295,13 @@
       "when": 1792166560926,
       "tag": "0041_one_session_a_day",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1792233813608,
+      "tag": "0042_program_exercise_photos",
+      "breakpoints": true
     }
   ]
 }

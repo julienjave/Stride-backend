@@ -131,6 +131,12 @@ export const SESSION_EXERCISE_SESSION_FINISHED =
 // check read the day before the Finish committed; the trigger waits for it,
 // then refuses. HttpExceptionFilter turns it into the service's 409.
 export const SESSION_ONE_COMPLETED_PER_DAY = 'session_one_completed_per_day'
+// A program exercise's own photos are at most 10 (programs.schema.ts,
+// migration 0042) — the database's half of AssignedProgramsService's check,
+// which runs first under the row's lock. HttpExceptionFilter turns it into
+// a 409, like the service's.
+export const ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT =
+  'assigned_program_exercises_photo_limit'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

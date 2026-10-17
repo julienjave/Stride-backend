@@ -87,6 +87,15 @@ import { StorageService } from '../storage/storage.service'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
 import { assertProgramOpen, planClosing } from './program-state'
 import {
+  assertOwnPhoto,
+  assertPhotoRoom,
+  assertSamePhotos,
+  extensionOfKey,
+  NO_LIBRARY_PHOTOS_MESSAGE,
+  programPhotoKey,
+} from './program-photos'
+import { extensionForMimeType } from '../common/config/image-upload.config'
+import {
   ASSIGNED_PROGRAM_EXERCISES_WORKOUT_FK,
   isForeignKeyViolation,
   isUniqueViolation,
@@ -137,6 +146,13 @@ interface ResolvedSourceExercise {
   // that list: the program's own workouts don't exist yet when this is
   // resolved — create() inserts them, then maps positions to their new ids.
   workoutIndex: number
+  // Its photos (decided 2026-10-17): the library's (true), or its own.
+  // From a template or an inline list: the library's, with no own photos —
+  // the column defaults. When assigning AGAIN: the old program's choice,
+  // and the object keys of its own photos, which create() COPIES to new
+  // files (the new program never points at the old one's files).
+  useLibraryImages: boolean
+  ownPhotoKeys: string[]
 }
 
 // What the new program will contain: its workouts (in order, A first) and
@@ -216,6 +232,11 @@ function exerciseForAudit(row: typeof assignedProgramExercises.$inferSelect) {
     weightUnit: row.weightUnit,
     sortOrder: row.sortOrder,
     notes: row.notes,
+    // Which photos the patient saw, and the own photos' keys: after a
+    // DELETE, their files are deleted too, so the entry is what still says
+    // they existed.
+    useLibraryImages: row.useLibraryImages,
+    ownPhotos: row.mediaUrls,
   }
 }
 
@@ -411,7 +432,44 @@ export class AssignedProgramsService {
     const source = await this.resolveSourceExercises(dto, currentUser)
     const sourceExercises = source.exercises
 
-    const programId = await withRlsContext(this.db, currentUser, async (tx) => {
+    // "Assign again" copies the old program's own photos to NEW files,
+    // BEFORE the transaction: a storage call is a network call, and inside a
+    // transaction it would hold the program's locks while waiting on it.
+    // The new keys can be made now because they name the patient, not the
+    // program or row (programPhotoKey). One list of keys per exercise, in
+    // the same order as sourceExercises. (From a template or an inline
+    // list, every list is empty: no storage call at all.)
+    const photoKeys = await this.copyPhotos(
+      dto.patientId,
+      sourceExercises.map((ex) => ex.ownPhotoKeys),
+    )
+
+    // If anything below fails — a schedule naming a workout the source
+    // doesn't have (a 400), the database refusing — the transaction rolls
+    // back, and the copies point at nothing: they're deleted (best-effort)
+    // before the error goes on to the client.
+    const programId = await this.undoPhotosOnFailure(photoKeys.flat(), () =>
+      this.insertProgram(currentUser, dto, source, photoKeys),
+    )
+
+    // Deliberately its own, separate RLS-scoped transaction — by the time
+    // this runs, the transaction above has committed, so the newly
+    // inserted rows are safely visible.
+    return this.findProgramWithExercises(programId, currentUser)
+  }
+
+  // create()'s transaction: the program, its workouts, its exercises, its
+  // first schedule version and the audit entry — all or nothing. Its own
+  // method so create() can wrap it in undoPhotosOnFailure; the body is
+  // create()'s, unchanged but for the photo columns.
+  private async insertProgram(
+    currentUser: CurrentUser,
+    dto: CreateAssignedProgramDto,
+    source: ResolvedSource,
+    photoKeys: string[][],
+  ): Promise<number> {
+    const sourceExercises = source.exercises
+    return withRlsContext(this.db, currentUser, async (tx) => {
       const [program] = await tx
         .insert(assignedPrograms)
         .values({
@@ -449,7 +507,7 @@ export class AssignedProgramsService {
       // exercise's own current data — editing or deleting the source
       // template later, or editing/archiving the exercise itself, never
       // touches this patient's already-assigned program.
-      for (const ex of sourceExercises) {
+      for (const [index, ex] of sourceExercises.entries()) {
         await tx.insert(assignedProgramExercises).values({
           assignedProgramId: program.id,
           workoutId: workouts[ex.workoutIndex].id,
@@ -466,6 +524,9 @@ export class AssignedProgramsService {
           weightUnit: ex.weightUnit,
           sortOrder: ex.sortOrder,
           notes: ex.notes,
+          useLibraryImages: ex.useLibraryImages,
+          // The COPIES' keys (copyPhotos), never the source program's.
+          mediaUrls: photoKeys[index],
         })
       }
 
@@ -510,7 +571,7 @@ export class AssignedProgramsService {
           lateMakeUpDays: program.lateMakeUpDays,
           schedule: versionForAudit(firstVersion),
           workouts: workouts.map(workoutForAudit),
-          exercises: sourceExercises.map((ex) => ({
+          exercises: sourceExercises.map((ex, index) => ({
             workoutId: workouts[ex.workoutIndex].id,
             exerciseId: ex.exerciseId,
             name: ex.name,
@@ -521,17 +582,14 @@ export class AssignedProgramsService {
             weightUnit: ex.weightUnit ?? null,
             sortOrder: ex.sortOrder,
             notes: ex.notes ?? null,
+            useLibraryImages: ex.useLibraryImages,
+            ownPhotos: photoKeys[index],
           })),
         },
       })
 
       return program.id
     })
-
-    // Deliberately its own, separate RLS-scoped transaction — by the time
-    // this runs, the transaction above has committed, so the newly
-    // inserted rows are safely visible.
-    return this.findProgramWithExercises(programId, currentUser)
   }
 
   async addExercise(
@@ -1686,6 +1744,9 @@ export class AssignedProgramsService {
     await this.assertCanManage(program.patientId, currentUser)
     assertProgramOpen(program)
 
+    // The own photos' keys of a DELETED exercise (none otherwise) — their
+    // files are deleted once the transaction has committed, below.
+    let filesToDelete: string[] = []
     await withRlsContext(this.db, currentUser, async (tx) => {
       // Locked: a concurrent edit of the same exercise waits for this
       // removal (and then finds it gone or retired), and so does a session
@@ -1747,7 +1808,19 @@ export class AssignedProgramsService {
         entityId: assignedProgramId,
         details: { exercise: exerciseForAudit(row) },
       })
+      // DELETED: nothing points at its own photos any more, so their files
+      // go too (decided 2026-10-17 — a photo of the patient's home
+      // shouldn't outlive its use). RETIRED: the row stays, kept for its
+      // sessions, and so do its photos — a screen showing that history
+      // still shows them.
+      if (outcome === 'deleted') filesToDelete = row.mediaUrls
     })
+    // AFTER the commit, best-effort — the same order as every photo
+    // removal (StorageService.deleteUnreferenced): if the transaction had
+    // failed, the row would still point at the files, so they must not be
+    // gone; once it has committed, a storage hiccup only leaves an orphaned
+    // file (logged), never an error for a removal that worked.
+    await this.deletePhotos(filesToDelete)
     // The full program (it used to answer with nothing), like every write.
     return this.findProgramWithExercises(assignedProgramId, currentUser)
   }
@@ -1791,6 +1864,254 @@ export class AssignedProgramsService {
         .where(eq(sessionExercises.assignedProgramExerciseId, rowId))
       return planRemoval(sessionCount)
     })
+  }
+
+  // --- PROGRAM-SPECIFIC PHOTOS (decided 2026-10-17) ---------------------------------------------------------
+  //
+  // A program exercise's OWN photos: uploaded for this patient, or copied
+  // from the library, then reordered or removed. Which photos the patient
+  // sees is a separate choice — `useLibraryImages`, on PATCH
+  // …/exercises/:rowId — so adding photos here never switches it: the
+  // practitioner can prepare the photos first and switch when they're
+  // ready (or the other way round).
+  //
+  // The same people and refusals as every change to a program exercise:
+  // the care team or an admin (assertCanManage), an OPEN program (409), an
+  // exercise of THIS program (404), not retired (409). Migrations 0031 and
+  // 0033 refuse the same in the database: every route here ends in an
+  // UPDATE of the row, which their triggers guard. Each change writes ONE
+  // audit entry in its own transaction (the convention), and answers with
+  // the full program, like every write on it.
+
+  // POST …/exercises/:rowId/images — up to 5 files (the controller's
+  // Multer limit), added after the existing ones.
+  async addImages(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+    files: Express.Multer.File[],
+  ) {
+    const { program, row } = await this.readPhotoTarget(
+      assignedProgramId,
+      rowId,
+      currentUser,
+    )
+    // Checked BEFORE storing anything (no upload just to delete it), and
+    // again under the row's lock (appendOwnPhotos) — two uploads racing
+    // could each fit alone, and not together.
+    assertPhotoRoom(row.mediaUrls.length, files.length)
+    // The extension from the type Multer checked (imageUploadOptions' file
+    // filter: JPEG, PNG or WebP), never from the client's file name.
+    const keys = await this.putPhotos(
+      program.patientId,
+      files.map((file) => ({
+        extension: extensionForMimeType(file.mimetype),
+        put: (key: string) =>
+          this.storageService.upload(key, file.buffer, file.mimetype),
+      })),
+    )
+    return this.appendOwnPhotos(program, rowId, currentUser, keys, {
+      source: 'upload',
+    })
+  }
+
+  // POST …/exercises/:rowId/images/from-library — COPIES the library
+  // exercise's current photos, in its order, after the existing own photos
+  // (decided with the person: a practitioner usually has no copy of a
+  // library photo to upload again). Copies, not references: a later change
+  // in the library can't reach them, and the practitioner can reorder or
+  // remove each one. Asked twice, it copies twice — deliberately allowed
+  // (decided 2026-10-17): knowing which own photos are copies would need a
+  // record of where each came from; a duplicate is removed like any photo.
+  async addLibraryImages(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+  ) {
+    const { program, row } = await this.readPhotoTarget(
+      assignedProgramId,
+      rowId,
+      currentUser,
+    )
+    // The library is readable by everyone (exercises_select is USING
+    // (true)), so no RLS context is needed — as in addExercise. A row's
+    // library exercise always exists (a foreign key, ON DELETE RESTRICT);
+    // an ARCHIVED one keeps its files, so its photos can still be copied.
+    const library = await this.db.query.exercises.findFirst({
+      where: eq(exercises.id, row.exerciseId),
+      columns: { mediaUrls: true },
+    })
+    const sources = library?.mediaUrls ?? []
+    if (sources.length === 0) {
+      throw new ConflictException(NO_LIBRARY_PHOTOS_MESSAGE)
+    }
+    assertPhotoRoom(row.mediaUrls.length, sources.length)
+    const keys = await this.putPhotos(
+      program.patientId,
+      sources.map((source) => ({
+        extension: extensionOfKey(source),
+        put: (key: string) => this.storageService.copy(source, key),
+      })),
+    )
+    // copiedFrom: which library files they were, in the same order as
+    // `added` — the trail says where each copy came from.
+    return this.appendOwnPhotos(program, rowId, currentUser, keys, {
+      source: 'library',
+      copiedFrom: sources,
+    })
+  }
+
+  // PATCH …/exercises/:rowId/images { order } — the same own photos in a
+  // new order (the first is the cover, as in the library).
+  async reorderImages(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+    order: string[],
+  ) {
+    const program = await this.findOpenProgramToManage(
+      assignedProgramId,
+      currentUser,
+    )
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const row = await this.lockProgramExercise(tx, assignedProgramId, rowId)
+      assertNotRetired(row)
+      assertSamePhotos(row.mediaUrls, order)
+      // The same order again changes nothing: no UPDATE, no audit entry —
+      // the convention's "a request that changes nothing writes nothing".
+      if (order.every((key, index) => key === row.mediaUrls[index])) return
+      await tx
+        .update(assignedProgramExercises)
+        .set({ mediaUrls: order })
+        .where(eq(assignedProgramExercises.id, rowId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'ASSIGNED_PROGRAM_EXERCISE_PHOTOS_REORDERED',
+        targetUserId: program.patientId,
+        entityType: 'assigned-programs',
+        entityId: assignedProgramId,
+        details: {
+          exerciseRowId: rowId,
+          name: row.name,
+          from: row.mediaUrls,
+          to: order,
+        },
+      })
+    })
+    return this.findProgramWithExercises(assignedProgramId, currentUser)
+  }
+
+  // DELETE …/exercises/:rowId/images { objectKey } — one own photo: the row
+  // stops listing it, THEN its file is deleted (after the commit,
+  // best-effort — the order every photo removal in this app follows).
+  // Deleted, not kept (decided 2026-10-17): a photo of a patient's home
+  // shouldn't outlive its use. The audit entry keeps who removed which
+  // file, and when.
+  async removeImage(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+    objectKey: string,
+  ) {
+    const program = await this.findOpenProgramToManage(
+      assignedProgramId,
+      currentUser,
+    )
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const row = await this.lockProgramExercise(tx, assignedProgramId, rowId)
+      assertNotRetired(row)
+      assertOwnPhoto(row.mediaUrls, objectKey)
+      await tx
+        .update(assignedProgramExercises)
+        .set({ mediaUrls: row.mediaUrls.filter((key) => key !== objectKey) })
+        .where(eq(assignedProgramExercises.id, rowId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'ASSIGNED_PROGRAM_EXERCISE_PHOTO_REMOVED',
+        targetUserId: program.patientId,
+        entityType: 'assigned-programs',
+        entityId: assignedProgramId,
+        details: { exerciseRowId: rowId, name: row.name, objectKey },
+      })
+    })
+    await this.storageService.deleteUnreferenced(objectKey)
+    return this.findProgramWithExercises(assignedProgramId, currentUser)
+  }
+
+  // The checks every photo route makes before anything else: the program
+  // exists for the caller (404), they manage this patient (403), it's open
+  // (409).
+  private async findOpenProgramToManage(
+    assignedProgramId: number,
+    currentUser: CurrentUser,
+  ) {
+    const program = await this.findProgramOrThrow(
+      assignedProgramId,
+      currentUser,
+    )
+    await this.assertCanManage(program.patientId, currentUser)
+    assertProgramOpen(program)
+    return program
+  }
+
+  // The two ADDING routes first read the row WITHOUT a lock, to refuse what
+  // they can before storing any file (an exercise of another program, a
+  // retired one, no room). appendOwnPhotos checks again under the lock: the
+  // row may have changed in between.
+  private async readPhotoTarget(
+    assignedProgramId: number,
+    rowId: number,
+    currentUser: CurrentUser,
+  ) {
+    const program = await this.findOpenProgramToManage(
+      assignedProgramId,
+      currentUser,
+    )
+    const row = await withRlsContext(this.db, currentUser, (tx) =>
+      this.lockProgramExercise(tx, assignedProgramId, rowId, false),
+    )
+    assertNotRetired(row)
+    return { program, row }
+  }
+
+  // Adds already-stored files (`keys`) after the row's own photos, with ONE
+  // audit entry — under the row's lock, re-checking what may have changed
+  // since readPhotoTarget (retired meanwhile, or another addition taking
+  // the room). Any failure — those checks, a trigger refusing (the program
+  // closed meanwhile: 0031), the CHECK — rolls back, and the files are
+  // deleted (undoPhotosOnFailure): nothing points at them.
+  private async appendOwnPhotos(
+    program: { id: number; patientId: number },
+    rowId: number,
+    currentUser: CurrentUser,
+    keys: string[],
+    details: { source: 'upload' | 'library'; copiedFrom?: string[] },
+  ) {
+    await this.undoPhotosOnFailure(keys, () =>
+      withRlsContext(this.db, currentUser, async (tx) => {
+        const row = await this.lockProgramExercise(tx, program.id, rowId)
+        assertNotRetired(row)
+        assertPhotoRoom(row.mediaUrls.length, keys.length)
+        await tx
+          .update(assignedProgramExercises)
+          .set({ mediaUrls: [...row.mediaUrls, ...keys] })
+          .where(eq(assignedProgramExercises.id, rowId))
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'ASSIGNED_PROGRAM_EXERCISE_PHOTOS_ADDED',
+          targetUserId: program.patientId,
+          entityType: 'assigned-programs',
+          entityId: program.id,
+          details: {
+            exerciseRowId: rowId,
+            name: row.name,
+            added: keys,
+            ...details,
+          },
+        })
+      }),
+    )
+    return this.findProgramWithExercises(program.id, currentUser)
   }
 
   // === HELPER FUNCTIONS =================================================================
@@ -1897,6 +2218,9 @@ export class AssignedProgramsService {
           // The `!` holds: an exercise's workout is one of its template's
           // (composite foreign key), and all of them are in the map.
           workoutIndex: indexOfWorkout.get(row.workoutId)!,
+          // A template has no photos of its own: the library's.
+          useLibraryImages: true,
+          ownPhotoKeys: [],
         }
       })
       return {
@@ -1940,6 +2264,8 @@ export class AssignedProgramsService {
         sortOrder: ex.sortOrder,
         notes: ex.notes,
         workoutIndex: 0,
+        useLibraryImages: true,
+        ownPhotoKeys: [],
       }
     })
     return {
@@ -2032,6 +2358,11 @@ export class AssignedProgramsService {
         sortOrder: row.sortOrder,
         notes: row.notes ?? undefined,
         workoutIndex: indexOfWorkout.get(row.workoutId)!,
+        // Its photo choice and own photos too (decided 2026-10-17): the
+        // continuation shows the patient what they were shown. The keys
+        // are the OLD program's files — create() copies them.
+        useLibraryImages: row.useLibraryImages,
+        ownPhotoKeys: row.mediaUrls,
       }),
     )
     return {
@@ -2057,8 +2388,21 @@ export class AssignedProgramsService {
   // the record (the sessions that used them), and for a screen that wants
   // to show "removed exercises".
   //
-  // Every exercise — active and retired — also carries `images`: the
-  // LIBRARY exercise's photos, read live (see libraryImagesByExercise).
+  // Every exercise — active and retired — also carries its photos (decided
+  // 2026-10-14, extended 2026-10-17):
+  //   - `images: { url }[]` — what the PATIENT sees: the library exercise's
+  //     photos, read live (libraryImageKeys), or the row's own photos when
+  //     `useLibraryImages` is false (possibly none). Every screen that
+  //     shows photos (the program exercise page, the session player) reads
+  //     this, and never needs to know where they come from.
+  //   - `ownImages: { objectKey, url }[]` — the row's own photos, whichever
+  //     is chosen (switching back to the library keeps them): what the
+  //     practitioner's photo page manages. The key is needed there — the
+  //     reorder and remove routes name photos by key, as the library's do.
+  // The raw `mediaUrls` column is not sent: renamed to `ownImages` rather
+  // than sent beside it, so code still reading the old shape fails to
+  // compile instead of showing keys as if they were URLs (the same choice as
+  // ExercisesService.withImages).
   private async findProgramWithExercises(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser)
     const [workoutRows, exerciseRows, schedules, imageKeys] =
@@ -2070,17 +2414,28 @@ export class AssignedProgramsService {
           await this.findWorkouts(tx, id),
           rows,
           await readScheduleVersions(tx, [id]),
-          await this.libraryImageKeys(tx, rows),
+          // Only the rows that SHOW the library's photos need them read.
+          await this.libraryImageKeys(
+            tx,
+            rows.filter((row) => row.useLibraryImages),
+          ),
         ] as const
       })
     const workouts = orderWorkouts(workoutRows)
     const withImages = await Promise.all(
-      exerciseRows.map(async (row) => ({
-        ...row,
-        // `?? []`: a row always has its library exercise (a foreign key), so
-        // this is only TypeScript's "a Map may not have the key" — no photos.
-        images: await this.signImages(imageKeys.get(row.exerciseId) ?? []),
-      })),
+      exerciseRows.map(async ({ mediaUrls, ...row }) => {
+        const ownImages = await this.signOwnImages(mediaUrls)
+        return {
+          ...row,
+          images: row.useLibraryImages
+            ? // `?? []`: a row always has its library exercise (a foreign
+              // key), so this is only TypeScript's "a Map may not have the
+              // key" — no photos.
+              await this.signImages(imageKeys.get(row.exerciseId) ?? [])
+            : ownImages.map(({ url }) => ({ url })),
+          ownImages,
+        }
+      }),
     )
     // "No retirement date" = active (a falsy check: null from the database).
     const active = withImages.filter((row) => !row.retiredAt)
@@ -2101,15 +2456,16 @@ export class AssignedProgramsService {
 
   // --- Exercise photos ---
   //
-  // A program exercise shows the photos of the LIBRARY exercise it was copied
-  // from, read LIVE — not a copy (decided with the person 2026-10-14). The
+  // By default, a program exercise shows the photos of the LIBRARY exercise
+  // it was copied from, read LIVE — not a copy (decided with the person
+  // 2026-10-14). The
   // program copies everything that is the clinical record: the prescription,
   // and the description (name, muscles, equipment, instructions — editable
   // per patient since D-3, copied into every session since D-2). Photos are
   // illustrations, like a leaflet: a better photo uploaded once in the library
   // should reach every patient who does that exercise. What a patient is told
-  // to do is the text. (Photos chosen per program: a roadmap item of their
-  // own, "Program-specific photos".)
+  // to do is the text. The practitioner may choose photos of the row's own
+  // instead ("Program-specific photos", 2026-10-17 — the routes below).
   //
   // The object keys of the library exercises these rows point at, in ONE query
   // for the whole program (not one per exercise — the N+1 problem): exercise
@@ -2149,6 +2505,94 @@ export class AssignedProgramsService {
       keys.map(async (key) => ({
         url: await this.storageService.getPresignedUrl(key),
       })),
+    )
+  }
+
+  // A row's OWN photos, signed — this time WITH their keys, for the
+  // practitioner's photo page (reorder and remove name photos by key).
+  private async signOwnImages(
+    keys: string[],
+  ): Promise<{ objectKey: string; url: string }[]> {
+    return Promise.all(
+      keys.map(async (objectKey) => ({
+        objectKey,
+        url: await this.storageService.getPresignedUrl(objectKey),
+      })),
+    )
+  }
+
+  // Puts new own-photo files into storage, one at a time, each under a NEW
+  // key for this patient (programPhotoKey), and returns the keys in order.
+  // `put` does the storing — an upload or a copy; the caller decides. If one
+  // fails, the ones already stored are deleted (best-effort) and the error
+  // goes on: nothing points at them yet, and nothing ever will.
+  // One at a time, not all at once (Promise.all): at most 10 files, and a
+  // failure stops the rest instead of racing them.
+  private async putPhotos(
+    patientId: number,
+    items: { extension: string; put: (key: string) => Promise<unknown> }[],
+  ): Promise<string[]> {
+    const stored: string[] = []
+    try {
+      for (const item of items) {
+        const key = programPhotoKey(patientId, item.extension)
+        await item.put(key)
+        stored.push(key)
+      }
+    } catch (error) {
+      await this.deletePhotos(stored)
+      throw error
+    }
+    return stored
+  }
+
+  // "Assign again": copies each source exercise's own photos (one list per
+  // exercise) to new files of the patient, and gives back the new keys in
+  // the same shape — one list per exercise, in order. All the copies go
+  // through ONE putPhotos call, so a failure on the 7th undoes the first 6,
+  // whichever exercise they belonged to.
+  private async copyPhotos(
+    patientId: number,
+    keyLists: string[][],
+  ): Promise<string[][]> {
+    const copies = await this.putPhotos(
+      patientId,
+      keyLists.flat().map((source) => ({
+        extension: extensionOfKey(source),
+        put: (key: string) => this.storageService.copy(source, key),
+      })),
+    )
+    // Cut the flat list back into one list per exercise.
+    const result: string[][] = []
+    let start = 0
+    for (const list of keyLists) {
+      result.push(copies.slice(start, start + list.length))
+      start += list.length
+    }
+    return result
+  }
+
+  // Runs `work` (a transaction that will point rows at `keys`); if it fails,
+  // the files at `keys` are deleted before the error goes on — the rollback
+  // left nothing pointing at them. Files the database DOES point at are
+  // never deleted here: this only runs when the work failed.
+  private async undoPhotosOnFailure<T>(
+    keys: string[],
+    work: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await work()
+    } catch (error) {
+      await this.deletePhotos(keys)
+      throw error
+    }
+  }
+
+  // Best-effort deletion of files nothing points at (any more, or ever):
+  // deleteUnreferenced never throws — it logs what it couldn't delete.
+  private async deletePhotos(keys: string[]) {
+    await Promise.all(
+      keys.map((key) => this.storageService.deleteUnreferenced(key)),
     )
   }
 

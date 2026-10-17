@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common'
+import { CopyObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { StorageService } from './storage.service'
 
 // Only deleteUnreferenced() is tested here — the other methods are thin
@@ -51,5 +52,50 @@ describe('StorageService.deleteUnreferenced', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('connect ECONNREFUSED'),
     )
+  })
+})
+
+// copy(): the request it sends — the real copy against an S3 server is
+// proven end to end by test/program-exercise-photos.e2e-spec.ts (moto).
+// The spy goes on S3Client.prototype.send: the service's client is a
+// private field, but every S3Client shares its prototype's send().
+describe('StorageService.copy', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('sends ONE CopyObject: the destination key, and the bucket-prefixed source, each path segment encoded', async () => {
+    // `as never`: send() is overloaded (a promise, or a callback); the
+    // mock only needs to resolve, whatever the overload's result type.
+    const send = jest
+      .spyOn(S3Client.prototype, 'send')
+      .mockResolvedValue({} as never)
+
+    const key = await new StorageService().copy(
+      'exercises/12/front view é.jpg',
+      'patients/5/exercise-photos/new.jpg',
+    )
+
+    expect(key).toBe('patients/5/exercise-photos/new.jpg')
+    expect(send).toHaveBeenCalledTimes(1)
+    const command = send.mock.calls[0][0] as unknown
+    expect(command).toBeInstanceOf(CopyObjectCommand)
+    // toStrictEqual: no other field (a MetadataDirective of REPLACE would
+    // drop the Content-Type).
+    expect((command as CopyObjectCommand).input).toStrictEqual({
+      Bucket: 'stride',
+      Key: 'patients/5/exercise-photos/new.jpg',
+      CopySource: 'stride/exercises/12/front%20view%20%C3%A9.jpg',
+    })
+  })
+
+  it('lets a storage failure reach the caller (it must undo its own work)', async () => {
+    jest
+      .spyOn(S3Client.prototype, 'send')
+      .mockRejectedValue(new Error('NoSuchKey') as never)
+
+    await expect(
+      new StorageService().copy('exercises/1/a.png', 'patients/1/b.png'),
+    ).rejects.toThrow('NoSuchKey')
   })
 })
