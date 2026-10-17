@@ -2312,12 +2312,14 @@ describe('lateMakeUps', () => {
       })
     })
 
-    it('is catch_up_first while another missed day can be made up on time', () => {
+    // Changed 2026-10-17: an on-time catch-up is a SUGGESTION (the home's
+    // button), not a block — the patient may choose the late one instead.
+    it('is not blocked while another missed day can be made up on time', () => {
       // No Wednesday session: on Thursday, Wednesday is due (its window runs
-      // to Thursday), Monday is missed.
+      // to Thursday), Monday is missed — and can be made up late today.
       expect(blocked({ today: '15', sessions: [] })).toStrictEqual({
         days: [{ forDay: d('12'), workoutId: A, until: d('18') }],
-        blockedToday: 'catch_up_first',
+        blockedToday: null,
       })
     })
 

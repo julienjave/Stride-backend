@@ -390,19 +390,15 @@ describe('assertLateMakeUpAllowed', () => {
     ).toThrow(new ConflictException(ONE_SESSION_A_DAY_MESSAGE))
   })
 
-  // Wednesday can still be made up on time: that comes first, and the
-  // message names it.
-  it('sends the patient to the ordinary catch-up first', () => {
+  // Wednesday can still be made up on time: the patient may still choose
+  // Monday late instead (changed 2026-10-17 — a suggestion, not a rule).
+  it('lets the patient choose a late make-up over an on-time catch-up', () => {
     expect(() =>
       assertLateMakeUpAllowed(
-        summary('missed', { wednesday: 'due', blockedToday: 'catch_up_first' }),
+        summary('missed', { wednesday: 'due', blockedToday: null }),
         MONDAY,
         7,
       ),
-    ).toThrow(
-      new BadRequestException(
-        `Catch up ${WEDNESDAY} first: it can still be made up on time, before the next scheduled day`,
-      ),
-    )
+    ).not.toThrow()
   })
 })

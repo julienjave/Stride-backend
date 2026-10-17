@@ -2483,13 +2483,6 @@ describe('Sessions (e2e)', () => {
         () => lateProgram(2),
         `${threeDaysAgo} is more than 2 days ago: it can no longer be made up`,
       ],
-      // Two days ago NOT done: still in its window (until the next
-      // scheduled day), so it comes first.
-      [
-        'while another day can be made up on time',
-        () => lateProgram(7, false),
-        `Catch up ${twoDaysAgo} first: it can still be made up on time, before the next scheduled day`,
-      ],
     ])('is refused %s, recording nothing', async (_label, make, message) => {
       const program = await make()
       const res = await start(program.id, { countsFor: threeDaysAgo })
@@ -2502,11 +2495,32 @@ describe('Sessions (e2e)', () => {
       expect(rows).toEqual([])
     })
 
-    // The summary says why, for the screens: catch up first.
-    it('says on the summary when an on-time catch-up comes first', async () => {
+    // Two days ago NOT done: still in its window (until the day before the
+    // next scheduled day, 3 days from now). Which to do first is the
+    // patient's choice (changed 2026-10-17): the late one is offered and
+    // accepted, and the on-time one stays open for another day.
+    it('lets the patient choose it over an on-time catch-up, leaving that one open', async () => {
       const program = await lateProgram(7, false)
-      const summary = bodyOf<LateSummary>(await summaryOf(program.id))
-      expect(summary.lateMakeUps.blockedToday).toBe('catch_up_first')
+      const before = bodyOf<LateSummary>(await summaryOf(program.id))
+      expect(before.lateMakeUps.blockedToday).toBeNull()
+      expect(before.days.find((d) => d.date === twoDaysAgo)?.state).toBe('due')
+
+      const res = await start(program.id, { countsFor: threeDaysAgo })
+      expect(res.status).toBe(201)
+      const session = bodyOf<SessionBody>(res)
+      const done = await patientA
+        .post(`/sessions/${session.id}/complete`)
+        .send({})
+      expect(done.status).toBe(200)
+
+      const after = bodyOf<LateSummary>(await summaryOf(program.id))
+      expect(after.days.find((d) => d.date === threeDaysAgo)?.state).toBe(
+        'made_up_late',
+      )
+      // Still due: its window runs past today — just not today any more.
+      expect(after.days.find((d) => d.date === twoDaysAgo)?.state).toBe('due')
+      expect(after.totals).toMatchObject({ madeUpLate: 1, madeUp: 0 })
+      expect(after.lateMakeUps.blockedToday).toBe('session_done_today')
     })
   })
 

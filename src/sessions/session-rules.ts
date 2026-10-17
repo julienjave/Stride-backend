@@ -185,7 +185,7 @@ export function skippedWorkoutId(input: {
 // scheduled day of the program, the workout is its own, and today isn't a
 // scheduled day. Checked in the order a person would think of it: does the
 // day still need making up at all → may it be made up late here → is it
-// too late → can it be today.
+// too late → can it be today (a free day, nothing completed yet).
 export function assertLateMakeUpAllowed(
   summary: Pick<ScheduleSummary, 'days' | 'lateMakeUps'>,
   countsFor: string,
@@ -229,13 +229,9 @@ export function assertLateMakeUpAllowed(
   if (blockedToday === 'session_done_today') {
     throw new ConflictException(ONE_SESSION_A_DAY_MESSAGE)
   }
-  if (blockedToday === 'catch_up_first') {
-    // The day that can still be made up on time. (Only an earlier day can
-    // be 'due' here: a due day TODAY would make today a scheduled day,
-    // answered above as not_a_free_day.)
-    const due = summary.days.find((d) => d.state === 'due')
-    throw new BadRequestException(
-      `Catch up ${due?.date} first: it can still be made up on time, before the next scheduled day`,
-    )
-  }
+  // No "catch up first" check (removed 2026-10-17): with another missed day
+  // still in its window, making THIS one up late instead is the patient's
+  // choice — the summary counts it as a late make-up and leaves the other
+  // day open (one session a day: if today was that day's last chance, it
+  // becomes missed).
 }

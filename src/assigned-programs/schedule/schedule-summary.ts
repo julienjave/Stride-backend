@@ -317,12 +317,14 @@ export interface LateMakeUp {
 //                          is done on a free day of specific days, so it
 //                          never adds a second session to a scheduled day;
 //   - session_done_today — a session of this program was already completed
-//                          today (one session a day);
-//   - catch_up_first     — a missed day can still be made up the ordinary
-//                          way (its window is open): that comes first
-//                          (decided 2026-10-16).
-export type LateMakeUpBlock =
-  'not_a_free_day' | 'session_done_today' | 'catch_up_first'
+//                          today (one session a day).
+// Only RULES block — never a preference. An on-time catch-up still open
+// does NOT block a late make-up (changed 2026-10-17, with the person): which
+// to do first is the patient's choice. The home suggests the on-time one
+// (its button), the Sessions hub will offer both; refusing the late one here
+// would make that choice for them. (Until then a third value,
+// catch_up_first, refused it.)
+export type LateMakeUpBlock = 'not_a_free_day' | 'session_done_today'
 
 export interface ScheduleSummary {
   // The days covered: the start date up to the end date — or, for an
@@ -979,10 +981,6 @@ export function summarizeSchedule(
   if (!isFreeDay(today)) blockedToday = 'not_a_free_day'
   else if (input.sessions.some((s) => s.localDate === today)) {
     blockedToday = 'session_done_today'
-  } else if (days.some((day) => day.state === 'due')) {
-    // (An earlier day: a day due TODAY would make today a scheduled day —
-    // not_a_free_day, above.)
-    blockedToday = 'catch_up_first'
   }
 
   // --- 7. Totals ---
