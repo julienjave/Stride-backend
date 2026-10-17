@@ -1,6 +1,12 @@
+import { createServer, type IncomingHttpHeaders, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { Logger } from '@nestjs/common'
-import { CopyObjectCommand, S3Client } from '@aws-sdk/client-s3'
-import { StorageService } from './storage.service'
+import {
+  CopyObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3'
+import { StorageService, storageClientConfig } from './storage.service'
 
 // Only deleteUnreferenced() is tested here — the other methods are thin
 // wrappers around the AWS SDK, exercised for real by the e2e tests
@@ -97,5 +103,93 @@ describe('StorageService.copy', () => {
     await expect(
       new StorageService().copy('exercises/1/a.png', 'patients/1/b.png'),
     ).rejects.toThrow('NoSuchKey')
+  })
+})
+
+// How the client TALKS to the storage server — checked against a real HTTP
+// server started by the test on a free local port, because what matters here
+// (a header on the wire, a request abandoned in time) only exists on a real
+// socket: a mocked send() would never show it.
+describe('the storage client, on the wire', () => {
+  let server: Server
+  // What the fake storage server received: the headers, and how many body
+  // bytes arrived.
+  let received: { headers: IncomingHttpHeaders; bodyBytes: number }[]
+  // Whether the server answers at all: false plays a storage server that
+  // accepts the request and then never responds.
+  let answers: boolean
+  const savedEnv = { ...process.env }
+
+  beforeEach(async () => {
+    received = []
+    answers = true
+    server = createServer((request, response) => {
+      const entry = { headers: request.headers, bodyBytes: 0 }
+      received.push(entry)
+      request.on('data', (chunk: Buffer) => {
+        entry.bodyBytes += chunk.length
+      })
+      // Answers once the WHOLE body has arrived, as S3 does for a PUT. It
+      // never answers "100 Continue": a client that asked for it waits.
+      request.on('end', () => {
+        if (answers) response.writeHead(200, { ETag: '"x"' }).end()
+      })
+    })
+    // Port 0: the system picks a free one.
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    process.env.STORAGE_ENDPOINT = '127.0.0.1'
+    process.env.STORAGE_PORT = String((server.address() as AddressInfo).port)
+  })
+
+  afterEach(async () => {
+    process.env = { ...savedEnv }
+    // closeAllConnections: a request the server never answered would
+    // otherwise keep close() waiting.
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  // 3 MB: over the SDK's 2 MB threshold for "Expect: 100-continue", like
+  // any phone photo. With the header, this server (which never says "100
+  // Continue") would get the body only after Node's 6 s wait — the
+  // "uploading takes forever" bug.
+  it('sends a big upload in one go: no "Expect: 100-continue", the whole body at once', async () => {
+    const started = Date.now()
+
+    await new StorageService().upload(
+      'patients/5/exercise-photos/big.jpg',
+      Buffer.alloc(3 * 1024 * 1024),
+      'image/jpeg',
+    )
+
+    expect(received).toHaveLength(1)
+    expect(received[0].headers.expect).toBeUndefined()
+    expect(received[0].bodyBytes).toBe(3 * 1024 * 1024)
+    // Far below the 6 s a wait for "100 Continue" costs.
+    expect(Date.now() - started).toBeLessThan(3_000)
+  })
+
+  // A server that never answers: the call FAILS after requestTimeout instead
+  // of waiting forever. The same configuration as the service's, with a
+  // short timeout so the test doesn't wait 30 s.
+  it('abandons a call the server never answers, with a TimeoutError', async () => {
+    answers = false
+    const client = new S3Client(
+      storageClientConfig({ connectionTimeout: 1_000, requestTimeout: 300 }),
+    )
+    const started = Date.now()
+
+    await expect(
+      client.send(
+        new PutObjectCommand({ Bucket: 'stride', Key: 'k.png', Body: 'x' }),
+      ),
+    ).rejects.toMatchObject({ name: 'TimeoutError' })
+    // It did reach the server (the timeout is the request's, not the
+    // connection's), and gave up soon after 300 ms, not at the test's own
+    // 5 s limit. maxAttempts 1 isn't set: the SDK retries a timeout (3
+    // attempts by default), hence "under 2 s" rather than "about 300 ms".
+    expect(received.length).toBeGreaterThanOrEqual(1)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    client.destroy()
   })
 })

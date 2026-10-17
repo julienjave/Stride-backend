@@ -25,6 +25,7 @@ import {
 } from '@nestjs/common'
 import {
   S3Client,
+  type S3ClientConfig,
   HeadBucketCommand,
   CreateBucketCommand,
   PutObjectCommand,
@@ -48,6 +49,68 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // that caller would currently have ZERO size enforcement at all.
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024 // 10MB
 
+// How long a call to the storage server may take before it is abandoned,
+// in milliseconds. Without these, the SDK waits FOREVER: a storage server
+// that accepts a connection and never answers would keep the HTTP request
+// that triggered the call (an upload, say) open with it, and the browser
+// would show "Uploading…" for good.
+//   - connectionTimeout: opening the connection. Storage runs next to the
+//     backend (same machine, same Docker network): if it can't connect in
+//     5 s, it's down, and waiting longer won't change that.
+//   - requestTimeout: the whole exchange, sending the body included. A 5 MB
+//     photo crosses a local network in well under a second; 30 s leaves a
+//     wide margin for a slow disk or a busy server, while still turning a
+//     server that never answers into an ERROR the caller can handle — the
+//     program-photo upload, for one, then deletes the files it already
+//     stored (its compensating action) and answers a 500.
+export const STORAGE_TIMEOUTS = {
+  connectionTimeout: 5_000,
+  requestTimeout: 30_000,
+}
+
+// The S3 client's configuration, apart from the class so a test can build a
+// client with the SAME settings but shorter timeouts (waiting 30 s in a unit
+// test would be absurd).
+export function storageClientConfig(
+  timeouts: typeof STORAGE_TIMEOUTS = STORAGE_TIMEOUTS,
+): S3ClientConfig {
+  return {
+    endpoint: `http://${process.env.STORAGE_ENDPOINT ?? 'localhost'}:${process.env.STORAGE_PORT ?? 9000}`,
+    region: 'us-east-1',
+    credentials: {
+      accessKeyId: process.env.RUSTFS_ACCESS_KEY ?? 'rustfsadmin',
+      secretAccessKey: process.env.RUSTFS_SECRET_KEY ?? 'rustfsadmin',
+    },
+    // AWS S3 addresses buckets via subdomains (bucket.s3.amazonaws.com),
+    // relying on AWS's own wildcard DNS. Self-hosted S3-compatible servers
+    // don't have that DNS setup, so they address buckets via the URL PATH
+    // instead (localhost:9000/stride/...). forcePathStyle is what tells the
+    // SDK to use that addressing style — required for any self-hosted target.
+    forcePathStyle: true,
+    // By default the SDK adds "Expect: 100-continue" to every request whose
+    // body is 2 MB or more: it sends only the HEADERS, and waits for the
+    // server to answer "100 Continue" before sending the body — so a server
+    // that would refuse the request (bad credentials, no such bucket) can do
+    // it before megabytes cross the network. If the server doesn't send
+    // that "100 Continue", Node waits a fixed 6 SECONDS and then sends the
+    // body anyway. Every phone photo is over 2 MB: 6 s each, one after the
+    // other — 30 s for five photos, a page that looks stuck.
+    // The saving is worthless here: storage is on the local network, and
+    // the backend already checked everything (size, type, permissions)
+    // before calling it. So: always send the body straight away.
+    expectContinueHeader: false,
+    // The SDK's HTTP layer (NodeHttpHandler) takes the timeouts.
+    // throwOnRequestTimeout: without it, an exceeded requestTimeout is only
+    // logged as a warning and the call keeps waiting (the option was, for
+    // years, a socket IDLE timeout, so making it an error is opt-in).
+    requestHandler: {
+      connectionTimeout: timeouts.connectionTimeout,
+      requestTimeout: timeouts.requestTimeout,
+      throwOnRequestTimeout: true,
+    },
+  }
+}
+
 @Injectable()
 export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name)
@@ -55,20 +118,7 @@ export class StorageService implements OnModuleInit {
   private readonly bucket = 'stride'
 
   constructor() {
-    this.client = new S3Client({
-      endpoint: `http://${process.env.STORAGE_ENDPOINT ?? 'localhost'}:${process.env.STORAGE_PORT ?? 9000}`,
-      region: 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.RUSTFS_ACCESS_KEY ?? 'rustfsadmin',
-        secretAccessKey: process.env.RUSTFS_SECRET_KEY ?? 'rustfsadmin',
-      },
-      // AWS S3 addresses buckets via subdomains (bucket.s3.amazonaws.com),
-      // relying on AWS's own wildcard DNS. Self-hosted S3-compatible servers
-      // don't have that DNS setup, so they address buckets via the URL PATH
-      // instead (localhost:9000/stride/...). forcePathStyle is what tells the
-      // SDK to use that addressing style — required for any self-hosted target.
-      forcePathStyle: true,
-    })
+    this.client = new S3Client(storageClientConfig())
   }
 
   async onModuleInit() {
