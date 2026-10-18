@@ -65,6 +65,7 @@ import { addDays, utcToday } from '../src/common/calendar-date'
 import {
   seedAttempts,
   seedSessionDays,
+  seedSessionScores,
   seedSessionWorkouts,
 } from './seed/session-history'
 import { CreateAssignedProgramDto } from '../src/assigned-programs/dto/create-assigned-program.dto'
@@ -481,10 +482,15 @@ async function run(): Promise<void> {
         program.schedules[0],
         sessions,
       )
+      // Each session's check-in and check-out (the progress page's charts,
+      // 2026-10-18): the dataset's scores, paired with the sessions by
+      // position — seedSessionScores refuses a list of the wrong length.
+      const scores = seedSessionScores(sessions.length, assignment.scores)
       for (const [index, { day, countsFor }] of sessions.entries()) {
         const workout = program.workouts.find(
           (w) => w.id === workoutIds[index],
         )!
+        const { painBefore, painAfter, mobilityAfter } = scores[index]
         // counts_for: set only for a session done early or half of a swap
         // (the day it fulfils).
         const {
@@ -492,12 +498,23 @@ async function run(): Promise<void> {
         } = await owner.query<{ id: number }>(
           `INSERT INTO sessions
              (assigned_program_id, workout_id, patient_id, scheduled_date, local_date,
-              counts_for, started_at, completed_at, total_duration_in_seconds, status)
+              counts_for, started_at, completed_at, total_duration_in_seconds, status,
+              pain_before, pain_after, mobility_after)
            VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4, $5,
                    $4::date + time '17:30' AT TIME ZONE 'UTC',
-                   $4::date + time '18:00' AT TIME ZONE 'UTC', 1800, 'completed')
+                   $4::date + time '18:00' AT TIME ZONE 'UTC', 1800, 'completed',
+                   $6, $7, $8)
            RETURNING id`,
-          [program.id, workout.id, program.patientId, day, countsFor],
+          [
+            program.id,
+            workout.id,
+            program.patientId,
+            day,
+            countsFor,
+            painBefore,
+            painAfter,
+            mobilityAfter,
+          ],
         )
         for (const exercise of program.exercises.filter(
           (e) => e.workoutId === workout.id,
@@ -529,7 +546,7 @@ async function run(): Promise<void> {
       // ask for (0037): a skip has no start and no checklist, ends at 07:30
       // UTC (before the day's usual session); a stopped session started at
       // 17:30 and ended at 17:45, with its checklist — the first exercise
-      // ticked, the rest not — and the pain it was stopped with. Each does
+      // ticked, the rest not — and the pain it started and was stopped with. Each does
       // the day's workout (seedSessionWorkouts, as for a session done on
       // its own day).
       const attempts = seedAttempts(
@@ -567,10 +584,11 @@ async function run(): Promise<void> {
         } = await owner.query<{ id: number }>(
           `INSERT INTO sessions
              (assigned_program_id, workout_id, patient_id, scheduled_date,
-              local_date, status, started_at, ended_at, end_reason, pain_after)
+              local_date, status, started_at, ended_at, end_reason, pain_before,
+              pain_after)
            VALUES ($1, $2, $3, $4::date + time '17:30' AT TIME ZONE 'UTC', $4,
                    'incomplete', $4::date + time '17:30' AT TIME ZONE 'UTC',
-                   $4::date + time '17:45' AT TIME ZONE 'UTC', $5, $6)
+                   $4::date + time '17:45' AT TIME ZONE 'UTC', $5, $6, $7)
            RETURNING id`,
           [
             program.id,
@@ -578,6 +596,7 @@ async function run(): Promise<void> {
             program.patientId,
             attempt.day,
             attempt.reason,
+            attempt.painBefore,
             attempt.painAfter,
           ],
         )

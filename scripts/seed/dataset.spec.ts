@@ -20,6 +20,7 @@ import { summarizeSchedule } from '../../src/assigned-programs/schedule/schedule
 import {
   seedAttempts,
   seedSessionDays,
+  seedSessionScores,
   seedSessionWorkouts,
 } from './session-history'
 import { readFileSync } from 'node:fs'
@@ -304,6 +305,73 @@ describe('the seed dataset', () => {
       }
     },
   )
+
+  // The progress page (2026-10-18): one set of scores per seeded session
+  // — whatever weekday the seed runs on, since seed-dev pairs them by
+  // position and seedSessionScores throws on a mismatch — and each a score
+  // the database's CHECKs accept (an integer 0–10) or no answer.
+  it.each([20, 21, 22, 23, 24, 25, 26])(
+    'gives every program one set of valid scores per seeded session (seed run on Oct %i)',
+    (dayOfMonth) => {
+      const today = `2026-10-${dayOfMonth}`
+      for (const assignment of ASSIGNED_PROGRAMS) {
+        const start = addDays(today, -assignment.startsDaysAgo)
+        const sessions = seedSessionDays(
+          start,
+          today,
+          assignment.schedule,
+          assignment.history,
+        )
+        expect(() =>
+          seedSessionScores(sessions.length, assignment.scores),
+        ).not.toThrow()
+      }
+    },
+  )
+
+  it('gives only scores from 0 to 10', () => {
+    const values = ASSIGNED_PROGRAMS.flatMap((a) => [
+      ...(a.scores ?? []).flatMap((s) => [
+        s.painBefore,
+        s.painAfter,
+        s.mobilityAfter,
+      ]),
+      ...(a.history.kind === 'weekdays' && a.history.stoppedBeforeMakeUp
+        ? [
+            a.history.stoppedBeforeMakeUp.painBefore,
+            a.history.stoppedBeforeMakeUp.painAfter,
+          ]
+        : []),
+    ])
+    for (const value of values) {
+      if (value !== null) {
+        expect(Number.isInteger(value)).toBe(true)
+        expect(value).toBeGreaterThanOrEqual(0)
+        expect(value).toBeLessThanOrEqual(10)
+      }
+    }
+  })
+
+  // What the demo is for: the charts' cases, each in the data — an
+  // unanswered question (a gap in a line) and a session that made the pain
+  // worse (after above before).
+  it('includes an unanswered question and a session that made pain worse', () => {
+    const all = ASSIGNED_PROGRAMS.flatMap((a) => a.scores ?? [])
+    expect(all.some((s) => s.painBefore !== null && s.painAfter === null)).toBe(
+      true,
+    )
+    expect(all.some((s) => s.painBefore === null && s.painAfter !== null)).toBe(
+      true,
+    )
+    expect(
+      all.some(
+        (s) =>
+          s.painBefore !== null &&
+          s.painAfter !== null &&
+          s.painAfter > s.painBefore,
+      ),
+    ).toBe(true)
+  })
 
   // Step 2b-iii: only a closed program can be assigned again (the service
   // refuses an active one, and the seed would stop halfway) — and the demo

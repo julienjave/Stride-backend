@@ -60,8 +60,8 @@ export type SeedHistory =
   //
   // ATTEMPTS (Phase 4 step 1b — seedAttempts below): `skippedMissed` — the
   // MISSED day was skipped, with that reason; `stoppedBeforeMakeUp` — on the
-  // day later MADE UP, a session was started and stopped (that reason, that
-  // pain after), then made up the next day.
+  // day later MADE UP, a session was started and stopped (that reason, the
+  // pain it started with and was stopped with), then made up the next day.
   | {
       kind: 'weekdays'
       madeUpIndex: number
@@ -69,7 +69,11 @@ export type SeedHistory =
       doneEarlyIndex?: number
       swappedWeek?: number
       skippedMissed?: PatientEndReason
-      stoppedBeforeMakeUp?: { reason: PatientEndReason; painAfter: number }
+      stoppedBeforeMakeUp?: {
+        reason: PatientEndReason
+        painBefore: number
+        painAfter: number
+      }
     }
   // Any schedule: sessions on these days after the start (0 = the start).
   | { kind: 'days-after-start'; days: number[] }
@@ -189,12 +193,14 @@ function scheduledDaysBefore(
 
 // One seeded ATTEMPT (Phase 4 step 1b): a session skipped, or started and
 // stopped — on a past day, with the patient's reason (and, for a stopped
-// one, how much it hurt afterwards). They count for nothing; the summary
+// one, how much it hurt when it started and when it was stopped — the
+// progress page's charts, 2026-10-18). They count for nothing; the summary
 // shows them as labels ("Missed · skipped (illness)").
 export interface SeedAttempt {
   day: string
   status: 'skipped' | 'incomplete'
   reason: PatientEndReason
+  painBefore: number | null
   painAfter: number | null
 }
 
@@ -223,6 +229,7 @@ export function seedAttempts(
       day: madeUpDay,
       status: 'incomplete',
       reason: history.stoppedBeforeMakeUp.reason,
+      painBefore: history.stoppedBeforeMakeUp.painBefore,
       painAfter: history.stoppedBeforeMakeUp.painAfter,
     })
   }
@@ -232,6 +239,7 @@ export function seedAttempts(
       day: missedDay,
       status: 'skipped',
       reason: history.skippedMissed,
+      painBefore: null,
       painAfter: null,
     })
   }
@@ -281,4 +289,41 @@ export function seedSessionWorkouts(
     doneInWeek.set(week, slot + 1)
     return rotation[(week * timesPerWeek + slot) % rotation.length]
   })
+}
+
+// The check-in and check-out scores of one seeded COMPLETED session (the
+// progress page, 2026-10-18): pain before and after (0–10, 0 = no pain) and
+// mobility after (0–10, 10 = moving freely) — each optional, as in the app
+// (decisions §6), so `null` = the patient didn't answer that question.
+export interface SeedScores {
+  painBefore: number | null
+  painAfter: number | null
+  mobilityAfter: number | null
+}
+
+const NO_SCORES: SeedScores = {
+  painBefore: null,
+  painAfter: null,
+  mobilityAfter: null,
+}
+
+// The scores for each of a program's seeded sessions, in day order: the
+// dataset's list, one entry per session — or none answered when the dataset
+// gives no list. A list of the wrong length throws (like a history that
+// doesn't fit its schedule): pairing scores with sessions by position only
+// means something if there is exactly one per session, and a silent
+// mismatch would put a session's pain on its neighbour.
+export function seedSessionScores(
+  sessionCount: number,
+  scores: SeedScores[] | undefined,
+): SeedScores[] {
+  if (scores === undefined) {
+    return Array.from({ length: sessionCount }, () => NO_SCORES)
+  }
+  if (scores.length !== sessionCount) {
+    throw new Error(
+      `${scores.length} sets of scores for ${sessionCount} seeded sessions: give one per session`,
+    )
+  }
+  return scores
 }

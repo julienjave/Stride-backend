@@ -98,16 +98,25 @@ made, through the app's own code); the seed announces it just before.
     - week 3: a **swap** — the first two scheduled days doing different
       workouts exchange them, each session counting for the other day.
     The summary's totals count them: **1 skipped, 1 incomplete**.
+    **Pain and mobility** (the program page's charts, the home's trend):
+    pain before easing from 6 to 3, pain after lower at each session,
+    mobility rising from 4 to 7; the session stopped for pain: 5 before, 7
+    after; the session done early answered the check-in only (a gap in the
+    "after" line).
   - *Lower Back Mobility — Jo*, assigned by **Sam**, started **10 days
     before** the seed ran, **3 times a week** — so its program weeks start
     on the weekday it started, not on Monday. The template has a single
     workout, so every session is A. First program week: **2 of 3, missed**;
     second week: **1 so far, in progress** (the seed runs on its 4th day).
+    Its second session skipped the pain check-in (a gap in the "before"
+    line).
   - *Knee Rehab — Robin*, assigned by **Sam**, started **21 days before**
     the seed ran, **twice a week** (A, then B): two weeks done, then
     nothing — and **cancelled** on the day the seed ran. It had sessions, so
     it stays, read-only, ending the day before. *Knee Rehab — Robin, block
     2* **continues it** ("Assign again"): its workouts and exercises copied
-    from the cancelled one, starting the day the seed ran.
+    from the cancelled one, starting the day the seed ran. Its sessions all
+    made the pain **worse** (3→5, 4→5, 3→4, 4→6) — the gap between "before"
+    and "after" the charts exist to show; look at it as **Sam**.
   - No program is paused; to try a pause, add a schedule version of type
     `paused` from today (and another one later to resume).

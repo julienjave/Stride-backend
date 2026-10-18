@@ -18,6 +18,7 @@
 import {
   seedAttempts,
   seedSessionDays,
+  seedSessionScores,
   seedSessionWorkouts,
 } from './session-history'
 
@@ -356,7 +357,11 @@ describe('seedAttempts', () => {
     madeUpIndex: 1,
     missedIndex: 3,
     skippedMissed: 'illness' as const,
-    stoppedBeforeMakeUp: { reason: 'pain' as const, painAfter: 7 },
+    stoppedBeforeMakeUp: {
+      reason: 'pain' as const,
+      painBefore: 5,
+      painAfter: 7,
+    },
   }
 
   // Scheduled days before Mon 26: 12, 14, 16, 19, 21, 23 — index 1 (Wed 14)
@@ -364,8 +369,20 @@ describe('seedAttempts', () => {
   // order they're planned in.
   it('stops a session on the day made up, and skips the missed day', () => {
     expect(seedAttempts(d('12'), d('26'), MWF, history)).toStrictEqual([
-      { day: d('14'), status: 'incomplete', reason: 'pain', painAfter: 7 },
-      { day: d('19'), status: 'skipped', reason: 'illness', painAfter: null },
+      {
+        day: d('14'),
+        status: 'incomplete',
+        reason: 'pain',
+        painBefore: 5,
+        painAfter: 7,
+      },
+      {
+        day: d('19'),
+        status: 'skipped',
+        reason: 'illness',
+        painBefore: null,
+        painAfter: null,
+      },
     ])
   })
 
@@ -417,5 +434,36 @@ describe('seedAttempts', () => {
         history,
       ),
     ).toThrow('A weekdays history needs a weekdays schedule')
+  })
+})
+
+// The progress page (2026-10-18): the scores of each seeded session.
+describe('seedSessionScores', () => {
+  const scores = [
+    { painBefore: 6, painAfter: 4, mobilityAfter: 5 },
+    { painBefore: 5, painAfter: null, mobilityAfter: null },
+  ]
+
+  it('gives the dataset its list, one entry per session', () => {
+    expect(seedSessionScores(2, scores)).toBe(scores)
+  })
+
+  it('gives every session no answer when the dataset has no list', () => {
+    expect(seedSessionScores(2, undefined)).toStrictEqual([
+      { painBefore: null, painAfter: null, mobilityAfter: null },
+      { painBefore: null, painAfter: null, mobilityAfter: null },
+    ])
+    expect(seedSessionScores(0, undefined)).toStrictEqual([])
+  })
+
+  // Paired by position: one too few or too many would shift every score
+  // onto the wrong session.
+  it('refuses a list of the wrong length', () => {
+    expect(() => seedSessionScores(3, scores)).toThrow(
+      '2 sets of scores for 3 seeded sessions: give one per session',
+    )
+    expect(() => seedSessionScores(1, scores)).toThrow(
+      '2 sets of scores for 1 seeded sessions: give one per session',
+    )
   })
 })

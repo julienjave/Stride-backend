@@ -24,7 +24,7 @@
 // never receive mail, so even a misconfigured email transport can't write
 // to a stranger.
 
-import type { SeedHistory } from './session-history'
+import type { SeedHistory, SeedScores } from './session-history'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -426,6 +426,15 @@ export type SeedSchedule =
 // done, made-up, done-early, swapped and missed days at once. Each session
 // does the workout the schedule asks for (seedSessionWorkouts).
 //
+// scores (the progress page, 2026-10-18): each completed session's pain
+// before / after and mobility after, in day order — one entry per session
+// of `history` (seedSessionScores refuses any other count), `null` where
+// the patient didn't answer. Written so each chart has something to say:
+// pain easing over the weeks, each session relieving it a little, mobility
+// rising — and the cases the charts must draw honestly: a question left
+// unanswered (a gap), sessions that made pain WORSE (Robin's: the reason
+// before / after are never averaged, decisions §6).
+//
 // close (step 2b-iii): the program is then cancelled or completed, on the
 // day the seed runs, through the real service (so its end date follows the
 // rules: yesterday). assignAgain: then continued as a new program ("Assign
@@ -439,6 +448,7 @@ export const ASSIGNED_PROGRAMS: {
   startsDaysAgo: number
   schedule: SeedSchedule
   history: SeedHistory
+  scores?: SeedScores[]
   close?: 'cancel' | 'complete'
   assignAgain?: { title: string; schedule: SeedSchedule }
 }[] = [
@@ -472,8 +482,21 @@ export const ASSIGNED_PROGRAMS: {
       doneEarlyIndex: 4,
       swappedWeek: 2,
       skippedMissed: 'illness',
-      stoppedBeforeMakeUp: { reason: 'pain', painAfter: 7 },
+      stoppedBeforeMakeUp: { reason: 'pain', painBefore: 5, painAfter: 7 },
     },
+    // Its 8 sessions (the 9 scheduled days but the missed one): pain easing
+    // from 6 to 3 before, and lower after each session; the session done
+    // early answered the check-in only (no pain after, no mobility: gaps).
+    scores: [
+      { painBefore: 6, painAfter: 5, mobilityAfter: 4 },
+      { painBefore: 5, painAfter: 4, mobilityAfter: 4 },
+      { painBefore: 6, painAfter: 4, mobilityAfter: 5 },
+      { painBefore: 5, painAfter: null, mobilityAfter: null },
+      { painBefore: 5, painAfter: 3, mobilityAfter: 5 },
+      { painBefore: 4, painAfter: 3, mobilityAfter: 6 },
+      { painBefore: 4, painAfter: 2, mobilityAfter: 6 },
+      { painBefore: 3, painAfter: 2, mobilityAfter: 7 },
+    ],
   },
   {
     patient: 'jo',
@@ -489,6 +512,12 @@ export const ASSIGNED_PROGRAMS: {
     // First program week: 2 of 3 (one missed). Second week (today is its
     // 4th day): 1 so far, in progress.
     history: { kind: 'days-after-start', days: [0, 2, 8] },
+    // The second session skipped the check-in (no pain before: a gap).
+    scores: [
+      { painBefore: 7, painAfter: 6, mobilityAfter: 3 },
+      { painBefore: null, painAfter: 6, mobilityAfter: 4 },
+      { painBefore: 6, painAfter: 5, mobilityAfter: 4 },
+    ],
   },
   {
     patient: 'robin',
@@ -501,6 +530,14 @@ export const ASSIGNED_PROGRAMS: {
     schedule: { type: 'times_per_week', timesPerWeek: 2 },
     // Two weeks done (A and B each), then nothing: the third week missed.
     history: { kind: 'days-after-start', days: [0, 3, 8, 10] },
+    // Every session made the pain WORSE — the before / after gap the charts
+    // exist to show (an average of the two would hide it).
+    scores: [
+      { painBefore: 3, painAfter: 5, mobilityAfter: 5 },
+      { painBefore: 4, painAfter: 5, mobilityAfter: 5 },
+      { painBefore: 3, painAfter: 4, mobilityAfter: 4 },
+      { painBefore: 4, painAfter: 6, mobilityAfter: 4 },
+    ],
     // Cancelled (it has sessions, so it stays, read-only) and continued.
     close: 'cancel',
     assignAgain: {
