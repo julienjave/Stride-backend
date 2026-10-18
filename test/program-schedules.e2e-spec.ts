@@ -32,7 +32,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
-import { addDays, utcToday } from '../src/common/calendar-date'
+import { addDays, isoWeekday, utcToday } from '../src/common/calendar-date'
 
 // Assigned programs' schedules (decisions §5, "Settled 2026-10-09"):
 //   1. creating a program stores its first schedule version — its days
@@ -1163,8 +1163,36 @@ describe('Program schedules (e2e)', () => {
         workoutId: a,
         forDay: null,
         programWeek: 1,
+        until: null,
       })
       expect(res.body.pauses).toEqual([])
+    })
+
+    // A catch-up's last day (2026-10-17, the Sessions hub) reaches the API —
+    // and past the days the summary covers: an open-ended program started
+    // 3 days ago covers up to 3 days from now (the end of its program week),
+    // but scheduled only on YESTERDAY's weekday, yesterday's missed session
+    // can be caught up until the day before that weekday comes again — 5
+    // days from now.
+    it("gives a catch-up's last day, even past the days covered", async () => {
+      const yesterday = addDays(today, -1)
+      const program = await createProgram({
+        startsIn: -3,
+        schedule: {
+          type: 'weekdays',
+          days: [{ weekday: isoWeekday(yesterday), workoutIndex: 0 }],
+        },
+      })
+
+      const res = await summaryOf(patient, program.id)
+      expect(res.status).toBe(200)
+      expect(res.body.lastDay).toBe(addDays(today, 3))
+      expect(res.body.nextWorkout).toEqual({
+        workoutId: program.workouts[0].id,
+        forDay: yesterday,
+        programWeek: null,
+        until: addDays(today, 5),
+      })
     })
 
     // The sessions reach the module WITH their workout: a rotation of B

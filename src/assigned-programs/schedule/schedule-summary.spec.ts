@@ -1108,6 +1108,7 @@ describe('next workout', () => {
       workoutId: B,
       forDay: d('14'),
       programWeek: null,
+      until: d('15'),
     })
   })
 
@@ -1125,6 +1126,7 @@ describe('next workout', () => {
       workoutId: B,
       forDay: d('14'),
       programWeek: null,
+      until: d('15'),
     })
   })
 
@@ -1140,6 +1142,7 @@ describe('next workout', () => {
       workoutId: A,
       forDay: d('16'),
       programWeek: null,
+      until: null,
     })
   })
 
@@ -1156,6 +1159,7 @@ describe('next workout', () => {
       workoutId: B,
       forDay: null,
       programWeek: 1,
+      until: null,
     })
   })
 
@@ -1172,6 +1176,7 @@ describe('next workout', () => {
       workoutId: B,
       forDay: null,
       programWeek: 2,
+      until: null,
     })
   })
 
@@ -1192,6 +1197,7 @@ describe('next workout', () => {
       workoutId: B,
       forDay: d('21'),
       programWeek: null,
+      until: null,
     })
   })
 
@@ -1203,6 +1209,95 @@ describe('next workout', () => {
       today: '20',
     })
     expect(s.nextWorkout).toBeNull()
+  })
+})
+
+// `until` (2026-10-17, the Sessions hub): the last day a DUE day can still
+// be done on time — the day before whatever closes its make-up window.
+// Each case is built so that a wrong rule gives a different day.
+describe("next workout's until", () => {
+  const MON = [1]
+  const untilOf = (s: ScheduleSummary) => s.nextWorkout?.until
+
+  // The case the look-ahead exists for: an open-ended program starting on a
+  // Wednesday, Mondays only — program weeks run Wednesday to Tuesday. Monday
+  // 19 missed, today Tuesday 20: the summary stops at 20 (the end of the
+  // program week), but the window runs to Sunday 25, the day before the
+  // next Monday. Reading the walk's windowEnd would say 20.
+  it('runs past the last day covered, for an open-ended program', () => {
+    const s = summarize({
+      start: '14',
+      versions: [weekdays(MON, '14')],
+      today: '20',
+    })
+    expect(s.lastDay).toBe(d('20'))
+    expect(s.nextWorkout).toStrictEqual({
+      workoutId: A,
+      forDay: d('19'),
+      programWeek: null,
+      until: d('25'),
+    })
+  })
+
+  // Mondays only, so without what closes it the window would run to Sunday
+  // 18. Each of these closes it earlier.
+  it('ends the day before a pause', () => {
+    const s = summarize({
+      start: '12',
+      versions: [weekdays(MON, '12'), paused('15')],
+      today: '13',
+    })
+    expect(untilOf(s)).toBe(d('14'))
+  })
+
+  it('ends the day before a change to "N a week"', () => {
+    const s = summarize({
+      start: '12',
+      versions: [weekdays(MON, '12'), perWeek(2, '15')],
+      today: '13',
+    })
+    expect(untilOf(s)).toBe(d('14'))
+  })
+
+  // A later specific-days version scheduling Thursday instead: the window
+  // ends on Wednesday — the day a LATER version schedules, not only the
+  // missed day's own version.
+  it("ends the day before a later version's scheduled day", () => {
+    const s = summarize({
+      start: '12',
+      versions: [weekdays(MON, '12'), weekdays([4], '15')],
+      today: '13',
+    })
+    expect(untilOf(s)).toBe(d('14'))
+  })
+
+  it('never runs past the end date', () => {
+    const s = summarize({
+      start: '12',
+      end: '16',
+      versions: [weekdays(MON, '12')],
+      today: '13',
+    })
+    expect(untilOf(s)).toBe(d('16'))
+  })
+
+  // The day it names is the day the summary itself still calls 'due': on
+  // `until` the day is due, the next day it's missed. (Mondays only, Monday
+  // 12 not done: until Sunday 18 — and on Monday 19 the 12th is missed.)
+  it('agrees with the day the summary stops calling the day due', () => {
+    const on = summarize({
+      start: '12',
+      versions: [weekdays(MON, '12')],
+      today: '18',
+    })
+    expect(untilOf(on)).toBe(d('18'))
+    expect(on.days[0]).toMatchObject({ date: d('12'), state: 'due' })
+    const after = summarize({
+      start: '12',
+      versions: [weekdays(MON, '12')],
+      today: '19',
+    })
+    expect(after.days[0]).toMatchObject({ date: d('12'), state: 'missed' })
   })
 })
 
@@ -1532,6 +1627,7 @@ describe('swaps', () => {
       workoutId: A,
       forDay: d('16'),
       programWeek: null,
+      until: null,
     })
   })
 })

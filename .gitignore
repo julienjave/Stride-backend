@@ -60,6 +60,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 docs/extra/
 docs/guides/
 backend-codebase-snapshot.md
+backend-codebase-snapshot.zip
 backend-documentation-snapshot.md
 removed/
 *.tsbuildinfo

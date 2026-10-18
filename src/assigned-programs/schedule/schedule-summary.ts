@@ -294,10 +294,21 @@ export interface Pause {
 // specific day: the workout and the day it's for (a make-up names the
 // MISSED day). A weekly count: the next workout the week still needs, and
 // the program week.
+//
+// `until` (added 2026-10-17, for the patient's Sessions hub): for a day
+// still DUE — today's own session, or a missed day whose make-up window is
+// open — the LAST day it can still be done on time: the day before the
+// next scheduled day (or a pause, or a change to "N a week"), never past the
+// end date. "Catch up: Wednesday's B · Strength, until Thu" — and the hub's
+// warning that a late make-up done on that last day leaves it missed. null
+// for an upcoming day (nothing to catch up yet) and a weekly count (no
+// window: each week stands alone). The late make-ups' own `until` is the
+// same idea after the window has closed (LateMakeUp below).
 export interface NextWorkout {
   workoutId: number
   forDay: string | null
   programWeek: number | null
+  until: string | null
 }
 
 // A missed day that may still be made up late: the day, its workout, and
@@ -916,12 +927,48 @@ export function summarizeSchedule(
   // or in progress is today; for something upcoming, its day or week start.
   // On a tie (can't happen today: one version is in force on a given day),
   // the scheduled day wins.
+  //
+  // A due day's `until`: the last day of its make-up window, looked up
+  // AHEAD rather than read from `windowEnd`. The walk stops at lastDay, and
+  // for an open-ended program that's the end of the current program week:
+  // a window still open there was given lastDay (step 2's last line), which
+  // is the last day COVERED, not the window's real end — the next scheduled
+  // day can lie beyond it. So this asks the walk's own closing rule
+  // (closeWindow) of the days after the missed one: the window ends the day
+  // before the first day that is scheduled, or under another kind of
+  // schedule (a pause, "N a week") — and never past the end date. Versions
+  // are known for every day, so days past lastDay can be asked too (as
+  // scheduledWorkoutOn already does for sessions done early). A 'weekdays'
+  // version always has at least one day (the service refuses an empty one),
+  // so a closing day comes within a week; the bound only keeps bad input
+  // from looping without end.
+  const windowLastDay = (missedDay: string): string => {
+    let last = missedDay
+    for (let i = 0; i < 366; i++) {
+      const day = addDays(last, 1)
+      if (endDate !== null && day > endDate) break
+      if (
+        versionOn(versions, day)?.type !== 'weekdays' ||
+        scheduledWorkoutOn(day) !== undefined
+      ) {
+        break
+      }
+      last = day
+    }
+    return last
+  }
   const candidates: { when: string; next: NextWorkout }[] = []
   for (const day of days) {
     if (day.state === 'due' || day.state === 'upcoming') {
+      const due = day.state === 'due'
       candidates.push({
-        when: day.state === 'due' ? today : day.date,
-        next: { workoutId: day.workoutId, forDay: day.date, programWeek: null },
+        when: due ? today : day.date,
+        next: {
+          workoutId: day.workoutId,
+          forDay: day.date,
+          programWeek: null,
+          until: due ? windowLastDay(day.date) : null,
+        },
       })
     }
   }
@@ -935,6 +982,7 @@ export function summarizeSchedule(
         workoutId: open.workoutId,
         forDay: null,
         programWeek: week.programWeek,
+        until: null,
       },
     })
   }
