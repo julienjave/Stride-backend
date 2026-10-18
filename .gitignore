@@ -64,3 +64,4 @@ backend-codebase-snapshot.zip
 backend-documentation-snapshot.md
 removed/
 *.tsbuildinfo
+devTools/
