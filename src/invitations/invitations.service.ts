@@ -28,7 +28,7 @@ import {
 } from '@nestjs/common'
 import { createHash, randomBytes } from 'node:crypto'
 import * as bcrypt from 'bcrypt'
-import { and, asc, desc, eq, gt, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, isNull, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
@@ -56,6 +56,23 @@ import { invitationStatus, type InvitationStatus } from './invitation-status'
 // How long an invitation link works (design decisions §3). The recipient
 // isn't expecting the email, so longer than a password reset's 1 hour.
 export const INVITATION_VALIDITY_DAYS = 7
+
+// When an invitation issued at `from` stops working: EXACTLY
+// INVITATION_VALIDITY_DAYS × 24 hours later, whatever the time zone.
+//
+// Why hours and not days (fixed 2026-10-18): adding `days => 7` to a
+// timestamptz is CALENDAR arithmetic in the database session's time zone —
+// "the same wall-clock time, 7 dates later". Across a daylight-saving change
+// those are not 168 hours: in Europe/Paris, an invitation sent the week
+// before the clocks go back (late October) lived 169 hours, one sent before
+// they go forward (late March) 167. Hours are fixed-length units, so the
+// lifetime no longer depends on the server's zone setting (UTC in Docker by
+// default — which is why it only showed in a sandbox running on Paris time).
+// A function of `from` (rather than now() written inside) so the e2e test
+// can evaluate it at a fixed date next to a DST change, on any day it runs.
+export function invitationExpiry(from: SQL): SQL {
+  return sql`${from} + make_interval(hours => ${INVITATION_VALIDITY_DAYS * 24})`
+}
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -299,7 +316,7 @@ export class InvitationsService {
         // database's (Docker on Windows can drift by seconds) can't create
         // an invitation that expires early, or one that fails the
         // "expires after creation" CHECK.
-        expiresAt: sql`now() + make_interval(days => ${INVITATION_VALIDITY_DAYS})`,
+        expiresAt: invitationExpiry(sql`now()`),
       })
       .returning()
     return { invitation, token }

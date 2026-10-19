@@ -87,6 +87,10 @@ export interface PractitionerAccount extends AccountBase {
   kind: 'practitioner'
   licenseNumber: string
   specialties: string[]
+  // What the patient's Team page shows under the name (decided 2026-10-18).
+  // Optional, like the real profile field: Blake is left without one — he
+  // is on Robin's care team, so the page's no-bio case shows straight away.
+  bio?: string
   invitation: 'accepted'
   // Roles granted on top of practitioner (the multi-role account).
   alsoAdmin?: { position: string }
@@ -158,6 +162,7 @@ export const ACCOUNTS: SeedAccount[] = [
     lastName: 'Reyes',
     licenseNumber: 'PT-SEED-001',
     specialties: ['Sports injuries'],
+    bio: 'Sports injuries of every kind, from sprained ankles to torn ligaments. Before Riverside I worked with a regional swimming team.',
     alsoAdmin: { position: 'Lead Physiotherapist' },
     clinics: ['riverside'],
     invitation: 'accepted',
@@ -171,6 +176,7 @@ export const ACCOUNTS: SeedAccount[] = [
     lastName: 'Chen',
     licenseNumber: 'PT-SEED-002',
     specialties: ['Knee rehabilitation', 'Post-surgery'],
+    bio: 'Physiotherapist for twelve years, most of them helping people back on their feet after knee surgery. I build programs around what you want to get back to — stairs, running, your garden.',
     clinics: ['riverside'],
     invitation: 'accepted',
     shows:
@@ -184,6 +190,7 @@ export const ACCOUNTS: SeedAccount[] = [
     lastName: 'Okafor',
     licenseNumber: 'PT-SEED-003',
     specialties: ['Lower back'],
+    bio: 'I work with people living with back pain, from a first episode to pain that has lasted years. Expect gentle, regular movement and honest explanations of what is going on.',
     clinics: ['riverside'],
     invitation: 'accepted',
     shows:

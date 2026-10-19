@@ -15,7 +15,10 @@ import { AppModule } from '../src/app.module'
 import { getAppDatabaseUrl, getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
-import { InvitationsService } from '../src/invitations/invitations.service'
+import {
+  InvitationsService,
+  invitationExpiry,
+} from '../src/invitations/invitations.service'
 import {
   InMemoryEmailTransport,
   findLink,
@@ -727,6 +730,32 @@ describe('Invitations (e2e)', () => {
   // (These tests used to count their calls against accept's, lookup's and
   // login's limits; the limits are off in the e2e suites since 2026-10-15 —
   // test/support/e2e-env.ts.)
+  // The lifetime must be 7 × 24 hours EVERY day of the year. The sending
+  // test below measures a real invitation, but only on the day it runs — it
+  // failed in a sandbox on Paris time the week before the clocks went back
+  // (2026-10-18). This one pins the dates next to both changes, so it fails
+  // on any day if the expiry goes back to calendar days.
+  describe("the invitation's lifetime", () => {
+    it.each([
+      ['the week before the clocks go back', '2031-10-22T09:00:00Z'],
+      ['the week before the clocks go forward', '2031-03-27T09:00:00Z'],
+    ])(
+      'is exactly 7 × 24 hours, even across a daylight-saving change (%s)',
+      async (_when, issuedAt) => {
+        const hours = await db.transaction(async (tx) => {
+          // A zone with daylight saving, for this transaction only (LOCAL).
+          await tx.execute(sql`SET LOCAL timezone = 'Europe/Paris'`)
+          const from = sql`${issuedAt}::timestamptz`
+          const { rows } = await tx.execute<{ hours: string }>(
+            sql`SELECT extract(epoch FROM ${invitationExpiry(from)} - ${from}) / 3600 AS hours`,
+          )
+          return Number(rows[0].hours)
+        })
+        expect(hours).toBe(7 * 24)
+      },
+    )
+  })
+
   describe('invitation endpoints', () => {
     let practitionerB: ReturnType<typeof agent>
 

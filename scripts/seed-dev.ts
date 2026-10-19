@@ -270,6 +270,8 @@ async function run(): Promise<void> {
           ? {
               licenseNumber: account.licenseNumber,
               specialties: account.specialties,
+              // Left out (not sent as undefined) when the dataset has none.
+              ...(account.bio !== undefined && { bio: account.bio }),
             }
           : { dateOfBirth: account.dateOfBirth }
 

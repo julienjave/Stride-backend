@@ -43,6 +43,7 @@ describe('Care team (e2e)', () => {
 
   let adminId: number
   let clinicXId: number
+  let clinicYId: number
   let practitionerAId: number
   let practitionerBId: number
   let practitionerCId: number
@@ -165,6 +166,7 @@ describe('Care team (e2e)', () => {
       .post('/clinics')
       .send({ name: 'Care Team Clinic Y', email: `ct-y-${stamp}@example.com` })
     expect(clinicY.status).toBe(201)
+    clinicYId = clinicY.body.id
 
     practitionerAId = await createUser(practitionerA, {
       email: `ct-pa-${stamp}@example.com`,
@@ -369,8 +371,6 @@ describe('Care team (e2e)', () => {
     })
 
     it("follows the PATIENT's clinics, not the caller's: a patient in two clinics brings in the other clinic's practitioners", async () => {
-      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body
-        .clinics[0].id
       const created = await admin.post('/users').send({
         email: `ct-patient3-${Date.now()}@example.com`,
         role: 'patient',
@@ -438,8 +438,6 @@ describe('Care team (e2e)', () => {
 
     it('leaves out deactivated practitioners, and names only the clinics a practitioner shares WITH THE PATIENT', async () => {
       const stamp = Date.now()
-      const clinicYId = (await admin.get(`/users/${patient2Id}`)).body
-        .clinics[0].id
       // Dan works at X and Y; patient1 attends X only.
       const dan = await admin.post('/users').send({
         email: `ct-pd-${stamp}@example.com`,
@@ -633,6 +631,123 @@ describe('Care team (e2e)', () => {
       }
     })
 
+    // What the patient's Team page reads (decided 2026-10-18): each
+    // practitioner's DIRECTORY fields — and nothing else. toStrictEqual on the
+    // whole entry, so any extra key (an email, a phone, the license number,
+    // the staff-only reason) fails the test.
+    it("gives the patient each practitioner's directory fields — and no contact details, license or reason", async () => {
+      // Alice writes her own profile (a practitioner may edit theirs)...
+      const profile = await practitionerA
+        .patch(`/users/${practitionerAId}`)
+        .send({
+          specialties: ['Knee', 'Sport'],
+          bio: 'Knees, mostly.',
+          phone: '555-0199',
+        })
+      expect(profile.status).toBe(200)
+      // ...and also works at clinic Y, which the patient doesn't attend: only
+      // the clinic they SHARE is "where they see you".
+      expect(
+        (
+          await admin
+            .post(`/clinics/${clinicYId}/members`)
+            .send({ userId: practitionerAId })
+        ).status,
+      ).toBe(201)
+
+      const res = await patient1.get(`/users/${patient1Id}/care-team`)
+      expect(res.status).toBe(200)
+      const alice = res.body.find(
+        (e: { practitioner: { id: number } }) =>
+          e.practitioner.id === practitionerAId,
+      )
+      expect(alice).toStrictEqual({
+        id: expect.any(Number),
+        patientId: patient1Id,
+        practitioner: {
+          id: practitionerAId,
+          firstName: 'Alice',
+          lastName: 'Practitioner',
+          avatarUrl: null,
+          specialties: ['Knee', 'Sport'],
+          bio: 'Knees, mostly.',
+        },
+        sharedClinics: [{ id: clinicXId, name: 'Care Team Clinic X' }],
+        startedAt: expect.any(String),
+        endsAt: null,
+        isActive: true,
+        createdBy: {
+          id: practitionerAId,
+          firstName: 'Alice',
+          lastName: 'Practitioner',
+        },
+        endedBy: null,
+      })
+      // Bob has no bio and no specialties (none were given at creation).
+      const bob = res.body.find(
+        (e: { practitioner: { id: number } }) =>
+          e.practitioner.id === practitionerBId,
+      )
+      expect(bob.practitioner).toStrictEqual({
+        id: practitionerBId,
+        firstName: 'Bob',
+        lastName: 'Practitioner',
+        avatarUrl: null,
+        specialties: [],
+        bio: null,
+      })
+    })
+
+    // A practitioner and a patient who meet in TWO clinics: both named, in
+    // name order — one query for the whole team still groups its rows per
+    // practitioner without losing any.
+    it('names every clinic a practitioner shares with the patient, in name order', async () => {
+      const created = await admin.post('/users').send({
+        email: `ct-patient4-${Date.now()}@example.com`,
+        role: 'patient',
+        firstName: 'Sasha',
+        lastName: 'Twoplaces',
+        dateOfBirth: '1980-02-02',
+        clinicId: clinicXId,
+      })
+      expect(created.status).toBe(201)
+      const patient4Id = created.body.id
+      expect(
+        (
+          await admin
+            .post(`/clinics/${clinicYId}/members`)
+            .send({ userId: patient4Id })
+        ).status,
+      ).toBe(201)
+      // Alice works at X and (since the test above) Y.
+      expect(
+        (await practitionerA.post(`/users/${patient4Id}/care-team`).send({}))
+          .status,
+      ).toBe(201)
+
+      const res = await admin.get(`/users/${patient4Id}/care-team`)
+      expect(res.body).toHaveLength(1)
+      expect(res.body[0].sharedClinics).toEqual([
+        { id: clinicXId, name: 'Care Team Clinic X' },
+        { id: clinicYId, name: 'Care Team Clinic Y' },
+      ])
+    })
+
+    it('keeps the reason for staff: the admin and a colleague still read it', async () => {
+      for (const who of [admin, practitionerB]) {
+        const res = await who.get(`/users/${patient1Id}/care-team`)
+        const alice = res.body.find(
+          (e: { practitioner: { id: number } }) =>
+            e.practitioner.id === practitionerAId,
+        )
+        expect(alice.reason).toBe('First assessment')
+        // Staff get the same directory fields as the patient.
+        expect(alice.sharedClinics).toEqual([
+          { id: clinicXId, name: 'Care Team Clinic X' },
+        ])
+      }
+    })
+
     it('hides it from a practitioner of another clinic', async () => {
       expect(
         (await practitionerC.get(`/users/${patient1Id}/care-team`)).status,
@@ -726,6 +841,8 @@ describe('Care team (e2e)', () => {
       expect(bobs[0]).toMatchObject({
         isActive: false,
         endedBy: { id: adminId },
+        // They share no clinic any more: the history names none.
+        sharedClinics: [],
       })
     })
   })

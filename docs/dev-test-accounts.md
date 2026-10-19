@@ -73,6 +73,12 @@ made, through the app's own code); the seed announces it just before.
 
 ## Content
 
+- **Practitioner profiles** (what a patient sees on **Team**): Morgan, Alex
+  and Sam each have specialties and a short bio; Blake has specialties but no
+  bio — log in as `robin@stride.test`, **Team → Blake Martin** to see a
+  profile without one. Each patient's team: **Pat** — Alex; **Jo** — Alex and
+  Sam; **Robin** — Sam (Riverside) and Blake (Harbour), each profile naming
+  the clinic they share.
 - **Alex's exercises:** *Terminal Knee Extension (band)* and *Heel Slides*.
 - **Alex's templates:** *Knee Rehab — Phase 1* and *Lower Back Mobility*,
   mixing Alex's exercises with library ones. The knee template has **two

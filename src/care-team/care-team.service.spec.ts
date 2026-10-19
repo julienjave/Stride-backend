@@ -14,6 +14,7 @@ import {
   DIRECTORY_RESULT_LIMIT,
   type Actor,
   type CareTeamEntry,
+  type PatientCareTeamEntry,
 } from './care-team.service'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { AuditService } from '../audit/audit.service'
@@ -55,18 +56,34 @@ function render(query: unknown) {
   return dialect.sqlToQuery(query as SQL)
 }
 
+// A reason is set (not null) so the tests can tell "removed for the
+// patient" from "there was none".
 function entry(id: number): CareTeamEntry {
   return {
     id,
     patientId: PATIENT_ID,
-    practitioner: { id: 4, firstName: 'Pat', lastName: 'Rac', avatarUrl: null },
+    practitioner: {
+      id: 4,
+      firstName: 'Pat',
+      lastName: 'Rac',
+      avatarUrl: null,
+      specialties: ['Knee'],
+      bio: null,
+    },
+    sharedClinics: [{ id: 3, name: 'North' }],
     startedAt: new Date('2026-09-01T00:00:00Z'),
     endsAt: null,
     isActive: true,
-    reason: null,
+    reason: 'Holiday cover',
     createdBy: null,
     endedBy: null,
   }
+}
+
+// The same entry as the patient receives it: every key but `reason`.
+function patientEntry(id: number): PatientCareTeamEntry {
+  const { reason: _removed, ...rest } = entry(id)
+  return rest
 }
 
 function exclusionError() {
@@ -284,26 +301,30 @@ describe('CareTeamService', () => {
       expect(findEntries).not.toHaveBeenCalled()
     })
 
-    it.each<[string, Actor, [number, number][]]>([
-      ['an admin', admin, []],
+    // toStrictEqual: the patient's answer must not have a `reason` key at
+    // all (toEqual treats a missing key and an undefined one alike).
+    it.each<[string, Actor, [number, number][], object[]]>([
+      ['an admin', admin, [], [entry(77)]],
       [
-        'the patient themselves',
+        'the patient themselves — without the staff-only reason',
         { id: PATIENT_ID, activeRole: UserRole.PATIENT },
         [],
+        [patientEntry(77)],
       ],
       [
         'a practitioner sharing a clinic (directory level)',
         practitioner,
         [[4, PATIENT_ID]],
+        [entry(77)],
       ],
-    ])('lets %s see the team', async (_who, actor, shared) => {
+    ])('lets %s see the team', async (_who, actor, shared, expected) => {
       givenRoles({})
       givenSharedClinics(shared)
       const findEntries = givenEntries()
 
       await expect(
         service.listForPatient(PATIENT_ID, actor, false),
-      ).resolves.toEqual([entry(77)])
+      ).resolves.toStrictEqual(expected)
       expect(findEntries).toHaveBeenCalledWith(actor, {
         patientId: PATIENT_ID,
         activeOnly: true,
@@ -335,7 +356,10 @@ describe('CareTeamService', () => {
       const patient: Actor = { id: PATIENT_ID, activeRole: UserRole.PATIENT }
       const findEntries = givenEntries()
 
-      await service.listForPatient(PATIENT_ID, patient, true)
+      // The history is the patient's too, so it loses the reason as well.
+      await expect(
+        service.listForPatient(PATIENT_ID, patient, true),
+      ).resolves.toStrictEqual([patientEntry(77)])
 
       expect(findEntries).toHaveBeenCalledWith(patient, {
         patientId: PATIENT_ID,

@@ -34,6 +34,7 @@ import {
   TEMPLATES,
   type AccountKey,
   type PatientAccount,
+  type PractitionerAccount,
 } from './dataset'
 
 // The rules the seed script RELIES ON, checked here so a bad edit to the
@@ -109,6 +110,37 @@ describe('the seed dataset', () => {
       'pending',
     ])
     expect(patients.some((p) => p.deactivated)).toBe(true)
+  })
+
+  // The patient's Team page has two looks for a practitioner: with a bio,
+  // and without one (no "No bio" line). Both must be visible to a seeded
+  // patient: Alex (Pat's and Jo's team) and Sam (Jo's, Robin's) have one;
+  // Blake (Robin's team) doesn't. Morgan, on nobody's team, has one too.
+  it('gives bios to most practitioners, but not to all', () => {
+    const practitioners = ACCOUNTS.filter(
+      (a): a is PractitionerAccount => a.kind === 'practitioner',
+    )
+    const withBio = practitioners.filter((p) => p.bio !== undefined)
+    expect(withBio.map((p) => p.key)).toEqual(['morgan', 'alex', 'sam'])
+    // ...and the no-bio case is on the team of a patient who can log in
+    // (created them, or joined them), so it shows without any set-up.
+    const visibleToAPatient = (key: AccountKey) =>
+      patients.some(
+        (patient) =>
+          patient.invitation === 'accepted' &&
+          !patient.deactivated &&
+          (patient.createdBy === key ||
+            (patient.alsoOnCareTeam ?? []).includes(key)),
+      )
+    const withoutBio = practitioners.filter((p) => p.bio === undefined)
+    expect(withoutBio.map((p) => p.key)).toEqual(['blake'])
+    expect(withoutBio.some((p) => visibleToAPatient(p.key))).toBe(true)
+    // A bio passes the API's own limit (CreateUserDto: 2000 characters)
+    // and isn't blank — the seed goes through the real validation.
+    for (const p of withBio) {
+      expect(p.bio?.trim().length).toBeGreaterThan(0)
+      expect(p.bio?.length).toBeLessThanOrEqual(2000)
+    }
   })
 
   it('builds templates only from known custom exercises', () => {

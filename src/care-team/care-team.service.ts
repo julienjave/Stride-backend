@@ -63,13 +63,30 @@ export interface PersonRef {
   lastName: string
 }
 
+// The practitioner of a care-team link: their DIRECTORY fields — who they
+// are and what they do (the patient's Team page shows them, decided
+// 2026-10-18). Never their own contact details (email, phone, address) nor
+// their license number: those are read from `users` / the profile by
+// other endpoints, for other people. A patient reaches their practitioner
+// through the clinic (its contact details are public, GET /clinics/:id)
+// and, later, through messaging.
+export interface CareTeamPractitioner extends PersonRef {
+  avatarUrl: string | null
+  specialties: string[]
+  bio: string | null
+}
+
 // One care-team link as the API returns it. Directory-level information
-// only about the practitioner (name and photo): being told who is on a
-// patient's team is not clinical data.
+// only about the practitioner: being told who is on a patient's team is not
+// clinical data.
 export interface CareTeamEntry {
   id: number
   patientId: number
-  practitioner: PersonRef & { avatarUrl: string | null }
+  practitioner: CareTeamPractitioner
+  // The clinics this practitioner and the patient BOTH belong to now — where
+  // they see each other. Empty once they share none (a link ended by
+  // leaving the clinic, in the history).
+  sharedClinics: { id: number; name: string }[]
   startedAt: Date
   endsAt: Date | null
   // Computed with the SAME rule as access (period AND shared clinic), so
@@ -79,6 +96,14 @@ export interface CareTeamEntry {
   createdBy: PersonRef | null
   endedBy: PersonRef | null
 }
+
+// The same entry as the PATIENT reads it: without `reason`. The reason is
+// typed by staff for staff ("Holiday cover", or anything else a colleague
+// should know), in a dialog that never said the patient would read it — so
+// it stays in the audit trail and on the staff screens (decided
+// 2026-10-18). Who added the practitioner, and when, stays visible: that is
+// the accountability the patient is promised (decisions §3).
+export type PatientCareTeamEntry = Omit<CareTeamEntry, 'reason'>
 
 // One patient in the clinic directory: enough to recognise someone and
 // decide to join their care team — nothing clinical, no contact details
@@ -264,13 +289,21 @@ export class CareTeamService {
     patientId: number,
     actor: Actor,
     includeEnded: boolean,
-  ): Promise<CareTeamEntry[]> {
+  ): Promise<CareTeamEntry[] | PatientCareTeamEntry[]> {
     await this.assertActivePatient(patientId)
     await this.assertCanSeeCareTeam(patientId, actor)
-    return this.findEntries(actor, {
+    const entries = await this.findEntries(actor, {
       patientId,
       activeOnly: !includeEnded,
     })
+    // assertCanSeeCareTeam() let a patient through only for their OWN team,
+    // so "acting as a patient" here means "the patient reading their team".
+    // The key is REMOVED, not set to null: null already means "no reason
+    // was given", and the patient's answer must not pretend to say that.
+    if (actor.activeRole === UserRole.PATIENT) {
+      return entries.map(({ reason: _staffOnly, ...entry }) => entry)
+    }
+    return entries
   }
 
   // --- POST /users/:id/care-team ---
@@ -579,21 +612,10 @@ export class CareTeamService {
 
     // Batched for the whole list, as in searchDirectory(): the clinics each
     // practitioner shares with the patient, and who is on the team now.
-    const clinicRows = await this.db
-      .select({
-        userId: userClinics.userId,
-        id: clinics.id,
-        name: clinics.name,
-      })
-      .from(userClinics)
-      .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
-      .where(
-        and(
-          inArray(userClinics.userId, practitionerIds),
-          inArray(userClinics.clinicId, patientClinicIds),
-        ),
-      )
-      .orderBy(asc(clinics.name))
+    const sharedClinics = await this.sharedClinicsByPractitioner(
+      patientId,
+      practitionerIds,
+    )
     // Read under the caller's RLS context: the care_team_members SELECT
     // policy lets an admin and any clinic-sharing practitioner see a
     // patient's links (directory level — who treats a patient isn't
@@ -613,9 +635,7 @@ export class CareTeamService {
         lastName: row.lastName,
         avatarUrl: await this.avatarUrl(row.avatarPath),
         specialties: row.specialties ?? [],
-        sharedClinics: clinicRows
-          .filter((clinic) => clinic.userId === row.id)
-          .map(({ id, name }) => ({ id, name })),
+        sharedClinics: sharedClinics.get(row.id) ?? [],
         onCareTeam: onTeam.has(row.id),
       })),
     )
@@ -761,9 +781,21 @@ export class CareTeamService {
             lastName: users.lastName,
             avatarPath: users.avatarPath,
           },
+          // Named fields only, never the whole profile row: it also holds
+          // the license number, which this answer must not carry.
+          profile: {
+            specialties: practitionerProfiles.specialties,
+            bio: practitionerProfiles.bio,
+          },
         })
         .from(careTeamMembers)
         .innerJoin(users, eq(users.id, careTeamMembers.practitionerId))
+        // LEFT JOIN, as in listCandidates(): a practitioner always has a
+        // profile, but a missing one must not make a team member vanish.
+        .leftJoin(
+          practitionerProfiles,
+          eq(practitionerProfiles.userId, careTeamMembers.practitionerId),
+        )
         .where(where)
         // Active members first, then the most recent periods first.
         .orderBy(
@@ -798,8 +830,16 @@ export class CareTeamService {
     const person = (id: number | null) =>
       id === null ? null : (personById.get(id) ?? null)
 
+    // Where each practitioner and the patient meet, in one batched query.
+    // Both filters name ONE patient (a list is one patient's team; a link
+    // has one patient), so the first row's patient is everyone's.
+    const sharedClinics = await this.sharedClinicsByPractitioner(
+      rows[0].link.patientId,
+      [...new Set(rows.map(({ practitioner }) => practitioner.id))],
+    )
+
     return Promise.all(
-      rows.map(async ({ link, isActive, practitioner }) => ({
+      rows.map(async ({ link, isActive, practitioner, profile }) => ({
         id: link.id,
         patientId: link.patientId,
         practitioner: {
@@ -807,7 +847,11 @@ export class CareTeamService {
           firstName: practitioner.firstName,
           lastName: practitioner.lastName,
           avatarUrl: await this.avatarUrl(practitioner.avatarPath),
+          // A LEFT JOIN with no match gives null for each field.
+          specialties: profile?.specialties ?? [],
+          bio: profile?.bio ?? null,
         },
+        sharedClinics: sharedClinics.get(practitioner.id) ?? [],
         startedAt: link.startedAt,
         endsAt: link.endsAt,
         isActive,
@@ -816,6 +860,43 @@ export class CareTeamService {
         endedBy: person(link.endedBy),
       })),
     )
+  }
+
+  // For each of `practitionerIds`, the clinics they share with the patient,
+  // ordered by name — one query for the whole list, whatever its length
+  // (one query per person would be the "N + 1" pattern). The patient's
+  // clinics are a subquery, so the comparison happens inside Postgres; it
+  // reads user_clinics a second time, hence the alias, as in sharedClinic().
+  // Clinics are read without an RLS context: their SELECT policy is open,
+  // like user_clinics' (identity data — migrations 0008 and 0011).
+  private async sharedClinicsByPractitioner(
+    patientId: number,
+    practitionerIds: number[],
+  ): Promise<Map<number, { id: number; name: string }[]>> {
+    const rows = await this.db
+      .select({
+        userId: userClinics.userId,
+        id: clinics.id,
+        name: clinics.name,
+      })
+      .from(userClinics)
+      .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
+      .where(
+        and(
+          inArray(userClinics.userId, practitionerIds),
+          sql`${userClinics.clinicId} IN (SELECT pc.clinic_id FROM ${userClinics} pc WHERE pc.user_id = ${patientId})`,
+        ),
+      )
+      .orderBy(asc(clinics.name))
+
+    const byPractitioner = new Map<number, { id: number; name: string }[]>()
+    for (const { userId, id, name } of rows) {
+      byPractitioner.set(userId, [
+        ...(byPractitioner.get(userId) ?? []),
+        { id, name },
+      ])
+    }
+    return byPractitioner
   }
 
   private avatarUrl(avatarPath: string | null) {
