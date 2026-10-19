@@ -32,6 +32,7 @@ import { ClinicsModule } from './clinics/clinics.module'
 import { ProgramsModule } from './programs/programs.module'
 import { AssignedProgramsModule } from './assigned-programs/assigned-programs.module'
 import { SessionsModule } from './sessions/sessions.module'
+import { AlertsModule } from './alerts/alerts.module'
 import { MessagingModule } from './messaging/messaging.module'
 import { AuditModule } from './audit/audit.module'
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor'
@@ -87,6 +88,7 @@ import { throttlerOptions } from './config/rate-limits'
     ProgramsModule,
     AssignedProgramsModule,
     SessionsModule,
+    AlertsModule,
     MessagingModule,
     AuditModule,
     MedicalFilesModule,

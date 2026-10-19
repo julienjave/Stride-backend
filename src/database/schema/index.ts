@@ -31,3 +31,5 @@ export * from './programs.schema'
 export * from './program-schedules.schema'
 export * from './sessions.schema'
 export * from './audit-logs.schema'
+
+export * from './session-reviews.schema'

@@ -504,17 +504,36 @@ describe('assertLocalDateIsToday', () => {
 describe('SessionsService.assertCanView (via findOne)', () => {
   let service: SessionsService
   let usersService: { isPatientManagedBy: jest.Mock }
+  // The reviews read (2026-10-19) is a chain — select → from → innerJoin →
+  // where → orderBy; each step returns the chain, the last one the rows.
+  const reviewedAt = new Date('2031-06-12T19:00:00Z')
+  let reviewChain: {
+    from: jest.Mock
+    innerJoin: jest.Mock
+    where: jest.Mock
+    orderBy: jest.Mock
+  }
   let db: {
     query: {
       sessions: { findFirst: jest.Mock }
       sessionExercises: { findMany: jest.Mock }
     }
+    select: jest.Mock
     execute: jest.Mock
     transaction: jest.Mock
   }
 
   beforeEach(async () => {
     usersService = { isPatientManagedBy: jest.fn() }
+    const reviewRows = [
+      { practitionerId: 4, firstName: 'Sam', lastName: 'Okafor', reviewedAt },
+    ]
+    reviewChain = {
+      from: jest.fn(() => reviewChain),
+      innerJoin: jest.fn(() => reviewChain),
+      where: jest.fn(() => reviewChain),
+      orderBy: jest.fn().mockResolvedValue(reviewRows),
+    }
     db = {
       query: {
         sessions: {
@@ -522,6 +541,7 @@ describe('SessionsService.assertCanView (via findOne)', () => {
         },
         sessionExercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
+      select: jest.fn(() => reviewChain),
       // withRlsContext() wraps every query in db.transaction(), setting two
       // session GUCs via tx.execute() before invoking the callback — tx ===
       // db here, so the callback's queries resolve against the mocks above.
@@ -571,6 +591,35 @@ describe('SessionsService.assertCanView (via findOne)', () => {
     await expect(
       service.findOne(500, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
+  })
+
+  // The To-do (2026-10-19): the care team and admins read who reviewed the
+  // session, in the API's shape; the PATIENT's answer has no `reviews` key
+  // at all — toStrictEqual, because an absent key and `reviews: []` differ
+  // (the second would say "nobody looked").
+  it.each([
+    ['a managing practitioner', { id: 7, activeRole: UserRole.PRACTITIONER }],
+    ['an admin', { id: 1, activeRole: UserRole.ADMIN }],
+  ])("gives %s the session's reviews", async (_who, user) => {
+    usersService.isPatientManagedBy.mockResolvedValue(true)
+    await expect(service.findOne(500, user)).resolves.toStrictEqual({
+      id: 500,
+      patientId: 20,
+      exercises: [],
+      reviews: [
+        {
+          practitioner: { id: 4, firstName: 'Sam', lastName: 'Okafor' },
+          reviewedAt,
+        },
+      ],
+    })
+  })
+
+  it('gives the patient their session without any reviews key', async () => {
+    await expect(
+      service.findOne(500, { id: 20, activeRole: UserRole.PATIENT }),
+    ).resolves.toStrictEqual({ id: 500, patientId: 20, exercises: [] })
+    expect(db.select).not.toHaveBeenCalled()
   })
 })
 

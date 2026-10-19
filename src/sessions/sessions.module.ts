@@ -20,6 +20,7 @@
 import { Module } from '@nestjs/common'
 import { SessionsController } from './sessions.controller'
 import { SessionsService } from './sessions.service'
+import { SessionReviewsService } from './session-reviews.service'
 import { UsersModule } from '../users/users.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -27,7 +28,7 @@ import { UsersModule } from '../users/users.module'
 @Module({
   imports: [UsersModule],
   controllers: [SessionsController],
-  providers: [SessionsService],
+  providers: [SessionsService, SessionReviewsService],
   exports: [SessionsService],
 })
 export class SessionsModule {}

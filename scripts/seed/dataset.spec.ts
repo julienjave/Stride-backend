@@ -18,6 +18,12 @@
 import { addDays } from '../../src/common/calendar-date'
 import { summarizeSchedule } from '../../src/assigned-programs/schedule/schedule-summary'
 import {
+  ALERT_THRESHOLDS,
+  attendanceFacts,
+  reviewWindowStart,
+  sessionReview,
+} from '../../src/alerts/alert-rules'
+import {
   seedAttempts,
   seedSessionDays,
   seedSessionScores,
@@ -312,6 +318,25 @@ describe('the seed dataset', () => {
         })
         expect(summary.extraSessions).toEqual([])
         expect(summary.otherAttempts).toEqual([])
+        // The To-do's attendance alert (2026-10-19), judged by the real
+        // rules on the same summary: Jo's last two program weeks ended below
+        // target; Pat, who keeps up, raises none. (Robin's first program is
+        // cancelled by the seed: no attendance alert for a closed program.)
+        const attendance = attendanceFacts({
+          startDate: start,
+          endDate: null,
+          today,
+          pauses: summary.pauses,
+          days: summary.days,
+          weeks: summary.weeks,
+          sessionDates: [...sessions, ...attempts].map((s) => s.day),
+        })
+        if (assignment.patient === 'jo') {
+          expect(attendance?.missedInARow?.weeks).toBe(
+            ALERT_THRESHOLDS.missedWeeksInARow,
+          )
+        }
+        if (assignment.patient === 'pat') expect(attendance).toBeNull()
         if (assignment.patient === 'pat') {
           expect(summary.totals).toMatchObject({
             done: 4,
@@ -358,6 +383,81 @@ describe('the seed dataset', () => {
           seedSessionScores(sessions.length, assignment.scores),
         ).not.toThrow()
       }
+    },
+  )
+
+  // The To-do's sessions to review (2026-10-19): feedback and reviews name
+  // seeded sessions (by position, like scores) whatever weekday the seed
+  // runs on; the ratings are ones the CHECK accepts (1–10) and the notes
+  // hold something. And the demo shows what it's for — judged by the real
+  // rules: a session with a hard exercise and a note, one with high and
+  // rising pain, each inside the review window; and a review by ONE member
+  // of a care team of two, so the other still has it on their To-do.
+  it.each([20, 21, 22, 23, 24, 25, 26])(
+    'gives the To-do a session of each kind to review (seed run on Oct %i)',
+    (dayOfMonth) => {
+      const today = `2026-10-${dayOfMonth}`
+      const reasons = new Set<string>()
+      let reviewedWithColleague = false
+      for (const assignment of ASSIGNED_PROGRAMS) {
+        const start = addDays(today, -assignment.startsDaysAgo)
+        const sessions = seedSessionDays(
+          start,
+          today,
+          assignment.schedule,
+          assignment.history,
+        )
+        const scores = seedSessionScores(sessions.length, assignment.scores)
+        for (const entry of assignment.feedback ?? []) {
+          expect(entry.session).toBeLessThan(sessions.length)
+          for (const rating of entry.difficulty) {
+            if (rating === null) continue
+            expect(Number.isInteger(rating)).toBe(true)
+            expect(rating).toBeGreaterThanOrEqual(1)
+            expect(rating).toBeLessThanOrEqual(10)
+          }
+          for (const note of entry.notes ?? []) {
+            if (note !== null) expect(note.trim()).not.toBe('')
+          }
+        }
+        for (const [index, { day }] of sessions.entries()) {
+          if (day < reviewWindowStart(today)) continue
+          const entry = assignment.feedback?.find((f) => f.session === index)
+          const review = sessionReview({
+            status: 'completed',
+            endReason: null,
+            painBefore: scores[index].painBefore,
+            painAfter: scores[index].painAfter,
+            sessionFeedback: entry?.sessionFeedback ?? null,
+            endNote: null,
+            exercises: (entry?.difficulty ?? []).map((rating, position) => ({
+              name: `exercise ${position}`,
+              difficultyRating: rating,
+              feedback: entry?.notes?.[position] ?? null,
+            })),
+          })
+          for (const reason of review?.reasons ?? []) reasons.add(reason)
+        }
+        const patient = patients.find((p) => p.key === assignment.patient)
+        const careTeam = [
+          patient?.createdBy,
+          ...(patient?.alsoOnCareTeam ?? []),
+        ]
+        for (const review of assignment.reviews ?? []) {
+          expect(review.session).toBeLessThan(sessions.length)
+          expect(careTeam).toContain(review.by)
+          if (careTeam.some((member) => member !== review.by)) {
+            reviewedWithColleague = true
+          }
+        }
+      }
+      expect([...reasons].sort()).toEqual([
+        'hard_exercise',
+        'pain_high',
+        'pain_rise',
+        'patient_note',
+      ])
+      expect(reviewedWithColleague).toBe(true)
     },
   )
 

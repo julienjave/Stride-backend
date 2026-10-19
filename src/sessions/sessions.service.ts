@@ -27,6 +27,7 @@ import {
 } from '@nestjs/common'
 import {
   and,
+  asc,
   eq,
   getTableColumns,
   inArray,
@@ -44,6 +45,8 @@ import {
   programWorkouts,
   programSchedules,
   programScheduleDays,
+  sessionReviews,
+  users,
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
@@ -552,10 +555,41 @@ export class SessionsService {
 
   // --- GET ROUTES ---
 
+  // One session with its checklist. For the care team and admins, also its
+  // REVIEWS (the To-do, 2026-10-19): who on the team has looked at it, and
+  // when — oldest first. The patient's answer has no `reviews` key at all
+  // (not an empty list, which would read as "nobody looked"): reviews are
+  // the staff's workflow, and the row-level security agrees — the patient
+  // has no branch in session_reviews' SELECT policy.
   async findOne(id: number, currentUser: CurrentUser) {
     const session = await this.findSessionOrThrow(id, currentUser)
     await this.assertCanView(session.patientId, currentUser)
-    return this.findSessionWithExercises(id, currentUser)
+    const withExercises = await this.findSessionWithExercises(id, currentUser)
+    if (currentUser.activeRole === UserRole.PATIENT) return withExercises
+    const reviews = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .select({
+          practitionerId: sessionReviews.practitionerId,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          reviewedAt: sessionReviews.reviewedAt,
+        })
+        .from(sessionReviews)
+        .innerJoin(users, eq(users.id, sessionReviews.practitionerId))
+        .where(eq(sessionReviews.sessionId, id))
+        .orderBy(asc(sessionReviews.reviewedAt), asc(sessionReviews.id)),
+    )
+    return {
+      ...withExercises,
+      reviews: reviews.map((review) => ({
+        practitioner: {
+          id: review.practitionerId,
+          firstName: review.firstName,
+          lastName: review.lastName,
+        },
+        reviewedAt: review.reviewedAt,
+      })),
+    }
   }
 
   // --- PATCH ROUTES ---

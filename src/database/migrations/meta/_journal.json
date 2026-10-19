@@ -302,6 +302,20 @@
       "when": 1792233813608,
       "tag": "0042_program_exercise_photos",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792414797358,
+      "tag": "0043_session_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1792414824756,
+      "tag": "0044_session_reviews_rls",
+      "breakpoints": true
     }
   ]
 }

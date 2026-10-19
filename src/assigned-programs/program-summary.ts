@@ -17,7 +17,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, inArray } from 'drizzle-orm'
 import type { DrizzleDb } from '../database/drizzle.provider'
 import {
   programScheduleDays,
@@ -119,35 +119,39 @@ export interface SummaryProgram {
   lateMakeUpDays: number | null
 }
 
-// The program's summary for `today` (and, optionally, `through`), plus
-// `openSession`: the program's session IN PROGRESS — `{ sessionId,
-// localDate, workoutId }` — or null. The module never sees it (an open
-// session neither counts nor labels anything yet); it rides along so a
-// screen can offer "Resume" instead of "Start" without a second request. At
-// most one exists (the partial unique index sessions_one_open_per_program);
-// its `localDate` may be an earlier day (left open — the next start will
-// close it).
-export async function summarizeProgram(
+// A session row as the summary reads it: only what the module needs (id, the
+// patient's day, the workout done, the day it counts for, how it ended), plus
+// the program it belongs to — so ONE query can serve several programs.
+export interface SummarySessionRow {
+  id: number
+  assignedProgramId: number
+  localDate: string
+  workoutId: number
+  // A session for another day — a swap, done early, a late make-up (null
+  // for an ordinary session).
+  countsFor: string | null
+  status: 'in_progress' | 'completed' | 'incomplete' | 'skipped'
+  endReason: string | null
+}
+
+// The sessions of these programs, as the summary reads them — every status:
+// completed ones count ("done" means completed — decided 2026-10-09);
+// skipped and stopped ones are labels (step 1b, 2026-10-15); an OPEN one is
+// neither yet, read for `openSession` only and kept away from the module
+// (summaryFromRows). One `IN (…)` query whatever the number of programs (the
+// practitioner's alerts read all their patients' programs at once — added
+// 2026-10-19); the index on (assigned_program_id, local_date) serves it.
+export async function readSummarySessions(
   tx: DrizzleDb,
-  program: SummaryProgram,
-  today: string,
-  through?: string,
-) {
-  const versions = await readScheduleVersions(tx, [program.id])
-  // Only what the module needs (id, the patient's day, the workout done,
-  // the day it counts for, how it ended), for the sessions that ENDED:
-  // completed ones count ("done" means completed — decided 2026-10-09);
-  // skipped and stopped ones are labels (step 1b, 2026-10-15). An OPEN
-  // session is neither yet — it's read in the same query for `openSession`
-  // only, and kept away from the module below. The index on
-  // (assigned_program_id, local_date) serves this read.
-  const rows = await tx
+  programIds: number[],
+): Promise<SummarySessionRow[]> {
+  if (programIds.length === 0) return []
+  return tx
     .select({
       id: sessions.id,
+      assignedProgramId: sessions.assignedProgramId,
       localDate: sessions.localDate,
       workoutId: sessions.workoutId,
-      // A session for another day — a swap, done early, a late make-up
-      // (null for an ordinary session).
       countsFor: sessions.countsFor,
       status: sessions.status,
       endReason: sessions.endReason,
@@ -155,7 +159,7 @@ export async function summarizeProgram(
     .from(sessions)
     .where(
       and(
-        eq(sessions.assignedProgramId, program.id),
+        inArray(sessions.assignedProgramId, programIds),
         inArray(sessions.status, [
           'completed',
           'skipped',
@@ -164,7 +168,29 @@ export async function summarizeProgram(
         ]),
       ),
     )
+}
 
+// The program's summary for `today` (and, optionally, `through`), plus
+// `openSession`: the program's session IN PROGRESS — `{ sessionId,
+// localDate, workoutId }` — or null. The module never sees it (an open
+// session neither counts nor labels anything yet); it rides along so a
+// screen can offer "Resume" instead of "Start" without a second request. At
+// most one exists (the partial unique index sessions_one_open_per_program);
+// its `localDate` may be an earlier day (left open — the next start will
+// close it).
+//
+// PURE: given the program's schedule versions and session rows (read by the
+// two functions above, already narrowed to this program), no database. Split
+// from summarizeProgram on 2026-10-19 so the alerts can read every program's
+// rows in a constant number of queries, then summarise each program with
+// exactly this function — one definition of "missed", whoever asks.
+export function summaryFromRows(
+  program: SummaryProgram,
+  versions: ScheduleVersion[],
+  rows: SummarySessionRow[],
+  today: string,
+  through?: string,
+) {
   const open = rows.find((row) => row.status === 'in_progress')
   const summary = summarizeSchedule({
     startDate: program.startDate,
@@ -206,4 +232,17 @@ export async function summarizeProgram(
         }
       : null,
   }
+}
+
+// One program's summary, read and computed: what GET …/summary and a late
+// make-up's check ask for.
+export async function summarizeProgram(
+  tx: DrizzleDb,
+  program: SummaryProgram,
+  today: string,
+  through?: string,
+) {
+  const versions = await readScheduleVersions(tx, [program.id])
+  const rows = await readSummarySessions(tx, [program.id])
+  return summaryFromRows(program, versions, rows, today, through)
 }

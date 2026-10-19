@@ -419,6 +419,19 @@ export type SeedSchedule =
   | { type: 'weekdays'; days: { weekday: number; workoutIndex: number }[] }
   | { type: 'times_per_week'; timesPerWeek: number; rotation?: number[] }
 
+// What a patient rated and wrote during one seeded session (the To-do,
+// 2026-10-19). `difficulty` and `notes` follow the session's CHECKLIST, in
+// its order (null = not rated, no note) — by position rather than by name,
+// because which workout a session did depends on the weekday the seed runs
+// (Pat's swap). A checklist shorter than the list (the library not
+// imported) simply ignores the extra entries.
+export interface SeedFeedback {
+  session: number
+  difficulty: (number | null)[]
+  notes?: (string | null)[]
+  sessionFeedback?: string
+}
+
 // Assigned programs: a copy of a template given to a patient (by a
 // practitioner on their care team), with its schedule (decisions §5).
 // One of each schedule type, so both can be looked at.
@@ -442,6 +455,12 @@ export type SeedSchedule =
 // unanswered (a gap), sessions that made pain WORSE (Robin's: the reason
 // before / after are never averaged, decisions §6).
 //
+// feedback and reviews (the practitioner's To-do, 2026-10-19): what the
+// patient rated and wrote during chosen sessions, and which practitioner has
+// already marked a session reviewed — so the To-do has one case of each
+// kind to show (decisions §3). `session` is a position in the program's
+// seeded sessions, as for `scores`.
+//
 // close (step 2b-iii): the program is then cancelled or completed, on the
 // day the seed runs, through the real service (so its end date follows the
 // rules: yesterday). assignAgain: then continued as a new program ("Assign
@@ -456,6 +475,8 @@ export const ASSIGNED_PROGRAMS: {
   schedule: SeedSchedule
   history: SeedHistory
   scores?: SeedScores[]
+  feedback?: SeedFeedback[]
+  reviews?: { session: number; by: AccountKey }[]
   close?: 'cancel' | 'complete'
   assignAgain?: { title: string; schedule: SeedSchedule }
 }[] = [
@@ -504,6 +525,19 @@ export const ASSIGNED_PROGRAMS: {
       { painBefore: 4, painAfter: 2, mobilityAfter: 6 },
       { painBefore: 3, painAfter: 2, mobilityAfter: 7 },
     ],
+    // The To-do: the LAST session (always within the last 14 days) rated its
+    // second exercise 9 of 10, with a question — a session for Alex to
+    // review ("hard exercise", "the patient wrote something").
+    feedback: [
+      {
+        session: 7,
+        difficulty: [4, 9],
+        notes: [
+          null,
+          'Sharp pain at the end of the movement. Should I stop earlier?',
+        ],
+      },
+    ],
   },
   {
     patient: 'jo',
@@ -512,18 +546,21 @@ export const ASSIGNED_PROGRAMS: {
     by: 'sam',
     template: 'Lower Back Mobility',
     title: 'Lower Back Mobility — Jo',
-    startsDaysAgo: 10,
+    startsDaysAgo: 17,
     // No rotation given: every workout in order — this template has one,
     // so every session is A.
     schedule: { type: 'times_per_week', timesPerWeek: 3 },
-    // First program week: 2 of 3 (one missed). Second week (today is its
-    // 4th day): 1 so far, in progress.
-    history: { kind: 'days-after-start', days: [0, 2, 8] },
+    // First program week: 2 of 3 (missed). Second week: 1 of 3 (missed) —
+    // two weeks in a row below target, an attendance alert on Alex's and
+    // Sam's To-do (changed 2026-10-19; it was 10 days and one missed week).
+    // Third week (today is its 4th day): 1 so far, in progress.
+    history: { kind: 'days-after-start', days: [0, 2, 8, 15] },
     // The second session skipped the check-in (no pain before: a gap).
     scores: [
       { painBefore: 7, painAfter: 6, mobilityAfter: 3 },
       { painBefore: null, painAfter: 6, mobilityAfter: 4 },
       { painBefore: 6, painAfter: 5, mobilityAfter: 4 },
+      { painBefore: 6, painAfter: 5, mobilityAfter: 5 },
     ],
   },
   {
@@ -538,13 +575,19 @@ export const ASSIGNED_PROGRAMS: {
     // Two weeks done (A and B each), then nothing: the third week missed.
     history: { kind: 'days-after-start', days: [0, 3, 8, 10] },
     // Every session made the pain WORSE — the before / after gap the charts
-    // exist to show (an average of the two would hide it).
+    // exist to show (an average of the two would hide it). The last one,
+    // 11 days before the seed's day, from 3 to 7 (changed 2026-10-19; it was
+    // 4 → 6): high pain after AND a rise of 4 — a session to review.
     scores: [
       { painBefore: 3, painAfter: 5, mobilityAfter: 5 },
       { painBefore: 4, painAfter: 5, mobilityAfter: 5 },
       { painBefore: 3, painAfter: 4, mobilityAfter: 4 },
-      { painBefore: 4, painAfter: 6, mobilityAfter: 4 },
+      { painBefore: 3, painAfter: 7, mobilityAfter: 3 },
     ],
+    // … which SAM has already reviewed, and Blake hasn't: a review is one
+    // practitioner's (decided 2026-10-19), so the session is on Blake's
+    // To-do only — and its page shows Blake "Reviewed by Sam Okafor".
+    reviews: [{ session: 3, by: 'sam' }],
     // Cancelled (it has sessions, so it stays, read-only) and continued.
     close: 'cancel',
     assignAgain: {

@@ -31,6 +31,7 @@ import {
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { SessionsService } from './sessions.service'
+import { SessionReviewsService } from './session-reviews.service'
 import { CreateSessionDto } from './dto/create-session.dto'
 import { SkipSessionDto } from './dto/skip-session.dto'
 import { CompleteSessionDto } from './dto/complete-session.dto'
@@ -53,15 +54,20 @@ import { UserRole } from '../users/dto/create-user.dto'
 // has its own body, its own rules and its own audit action — rather than one
 // PATCH { status } that let any status follow any other.
 //
-// Every write is patient-only (@Roles — starting, doing and ending a session
-// is something a patient does for themselves; the service then checks it's
-// THEIR session) and audited by the service (@AuditedByService(): one
-// complete entry in the change's transaction, no generic duplicate).
+// Every write to a session is patient-only (@Roles — starting, doing and
+// ending a session is something a patient does for themselves; the service
+// then checks it's THEIR session) — the one practitioner route, …/review,
+// writes a review ABOUT the session, never the session itself — and every
+// write is audited by the service (@AuditedByService(): one complete entry
+// in the change's transaction, no generic duplicate).
 @UseGuards(SessionAuthGuard)
 @ApiTags('Sessions')
 @Controller('sessions')
 export class SessionsController {
-  constructor(private readonly sessionsService: SessionsService) {}
+  constructor(
+    private readonly sessionsService: SessionsService,
+    private readonly sessionReviewsService: SessionReviewsService,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -114,6 +120,23 @@ export class SessionsController {
     @Body() dto: StopSessionDto,
   ) {
     return this.sessionsService.stop(id, user, dto)
+  }
+
+  // "Mark as reviewed" — the practitioner home's To-do (2026-10-19). The one
+  // session route a PRACTITIONER writes: it never changes the session, it
+  // records that this practitioner looked at it (session_reviews). 200, not
+  // 201: idempotent — a second call finds the review already there and
+  // answers the same session. Audited by the service, like every write.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/review')
+  review(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.sessionReviewsService.review(id, user)
   }
 
   // --- GET ROUTES ---

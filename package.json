@@ -17,6 +17,7 @@
     "seed": "npm run seed:exercises && npm run seed:dev --",
     "db:create-app-role": "ts-node scripts/create-app-role.ts",
     "db:create-app-role:test": "cross-env POSTGRES_DB=stride_test npm run db:create-app-role",
+    "db:migrate:all": "npx drizzle-kit migrate && npm run db:migrate:test",
     "db:migrate:test": "cross-env POSTGRES_DB=stride_test drizzle-kit migrate",
     "lint:prettier": "npx prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",

@@ -108,21 +108,34 @@ made, through the app's own code); the seed announces it just before.
     pain before easing from 6 to 3, pain after lower at each session,
     mobility rising from 4 to 7; the session stopped for pain: 5 before, 7
     after; the session done early answered the check-in only (a gap in the
-    "after" line).
-  - *Lower Back Mobility — Jo*, assigned by **Sam**, started **10 days
+    "after" line). Its **last session** rated its second exercise **9 of
+    10**, with a note ("Sharp pain at the end of the movement. Should I stop
+    earlier?") — a session on **Alex's To-do**.
+  - *Lower Back Mobility — Jo*, assigned by **Sam**, started **17 days
     before** the seed ran, **3 times a week** — so its program weeks start
     on the weekday it started, not on Monday. The template has a single
     workout, so every session is A. First program week: **2 of 3, missed**;
-    second week: **1 so far, in progress** (the seed runs on its 4th day).
-    Its second session skipped the pain check-in (a gap in the "before"
-    line).
+    second week: **1 of 3, missed** — two weeks in a row below target, an
+    **attendance alert** on Alex's and Sam's To-do; third week: **1 so far,
+    in progress** (the seed runs on its 4th day). Its second session skipped
+    the pain check-in (a gap in the "before" line).
   - *Knee Rehab — Robin*, assigned by **Sam**, started **21 days before**
     the seed ran, **twice a week** (A, then B): two weeks done, then
     nothing — and **cancelled** on the day the seed ran. It had sessions, so
     it stays, read-only, ending the day before. *Knee Rehab — Robin, block
     2* **continues it** ("Assign again"): its workouts and exercises copied
     from the cancelled one, starting the day the seed ran. Its sessions all
-    made the pain **worse** (3→5, 4→5, 3→4, 4→6) — the gap between "before"
-    and "after" the charts exist to show; look at it as **Sam**.
+    made the pain **worse** (3→5, 4→5, 3→4, 3→7) — the gap between "before"
+    and "after" the charts exist to show; look at it as **Sam**. The last
+    one (pain 7 after, up 4) is a session to review, **already reviewed by
+    Sam**: it is on **Blake's** To-do only, and its page shows Blake
+    "Reviewed by Sam Okafor".
   - No program is paused; to try a pause, add a schedule version of type
     `paused` from today (and another one later to resume).
+- **The practitioners' To-do** (the home page; `GET /alerts`): **Alex** —
+  Jo's two missed weeks, and Pat's last session (a hard exercise, a note);
+  **Sam** — Jo's two missed weeks (Robin's session is reviewed); **Blake** —
+  Robin's last session (high pain, a rise of 4). Morgan has none (on no care
+  team). A session leaves the list when that practitioner marks it reviewed,
+  or 14 days after it happened; an attendance alert clears itself when the
+  patient acts.

@@ -61,6 +61,7 @@ import { AddTemplateExerciseDto } from '../src/programs/dto/add-template-exercis
 import { AddWorkoutDto } from '../src/programs/dto/add-workout.dto'
 import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
+import { SessionReviewsService } from '../src/sessions/session-reviews.service'
 import { addDays, utcToday } from '../src/common/calendar-date'
 import {
   seedAttempts,
@@ -188,6 +189,7 @@ async function run(): Promise<void> {
     const exercisesService = app.get(ExercisesService)
     const programs = app.get(ProgramsService)
     const assignedPrograms = app.get(AssignedProgramsService)
+    const sessionReviews = app.get(SessionReviewsService)
 
     const clinicIds = new Map<ClinicKey, number>()
     const accountIds = new Map<AccountKey, number>()
@@ -488,6 +490,11 @@ async function run(): Promise<void> {
       // 2026-10-18): the dataset's scores, paired with the sessions by
       // position — seedSessionScores refuses a list of the wrong length.
       const scores = seedSessionScores(sessions.length, assignment.scores)
+      // Each seeded session's id, by position — for the feedback and
+      // reviews below. (node-postgres returns a bigserial as a STRING: a
+      // bigint can exceed JavaScript's safe integers, so the driver doesn't
+      // guess. Number() is safe for a dev database's handful of rows.)
+      const sessionIds: number[] = []
       for (const [index, { day, countsFor }] of sessions.entries()) {
         const workout = program.workouts.find(
           (w) => w.id === workoutIds[index],
@@ -518,6 +525,7 @@ async function run(): Promise<void> {
             mobilityAfter,
           ],
         )
+        sessionIds.push(Number(session.id))
         for (const exercise of program.exercises.filter(
           (e) => e.workoutId === workout.id,
         )) {
@@ -540,6 +548,45 @@ async function run(): Promise<void> {
             [session.id, exercise.id],
           )
         }
+      }
+
+      // What the patient rated and wrote (the To-do, 2026-10-19), on chosen
+      // sessions' checklist rows, by position — as the owner, like the
+      // sessions themselves (finished sessions are final for everyone else:
+      // migration 0038's guard exempts only the tables' owner).
+      for (const entry of assignment.feedback ?? []) {
+        const sessionId = sessionIds[entry.session]
+        if (entry.sessionFeedback !== undefined) {
+          await owner.query(
+            `UPDATE sessions SET session_feedback = $2 WHERE id = $1`,
+            [sessionId, entry.sessionFeedback],
+          )
+        }
+        const { rows: checklist } = await owner.query<{ id: string }>(
+          `SELECT id FROM session_exercises WHERE session_id = $1
+           ORDER BY sort_order, id`,
+          [sessionId],
+        )
+        for (const [position, row] of checklist.entries()) {
+          await owner.query(
+            `UPDATE session_exercises
+             SET difficulty_rating = $2, feedback = $3 WHERE id = $1`,
+            [
+              row.id,
+              entry.difficulty[position] ?? null,
+              entry.notes?.[position] ?? null,
+            ],
+          )
+        }
+      }
+      // Reviews already made — through the real service, as that
+      // practitioner: the row's moment (the database's now), its audit
+      // entry and the care-team rule are the app's own.
+      for (const review of assignment.reviews ?? []) {
+        await sessionReviews.review(
+          sessionIds[review.session],
+          await as(review.by, UserRole.PRACTITIONER),
+        )
       }
 
       // Attempts (Phase 4 step 1b): a session SKIPPED, or started and
