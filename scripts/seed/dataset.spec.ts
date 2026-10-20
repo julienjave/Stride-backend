@@ -29,12 +29,14 @@ import {
   seedSessionScores,
   seedSessionWorkouts,
 } from './session-history'
+import { MESSAGE_MAX_LENGTH } from '../../src/database/schema/messaging.schema'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   ACCOUNTS,
   ASSIGNED_PROGRAMS,
   CLINICS,
+  CONVERSATIONS,
   CUSTOM_EXERCISES,
   DEMO_PASSWORD,
   TEMPLATES,
@@ -540,6 +542,69 @@ describe('the seed dataset', () => {
 // The reviewers' guide describes this data; it must name every account
 // and clinic, and give the password. (What it SAYS about them is prose —
 // this only catches an account added, renamed or removed in one place.)
+// The seeded conversations (Phase 5): what the seed and the database
+// require of them, checked before anything is written.
+describe('the seeded conversations', () => {
+  const careTeamOf = (key: AccountKey) => {
+    const patient = byKey.get(key)
+    if (patient?.kind !== 'patient') return []
+    return [patient.createdBy, ...(patient.alsoOnCareTeam ?? [])]
+  }
+  // A moment as minutes before the seed's day ends — bigger = older.
+  const age = (m: { daysAgo: number; at: string }) => {
+    const [hours, minutes] = m.at.split(':').map(Number)
+    return m.daysAgo * 24 * 60 - (hours * 60 + minutes)
+  }
+
+  it("pairs each patient with a practitioner on the patient's care team, once", () => {
+    const pairs = CONVERSATIONS.map((c) => `${c.patient}-${c.practitioner}`)
+    expect(new Set(pairs).size).toBe(pairs.length)
+    for (const conversation of CONVERSATIONS) {
+      expect(byKey.get(conversation.practitioner)?.kind).toBe('practitioner')
+      expect(careTeamOf(conversation.patient)).toContain(
+        conversation.practitioner,
+      )
+    }
+  })
+
+  // The database's CHECKs (0047) apply to the owner too: a bad message
+  // would fail the seed halfway.
+  it('writes only messages the database accepts, all in the past, in time order', () => {
+    for (const { messages } of CONVERSATIONS) {
+      expect(messages.length).toBeGreaterThan(0)
+      for (const message of messages) {
+        expect(message.body).toMatch(/\S/)
+        expect(message.body.length).toBeLessThanOrEqual(MESSAGE_MAX_LENGTH)
+        expect(message.at).toMatch(/^([01]\d|2[0-3]):[0-5]\d$/)
+        expect(message.daysAgo).toBeGreaterThanOrEqual(1)
+      }
+      const ages = messages.map(age)
+      expect([...ages].sort((a, b) => b - a)).toEqual(ages)
+    }
+  })
+
+  // "Mark as read" reads everything at once: a message read while an
+  // EARLIER one from the same person stayed unread can't happen.
+  it("has each sender's read messages before their unread ones", () => {
+    for (const { messages } of CONVERSATIONS) {
+      for (const from of ['patient', 'practitioner'] as const) {
+        const reads = messages.filter((m) => m.from === from).map((m) => m.read)
+        expect(reads).toEqual([...reads].sort((a, b) => Number(b) - Number(a)))
+      }
+    }
+  })
+
+  it('shows an unread message for a patient and for a practitioner, and an archived conversation', () => {
+    const unreadBy = (reader: 'patient' | 'practitioner') =>
+      CONVERSATIONS.some((c) =>
+        c.messages.some((m) => m.from !== reader && !m.read),
+      )
+    expect(unreadBy('patient')).toBe(true)
+    expect(unreadBy('practitioner')).toBe(true)
+    expect(CONVERSATIONS.some((c) => c.archivedBy)).toBe(true)
+  })
+})
+
 describe('docs/dev-test-accounts.md', () => {
   const doc = readFileSync(
     join(__dirname, '..', '..', 'docs', 'dev-test-accounts.md'),

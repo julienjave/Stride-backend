@@ -17,10 +17,9 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { Logger, UseFilters } from '@nestjs/common'
+import { Logger, UseFilters, UsePipes, ValidationPipe } from '@nestjs/common'
 import {
   WebSocketGateway,
-  WebSocketServer,
   SubscribeMessage,
   MessageBody,
   ConnectedSocket,
@@ -30,10 +29,17 @@ import { DefaultEventsMap, Server, Socket } from 'socket.io'
 import type { IncomingMessage } from 'http'
 import type { Session, SessionData } from 'express-session'
 import { UsersService } from '../users/users.service'
+import { UserRole } from '../users/dto/create-user.dto'
 import { MessagingService } from './messaging.service'
+import { MessagingEvents } from './messaging-events'
 import { getAllowedOrigins } from '../config/allowed-origins'
-import { WsHttpExceptionFilter } from './ws-exception.filter'
+import { WsHttpExceptionFilter, type WsAnswer } from './ws-exception.filter'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import {
+  DeleteMessageEventDto,
+  SendMessageEventDto,
+} from './dto/send-message.dto'
+import type { PublicMessage } from './message-rules'
 
 // --- TYPES ---------------------------------------------------------------------------------------------------
 // socket.data is `any` by default — this narrows it to what the
@@ -49,16 +55,46 @@ type AuthenticatedSocket = Socket<
 // Socket.IO types socket.request as a bare IncomingMessage — it has no idea
 // SessionIoAdapter runs Express's session middleware directly against it
 // (see session-io.adapter.ts), which is what actually attaches `.session`
-// at runtime. This describes that real, augmented shape; `session` stays
-// optional to match the existing `?.` below (defensive against a socket
-// that somehow reaches this middleware before the session middleware ran).
+// (and `.sessionID`, the session's id) at runtime. This describes that real,
+// augmented shape; `session` stays optional (defensive against a socket that
+// somehow reaches this middleware before the session middleware ran).
 type RequestWithSession = IncomingMessage & {
   session?: Session & Partial<SessionData>
+  sessionID?: string
 }
 
 // --- GATEWAY ------------------------------------------------------------------------------------------------
 
+// The live half of messaging (Phase 5). What it does, and what it no longer
+// does:
+//   - AUTHENTICATES each connection once, from the session cookie (the
+//     middleware below) — practitioners and patients only;
+//   - PUTS each connection in its rooms (MessagingEvents): this person in
+//     this role, and this login session. Every conversation's events reach
+//     its participants through the first; logout / switch-role close the
+//     connections through the second. There is no "joinConversation" any
+//     more: per-conversation rooms made a screen join each thread it showed,
+//     and still left the list and the unread badge deaf to every other
+//     conversation. One room per person hears them all, and needs no
+//     authorization check of its own — it's derived from the session.
+//   - RECEIVES two events, sendMessage and deleteMessage, and hands them to
+//     MessagingService — the same methods the REST routes call. The service
+//     emits the resulting events itself (after its commit), so a message
+//     sent through REST is pushed exactly like one sent here.
+//   - ANSWERS each event through its acknowledgement: { ok: true, data } or
+//     { ok: false, status, message } (WsHttpExceptionFilter).
+//
+// VALIDATION: the app's global ValidationPipe (main.ts) applies to HTTP
+// routes only — gateways get their own, here, with the same options. Before
+// Phase 5 the socket took its payloads as they came.
 @UseFilters(new WsHttpExceptionFilter())
+@UsePipes(
+  new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }),
+)
 @WebSocketGateway({
   cors: {
     origin: getAllowedOrigins(),
@@ -66,42 +102,47 @@ type RequestWithSession = IncomingMessage & {
   },
 })
 export class MessagingGateway implements OnGatewayInit {
-  @WebSocketServer() server!: Server
   private readonly logger = new Logger(MessagingGateway.name)
 
   constructor(
     private readonly messagingService: MessagingService,
     private readonly usersService: UsersService,
+    private readonly events: MessagingEvents,
   ) {}
 
-  // Genuine Socket.IO MIDDLEWARE (server.use), not the handleConnection
-  // lifecycle hook this used to be — a real, previously-latent bug this
-  // change fixes: handleConnection runs asynchronously WITHOUT blocking the
-  // client from sending further events, meaning a client that emits an
-  // event (joinConversation, sendMessage) immediately after connecting
-  // could reach its handler BEFORE handleConnection's own `await
-  // usersService.findOne(...)` had actually finished — socket.data.user
-  // would still be undefined, crashing every handler that reads it.
-  // Middleware registered via server.use() is different in a way that
-  // actually matters here: it must fully resolve, awaits included, before
-  // the connection is considered established at all — no event can reach
-  // ANY handler until this completes. This is the WebSocket equivalent of
-  // Passport's deserializeUser, done manually since Passport's own
-  // machinery is Express-specific. socket.request.session exists at all
+  // Genuine Socket.IO MIDDLEWARE (server.use): it must fully resolve —
+  // awaits included — before the connection counts as established, so no
+  // event can reach a handler before socket.data.user is set. (A former
+  // handleConnection hook ran WITHOUT blocking events: one emitted right
+  // after connecting could arrive before the user was loaded.) This is the
+  // WebSocket equivalent of Passport's deserializeUser, done by hand since
+  // Passport's machinery is Express-specific. socket.request.session exists
   // only because of SessionIoAdapter.
   afterInit(server: Server) {
+    // The rest of the app emits through MessagingEvents; it needs THIS
+    // server to do so (messaging-events.ts explains the arrangement).
+    this.events.attach(server)
+
     // Socket.IO's middleware type expects a void-returning callback, but the
-    // check below is genuinely async (it awaits a DB lookup) — wrapping the
-    // logic in an inner async IIFE keeps the outer function itself
-    // synchronous (satisfying that type) while still only calling next()
-    // once the awaits inside have resolved, exactly as before.
+    // check is genuinely async (a database read) — an inner async function
+    // keeps the outer one synchronous while still calling next() only once
+    // the awaits have resolved.
     server.use((socket: AuthenticatedSocket, next) => {
       void (async () => {
-        const sessionData = (socket.request as RequestWithSession).session
-          ?.passport?.user
-        if (!sessionData) {
+        const request = socket.request as RequestWithSession
+        const sessionData = request.session?.passport?.user
+        if (!sessionData || !request.sessionID) {
           this.logger.warn(`Socket ${socket.id} rejected — no session`)
           return next(new Error('Unauthorized'))
+        }
+        // Messaging is for practitioners and patients (decided 2026-10-20:
+        // admins read no messages) — an admin's connection is refused at
+        // the door rather than accepted and left with nothing to hear.
+        if (
+          sessionData.activeRole !== UserRole.PRACTITIONER &&
+          sessionData.activeRole !== UserRole.PATIENT
+        ) {
+          return next(new Error('Forbidden'))
         }
 
         try {
@@ -109,14 +150,20 @@ export class MessagingGateway implements OnGatewayInit {
           if (!user.roles.includes(sessionData.activeRole)) {
             return next(new Error('Unauthorized'))
           }
-          // Stashed on the socket itself — every subsequent event handler for
-          // THIS connection reads it back, the same role @CurrentUser() plays
-          // for HTTP requests. Guaranteed set before any handler can possibly
-          // run, unlike the old handleConnection-based approach.
+          // Stashed on the socket — every handler of THIS connection reads
+          // it back, the role @CurrentUser() plays for HTTP requests.
           socket.data.user = {
             ...user,
             activeRole: sessionData.activeRole,
           }
+          // The connection's two rooms (see the class comment). Joining in
+          // the middleware means the rooms are set before the client's
+          // 'connect' fires: no event for this person can be missed between
+          // connecting and joining.
+          await socket.join([
+            MessagingEvents.userRoom(user.id, sessionData.activeRole),
+            MessagingEvents.sessionRoom(request.sessionID),
+          ])
           next()
         } catch {
           next(new Error('Unauthorized'))
@@ -125,65 +172,36 @@ export class MessagingGateway implements OnGatewayInit {
     })
   }
 
-  @SubscribeMessage('joinConversation')
-  async handleJoin(
-    @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: number },
-  ) {
-    const user = socket.data.user
-    // Verifies genuine participation — reusing the EXACT SAME rule as every
-    // REST endpoint on this resource (MessagingService.assertParticipant) —
-    // before ever letting the socket into the room. Without this, any
-    // authenticated socket could join ANY conversation's room purely by
-    // knowing its id, silently receiving every message broadcast to a
-    // clinical conversation they have no legitimate connection to. Throws
-    // NotFoundException/ForbiddenException on failure, caught by
-    // WsHttpExceptionFilter above rather than a manual try/catch here — the
-    // same "let the filter handle it" pattern REST controllers already rely on.
-    await this.messagingService.assertUserCanJoinConversation(
-      data.conversationId,
-      user,
-    )
-    // Room name is just the conversation's own id — everyone who joins this
-    // room receives every message broadcast to it, and no one outside it does.
-    await socket.join(`conversation:${data.conversationId}`)
-  }
-
+  // `sendMessage` { conversationId, messageBody } → ack { ok, data: the
+  // message }. Everyone in the conversation (the sender's other tabs too)
+  // receives `newMessage` from the service; the sender's own screen can use
+  // the ack to replace its "sending…" bubble.
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: number; messageBody: string },
-  ) {
-    const user = socket.data.user
+    @MessageBody() data: SendMessageEventDto,
+  ): Promise<WsAnswer<PublicMessage>> {
     const message = await this.messagingService.sendMessage(
       data.conversationId,
-      user,
+      socket.data.user,
       data.messageBody,
     )
-    // Broadcast to everyone in the room — including the sender's own other
-    // open tabs/devices, so a multi-device session stays in sync too.
-    this.server
-      .to(`conversation:${data.conversationId}`)
-      .emit('newMessage', message)
-    return message
+    return { ok: true, data: message }
   }
 
+  // `deleteMessage` { conversationId, messageId } → ack { ok, data: the
+  // message, without its text }; both participants receive
+  // `messageDeleted`.
   @SubscribeMessage('deleteMessage')
   async handleDeleteMessage(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: number; messageId: number },
-  ) {
-    const user = socket.data.user
+    @MessageBody() data: DeleteMessageEventDto,
+  ): Promise<WsAnswer<PublicMessage>> {
     const message = await this.messagingService.deleteMessage(
       data.conversationId,
       data.messageId,
-      user,
+      socket.data.user,
     )
-    // Live tombstone — the other party's open thread updates immediately,
-    // same room-broadcast mechanism as a new message.
-    this.server
-      .to(`conversation:${data.conversationId}`)
-      .emit('messageDeleted', message)
-    return message
+    return { ok: true, data: message }
   }
 }

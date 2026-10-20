@@ -21,12 +21,17 @@ import { Module } from '@nestjs/common'
 import { MessagingController } from './messaging.controller'
 import { MessagingService } from './messaging.service'
 import { MessagingGateway } from './messaging.gateway'
+import { MessagingEventsModule } from './messaging-events.module'
 import { UsersModule } from '../users/users.module'
+import { StorageModule } from '../storage/storage.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
+// StorageModule: the conversation list signs the other person's photo URL.
+// MessagingEventsModule: the service emits, the gateway attaches its server
+// (one shared instance — messaging-events.module.ts).
 @Module({
-  imports: [UsersModule],
+  imports: [UsersModule, StorageModule, MessagingEventsModule],
   controllers: [MessagingController],
   providers: [MessagingService, MessagingGateway],
   exports: [MessagingService],

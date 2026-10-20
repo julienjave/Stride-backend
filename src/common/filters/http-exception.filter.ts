@@ -34,6 +34,12 @@ import {
   ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT,
   ASSIGNED_PROGRAMS_TITLE_NOT_BLANK,
   PROGRAM_TEMPLATES_TITLE_NOT_BLANK,
+  CONVERSATION_PARTICIPANTS_FIXED,
+  MESSAGE_CONTENT_FIXED,
+  MESSAGE_DELETE_WINDOW,
+  MESSAGE_READ_BY_RECIPIENT,
+  MESSAGES_BODY_MAX_LENGTH,
+  MESSAGES_BODY_NOT_BLANK,
   SESSION_EXERCISE_SESSION_FINISHED,
   SESSION_ONE_COMPLETED_PER_DAY,
   isCheckViolation,
@@ -44,6 +50,13 @@ import {
   SESSION_FINISHED_MESSAGE,
 } from '../../sessions/session-rules'
 import { PHOTO_LIMIT_MESSAGE } from '../../assigned-programs/program-photos'
+import {
+  BLANK_MESSAGE_MESSAGE,
+  CONVERSATION_FIXED_MESSAGE,
+  MESSAGE_FIXED_MESSAGE,
+  MESSAGE_NOT_DELETABLE_MESSAGE,
+  MESSAGE_TOO_LONG_MESSAGE,
+} from '../../messaging/message-rules'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -72,7 +85,11 @@ export const RETIRED_EXERCISE_MESSAGE =
 //   400 that says what's wrong, not a 500.
 // Every other database error stays a 500: it means a bug, not a request to
 // fix.
-function translateDatabaseRefusal(caught: unknown): unknown {
+//
+// Exported (Phase 5): the WebSocket exception filter translates through the
+// same function, so a refusal reached through the socket gets the same
+// answer as through REST.
+export function translateDatabaseRefusal(caught: unknown): unknown {
   if (isCheckViolation(caught, ASSIGNED_PROGRAM_CLOSED)) {
     return new ConflictException(CLOSED_PROGRAM_MESSAGE)
   }
@@ -103,6 +120,32 @@ function translateDatabaseRefusal(caught: unknown): unknown {
   }
   if (isCheckViolation(caught, ASSIGNED_PROGRAMS_TITLE_NOT_BLANK)) {
     return new BadRequestException(blankTitleMessage('program'))
+  }
+  // Messaging (migrations 0047 / 0048). A message's text: IsMessageBody
+  // refuses a blank or over-long one first, so these two are safety nets
+  // answering in its words. A delete that raced a read: the service's
+  // UPDATE re-checks "unread" itself (no row → its own 409), so the trigger
+  // answers only for some other query — a 409 that can't say which of the
+  // two conditions failed. The last three changes are never asked for by
+  // the service; translated so that a future route that tries gets a
+  // readable 409, not a 500.
+  if (isCheckViolation(caught, MESSAGES_BODY_NOT_BLANK)) {
+    return new BadRequestException(BLANK_MESSAGE_MESSAGE)
+  }
+  if (isCheckViolation(caught, MESSAGES_BODY_MAX_LENGTH)) {
+    return new BadRequestException(MESSAGE_TOO_LONG_MESSAGE)
+  }
+  if (isCheckViolation(caught, MESSAGE_DELETE_WINDOW)) {
+    return new ConflictException(MESSAGE_NOT_DELETABLE_MESSAGE)
+  }
+  if (
+    isCheckViolation(caught, MESSAGE_CONTENT_FIXED) ||
+    isCheckViolation(caught, MESSAGE_READ_BY_RECIPIENT)
+  ) {
+    return new ConflictException(MESSAGE_FIXED_MESSAGE)
+  }
+  if (isCheckViolation(caught, CONVERSATION_PARTICIPANTS_FIXED)) {
+    return new ConflictException(CONVERSATION_FIXED_MESSAGE)
   }
   return caught
 }

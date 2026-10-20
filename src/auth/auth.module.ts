@@ -23,6 +23,7 @@ import { EmailModule } from '../email/email.module'
 import { AuthService } from './auth.service'
 import { AuthController } from './auth.controller'
 import { SessionSerializer } from './strategies/session.serializer'
+import { MessagingEventsModule } from '../messaging/messaging-events.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 @Module({
@@ -30,6 +31,7 @@ import { SessionSerializer } from './strategies/session.serializer'
     UsersModule,
     EmailModule, // AuthService injects EmailService, for forgotPassword()
     PassportModule.register({ session: true }), // session: true = use req.login()/sessions, not JWT issuance
+    MessagingEventsModule, // logout and switch-role close the session's sockets
   ],
   controllers: [AuthController],
   providers: [AuthService, SessionSerializer],

@@ -330,6 +330,20 @@
       "when": 1792425968263,
       "tag": "0046_program_alert_reviews_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792488576877,
+      "tag": "0047_messaging_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792488667589,
+      "tag": "0048_messaging_rules_rls",
+      "breakpoints": true
     }
   ]
 }

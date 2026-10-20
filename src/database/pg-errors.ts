@@ -40,6 +40,14 @@ export const PG_FOREIGN_KEY_VIOLATION = '23503'
 // below, so it reads like any other constraint refusal.
 export const PG_CHECK_VIOLATION = '23514'
 
+// 42501 is "insufficient_privilege" — among other things, what Postgres
+// raises when a row breaks a row-level security policy's WITH CHECK ("new
+// row violates row-level security policy for table …"). It carries no
+// constraint name (a policy isn't a constraint), so it is matched on the
+// code alone, and only where one known policy can be the reason — a
+// message sent after its care-team link ended (migration 0048).
+export const PG_INSUFFICIENT_PRIVILEGE = '42501'
+
 // Constraint names this app translates into a 409. Drizzle names a column's
 // .unique() constraint `<table>_<column>_unique` (see migration 0000).
 // Kept as named constants so the service and its tests can't disagree on
@@ -137,6 +145,18 @@ export const SESSION_ONE_COMPLETED_PER_DAY = 'session_one_completed_per_day'
 // a 409, like the service's.
 export const ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT =
   'assigned_program_exercises_photo_limit'
+// Messaging (Phase 5, migrations 0047 / 0048). The two CHECKs on a message's
+// text — the database's half of IsMessageBody, which refuses both first —
+// and the guards: a message's text is fixed, "read" is set once by the
+// recipient, "deleted" once by the sender while unread and within 15
+// minutes, a conversation's participants are fixed. HttpExceptionFilter
+// turns each into the answer the service's own checks give.
+export const MESSAGES_BODY_NOT_BLANK = 'messages_body_not_blank'
+export const MESSAGES_BODY_MAX_LENGTH = 'messages_body_max_length'
+export const MESSAGE_CONTENT_FIXED = 'message_content_fixed'
+export const MESSAGE_READ_BY_RECIPIENT = 'message_read_by_recipient'
+export const MESSAGE_DELETE_WINDOW = 'message_delete_window'
+export const CONVERSATION_PARTICIPANTS_FIXED = 'conversation_participants_fixed'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -211,4 +231,11 @@ export function isForeignKeyViolation(
 // A check violation (23514), optionally on one named constraint.
 export function isCheckViolation(error: unknown, constraint?: string): boolean {
   return isPgError(error, PG_CHECK_VIOLATION, constraint)
+}
+
+// A row-level security refusal on a write (42501). No constraint name to
+// narrow it: call it only around ONE write whose policy has one possible
+// reason left once the service's own checks have passed.
+export function isRowSecurityViolation(error: unknown): boolean {
+  return isPgError(error, PG_INSUFFICIENT_PRIVILEGE)
 }

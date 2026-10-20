@@ -44,6 +44,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
 import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
+import { MessagingEvents } from '../messaging/messaging-events'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -54,6 +55,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
+    private readonly messagingEvents: MessagingEvents,
   ) {}
 
   // === ROUTES ===========================================================
@@ -205,10 +207,20 @@ export class AuthController {
       throw new ForbiddenException(`You do not have the "${dto.role}" role`)
     }
     const updatedUser = { ...user, activeRole: dto.role }
+    // The session's id BEFORE the login: req.login() regenerates the session
+    // (a new id — Passport's protection against session fixation), and the
+    // open sockets were authenticated with the old one.
+    const previousSessionId = req.sessionID
     return new Promise((resolve, reject) => {
-      req.login(updatedUser, (err: Error | null) =>
-        err ? reject(err) : resolve(updatedUser),
-      )
+      req.login(updatedUser, (err: Error | null) => {
+        if (err) return reject(err)
+        // The sockets opened in the OLD role are closed (Phase 5): each
+        // keeps the role it connected with, so it would go on receiving —
+        // and sending — the previous role's messages. The client reconnects
+        // and gets a socket in the new role (MessagingEvents).
+        this.messagingEvents.disconnectSession(previousSessionId)
+        resolve(updatedUser)
+      })
     })
   }
 
@@ -227,8 +239,15 @@ export class AuthController {
       })
     }
 
+    // Read before the session is destroyed: the id names its sockets' room.
+    const sessionId = req.sessionID
     req.logout(() => {
       req.session.destroy(() => {
+        // A logged-out tab's socket must not stay connected — it was
+        // authenticated once, at its handshake, and would otherwise keep
+        // receiving messages (MessagingEvents.disconnectSession). Its
+        // reconnect is then refused: no session.
+        this.messagingEvents.disconnectSession(sessionId)
         res.clearCookie('connect.sid')
         res.status(HttpStatus.NO_CONTENT).send()
       })

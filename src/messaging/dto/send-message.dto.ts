@@ -17,13 +17,39 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsString, MinLength, MaxLength } from 'class-validator'
+import { IsInt, IsPositive } from 'class-validator'
+import { IsMessageBody } from './message-body'
 
-// --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
+// --- DATA TRANSFER OBJECTS ---------------------------------------------------------------------------------
 
+// POST /conversations/:id/messages — the REST door (the conversation is in
+// the URL).
 export class SendMessageDto {
-  @IsString()
-  @MinLength(1)
-  @MaxLength(5000)
+  @IsMessageBody()
   messageBody!: string
+}
+
+// The `sendMessage` WebSocket event — the socket door. An event has no URL,
+// so the conversation travels in the payload. The gateway validates it with
+// its own ValidationPipe: the app's global pipe (main.ts) applies to HTTP
+// routes only, and before Phase 5 the socket took `data.messageBody` as it
+// came — a number, an object, a megabyte of text.
+export class SendMessageEventDto {
+  @IsInt()
+  @IsPositive()
+  conversationId!: number
+
+  @IsMessageBody()
+  messageBody!: string
+}
+
+// The `deleteMessage` WebSocket event.
+export class DeleteMessageEventDto {
+  @IsInt()
+  @IsPositive()
+  conversationId!: number
+
+  @IsInt()
+  @IsPositive()
+  messageId!: number
 }

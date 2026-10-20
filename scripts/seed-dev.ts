@@ -62,6 +62,8 @@ import { AddWorkoutDto } from '../src/programs/dto/add-workout.dto'
 import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
 import { SessionReviewsService } from '../src/sessions/session-reviews.service'
+import { MessagingService } from '../src/messaging/messaging.service'
+import { CreateConversationDto } from '../src/messaging/dto/create-conversation.dto'
 import { addDays, utcToday } from '../src/common/calendar-date'
 import {
   seedAttempts,
@@ -75,6 +77,7 @@ import {
   ACCOUNTS,
   ASSIGNED_PROGRAMS,
   CLINICS,
+  CONVERSATIONS,
   CUSTOM_EXERCISES,
   DEMO_PASSWORD,
   TEMPLATES,
@@ -190,6 +193,7 @@ async function run(): Promise<void> {
     const programs = app.get(ProgramsService)
     const assignedPrograms = app.get(AssignedProgramsService)
     const sessionReviews = app.get(SessionReviewsService)
+    const messaging = app.get(MessagingService)
 
     const clinicIds = new Map<ClinicKey, number>()
     const accountIds = new Map<AccountKey, number>()
@@ -695,14 +699,66 @@ async function run(): Promise<void> {
       }
     }
 
-    // --- 6. Deactivations, last (a deactivated account can't be acted on) ---
+    // --- 6. Conversations (Phase 5) ---
+    // Each conversation STARTED through the real service, as the
+    // practitioner — the care-team rule and the CONVERSATION_STARTED audit
+    // entry are the app's own. Its messages are written as the OWNER, with
+    // past moments: the API stamps a message with now() (0048's trigger),
+    // and a demo needs a history; the owner is exempt from that trigger,
+    // never from the CHECKs (a blank message would fail here too). A read
+    // message was read 30 minutes after it was sent. Archiving, last,
+    // through the service again (a message written after it would undo it —
+    // decided 2026-10-20).
+    for (const conversation of CONVERSATIONS) {
+      const { id } = await messaging.createConversation(
+        await as(conversation.practitioner, UserRole.PRACTITIONER),
+        await validated(CreateConversationDto, {
+          userId: idOf(conversation.patient),
+        }),
+      )
+      for (const message of conversation.messages) {
+        const senderId = idOf(
+          message.from === 'patient'
+            ? conversation.patient
+            : conversation.practitioner,
+        )
+        await owner.query(
+          `INSERT INTO messages (conversation_id, sender_id, message_body, sent_at, read_at)
+           VALUES ($1, $2, $3, ($4::date + $5::time) AT TIME ZONE 'UTC',
+                   CASE WHEN $6::boolean
+                     THEN ($4::date + $5::time) AT TIME ZONE 'UTC' + interval '30 minutes'
+                   END)`,
+          [
+            id,
+            senderId,
+            message.body,
+            addDays(today, -message.daysAgo),
+            message.at,
+            message.read,
+          ],
+        )
+      }
+      if (conversation.archivedBy === 'patient') {
+        await messaging.archiveConversation(
+          id,
+          await as(conversation.patient, UserRole.PATIENT),
+        )
+      } else if (conversation.archivedBy === 'practitioner') {
+        await messaging.archiveConversation(
+          id,
+          await as(conversation.practitioner, UserRole.PRACTITIONER),
+        )
+      }
+    }
+
+    // --- 7. Deactivations, last (a deactivated account can't be acted on) ---
     for (const account of ACCOUNTS) {
       if (account.kind === 'patient' && account.deactivated) {
         await users.softDelete(idOf(account.key), admin)
       }
     }
 
-    // --- 7. What was made ---
+    // --- 8. What was made ---
     console.log(
       `\nDone. Every account with a password uses: ${DEMO_PASSWORD}\n`,
     )

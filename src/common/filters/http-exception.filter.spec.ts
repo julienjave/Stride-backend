@@ -126,6 +126,68 @@ describe('HttpExceptionFilter', () => {
     })
   })
 
+  // Messaging (migrations 0047 / 0048): each refusal answered as the
+  // service or the DTO would — the text CHECKs as IsMessageBody's 400, the
+  // guards as 409s. Full bodies, so a wrong status, class or message fails.
+  it.each([
+    [
+      'messages_body_not_blank',
+      400,
+      'BadRequestException',
+      "A message can't be blank",
+    ],
+    [
+      'messages_body_max_length',
+      400,
+      'BadRequestException',
+      'A message can be at most 5000 characters',
+    ],
+    [
+      'message_delete_window',
+      409,
+      'ConflictException',
+      'This message can no longer be deleted: it has been read, or the 15 minutes have passed',
+    ],
+    [
+      'message_content_fixed',
+      409,
+      'ConflictException',
+      'A message can no longer change once sent',
+    ],
+    [
+      'message_read_by_recipient',
+      409,
+      'ConflictException',
+      'A message can no longer change once sent',
+    ],
+    [
+      'conversation_participants_fixed',
+      409,
+      'ConflictException',
+      'Who a conversation is between can no longer change',
+    ],
+  ])('answers %s with a %i', (constraint, statusCode, error, message) => {
+    const { status, body } = run(databaseError('23514', constraint))
+    expect(status).toBe(statusCode)
+    expect({ ...body, timestamp: 'any' }).toStrictEqual({
+      statusCode,
+      message: [message],
+      error,
+      timestamp: 'any',
+      path: '/sessions',
+    })
+  })
+
+  // A guard of 0048 that the filter must NOT translate: refusing a new
+  // message that claims to be read already is a bug in the caller, never a
+  // request to fix — a 500 like any other unexpected CHECK. (A translation
+  // matching every `message_…` name would fail here.)
+  it('leaves message_starts_unread as a 500', () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { status } = run(databaseError('23514', 'message_starts_unread'))
+    expect(status).toBe(500)
+  })
+
   // Any other CHECK failure is still an unexpected error: a 500, its details
   // kept out of the response. The second case is a neighbour of the title
   // CHECKs — another CHECK on the same table — so a translation that

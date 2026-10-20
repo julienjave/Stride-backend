@@ -141,3 +141,20 @@ made, through the app's own code); the seed announces it just before.
   happened. A program's alert clears itself when the patient acts, or when
   that practitioner marks it reviewed on the program page's banner — then it
   stays off their list until something changes, or for 14 days.
+- **Messages** (`GET /conversations`; the screens come with Phase 5's
+  frontend): a patient writes with the practitioners on their care team, and
+  only while they are on it.
+  - **Pat ↔ Alex**: an exchange over the last few days. Alex's last two
+    messages are **unread** — Pat's list shows 2 unread.
+  - **Jo ↔ Sam**: Jo's question about a lighter program waits for Sam —
+    **1 unread** on Sam's side.
+  - **Robin ↔ Blake**: an old exchange that **Robin archived** (it shows
+    behind "archived" on Robin's side only; a new message from either side
+    brings it back for both).
+  - Admins have **no messaging** — no route, no conversation, no message
+    (`admin@stride.test` gets a 403; the database hides them too).
+  - To see a **read-only** conversation: as the admin, end Alex's place on
+    Pat's care team (Admin → Users → Pat → Care team → End). Pat and Alex
+    both still read their history; neither can write until Alex rejoins.
+  - A message can be deleted by its sender while it is **unread and at most
+    15 minutes old** — the seeded ones are all older; send a new one to try.

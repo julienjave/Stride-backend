@@ -596,3 +596,130 @@ export const ASSIGNED_PROGRAMS: {
     },
   },
 ]
+
+// --- MESSAGES (Phase 5) ------------------------------------------------------------------------------------
+
+// One message of a seeded conversation. Written as the database OWNER with
+// a past moment (the API stamps every message with now(), and a demo
+// conversation needs a history), like the session history above.
+export interface SeedMessage {
+  from: 'patient' | 'practitioner'
+  // When: this many days before the seed's day, at this UTC time. Never the
+  // seed's own day (0): the seed may run at 06:00 UTC, and a message "at
+  // 21:00 today" would be in the future.
+  daysAgo: number
+  at: string
+  body: string
+  // Read by the other person, 30 minutes after it was sent — or not yet
+  // (an unread count and a "Seen" missing, on the screens).
+  read: boolean
+}
+
+export interface SeedConversation {
+  patient: AccountKey
+  // On the patient's care team: starting a conversation needs it (the
+  // service refuses otherwise — and so does the database).
+  practitioner: AccountKey
+  // Archived by one side, after its messages (decided 2026-10-20: a NEW
+  // message would bring it back).
+  archivedBy?: 'patient' | 'practitioner'
+  messages: SeedMessage[]
+}
+
+export const CONVERSATIONS: SeedConversation[] = [
+  {
+    // Pat and Alex: an exchange over the last days, Alex's last two
+    // messages still unread — Pat's Messages tab shows a badge of 2.
+    patient: 'pat',
+    practitioner: 'alex',
+    messages: [
+      {
+        from: 'practitioner',
+        daysAgo: 4,
+        at: '09:15',
+        body: "Hi Pat, I've added a strength workout on Wednesdays. Start with the lighter band.",
+        read: true,
+      },
+      {
+        from: 'patient',
+        daysAgo: 4,
+        at: '18:40',
+        body: 'Thanks! Should I still ice the knee after each session?',
+        read: true,
+      },
+      {
+        from: 'practitioner',
+        daysAgo: 3,
+        at: '08:05',
+        body: 'Yes, 10 to 15 minutes if it feels warm.',
+        read: true,
+      },
+      {
+        from: 'patient',
+        daysAgo: 1,
+        at: '19:20',
+        body: 'The last exercise gave me a sharp pain at the end of the movement. I left a note on the session.',
+        read: true,
+      },
+      {
+        from: 'practitioner',
+        daysAgo: 1,
+        at: '21:00',
+        body: 'I saw it, thank you. Stop a little before that point for now, and we will look at it together on Friday.',
+        read: false,
+      },
+      {
+        from: 'practitioner',
+        daysAgo: 1,
+        at: '21:02',
+        body: 'And skip the band for that one until then.',
+        read: false,
+      },
+    ],
+  },
+  {
+    // Jo and Sam: Jo's question waits for Sam — Sam's practitioner home
+    // shows "1 unread".
+    patient: 'jo',
+    practitioner: 'sam',
+    messages: [
+      {
+        from: 'practitioner',
+        daysAgo: 6,
+        at: '10:00',
+        body: 'Hi Jo, how are the mobility exercises going?',
+        read: true,
+      },
+      {
+        from: 'patient',
+        daysAgo: 2,
+        at: '20:10',
+        body: 'Sorry, I missed a few sessions, work has been busy. Could we make the program shorter for a couple of weeks?',
+        read: false,
+      },
+    ],
+  },
+  {
+    // Robin and Blake: an old, finished exchange that Robin archived —
+    // "Show 1 archived conversation" on Robin's list.
+    patient: 'robin',
+    practitioner: 'blake',
+    archivedBy: 'patient',
+    messages: [
+      {
+        from: 'practitioner',
+        daysAgo: 9,
+        at: '11:30',
+        body: 'Hi Robin, your next appointment at Harbour is confirmed for Thursday at 10.',
+        read: true,
+      },
+      {
+        from: 'patient',
+        daysAgo: 9,
+        at: '12:05',
+        body: 'Great, thank you!',
+        read: true,
+      },
+    ],
+  },
+]
