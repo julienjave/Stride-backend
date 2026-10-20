@@ -43,6 +43,12 @@ import {
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
 } from '../database/pg-errors'
 
+// What UsersService hands to db.transaction(): a function of the
+// transaction. The mocks call it with a small stub of their own; `unknown`
+// because each test's stub has its own shape (an `any` here made every call
+// and return through it unchecked — no-unsafe-call / no-unsafe-return).
+type TransactionCallback = (tx: unknown) => unknown
+
 // What a duplicate licenseNumber really looks like by the time it reaches
 // UsersService: node-postgres's error (code 23505 + the constraint's name),
 // wrapped by drizzle in a DrizzleQueryError. Built with drizzle's real
@@ -214,7 +220,7 @@ describe('UsersService.create', () => {
     )
 
     expect(result.roles).toEqual([UserRole.PATIENT])
-    expect((result as any).passwordHash).toBeUndefined()
+    expect(result).not.toHaveProperty('passwordHash')
     // Regression coverage for the gap this fix closes: patientProfiles was
     // written inside this same insert, but never attached to create()'s own
     // response until attachProfile() started reading it back.
@@ -406,7 +412,7 @@ describe('UsersService.create', () => {
 
   it('rejects a clinicId that does not correspond to any real clinic', async () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
-    db.transaction.mockImplementation((cb: any) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         // withRlsContext() sets the creator's session context first.
         execute: jest.fn().mockResolvedValue(undefined),
@@ -481,7 +487,7 @@ describe('UsersService.create', () => {
       }),
     })
     db.query.users.findFirst.mockResolvedValue(undefined)
-    db.transaction.mockImplementation((cb: any) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         // withRlsContext() sets two session GUCs via tx.execute() before
         // invoking the callback, since requestingUser is defined here.
@@ -530,7 +536,7 @@ describe('UsersService.create', () => {
 
   it('does not apply the clinic-ownership check to an admin', async () => {
     db.query.users.findFirst.mockResolvedValue(undefined)
-    db.transaction.mockImplementation((cb: any) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         // withRlsContext() sets two session GUCs via tx.execute() before
         // invoking the callback, since requestingUser is defined here.
@@ -686,7 +692,7 @@ describe('UsersService.grantRole', () => {
         },
       },
     }
-    db.transaction.mockImplementation((cb: any) => cb(tx))
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     await usersService.grantRole(
       1,
@@ -717,7 +723,7 @@ describe('UsersService.grantRole', () => {
         },
       },
     }
-    db.transaction.mockImplementation((cb: any) => cb(tx))
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     await usersService.grantRole(
       1,
@@ -846,7 +852,7 @@ describe('UsersService.findPatientsForPractitioner', () => {
     const result = await usersService.findPatientsForPractitioner(1)
 
     expect(result).toHaveLength(1)
-    expect((result[0] as any).passwordHash).toBeUndefined()
+    expect(result[0]).not.toHaveProperty('passwordHash')
     // Regression coverage for the gap this fix closes: this is the
     // practitioner-facing branch of GET /users, which previously attached
     // neither roles nor profile data at all.
@@ -1229,7 +1235,7 @@ describe('UsersService.update', () => {
         },
       },
     }
-    db.transaction.mockImplementation((cb: any) => cb(tx))
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await usersService.update(
       1,
@@ -1307,7 +1313,7 @@ describe('UsersService.update', () => {
         }),
       }),
     }
-    db.transaction.mockImplementation((cb: any) => cb(tx))
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await usersService.update(
       3,
@@ -1380,8 +1386,9 @@ describe('UsersService.update', () => {
         }),
       }),
     }
-    // Typed callback (not `cb: any`, the older pattern above): calling an
-    // `any` is exactly what the no-unsafe-call lint rule flags.
+    // Typed callback — calling an `any` is exactly what the no-unsafe-call
+    // lint rule flags (the file's other mocks use TransactionCallback, at
+    // the top; this one can name its stub's own type).
     db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
     return profileUpdateChain
   }
@@ -1643,7 +1650,7 @@ describe('UsersService.reactivate', () => {
         ]),
       }),
     })
-    db.transaction.mockImplementation((cb) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         execute: jest.fn().mockResolvedValue(undefined),
         update: () => ({ set }),
@@ -1669,7 +1676,7 @@ describe('UsersService.reactivate', () => {
 
   it('audit-logs the reactivation, naming who performed it and which account was affected', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
-    db.transaction.mockImplementation((cb) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         execute: jest.fn().mockResolvedValue(undefined),
         update: () => ({
@@ -1699,7 +1706,9 @@ describe('UsersService.findAll', () => {
   let usersService: UsersService
   let db: {
     query: {
-      users: { findMany: jest.Mock }
+      // Typed with its call signature (what findAll passes), so the tests'
+      // `mock.calls[0][0]` is checked rather than `any`.
+      users: { findMany: jest.Mock<Promise<unknown[]>, [{ where: unknown }]> }
       practitionerProfiles: { findMany: jest.Mock }
       patientProfiles: { findMany: jest.Mock }
       adminProfiles: { findMany: jest.Mock }
@@ -1710,7 +1719,9 @@ describe('UsersService.findAll', () => {
   beforeEach(async () => {
     db = {
       query: {
-        users: { findMany: jest.fn() },
+        users: {
+          findMany: jest.fn<Promise<unknown[]>, [{ where: unknown }]>(),
+        },
         practitionerProfiles: { findMany: jest.fn().mockResolvedValue([]) },
         patientProfiles: { findMany: jest.fn().mockResolvedValue([]) },
         adminProfiles: { findMany: jest.fn().mockResolvedValue([]) },

@@ -17,9 +17,10 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+import type { INestApplicationContext } from '@nestjs/common'
 import { IoAdapter } from '@nestjs/platform-socket.io'
-import { ServerOptions } from 'socket.io'
-import { RequestHandler, Response, NextFunction } from 'express'
+import type { ExtendedError, Server, ServerOptions } from 'socket.io'
+import type { NextFunction, Request, RequestHandler, Response } from 'express'
 
 // --- ADAPTER -----------------------------------------------------------------------------------------------
 
@@ -32,18 +33,56 @@ import { RequestHandler, Response, NextFunction } from 'express'
 // trust socket.request.session — the real session store, the real cookie,
 // not a separate auth mechanism invented for sockets specifically.
 export class SessionIoAdapter extends IoAdapter {
+  // The Nest application (main.ts and the gateway's e2e suite pass theirs):
+  // the type IoAdapter's own constructor accepts, so no cast is needed.
   constructor(
-    app: unknown,
+    app: INestApplicationContext,
     private readonly sessionMiddleware: RequestHandler,
   ) {
-    super(app as any)
+    super(app)
   }
 
-  createIOServer(port: number, options?: ServerOptions): any {
-    const server = super.createIOServer(port, options)
-    server.use((socket: any, next: NextFunction) => {
-      this.sessionMiddleware(socket.request, {} as Response, next)
+  // Nest declares IoAdapter.createIOServer as returning `any`; the value is
+  // socket.io's Server, named ONCE here so everything after it is checked
+  // (an `any` made `server.use`, `socket.request` and the call below
+  // unchecked — lint's no-unsafe-*).
+  createIOServer(port: number, options?: ServerOptions): Server {
+    const server = super.createIOServer(port, options) as Server
+    server.use((socket, next) => {
+      // `socket.request` is Node's IncomingMessage — the object Express
+      // turns into its Request for an HTTP call. express-session reads only
+      // what both have (the cookie header, the URL) and sets
+      // `request.session`, so
+      // the handshake is handed over as a Request. The empty Response:
+      // session only writes a cookie on a real response, and a handshake
+      // has none to send.
+      this.sessionMiddleware(
+        socket.request as Request,
+        {} as Response,
+        toExpressNext(next),
+      )
     })
     return server
+  }
+}
+
+// express-session finishes by calling next() — or next(error) when the store
+// failed (the database unreachable). socket.io's `next` takes an Error, and
+// refuses the handshake when it gets one; Express's NextFunction may also be
+// called with the strings 'route' / 'router' (routing instructions, which
+// session never sends). Different types, so this bridge says what crosses:
+// nothing → the handshake goes on; anything else → an Error, so a failure
+// can never be mistaken for success (a non-Error value is wrapped rather
+// than dropped, the original kept as its `cause`).
+export function toExpressNext(
+  next: (error?: ExtendedError) => void,
+): NextFunction {
+  return (error?: unknown) => {
+    if (error === undefined) return next()
+    next(
+      error instanceof Error
+        ? error
+        : new Error('The session middleware failed', { cause: error }),
+    )
   }
 }

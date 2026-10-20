@@ -22,6 +22,7 @@ import { NestFactory } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
 import { ValidationPipe } from '@nestjs/common'
 import session from 'express-session'
+import type { NextFunction, Request, Response } from 'express'
 import passport from 'passport'
 import connectPgSimple from 'connect-pg-simple'
 import { Pool } from 'pg'
@@ -78,7 +79,11 @@ async function bootstrap() {
   // req.ip, is the robust fix — every consumer of req.ip benefits
   // automatically, with no changes needed anywhere else in the app.
   if (process.env.NODE_ENV === 'production') {
-    app.use((req: any, res: any, next: any) => {
+    // Typed with Express's own types (an `any` let every access through
+    // them go unchecked). `_res`: unused, but `next` is the THIRD argument
+    // Express passes, so the second must be named too (the `_` says
+    // "deliberately unused").
+    app.use((req: Request, _res: Response, next: NextFunction) => {
       const cfConnectingIp = req.headers['cf-connecting-ip']
       if (typeof cfConnectingIp === 'string') {
         req.headers['x-forwarded-for'] = cfConnectingIp
@@ -172,4 +177,9 @@ async function bootstrap() {
 
   await app.listen(process.env.PORT ?? 3000)
 }
-bootstrap()
+
+// `void`: says "this promise is deliberately not awaited" (the top level of
+// a CommonJS module can't await). Nothing is swallowed — if bootstrap()
+// rejects (a bad environment variable, the port taken), Node still reports
+// the unhandled rejection and exits with code 1, exactly as before.
+void bootstrap()

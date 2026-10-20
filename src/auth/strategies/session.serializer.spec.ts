@@ -22,12 +22,20 @@ describe('SessionSerializer.deserializeUser', () => {
   // a spy callback — this is how Passport actually calls it (a
   // (err, user) => void callback, not a returned Promise), so testing it
   // this way exercises the exact same shape a real request would.
+  //
+  // deserializeUser is `async`: it returns a promise of its own. Today it
+  // never rejects (it catches and reports through done()), but if it ever
+  // threw, an unhandled promise here would leave this one pending — the
+  // test would hang until jest's timeout instead of failing with the
+  // reason. `.catch(reject)` hands any such error to the test.
   function deserialize(sessionData: { id: number; activeRole: UserRole }) {
     return new Promise<unknown>((resolve, reject) => {
-      serializer.deserializeUser(sessionData, (err, user) => {
-        if (err) reject(err)
-        else resolve(user)
-      })
+      serializer
+        .deserializeUser(sessionData, (err, user) => {
+          if (err) reject(err)
+          else resolve(user)
+        })
+        .catch(reject)
     })
   }
 

@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing'
+import type { VerifyResult } from 'otplib'
 import {
   BadRequestException,
   ConflictException,
@@ -12,6 +13,27 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
+
+// What AuthService hands to db.transaction(): a function of the
+// transaction. The mocks call it with a small stub of their own; `unknown`
+// because each test's stub has its own shape (an `any` here made every call
+// and return through it unchecked — no-unsafe-call / no-unsafe-return).
+type TransactionCallback = (tx: unknown) => unknown
+
+// otp is constructed inside AuthService (`new OTP(...)`), not injected —
+// there's no provider seam for it, so its verify() is replaced on the
+// constructed instance (the role the DRIZZLE mock plays for the database).
+// `service['otp']`: TypeScript refuses `service.otp` (private) but allows
+// the bracket form, and keeps the field's real type — so the stub is checked
+// against otplib's own signature, where `(service as any).otp` checked
+// nothing. A full result of otplib's type, though the service reads only
+// `valid`.
+function stubTotp(service: AuthService, valid: boolean) {
+  const result: VerifyResult = valid
+    ? { valid: true, delta: 0, epoch: 0, timeStep: 0 }
+    : { valid: false }
+  return jest.spyOn(service['otp'], 'verify').mockResolvedValue(result)
+}
 
 // AuthService now decrypts the stored MFA secret (encryptMfaSecret/
 // decryptMfaSecret, AES-256-GCM) before ever handing it to otp.verify() —
@@ -71,7 +93,7 @@ describe('AuthService.validateUser', () => {
       // findOne()/create() do — defaults to "no profile" here since most
       // tests in this block don't care; the dedicated test below overrides
       // this to assert the real behavior.
-      attachProfile: jest.fn().mockImplementation((user) => user),
+      attachProfile: jest.fn().mockImplementation((user: unknown) => user),
       toPublic: jest.fn().mockImplementation(fakeToPublic),
     }
     // AuthService now calls auditService.log() from inside validateUser()
@@ -309,7 +331,7 @@ describe('AuthService.registerClinic', () => {
     // just passes the user through unchanged; the dedicated test below
     // overrides it to assert the real behavior and the tx it's called with.
     usersService = {
-      attachProfile: jest.fn().mockImplementation((user) => user),
+      attachProfile: jest.fn().mockImplementation((user: unknown) => user),
       toPublic: jest.fn().mockImplementation(fakeToPublic),
     }
     auditService = { log: jest.fn().mockResolvedValue(undefined) }
@@ -419,7 +441,9 @@ describe('AuthService.registerClinic', () => {
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
 
-    db.transaction.mockImplementation((cb: any) => cb({ insert }))
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
+      cb({ insert }),
+    )
 
     const result = await authService.registerClinic({
       clinicName: 'Acme Clinic',
@@ -477,7 +501,7 @@ describe('AuthService.registerClinic', () => {
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
     const tx = { insert }
-    db.transaction.mockImplementation((cb: any) => cb(tx))
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
     usersService.attachProfile.mockImplementation((user) =>
       Promise.resolve({
         ...user,
@@ -750,7 +774,7 @@ describe('AuthService.resetPassword', () => {
     })
     // withRlsContext() sets two session GUCs via tx.execute() before
     // invoking the callback, which then issues the real UPDATE via tx.
-    db.transaction.mockImplementation((cb: any) =>
+    db.transaction.mockImplementation((cb: TransactionCallback) =>
       cb({
         execute: jest.fn().mockResolvedValue(undefined),
         update: jest.fn().mockReturnValue({
@@ -790,7 +814,7 @@ describe('AuthService.enableMfa', () => {
       query: { users: { findFirst: jest.fn() } },
       // withRlsContext() sets two session GUCs via tx.execute() before
       // invoking the callback, which then issues the real UPDATE via tx.
-      transaction: jest.fn().mockImplementation((cb: any) =>
+      transaction: jest.fn().mockImplementation((cb: TransactionCallback) =>
         cb({
           execute: jest.fn().mockResolvedValue(undefined),
           update: jest.fn().mockReturnValue({
@@ -826,13 +850,8 @@ describe('AuthService.enableMfa', () => {
 
   it('rejects an incorrect TOTP code', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 1, mfaSecret: 'SECRET' })
-    // otp is constructed internally by AuthService itself (`new OTP(...)`),
-    // not injected via DI — there's no provider seam for it, so its
-    // .verify() is monkey-patched directly on the constructed instance
-    // instead, the same role the DRIZZLE mock plays for the database.
-    ;(authService as any).otp.verify = jest
-      .fn()
-      .mockResolvedValue({ valid: false })
+    // otp is constructed internally by AuthService itself — see stubTotp().
+    stubTotp(authService, false)
 
     await expect(
       authService.enableMfa(1, '000000', currentUser),
@@ -841,9 +860,7 @@ describe('AuthService.enableMfa', () => {
 
   it('enables MFA once a correct TOTP code is provided', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 1, mfaSecret: 'SECRET' })
-    ;(authService as any).otp.verify = jest
-      .fn()
-      .mockResolvedValue({ valid: true })
+    stubTotp(authService, true)
 
     await authService.enableMfa(1, '123456', currentUser)
 
@@ -867,7 +884,7 @@ describe('AuthService.disableMfa', () => {
       query: { users: { findFirst: jest.fn() } },
       // withRlsContext() sets two session GUCs via tx.execute() before
       // invoking the callback, which then issues the real UPDATE via tx.
-      transaction: jest.fn().mockImplementation((cb: any) =>
+      transaction: jest.fn().mockImplementation((cb: TransactionCallback) =>
         cb({
           execute: jest.fn().mockResolvedValue(undefined),
           update: jest.fn().mockReturnValue({
@@ -911,9 +928,7 @@ describe('AuthService.disableMfa', () => {
       mfaEnabled: true,
       mfaSecret: 'SECRET',
     })
-    ;(authService as any).otp.verify = jest
-      .fn()
-      .mockResolvedValue({ valid: false })
+    stubTotp(authService, false)
 
     await expect(
       authService.disableMfa(1, '000000', currentUser),
@@ -926,9 +941,7 @@ describe('AuthService.disableMfa', () => {
       mfaEnabled: true,
       mfaSecret: 'SECRET',
     })
-    ;(authService as any).otp.verify = jest
-      .fn()
-      .mockResolvedValue({ valid: true })
+    stubTotp(authService, true)
 
     await authService.disableMfa(1, '123456', currentUser)
 
@@ -967,9 +980,7 @@ describe('AuthService.verifyMfaCode', () => {
 
   it('returns true for a correct TOTP code', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 1, mfaSecret: 'SECRET' })
-    ;(authService as any).otp.verify = jest
-      .fn()
-      .mockResolvedValue({ valid: true })
+    stubTotp(authService, true)
 
     const result = await authService.verifyMfaCode(1, '123456')
     expect(result).toBe(true)

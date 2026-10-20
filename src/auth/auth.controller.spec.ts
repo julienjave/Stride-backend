@@ -13,23 +13,34 @@ import { AuthController } from './auth.controller'
 // messaging-gateway.e2e-spec.ts) — this asserts the same decorator config
 // without spending any of that budget.
 describe('AuthController MFA route throttling', () => {
-  const readThrottle = (fn: (...args: never[]) => unknown) => ({
-    limit: Reflect.getMetadata(THROTTLER_LIMIT + 'default', fn) as
-      number | undefined,
-    ttl: Reflect.getMetadata(THROTTLER_TTL + 'default', fn) as
-      number | undefined,
-  })
+  // @Throttle writes its metadata on the method's FUNCTION OBJECT — the
+  // property descriptor's `value` (see @nestjs/throttler's
+  // throttler.decorator.js). So the test reads it from the descriptor,
+  // rather than writing `AuthController.prototype.enableMfa` as a value:
+  // that is what lint's unbound-method warns about (a method taken off its
+  // object loses `this` if it's ever CALLED). Nothing is called here — and
+  // now the code says so.
+  const readThrottle = (method: keyof AuthController) => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      AuthController.prototype,
+      method,
+    )
+    if (!descriptor) throw new Error(`AuthController has no ${method}`)
+    const handler = descriptor.value as object
+    return {
+      limit: Reflect.getMetadata(THROTTLER_LIMIT + 'default', handler) as
+        number | undefined,
+      ttl: Reflect.getMetadata(THROTTLER_TTL + 'default', handler) as
+        number | undefined,
+    }
+  }
 
   it('applies the same throttle to mfa/enable and mfa/disable as mfa/verify', () => {
-    const verifyThrottle = readThrottle(AuthController.prototype.verifyMfaLogin)
+    const verifyThrottle = readThrottle('verifyMfaLogin')
     expect(verifyThrottle.limit).toBe(5)
     expect(verifyThrottle.ttl).toBeDefined()
 
-    expect(readThrottle(AuthController.prototype.enableMfa)).toEqual(
-      verifyThrottle,
-    )
-    expect(readThrottle(AuthController.prototype.disableMfa)).toEqual(
-      verifyThrottle,
-    )
+    expect(readThrottle('enableMfa')).toEqual(verifyThrottle)
+    expect(readThrottle('disableMfa')).toEqual(verifyThrottle)
   })
 })
