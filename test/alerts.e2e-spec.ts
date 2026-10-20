@@ -938,4 +938,378 @@ describe('Alerts and session reviews (e2e)', () => {
       expect(bodyOf<{ reviews: ReviewBody[] }>(asAdmin).reviews).toHaveLength(1)
     })
   })
+  // --- POST /alerts/programs/:programId/review (2026-10-19) ------------------
+
+  describe('reviewing an attendance alert', () => {
+    interface ProgramReviewBody {
+      missedSince: string | null
+      inactiveSince: string | null
+      reviewedAt: string
+    }
+    const reviewProgram = (
+      who: ReturnType<typeof agent>,
+      programId: number,
+      body: object = { today },
+    ) => who.post(`/alerts/programs/${programId}/review`).send(body)
+
+    async function programReviews(programId: number) {
+      const { rows } = await sessionPool.query<{
+        practitioner_id: number
+        missed_since: string | null
+        inactive_since: string | null
+      }>(
+        `SELECT practitioner_id, missed_since::text, inactive_since::text
+         FROM program_alert_reviews WHERE assigned_program_id = $1 ORDER BY id`,
+        [programId],
+      )
+      return rows
+    }
+    async function programReviewAudit(programId: number) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const { rows } = await sessionPool.query<{
+        performed_by: number
+        target_user_id: number
+        entity_type: string
+        details: Record<string, unknown>
+      }>(
+        `SELECT performed_by, target_user_id, entity_type, details FROM audit_logs
+         WHERE action = 'PROGRAM_ALERT_REVIEWED'
+           AND (details->>'programId')::int = $1 ORDER BY id`,
+        [programId],
+      )
+      return rows
+    }
+    const kindsFor = async (who: ReturnType<typeof agent>, programId: number) =>
+      forProgram(await alertsOf(who), programId).map((alert) => alert.kind)
+
+    it("takes the alert off the reviewer's list only, recording the facts the server saw", async () => {
+      const patientId = await newPatient('Away')
+      const program = await newProgram(patientId, 8)
+      const res = await reviewProgram(practitionerA, program.id)
+      expect(res.status).toBe(200)
+      const start = addDays(today, -8)
+      expect(res.body).toStrictEqual({
+        missedSince: start,
+        inactiveSince: start,
+        reviewedAt: expect.any(String),
+      })
+      expect(await kindsFor(practitionerA, program.id)).toEqual([])
+      expect(await kindsFor(practitionerC, program.id)).toEqual(['attendance'])
+      expect(await programReviews(program.id)).toStrictEqual([
+        {
+          practitioner_id: practitionerAId,
+          missed_since: start,
+          inactive_since: start,
+        },
+      ])
+      expect(await programReviewAudit(program.id)).toStrictEqual([
+        {
+          performed_by: practitionerAId,
+          target_user_id: patientId,
+          entity_type: 'program_alert_reviews',
+          details: {
+            programId: program.id,
+            missedSince: start,
+            inactiveSince: start,
+            today,
+          },
+        },
+      ])
+    })
+
+    it('is idempotent: while my review covers the alert, another writes nothing', async () => {
+      const patientId = await newPatient('Again')
+      const program = await newProgram(patientId, 8)
+      const first = await reviewProgram(practitionerA, program.id)
+      const second = await reviewProgram(practitionerA, program.id)
+      expect(second.status).toBe(200)
+      expect(second.body).toEqual(first.body)
+      expect(await programReviews(program.id)).toHaveLength(1)
+      expect(await programReviewAudit(program.id)).toHaveLength(1)
+    })
+
+    it('brings the alert back when a fact the review did not see appears', async () => {
+      const patientId = await newPatient('Worse')
+      const program = await newProgram(patientId, 8)
+      // A skip yesterday: the patient was in touch (no inactivity), but
+      // every scheduled day is still missed.
+      const skip = await plantSession(program, 1, {
+        status: 'skipped',
+        endReason: 'no_time',
+      })
+      const res = await reviewProgram(practitionerA, program.id)
+      expect(bodyOf<ProgramReviewBody>(res).inactiveSince).toBeNull()
+      expect(await kindsFor(practitionerA, program.id)).toEqual([])
+      // Without the skip, eight days without contact: NEW — back on the list.
+      await sessionPool.query('DELETE FROM sessions WHERE id = $1', [skip])
+      expect(await kindsFor(practitionerA, program.id)).toEqual(['attendance'])
+    })
+
+    it('stays reviewed when a fact goes away, and the same facts never need a second review', async () => {
+      const patientId = await newPatient('Better')
+      const program = await newProgram(patientId, 8)
+      await reviewProgram(practitionerA, program.id)
+      // A skip yesterday ends the inactivity; the run is the one reviewed.
+      await plantSession(program, 1, {
+        status: 'skipped',
+        endReason: 'illness',
+      })
+      expect(await kindsFor(practitionerA, program.id)).toEqual([])
+      expect((await reviewProgram(practitionerA, program.id)).status).toBe(200)
+      expect(await programReviews(program.id)).toHaveLength(1)
+    })
+
+    it('brings the alert back 14 days after the review, unchanged', async () => {
+      const patientId = await newPatient('Reminder')
+      const program = await newProgram(patientId, 8)
+      await reviewProgram(practitionerA, program.id)
+      await sessionPool.query(
+        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '13 days 23 hours'
+         WHERE assigned_program_id = $1`,
+        [program.id],
+      )
+      expect(await kindsFor(practitionerA, program.id)).toEqual([])
+      await sessionPool.query(
+        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '14 days 1 minute'
+         WHERE assigned_program_id = $1`,
+        [program.id],
+      )
+      expect(await kindsFor(practitionerA, program.id)).toEqual(['attendance'])
+    })
+
+    // Two reviews by A, the NEWER one (by its moment) inserted FIRST — so
+    // ordering by time and ordering by id disagree, and only the moment
+    // decides which is the latest.
+    async function plantTwoReviews(
+      programId: number,
+      newest: string,
+      older: string,
+    ) {
+      await sessionPool.query(
+        `INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id, missed_since, inactive_since)
+         VALUES ($1, $2, $3, $3)`,
+        [programId, practitionerAId, newest],
+      )
+      await sessionPool.query(
+        `INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id, missed_since, inactive_since)
+         VALUES ($1, $2, $3, $3)`,
+        [programId, practitionerAId, older],
+      )
+      // The trigger stamps every insert now(): age the second one by hand.
+      await sessionPool.query(
+        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '1 day'
+         WHERE assigned_program_id = $1 AND missed_since = $2`,
+        [programId, older],
+      )
+    }
+
+    // A colleague's review never stands in for mine — on the list (above)
+    // nor in the route: my "Mark as reviewed" writes MY review.
+    it("writes my review even when a colleague's covers the same facts", async () => {
+      const patientId = await newPatient('Colleague')
+      const program = await newProgram(patientId, 8)
+      await reviewProgram(practitionerC, program.id)
+      expect((await reviewProgram(practitionerA, program.id)).status).toBe(200)
+      expect(
+        (await programReviews(program.id)).map((r) => r.practitioner_id),
+      ).toEqual([practitionerCId, practitionerAId])
+    })
+
+    it('reads only my LATEST review, by its moment', async () => {
+      const start = addDays(today, -8)
+      const other = addDays(today, -20)
+      // The newest saw THIS situation: hidden.
+      const covered = await newProgram(await newPatient('Covered'), 8)
+      await plantTwoReviews(covered.id, start, other)
+      expect(await kindsFor(practitionerA, covered.id)).toEqual([])
+      // The newest saw ANOTHER situation (an older one saw this): shown.
+      const uncovered = await newProgram(await newPatient('Uncovered'), 8)
+      await plantTwoReviews(uncovered.id, other, start)
+      expect(await kindsFor(practitionerA, uncovered.id)).toEqual([
+        'attendance',
+      ])
+      // The route reads the same latest review: no write for the first,
+      // a new review for the second.
+      expect((await reviewProgram(practitionerA, covered.id)).status).toBe(200)
+      expect(await programReviews(covered.id)).toHaveLength(2)
+      expect((await reviewProgram(practitionerA, uncovered.id)).status).toBe(
+        200,
+      )
+      expect(await programReviews(uncovered.id)).toHaveLength(3)
+    })
+
+    it('refuses a program with nothing to review, a closed one too', async () => {
+      const patientId = await newPatient('Fine')
+      const program = await newProgram(patientId, 3)
+      await plantSession(program, 1)
+      const res = await reviewProgram(practitionerA, program.id)
+      expect(res.status).toBe(409)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        'Nothing on this program needs reviewing right now',
+      ])
+      const behind = await newProgram(patientId, 8)
+      await plantSession(behind, 6)
+      expect(
+        (
+          await practitionerA
+            .post(`/assigned-programs/${behind.id}/cancel`)
+            .send({ today })
+        ).status,
+      ).toBe(200)
+      expect((await reviewProgram(practitionerA, behind.id)).status).toBe(409)
+      expect(await programReviews(program.id)).toEqual([])
+    })
+
+    it('answers 404 off the care team, for a deleted or unknown program', async () => {
+      const patientId = await newPatient('Hidden')
+      const program = await newProgram(patientId, 8)
+      expect((await reviewProgram(practitionerB, program.id)).status).toBe(404)
+      const deleted = await newProgram(patientId, 8)
+      await practitionerA
+        .post(`/assigned-programs/${deleted.id}/cancel`)
+        .send({ today })
+      expect((await reviewProgram(practitionerA, deleted.id)).status).toBe(404)
+      expect((await reviewProgram(practitionerA, 999999)).status).toBe(404)
+      expect(await programReviews(program.id)).toEqual([])
+    })
+
+    it("refuses the patient and an admin with the guard's message, and checks the body", async () => {
+      const program = await newProgram(loggedInPatientId, 8)
+      for (const who of [patient, admin]) {
+        const res = await reviewProgram(who, program.id)
+        expect(res.status).toBe(403)
+        expect(bodyOf<ErrorBody>(res).message).toEqual([
+          'You do not have permission to access this resource',
+        ])
+      }
+      const tooFar = await reviewProgram(practitionerA, program.id, {
+        today: addDays(today, 3),
+      })
+      expect(tooFar.status).toBe(400)
+      expect(bodyOf<ErrorBody>(tooFar).message).toEqual([
+        "today must be today's date in your time zone",
+      ])
+      const facts = await reviewProgram(practitionerA, program.id, {
+        today,
+        missedSince: today,
+      })
+      expect(facts.status).toBe(400)
+      expect(bodyOf<ErrorBody>(facts).message).toEqual([
+        'property missedSince should not exist',
+      ])
+      expect(await programReviews(program.id)).toEqual([])
+    })
+
+    it('keeps reviews to the care team at the row level, in your own name, written once, at the database clock', async () => {
+      const patientId = await newPatient('Rows')
+      const program = await newProgram(patientId, 8)
+      await reviewProgram(practitionerA, program.id)
+      const select = sql`SELECT practitioner_id FROM program_alert_reviews WHERE assigned_program_id = ${program.id}`
+      expect(
+        await asActor(practitionerCId, 'practitioner', select),
+      ).toMatchObject({ rowCount: 1 })
+      expect(await asActor(adminId, 'admin', select)).toMatchObject({
+        rowCount: 1,
+      })
+      expect(
+        await asActor(practitionerBId, 'practitioner', select),
+      ).toMatchObject({ rowCount: 0 })
+      expect(await asActor(patientId, 'patient', select)).toMatchObject({
+        rowCount: 0,
+      })
+
+      // Refusals are tested WITHOUT `RETURNING`: returning the new row
+      // also asks the SELECT policy, which would refuse an outsider on its
+      // own — and hide whether the INSERT policy did.
+      const insert = (practitionerId: number) =>
+        sql`INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id, missed_since)
+            VALUES (${program.id}, ${practitionerId}, ${today})`
+      expect(
+        await asActor(practitionerCId, 'practitioner', insert(practitionerCId)),
+      ).toMatchObject({ rowCount: 1 })
+      expect(
+        await asActor(practitionerCId, 'practitioner', insert(practitionerAId)),
+      ).toEqual({ error: { code: '42501' } })
+      expect(
+        await asActor(practitionerBId, 'practitioner', insert(practitionerBId)),
+      ).toEqual({ error: { code: '42501' } })
+      // The moment is the database's, whatever is sent.
+      const own = await asActor(
+        practitionerCId,
+        'practitioner',
+        sql`INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id, missed_since, reviewed_at)
+            VALUES (${program.id}, ${practitionerCId}, ${today}, '2000-01-01T00:00:00Z') RETURNING reviewed_at`,
+      )
+      const [{ reviewed_at }] = own.rows as { reviewed_at: string }[]
+      expect(new Date(reviewed_at).getFullYear()).toBeGreaterThan(2000)
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE program_alert_reviews SET reviewed_at = now() - interval '20 days' WHERE assigned_program_id = ${program.id}`,
+        ),
+      ).toMatchObject({ rowCount: 0 })
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`DELETE FROM program_alert_reviews WHERE assigned_program_id = ${program.id}`,
+        ),
+      ).toMatchObject({ rowCount: 0 })
+      // A review with no fact at all is refused by the CHECK.
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id) VALUES (${program.id}, ${practitionerAId})`,
+        ),
+      ).toEqual({
+        error: { code: '23514', constraint: 'program_alert_reviews_some_fact' },
+      })
+    })
+
+    // Two reviews racing: another connection, as A, holds the program's
+    // lock and an UNCOMMITTED review covering the alert. The request must
+    // wait for the lock, then find that review and write nothing — no
+    // second row, no audit entry (the held insert was raw SQL).
+    it('serializes two reviews on the program lock: the second writes nothing', async () => {
+      const patientId = await newPatient('Race')
+      const program = await newProgram(patientId, 8)
+      const start = addDays(today, -8)
+      const client = await appPool.connect()
+      let waited = false
+      let res: request.Response
+      try {
+        await client.query('BEGIN')
+        await client.query(
+          "SELECT set_config('app.current_user_id', $1, true), set_config('app.current_role', 'practitioner', true)",
+          [String(practitionerAId)],
+        )
+        await client.query(
+          'SELECT id FROM assigned_programs WHERE id = $1 FOR UPDATE',
+          [program.id],
+        )
+        await client.query(
+          `INSERT INTO program_alert_reviews (assigned_program_id, practitioner_id, missed_since, inactive_since)
+           VALUES ($1, $2, $3, $3)`,
+          [program.id, practitionerAId, start],
+        )
+        let answered = false
+        const pending = reviewProgram(practitionerA, program.id).then((r) => {
+          answered = true
+          return r
+        })
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        waited = !answered
+        await client.query('COMMIT')
+        res = await pending
+      } finally {
+        client.release()
+      }
+      expect(waited).toBe(true)
+      expect(res.status).toBe(200)
+      expect(await programReviews(program.id)).toHaveLength(1)
+      expect(await programReviewAudit(program.id)).toEqual([])
+    })
+  })
 })

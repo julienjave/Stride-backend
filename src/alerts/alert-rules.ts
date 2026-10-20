@@ -59,6 +59,9 @@ export const ALERT_THRESHOLDS = {
   hardExercise: 8,
   // How far back a session can still be a to-do (today included): 14 days.
   reviewWindowDays: 14,
+  // How long a reviewed attendance alert stays off the reviewer's list when
+  // nothing changes — then it comes back as a reminder (2026-10-19).
+  attendanceReminderDays: 14,
 } as const
 
 // --- ATTENDANCE --------------------------------------------------------------------------------------------
@@ -239,6 +242,72 @@ export function attendanceFacts(input: {
     inactive: idle.days >= ALERT_THRESHOLDS.inactiveDays ? idle : null,
   }
   return facts.missedInARow === null && facts.inactive === null ? null : facts
+}
+
+// --- REVIEWING AN ATTENDANCE ALERT (added 2026-10-19) -----------------------------------------------------
+
+// What identifies an attendance alert's SITUATION: the first day of each
+// fact — the run of misses (`missedSince`) and the stretch without a session
+// (`inactiveSince`) — or null when that fact isn't part of it. Two alerts
+// with the same keys describe the same situation, however much longer it
+// has lasted since (a run of 3 that became 5 still started on the same
+// day); a different key is a NEW situation (the patient came back, then
+// stopped again).
+export interface AttendanceKeys {
+  missedSince: string | null
+  inactiveSince: string | null
+}
+
+export function attendanceKeys(
+  facts: AttendanceFacts,
+  startDate: string,
+): AttendanceKeys {
+  let inactiveSince: string | null = null
+  if (facts.inactive !== null) {
+    // The first day counted by `inactivity`: the day after the last
+    // session, or the start date — never before the start.
+    const after =
+      facts.inactive.lastSessionDate === null
+        ? startDate
+        : addDays(facts.inactive.lastSessionDate, 1)
+    inactiveSince = after < startDate ? startDate : after
+  }
+  return { missedSince: facts.missedInARow?.since ?? null, inactiveSince }
+}
+
+// A practitioner's latest review of a program's alert: the keys it saw,
+// and when (the database's moment — migration 0046).
+export interface AttendanceReview extends AttendanceKeys {
+  reviewedAt: Date
+}
+
+// Whether the alert stays OFF this practitioner's list (decided with the
+// person 2026-10-19: "until it changes, and back after 14 days anyway"):
+//   - only their LATEST review counts — it saw the situation most recently;
+//   - each fact the alert has NOW must be one that review saw (the same
+//     key). A fact that has since gone away is fine (the patient skipped:
+//     no more inactivity, the run still the same — still reviewed); a fact
+//     that is NEW, or a new start for one, brings the alert back;
+//   - and the review is less than 14 days old — a FIXED duration (14 × 24
+//     hours from the review's moment, the lesson of the invitations'
+//     lifetime), so the reminder never depends on a time zone.
+// `now` is a parameter: the rule never reads a clock (tests pin it).
+export function isAttendanceReviewed(
+  keys: AttendanceKeys,
+  review: AttendanceReview | null,
+  now: Date,
+): boolean {
+  if (review === null) return false
+  const reminderAt =
+    review.reviewedAt.getTime() +
+    ALERT_THRESHOLDS.attendanceReminderDays * 24 * 60 * 60 * 1000
+  if (now.getTime() >= reminderAt) return false
+  const seen = (current: string | null, reviewed: string | null) =>
+    current === null || current === reviewed
+  return (
+    seen(keys.missedSince, review.missedSince) &&
+    seen(keys.inactiveSince, review.inactiveSince)
+  )
 }
 
 // --- SESSIONS TO REVIEW ------------------------------------------------------------------------------------

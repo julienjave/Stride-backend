@@ -33,3 +33,4 @@ export * from './sessions.schema'
 export * from './audit-logs.schema'
 
 export * from './session-reviews.schema'
+export * from './program-alert-reviews.schema'

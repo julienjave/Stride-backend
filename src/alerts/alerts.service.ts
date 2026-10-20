@@ -17,11 +17,18 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, Inject, Injectable } from '@nestjs/common'
-import { and, eq, gte, inArray, ne } from 'drizzle-orm'
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
+import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   assignedPrograms,
+  programAlertReviews,
   sessionExercises,
   sessionReviews,
   sessions,
@@ -33,16 +40,23 @@ import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
 import { CareTeamService } from '../care-team/care-team.service'
 import { StorageService } from '../storage/storage.service'
 import { UserRole } from '../users/dto/create-user.dto'
+import { AuditService } from '../audit/audit.service'
 import {
   readScheduleVersions,
   readSummarySessions,
   summaryFromRows,
+  type ScheduleVersion,
+  type SummaryProgram,
+  type SummarySessionRow,
 } from '../assigned-programs/program-summary'
 import {
   attendanceFacts,
+  attendanceKeys,
+  isAttendanceReviewed,
   reviewWindowStart,
   sessionReview,
   type AttendanceFacts,
+  type AttendanceReview,
   type SessionAlertReason,
 } from './alert-rules'
 
@@ -94,6 +108,51 @@ export interface SessionAlert {
 
 export type Alert = AttendanceAlert | SessionAlert
 
+// What POST /alerts/programs/:id/review answers: the review that now
+// covers the program's alert for this practitioner — the facts it saw and
+// when.
+export interface ProgramAlertReviewAnswer {
+  missedSince: string | null
+  inactiveSince: string | null
+  reviewedAt: Date
+}
+
+const NOTHING_TO_REVIEW_MESSAGE =
+  'Nothing on this program needs reviewing right now'
+
+// One program's attendance facts for `today`, from ITS OWN schedule
+// versions and session rows: the summary (the same code as GET …/summary),
+// then the rules. Used by the list (every program at once, rows grouped in
+// memory) and by the review route (one program, under its lock) — so the
+// alert a practitioner reviews is exactly the one the list showed.
+function programAttendance(
+  program: SummaryProgram,
+  versions: ScheduleVersion[],
+  rows: SummarySessionRow[],
+  today: string,
+): AttendanceFacts | null {
+  const summary = summaryFromRows(program, versions, rows, today)
+  return attendanceFacts({
+    startDate: program.startDate,
+    endDate: program.endDate,
+    today,
+    pauses: summary.pauses,
+    days: summary.days,
+    weeks: summary.weeks,
+    sessionDates: rows.map((row) => row.localDate),
+  })
+}
+
+// `today` sent by the practitioner's app must be today somewhere (the
+// summary's rule): one copy of the check and its message for both routes.
+function assertPossibleToday(today: string) {
+  if (!isPossibleToday(today)) {
+    throw new BadRequestException(
+      "today must be today's date in your time zone",
+    )
+  }
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 @Injectable()
@@ -102,6 +161,7 @@ export class AlertsService {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly careTeamService: CareTeamService,
     private readonly storageService: StorageService,
+    private readonly auditService: AuditService,
   ) {}
 
   // --- GET /alerts ---
@@ -125,18 +185,14 @@ export class AlertsService {
   //      and reviews filter the same rows again. A bug in step 1 would show
   //      no extra patient.
   //
-  // HOW MANY QUERIES: a fixed number (nine, plus the care-team lookup),
+  // HOW MANY QUERIES: a fixed number (ten, plus the care-team lookup),
   // whatever the number of patients or programs — each read asks for every
   // row it needs at once with `IN (…)`, and the rows are grouped in memory.
   // The alternative —
   // the home asking each program's summary and sessions — is one request
   // per program per patient (the "N+1" pattern), slow on a full caseload.
   async list(currentUser: CurrentUser, today: string): Promise<Alert[]> {
-    if (!isPossibleToday(today)) {
-      throw new BadRequestException(
-        "today must be today's date in your time zone",
-      )
-    }
+    assertPossibleToday(today)
     const patientIds = await this.careTeamService.findPatientIdsForPractitioner(
       currentUser.id,
     )
@@ -237,7 +293,34 @@ export class AlertsService {
                 ),
               )
 
-      // 8. The patients' names and photos.
+      // 8. My LATEST review of each active program's attendance alert
+      //    (2026-10-19). DISTINCT ON keeps the first row of each program in
+      //    the ORDER BY — the newest — one row per program, in one query.
+      //    The index (practitioner, program, reviewed_at) serves it.
+      const programReviews =
+        activeIds.length === 0
+          ? []
+          : await tx
+              .selectDistinctOn([programAlertReviews.assignedProgramId], {
+                assignedProgramId: programAlertReviews.assignedProgramId,
+                missedSince: programAlertReviews.missedSince,
+                inactiveSince: programAlertReviews.inactiveSince,
+                reviewedAt: programAlertReviews.reviewedAt,
+              })
+              .from(programAlertReviews)
+              .where(
+                and(
+                  eq(programAlertReviews.practitionerId, currentUser.id),
+                  inArray(programAlertReviews.assignedProgramId, activeIds),
+                ),
+              )
+              .orderBy(
+                programAlertReviews.assignedProgramId,
+                desc(programAlertReviews.reviewedAt),
+                desc(programAlertReviews.id),
+              )
+
+      // 9. The patients' names and photos.
       const people = await tx
         .select({
           id: users.id,
@@ -255,6 +338,7 @@ export class AlertsService {
         recent,
         checklist,
         reviewed,
+        programReviews,
         people,
       }
     })
@@ -276,6 +360,14 @@ export class AlertsService {
     }
     const programsById = new Map(read.programs.map((p) => [p.id, p]))
     const reviewedIds = new Set(read.reviewed.map((row) => row.sessionId))
+    const latestReviews = new Map<number, AttendanceReview>(
+      read.programReviews.map(({ assignedProgramId, ...review }) => [
+        assignedProgramId,
+        review,
+      ]),
+    )
+    // One moment for the whole answer: every reminder is judged against it.
+    const now = new Date()
 
     // Attendance: one summary per ACTIVE program, from its own rows. (A
     // closed program would raise nothing anyway — its end date is past, so
@@ -284,25 +376,21 @@ export class AlertsService {
     const attendance: AttendanceAlert[] = []
     for (const program of read.programs) {
       if (program.status !== 'active') continue
-      const rows = read.summaryRows.filter(
-        (row) => row.assignedProgramId === program.id,
-      )
-      const summary = summaryFromRows(
+      const facts = programAttendance(
         program,
         read.versions.filter((v) => v.assignedProgramId === program.id),
-        rows,
+        read.summaryRows.filter((row) => row.assignedProgramId === program.id),
         today,
       )
-      const facts = attendanceFacts({
-        startDate: program.startDate,
-        endDate: program.endDate,
-        today,
-        pauses: summary.pauses,
-        days: summary.days,
-        weeks: summary.weeks,
-        sessionDates: rows.map((row) => row.localDate),
-      })
       if (facts === null) continue
+      // Reviewed by me, and nothing new since (nor 14 days gone): not on
+      // MY list. A colleague's review changes nothing here.
+      const keys = attendanceKeys(facts, program.startDate)
+      if (
+        isAttendanceReviewed(keys, latestReviews.get(program.id) ?? null, now)
+      ) {
+        continue
+      }
       attendance.push({
         kind: 'attendance',
         patient: patients.get(program.patientId)!,
@@ -355,5 +443,131 @@ export class AlertsService {
         b.session.id - a.session.id,
     )
     return [...attendance, ...toReview]
+  }
+  // --- POST /alerts/programs/:programId/review ---
+
+  // "Mark as reviewed" for a program's ATTENDANCE alert (decided with the
+  // person 2026-10-19, after live testing): it takes the alert off THIS
+  // practitioner's list until something new happens, or for 14 days.
+  //
+  // The client sends only `today`: the FACTS reviewed are computed here,
+  // the same way the list computes them — a review always describes what
+  // the alert really said, never what a client claims it said.
+  //
+  // Under the program's row lock (SELECT … FOR UPDATE), so two reviews at
+  // once — a double tap, two tabs — are serialized: the second waits, then
+  // finds the first's review already covering the alert and writes nothing
+  // (the convention: a request that changes nothing writes nothing). Unlike
+  // session reviews there is no unique index to lean on — a program gets a
+  // new review per situation — so the lock is what makes it idempotent.
+  //
+  // Refusals: a program the practitioner can't see → 404 (row security,
+  // then the care-team check — one answer, so an outsider learns nothing);
+  // no attendance alert right now → 409.
+  async reviewAttendance(
+    programId: number,
+    currentUser: CurrentUser,
+    today: string,
+  ): Promise<ProgramAlertReviewAnswer> {
+    assertPossibleToday(today)
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const [program] = await tx
+        .select({
+          id: assignedPrograms.id,
+          patientId: assignedPrograms.patientId,
+          status: assignedPrograms.status,
+          startDate: assignedPrograms.startDate,
+          endDate: assignedPrograms.endDate,
+          lateMakeUpDays: assignedPrograms.lateMakeUpDays,
+        })
+        .from(assignedPrograms)
+        .where(
+          and(
+            eq(assignedPrograms.id, programId),
+            eq(assignedPrograms.isArchived, false),
+          ),
+        )
+        .for('update')
+      // Both layers of the care-team rule, as for every clinical read: row
+      // security already hides a program off my care team (`program` is
+      // undefined — mutation-checked: removing the TypeScript check below
+      // changes no answer), and the check says the rule in TypeScript too.
+      if (
+        !program ||
+        !(await this.careTeamService.isOnCareTeam(
+          currentUser.id,
+          program.patientId,
+        ))
+      ) {
+        throw new NotFoundException(`Program ${programId} not found`)
+      }
+      // Only an active program raises an attendance alert — as in the list,
+      // which reads schedules for active programs only. (A closed one would
+      // raise nothing anyway: it isn't running past its end date. Kept to say
+      // the rule plainly, the same way in both places.)
+      const facts =
+        program.status === 'active'
+          ? programAttendance(
+              program,
+              await readScheduleVersions(tx, [program.id]),
+              await readSummarySessions(tx, [program.id]),
+              today,
+            )
+          : null
+      if (facts === null) {
+        throw new ConflictException(NOTHING_TO_REVIEW_MESSAGE)
+      }
+      const keys = attendanceKeys(facts, program.startDate)
+
+      const [latest] = await tx
+        .select({
+          missedSince: programAlertReviews.missedSince,
+          inactiveSince: programAlertReviews.inactiveSince,
+          reviewedAt: programAlertReviews.reviewedAt,
+        })
+        .from(programAlertReviews)
+        .where(
+          and(
+            eq(programAlertReviews.practitionerId, currentUser.id),
+            eq(programAlertReviews.assignedProgramId, program.id),
+          ),
+        )
+        .orderBy(
+          desc(programAlertReviews.reviewedAt),
+          desc(programAlertReviews.id),
+        )
+        .limit(1)
+      if (isAttendanceReviewed(keys, latest ?? null, new Date())) return latest
+
+      // reviewed_at isn't sent: the trigger writes the database's now().
+      const [created] = await tx
+        .insert(programAlertReviews)
+        .values({
+          assignedProgramId: program.id,
+          practitionerId: currentUser.id,
+          ...keys,
+        })
+        .returning({
+          id: programAlertReviews.id,
+          missedSince: programAlertReviews.missedSince,
+          inactiveSince: programAlertReviews.inactiveSince,
+          reviewedAt: programAlertReviews.reviewedAt,
+        })
+      // ONE complete entry in the same transaction (the audit convention):
+      // whose program, which facts, on which day of the practitioner's.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'PROGRAM_ALERT_REVIEWED',
+        targetUserId: program.patientId,
+        entityType: 'program_alert_reviews',
+        entityId: created.id,
+        details: { programId: program.id, ...keys, today },
+      })
+      return {
+        missedSince: created.missedSince,
+        inactiveSince: created.inactiveSince,
+        reviewedAt: created.reviewedAt,
+      }
+    })
   }
 }

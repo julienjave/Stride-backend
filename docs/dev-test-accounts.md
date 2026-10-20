@@ -132,10 +132,12 @@ made, through the app's own code); the seed announces it just before.
     "Reviewed by Sam Okafor".
   - No program is paused; to try a pause, add a schedule version of type
     `paused` from today (and another one later to resume).
-- **The practitioners' To-do** (the home page; `GET /alerts`): **Alex** —
-  Jo's two missed weeks, and Pat's last session (a hard exercise, a note);
-  **Sam** — Jo's two missed weeks (Robin's session is reviewed); **Blake** —
-  Robin's last session (high pain, a rise of 4). Morgan has none (on no care
-  team). A session leaves the list when that practitioner marks it reviewed,
-  or 14 days after it happened; an attendance alert clears itself when the
-  patient acts.
+- **The practitioners' "For review" list** (the home page, under the
+  shortcuts; `GET /alerts`): **Alex** — Jo's two missed weeks, and Pat's last
+  session (a hard exercise, a note); **Sam** — Jo's two missed weeks (Robin's
+  session is reviewed); **Blake** — Robin's last session (high pain, a rise
+  of 4). Morgan has none (on no care team). A session leaves the list when
+  that practitioner marks it reviewed (its page), or 14 days after it
+  happened. A program's alert clears itself when the patient acts, or when
+  that practitioner marks it reviewed on the program page's banner — then it
+  stays off their list until something changes, or for 14 days.

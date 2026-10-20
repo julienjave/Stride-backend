@@ -18,6 +18,8 @@
 import {
   ALERT_THRESHOLDS,
   attendanceFacts,
+  attendanceKeys,
+  isAttendanceReviewed,
   inactivity,
   isLongRun,
   isRunning,
@@ -183,6 +185,7 @@ describe('isLongRun', () => {
       painRise: 3,
       hardExercise: 8,
       reviewWindowDays: 14,
+      attendanceReminderDays: 14,
     })
   })
 })
@@ -526,5 +529,116 @@ describe('reviewWindowStart', () => {
   it('opens the window 14 days long, today included', () => {
     expect(reviewWindowStart('2031-06-14')).toBe('2031-06-01')
     expect(reviewWindowStart('2031-03-01')).toBe('2031-02-16')
+  })
+})
+
+describe('attendanceKeys', () => {
+  const run = { days: 3, weeks: 0, since: '2031-06-09' }
+
+  it("takes the run's first missed day, and the first day without a session", () => {
+    expect(
+      attendanceKeys(
+        {
+          missedInARow: run,
+          inactive: { days: 9, lastSessionDate: '2031-06-05' },
+        },
+        '2031-06-02',
+      ),
+    ).toStrictEqual({ missedSince: '2031-06-09', inactiveSince: '2031-06-06' })
+  })
+
+  it('starts inactivity on the start date when there was no session', () => {
+    expect(
+      attendanceKeys(
+        { missedInARow: null, inactive: { days: 8, lastSessionDate: null } },
+        '2031-06-02',
+      ),
+    ).toStrictEqual({ missedSince: null, inactiveSince: '2031-06-02' })
+  })
+
+  it('never starts inactivity before the start date', () => {
+    expect(
+      attendanceKeys(
+        {
+          missedInARow: null,
+          inactive: { days: 8, lastSessionDate: '2031-05-20' },
+        },
+        '2031-06-02',
+      ),
+    ).toStrictEqual({ missedSince: null, inactiveSince: '2031-06-02' })
+  })
+
+  it('gives null for a fact the alert does not have', () => {
+    expect(
+      attendanceKeys({ missedInARow: run, inactive: null }, '2031-06-02'),
+    ).toStrictEqual({ missedSince: '2031-06-09', inactiveSince: null })
+  })
+})
+
+describe('isAttendanceReviewed', () => {
+  // Reviewed on 10 June at 09:00 UTC, seeing a run since 2 June and no
+  // session since 3 June.
+  const review = {
+    missedSince: '2031-06-02',
+    inactiveSince: '2031-06-03',
+    reviewedAt: new Date('2031-06-10T09:00:00.000Z'),
+  }
+  const soon = new Date('2031-06-12T09:00:00.000Z')
+  const both = { missedSince: '2031-06-02', inactiveSince: '2031-06-03' }
+
+  it('is not reviewed without a review', () => {
+    expect(isAttendanceReviewed(both, null, soon)).toBe(false)
+  })
+
+  it('stays reviewed while the same facts hold', () => {
+    expect(isAttendanceReviewed(both, review, soon)).toBe(true)
+  })
+
+  it('stays reviewed when a fact has gone away since', () => {
+    expect(
+      isAttendanceReviewed(
+        { missedSince: '2031-06-02', inactiveSince: null },
+        review,
+        soon,
+      ),
+    ).toBe(true)
+    expect(
+      isAttendanceReviewed(
+        { missedSince: null, inactiveSince: '2031-06-03' },
+        review,
+        soon,
+      ),
+    ).toBe(true)
+  })
+
+  it('comes back for a new start of either fact', () => {
+    expect(
+      isAttendanceReviewed(
+        { missedSince: '2031-06-11', inactiveSince: '2031-06-03' },
+        review,
+        soon,
+      ),
+    ).toBe(false)
+    expect(
+      isAttendanceReviewed(
+        { missedSince: '2031-06-02', inactiveSince: '2031-06-11' },
+        review,
+        soon,
+      ),
+    ).toBe(false)
+  })
+
+  it('comes back for a fact the review did not see', () => {
+    const missedOnly = { ...review, inactiveSince: null }
+    expect(isAttendanceReviewed(both, missedOnly, soon)).toBe(false)
+    const inactiveOnly = { ...review, missedSince: null }
+    expect(isAttendanceReviewed(both, inactiveOnly, soon)).toBe(false)
+  })
+
+  it('comes back exactly 14 × 24 hours after the review, unchanged or not', () => {
+    const justBefore = new Date('2031-06-24T08:59:59.999Z')
+    const atTheMoment = new Date('2031-06-24T09:00:00.000Z')
+    expect(isAttendanceReviewed(both, review, justBefore)).toBe(true)
+    expect(isAttendanceReviewed(both, review, atTheMoment)).toBe(false)
   })
 })
