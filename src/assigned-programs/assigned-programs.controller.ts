@@ -187,7 +187,8 @@ export class AssignedProgramsController {
   // module). Every role may ask; the service checks it's someone who may
   // see this program.
   // What cancelling / completing would do today — for the confirmation
-  // dialog. A read: no @AuditedByService (the tag is for writes).
+  // dialog. A read: no tag (the tags are for writes); the service records
+  // who saw it (PROGRAM_CLOSING_PREVIEWED — the audit review, step 2).
   @Get(':id/closing')
   closingPreview(
     @Param('id', ParseIntPipe) id: number,
@@ -200,8 +201,10 @@ export class AssignedProgramsController {
 
   // What removing this exercise WOULD do — deleted, or kept (retired) for
   // the sessions that used it — for the confirmation dialog (decided
-  // 2026-10-13). A read like the closing preview: no @AuditedByService, any
-  // role reaches the service, which refuses anyone who couldn't remove it.
+  // 2026-10-13). A read like the closing preview: no tag, any role reaches
+  // the service, which refuses anyone who couldn't remove it. NOT recorded
+  // (step 2): it says how many sessions used one exercise — an editing aid
+  // showing no pain score, rating or note.
   @Get(':id/exercises/:exerciseRowId/removal')
   removalPreview(
     @Param('id', ParseIntPipe) id: number,
@@ -212,8 +215,9 @@ export class AssignedProgramsController {
   }
 
   // The program's sessions, newest first, without their checklists (Phase 4
-  // step 1b). A read: no @AuditedByService; any role reaches the service,
-  // which lets through the people who may view the program.
+  // step 1b). A read: no tag; any role reaches the service, which lets
+  // through the people who may view the program — and records which
+  // sessions someone other than the patient saw (step 2).
   @Get(':id/sessions')
   listSessions(
     @Param('id', ParseIntPipe) id: number,

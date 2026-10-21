@@ -63,3 +63,62 @@ describe('AuditService.logInTransaction', () => {
     )
   })
 })
+
+describe('AuditService.logReads', () => {
+  // A practitioner (7) reading two patients' data, and an admin's own read
+  // (9 reading 9 — e.g. an account that is also a patient).
+  const read = (performedBy: number, targetUserId: number) => ({
+    performedBy,
+    action: 'PROGRAMS_VIEWED',
+    targetUserId,
+    entityType: 'assigned-programs',
+    details: { programIds: [targetUserId * 10] },
+  })
+
+  // ONE statement for every entry: all of them are written, or none.
+  it('writes every entry in one insert, on its own connection', async () => {
+    const own = fakeDb()
+    const service = new AuditService(own.db)
+
+    await service.logReads([read(7, 20), read(7, 21)])
+
+    expect(own.insert).toHaveBeenCalledTimes(1)
+    expect(own.insert).toHaveBeenCalledWith(auditLogs)
+    expect(own.values).toHaveBeenCalledWith([read(7, 20), read(7, 21)])
+  })
+
+  // "Others' reads only" (decided 2026-10-21): the patient reading their
+  // own data is not recorded — decided here, for every caller.
+  it("drops a read of the reader's own data", async () => {
+    const own = fakeDb()
+    const service = new AuditService(own.db)
+
+    await service.logReads([read(9, 9), read(9, 20)])
+
+    expect(own.values).toHaveBeenCalledWith([read(9, 20)])
+  })
+
+  // An insert of zero rows is an SQL error in Drizzle — and there is
+  // nothing to record anyway (an empty list, or only one's own data).
+  it('writes nothing when nothing is left to record', async () => {
+    const own = fakeDb()
+    const service = new AuditService(own.db)
+
+    await service.logReads([])
+    await service.logReads([read(9, 9)])
+
+    expect(own.insert).not.toHaveBeenCalled()
+  })
+
+  // The caller awaits it before answering: a failed insert must fail the
+  // request, so the data is never served without its trace.
+  it('lets a failed insert reach the caller', async () => {
+    const own = fakeDb()
+    own.values.mockRejectedValueOnce(new Error('insert failed'))
+    const service = new AuditService(own.db)
+
+    await expect(service.logReads([read(7, 20)])).rejects.toThrow(
+      'insert failed',
+    )
+  })
+})

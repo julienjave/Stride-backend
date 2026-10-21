@@ -901,8 +901,10 @@ describe('Program lifecycle (e2e)', () => {
       })
     })
 
-    // A read: it changes nothing and writes no audit entry.
-    it('changes nothing and writes no audit entry', async () => {
+    // A read: it changes nothing — its only entries record the READS
+    // (the preview, then the program read to check; the audit review's
+    // step 2), no change.
+    it('changes nothing, and records only that it was read', async () => {
       const program = await createProgram({ startsIn: -3 })
       await preview(practitionerA, program.id)
 
@@ -910,6 +912,8 @@ describe('Program lifecycle (e2e)', () => {
       expect(after.body).toMatchObject({ status: 'active', isArchived: false })
       expect((await auditTrail(program.id)).map((r) => r.action)).toEqual([
         'ASSIGNED_PROGRAM_CREATED',
+        'PROGRAM_CLOSING_PREVIEWED',
+        'PROGRAM_VIEWED',
       ])
     })
 

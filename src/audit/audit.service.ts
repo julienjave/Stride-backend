@@ -87,6 +87,30 @@ export class AuditService {
     await tx.insert(auditLogs).values(entry)
   }
 
+  // READS of someone else's clinical data (the audit review's step 2,
+  // decided with the person 2026-10-21): programs, sessions and pain alerts
+  // seen by a practitioner or an admin — ONE entry per patient whose data
+  // the answer shows, all written by ONE insert (a single statement: all of
+  // them or none), AWAITED by the caller before it answers. A failed insert
+  // fails the request: the data is never served without its trace.
+  //
+  // Why not in the read's transaction, like the medical files' reads? Those
+  // run in one transaction; these span several (a program list reads its
+  // rows, then its schedules, then its workouts), and the alerts are
+  // computed in memory AFTER theirs. A read has nothing to roll back, so
+  // what matters is "no answer without the entry" — which awaiting it gives.
+  //
+  // The patient reading their OWN data is not recorded (the person's
+  // choice: "others' reads only") — decided HERE, once, rather than in
+  // every caller: an entry whose target is its author is dropped.
+  async logReads(entries: AuditEntry[]): Promise<void> {
+    const othersReads = entries.filter(
+      (entry) => entry.targetUserId !== entry.performedBy,
+    )
+    if (othersReads.length === 0) return
+    await this.db.insert(auditLogs).values(othersReads)
+  }
+
   // --- GET ROUTES ---
 
   async findAll(currentUser: CurrentUser, query: FindAuditLogsQueryDto) {

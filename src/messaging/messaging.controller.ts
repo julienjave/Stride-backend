@@ -47,9 +47,10 @@ import { UserRole } from '../users/dto/create-user.dto'
 // and patients only: since 2026-10-20 an admin reads no messages and has no
 // route here (403 from RolesGuard), and the database agrees (migration
 // 0048). Every route that WRITES is @AuditedByService(): the service writes
-// one complete entry in the change's own transaction. The reads aren't audited here — logging reads of
-// clinical data is the whole-app audit review's question (Phase 6) — except
-// "mark as read", which is a write and records who read what.
+// one complete entry in the change's own transaction. Reading a conversation
+// is NOT recorded (the audit review, step 2, 2026-10-21): only its two
+// participants can read it — never someone else — except "mark as read",
+// which is a write and records who read what.
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles(UserRole.PRACTITIONER, UserRole.PATIENT)
 @ApiTags('Messaging')

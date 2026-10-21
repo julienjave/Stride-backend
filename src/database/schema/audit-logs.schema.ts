@@ -53,5 +53,16 @@ export const auditLogs = pgTable(
   (table) => ({
     performedByIdx: index('audit_logs_performed_by_idx').on(table.performedBy),
     entityTypeIdx: index('audit_logs_entity_type_idx').on(table.entityType),
+    // "Everything about patient X, newest first" — the viewer's question, and
+    // the reason step 2 records one entry PER PATIENT (migration 0051).
+    // Postgres does NOT index a foreign key by itself, so until now this
+    // filter read the whole table. Two columns, in this order: the rows of
+    // one target sit together in the index, already sorted by time — the
+    // filter AND the ORDER BY answered by one ordered index scan, no sort.
+    // (It serves "target = X" alone too: a leading column is usable by
+    // itself.)
+    targetUserCreatedAtIdx: index(
+      'audit_logs_target_user_id_created_at_idx',
+    ).on(table.targetUserId, table.createdAt),
   }),
 )

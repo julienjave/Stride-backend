@@ -83,6 +83,7 @@ import {
   type ScheduleVersion,
 } from './program-summary'
 import { AuditService } from '../audit/audit.service'
+import { perPatient } from '../audit/clinical-reads'
 import { StorageService } from '../storage/storage.service'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
 import { assertProgramOpen, planClosing } from './program-state'
@@ -796,12 +797,30 @@ export class AssignedProgramsService {
   // ...and with its `workouts` (in order — the patient home, Phase 4), so a
   // screen can name a day's workout ("B · Strength") from the list, without
   // asking for every program in full (exercises and signed photo URLs).
+  //
+  // AUDITED (the audit review, step 2): one PROGRAMS_VIEWED per patient the
+  // list shows, naming their programs — a practitioner's whole caseload is
+  // one entry per patient, not one for the request (perPatient). Written
+  // once the answer is complete, before it is sent; a patient's own list
+  // writes nothing (logReads decides).
   async findAllForCurrentUser(currentUser: CurrentUser, patientId?: number) {
     const programs = await this.findProgramRows(currentUser, patientId)
-    return this.withWorkouts(
+    const answer = await this.withWorkouts(
       currentUser,
       await this.withSchedules(currentUser, await this.withAssigners(programs)),
     )
+    await this.auditService.logReads(
+      perPatient(answer, (program) => program.patientId).map(
+        ([patient, shown]) => ({
+          performedBy: currentUser.id,
+          action: 'PROGRAMS_VIEWED',
+          targetUserId: patient,
+          entityType: 'assigned-programs',
+          details: { programIds: shown.map((program) => program.id) },
+        }),
+      ),
+    )
+    return answer
   }
 
   private async findProgramRows(
@@ -948,10 +967,14 @@ export class AssignedProgramsService {
     }))
   }
 
+  // AUDITED (step 2): PROGRAM_VIEWED, about the patient — unless it is the
+  // patient. A refused read (404, 403) throws before it: nothing was shown.
   async findOne(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
-    return this.findProgramWithExercises(id, currentUser)
+    const answer = await this.findProgramWithExercises(id, currentUser)
+    await this.logProgramRead(currentUser, program, 'PROGRAM_VIEWED')
+    return answer
   }
 
   // GET /assigned-programs/:id/summary?today= — what was due, done, made
@@ -986,9 +1009,12 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
 
-    return withRlsContext(this.db, currentUser, (tx) =>
+    const answer = await withRlsContext(this.db, currentUser, (tx) =>
       summarizeProgram(tx, program, today, through),
     )
+    // Due / done / missed is adherence — clinical (step 2).
+    await this.logProgramRead(currentUser, program, 'PROGRAM_SUMMARY_VIEWED')
+    return answer
   }
 
   // GET /assigned-programs/:id/sessions?from=&to= (Phase 4 step 1b, decided
@@ -1019,7 +1045,7 @@ export class AssignedProgramsService {
     }
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanView(program.patientId, currentUser)
-    return withRlsContext(this.db, currentUser, (tx) =>
+    const rows = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .select()
         .from(sessions)
@@ -1036,6 +1062,12 @@ export class AssignedProgramsService {
         )
         .orderBy(desc(sessions.localDate), desc(sessions.id)),
     )
+    // Which sessions were shown, by id (step 2) — pain scores and feedback
+    // are in those rows.
+    await this.logProgramRead(currentUser, program, 'PROGRAM_SESSIONS_VIEWED', {
+      sessionIds: rows.map((session) => session.id),
+    })
+    return rows
   }
 
   // --- PATCH ROUTES ---
@@ -1566,12 +1598,15 @@ export class AssignedProgramsService {
     const sessionDays = await withRlsContext(this.db, currentUser, (tx) =>
       this.readSessionDays(tx, id),
     )
-    return {
+    const answer = {
       cancel: planClosing('cancel', program, sessionDays, today),
       complete: planClosing('complete', program, sessionDays, today),
       openSessions: sessionDays.filter((s) => s.status === 'in_progress')
         .length,
     }
+    // What was done and missed, counted — adherence again (step 2).
+    await this.logProgramRead(currentUser, program, 'PROGRAM_CLOSING_PREVIEWED')
+    return answer
   }
 
   // POST /assigned-programs/:id/cancel and …/complete (decisions §5,
@@ -2112,6 +2147,27 @@ export class AssignedProgramsService {
       }),
     )
     return this.findProgramWithExercises(program.id, currentUser)
+  }
+
+  // One program read, recorded (the audit review, step 2): about the
+  // program's patient, entity = the program. logReads drops it when the
+  // reader IS the patient, and writes it before the caller answers.
+  private logProgramRead(
+    currentUser: CurrentUser,
+    program: { id: number; patientId: number },
+    action: string,
+    details?: Record<string, unknown>,
+  ) {
+    return this.auditService.logReads([
+      {
+        performedBy: currentUser.id,
+        action,
+        targetUserId: program.patientId,
+        entityType: 'assigned-programs',
+        entityId: program.id,
+        details,
+      },
+    ])
   }
 
   // === HELPER FUNCTIONS =================================================================

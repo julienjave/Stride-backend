@@ -16,14 +16,18 @@ import { AuditService } from '../audit/audit.service'
 import { StorageService } from '../storage/storage.service'
 
 // The audit entries written by create / update / addScheduleVersion
-// (AuditService.logInTransaction) — shared by every test module below, and
-// cleared before each test.
+// (AuditService.logInTransaction), and by the reads (logReads — the audit
+// review, step 2) — shared by every test module below, and cleared before
+// each test.
 const auditService = {
   logInTransaction: jest.fn().mockResolvedValue(undefined),
+  logReads: jest.fn().mockResolvedValue(undefined),
 }
 beforeEach(() => {
   auditService.logInTransaction.mockReset()
   auditService.logInTransaction.mockResolvedValue(undefined)
+  auditService.logReads.mockReset()
+  auditService.logReads.mockResolvedValue(undefined)
 })
 
 // Signs the library photos a program exercise shows (findProgramWithExercises).
@@ -780,6 +784,35 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
     expect(db.query.assignedPrograms.findMany).toHaveBeenCalled()
   })
 
+  // The audit review, step 2: ONE read entry per patient the list shows,
+  // naming their programs, in the order patients first appear.
+  it('records one PROGRAMS_VIEWED per patient shown', async () => {
+    db.query.assignedPrograms.findMany.mockResolvedValue([
+      { id: 1, assignedBy: 7, patientId: 20 },
+      { id: 2, assignedBy: 7, patientId: 21 },
+      { id: 3, assignedBy: 7, patientId: 20 },
+    ])
+
+    await service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN })
+
+    expect(auditService.logReads).toHaveBeenCalledWith([
+      {
+        performedBy: 1,
+        action: 'PROGRAMS_VIEWED',
+        targetUserId: 20,
+        entityType: 'assigned-programs',
+        details: { programIds: [1, 3] },
+      },
+      {
+        performedBy: 1,
+        action: 'PROGRAMS_VIEWED',
+        targetUserId: 21,
+        entityType: 'assigned-programs',
+        details: { programIds: [2] },
+      },
+    ])
+  })
+
   it("adds each program's assigner, all looked up in ONE query", async () => {
     db.query.assignedPrograms.findMany.mockResolvedValue([
       { id: 1, assignedBy: 7 },
@@ -1020,6 +1053,25 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
     await expect(
       service.findOne(900, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
+    // Refused: nothing was shown, nothing is recorded.
+    expect(auditService.logReads).not.toHaveBeenCalled()
+  })
+
+  // The audit review, step 2: the read is recorded about the patient. (The
+  // patient's own read is passed on too — logReads drops it; its own test.)
+  it('records PROGRAM_VIEWED about the patient', async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(true)
+    await service.findOne(900, { id: 7, activeRole: UserRole.PRACTITIONER })
+    expect(auditService.logReads).toHaveBeenCalledWith([
+      {
+        performedBy: 7,
+        action: 'PROGRAM_VIEWED',
+        targetUserId: 20,
+        entityType: 'assigned-programs',
+        entityId: 900,
+        details: undefined,
+      },
+    ])
   })
 })
 

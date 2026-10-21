@@ -566,6 +566,20 @@ export class SessionsService {
     await this.assertCanView(session.patientId, currentUser)
     const withExercises = await this.findSessionWithExercises(id, currentUser)
     if (currentUser.activeRole === UserRole.PATIENT) return withExercises
+    // AUDITED (the audit review, step 2): someone else read this session —
+    // its pain scores, ratings and the patient's words. Written before the
+    // answer; a refused read (404, 403) threw above and wrote nothing. Only
+    // past the patient's return: a patient reads only their own sessions
+    // (row security), and logReads drops a self-read anyway.
+    await this.auditService.logReads([
+      {
+        performedBy: currentUser.id,
+        action: 'SESSION_VIEWED',
+        targetUserId: session.patientId,
+        entityType: 'sessions',
+        entityId: id,
+      },
+    ])
     const reviews = await withRlsContext(this.db, currentUser, (tx) =>
       tx
         .select({

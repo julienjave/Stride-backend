@@ -321,7 +321,11 @@ describe('Program exercise photos (e2e)', () => {
     await new Promise((resolve) => setTimeout(resolve, 200))
     const { rows } = await sessionPool.query<AuditRow>(
       `SELECT action, performed_by, target_user_id, details FROM audit_logs
-       WHERE entity_type = 'assigned-programs' AND entity_id = $1 ORDER BY id`,
+       WHERE entity_type = 'assigned-programs' AND entity_id = $1
+         -- The program's CHANGES: its reads (PROGRAM_VIEWED…, the audit
+         -- review's step 2) are recorded too, and left out here.
+         AND action !~ '_(PRE)?VIEWED$'
+       ORDER BY id`,
       [programId],
     )
     return rows

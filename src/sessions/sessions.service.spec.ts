@@ -40,13 +40,17 @@ const summarizeProgramMock = summarizeProgram as jest.MockedFunction<
 >
 
 // The audit service: a double each test module receives, so a test can read
-// the entries a write records (logInTransaction's second argument).
-let audit: { logInTransaction: jest.Mock }
+// the entries a write records (logInTransaction's second argument), and a
+// read's (logReads' only argument — the audit review, step 2).
+let audit: { logInTransaction: jest.Mock; logReads: jest.Mock }
 // "A completed session of this program today?" (one session a day): none,
 // unless a test says otherwise.
 let completedToday: { id: number }[]
 beforeEach(() => {
-  audit = { logInTransaction: jest.fn().mockResolvedValue(undefined) }
+  audit = {
+    logInTransaction: jest.fn().mockResolvedValue(undefined),
+    logReads: jest.fn().mockResolvedValue(undefined),
+  }
   completedToday = []
   summarizeProgramMock.mockReset()
 })
@@ -591,6 +595,27 @@ describe('SessionsService.assertCanView (via findOne)', () => {
     await expect(
       service.findOne(500, { id: 7, activeRole: UserRole.PRACTITIONER }),
     ).rejects.toThrow(ForbiddenException)
+    expect(audit.logReads).not.toHaveBeenCalled()
+  })
+
+  // The audit review, step 2: someone else's read of the session is
+  // recorded, about its patient; the patient's own is not even passed on.
+  it('records SESSION_VIEWED for the care team, not for the patient', async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(true)
+    await service.findOne(500, { id: 7, activeRole: UserRole.PRACTITIONER })
+    expect(audit.logReads).toHaveBeenCalledWith([
+      {
+        performedBy: 7,
+        action: 'SESSION_VIEWED',
+        targetUserId: 20,
+        entityType: 'sessions',
+        entityId: 500,
+      },
+    ])
+
+    audit.logReads.mockClear()
+    await service.findOne(500, { id: 20, activeRole: UserRole.PATIENT })
+    expect(audit.logReads).not.toHaveBeenCalled()
   })
 
   // The To-do (2026-10-19): the care team and admins read who reviewed the

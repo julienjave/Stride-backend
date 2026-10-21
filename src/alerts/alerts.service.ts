@@ -41,6 +41,7 @@ import { CareTeamService } from '../care-team/care-team.service'
 import { StorageService } from '../storage/storage.service'
 import { UserRole } from '../users/dto/create-user.dto'
 import { AuditService } from '../audit/audit.service'
+import { perPatient } from '../audit/clinical-reads'
 import {
   readScheduleVersions,
   readSummarySessions,
@@ -442,7 +443,31 @@ export class AlertsService {
         b.session.localDate.localeCompare(a.session.localDate) ||
         b.session.id - a.session.id,
     )
-    return [...attendance, ...toReview]
+    const alerts = [...attendance, ...toReview]
+    // AUDITED (the audit review, step 2): ONE ALERTS_VIEWED per patient the
+    // list shows, naming exactly what it showed of them — the programs whose
+    // attendance it reports, the sessions (with their pain scores) it asks
+    // to review. A patient whose data was read but raised nothing was shown
+    // nothing, and gets no entry. Written before the answer.
+    await this.auditService.logReads(
+      perPatient(alerts, (alert) => alert.patient.id).map(
+        ([patientId, shown]) => ({
+          performedBy: currentUser.id,
+          action: 'ALERTS_VIEWED',
+          targetUserId: patientId,
+          entityType: 'alerts',
+          details: {
+            programIds: shown
+              .filter((alert) => alert.kind === 'attendance')
+              .map((alert) => alert.program.id),
+            sessionIds: shown.flatMap((alert) =>
+              alert.kind === 'session' ? [alert.session.id] : [],
+            ),
+          },
+        }),
+      ),
+    )
+    return alerts
   }
   // --- POST /alerts/programs/:programId/review ---
 
