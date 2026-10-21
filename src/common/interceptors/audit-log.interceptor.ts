@@ -30,6 +30,7 @@ import { tap } from 'rxjs/operators'
 import { AuditService } from '../../audit/audit.service'
 import { AuthenticatedRequest } from '../decorators/current-user.decorator'
 import { AUDITED_BY_SERVICE_KEY } from '../decorators/audited-by-service.decorator'
+import { NOT_AUDITED_KEY } from '../decorators/not-audited.decorator'
 import { errorMessage } from '../error-message'
 
 // --- INTERCEPTOR -------------------------------------------------------------------------------------------
@@ -51,27 +52,27 @@ export class AuditLogInterceptor implements NestInterceptor {
 
     // Only mutating methods are worth auditing here — GET requests are
     // reads, and logging every single one would make this table enormous
-    // for very little signal. /auth/* routes are excluded because
-    // AuthService calls AuditService directly for those, with far more
-    // precise context (e.g. distinguishing "unknown email" from "wrong
-    // password" on a failed login) than this generic interceptor could
-    // ever infer from the request alone.
+    // for very little signal.
     const isMutating = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)
     //
     // Routes tagged @AuditedByService() are skipped too: their service writes
     // a complete entry (what changed, before and after) in the change's own
     // transaction, and a generic one beside it would only be a vague
-    // duplicate. getAllAndOverride looks at the handler first, then its
-    // controller class, so a whole controller could be tagged at once. The
-    // URL prefix is the older way of saying the same thing, kept until the
-    // audit review moves /auth to the decorator (medical files moved in
-    // Phase 6: their one write is tagged).
+    // duplicate. So are routes tagged @NotAudited(reason): a POST that
+    // changes nothing has nothing to record. getAllAndOverride looks at the
+    // handler first, then its controller class, so a whole controller could
+    // be tagged at once. (The older URL-prefix exception for /auth is gone
+    // since the audit review's slice 1b: every /auth route carries a tag.)
+    const targets = [context.getHandler(), context.getClass()]
     const isExplicitlyAudited =
-      originalUrl.startsWith('/auth') ||
       this.reflector.getAllAndOverride<boolean | undefined>(
         AUDITED_BY_SERVICE_KEY,
-        [context.getHandler(), context.getClass()],
-      ) === true
+        targets,
+      ) === true ||
+      this.reflector.getAllAndOverride<string | undefined>(
+        NOT_AUDITED_KEY,
+        targets,
+      ) !== undefined
 
     if (!isMutating || isExplicitlyAudited || !user) {
       return next.handle()

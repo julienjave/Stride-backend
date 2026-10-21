@@ -211,6 +211,18 @@ export class AuthService {
           roles,
           tx,
         )
+        // The founding of the whole deployment: ONE entry, in this
+        // transaction (audit_logs' INSERT policy is WITH CHECK (true), so no
+        // session context is needed). It names the clinic and the admin —
+        // never the request itself, which carries the password.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: user.id,
+          action: 'REGISTER_CLINIC',
+          targetUserId: user.id,
+          entityType: 'clinics',
+          entityId: clinic.id,
+          details: { adminUserId: user.id },
+        })
         return {
           ...withProfile,
           roles,
@@ -219,14 +231,6 @@ export class AuthService {
         }
       },
     )
-
-    await this.auditService.log({
-      performedBy: result.id,
-      action: 'REGISTER_CLINIC',
-      entityType: 'clinics',
-      entityId: result.clinicId,
-      details: { adminUserId: result.id },
-    })
 
     return result
   }
@@ -238,7 +242,14 @@ export class AuthService {
   // through the resolved activeRole it originally returned. requestedRole is
   // optional — required only when the account holds more than one role.
   //
-  // On audit coverage: a failed attempt against an email that matches NO
+  // On audit coverage (the audit review, decided with the person 2026-10-21 —
+  // decisions §10): signing in changes no data, so there is no transaction
+  // for these entries to join. They are written on AuditService's own
+  // connection and AWAITED before answering: a sign-in can't succeed (nor a
+  // failure be answered) without the trail recording it. Each names the
+  // account concerned (targetUserId), like every other entry.
+  //
+  // A failed attempt against an email that matches NO
   // real account is never logged — audit_logs.performedBy is NOT NULL, and
   // there is no valid user id to attribute an attempt against a
   // nonexistent account to. This is a real, deliberate scope limitation,
@@ -272,6 +283,7 @@ export class AuthService {
       await this.auditService.log({
         performedBy: user.id,
         action: 'LOGIN_FAILURE',
+        targetUserId: user.id,
         entityType: 'users',
         entityId: user.id,
       })
@@ -289,6 +301,7 @@ export class AuthService {
       await this.auditService.log({
         performedBy: user.id,
         action: 'LOGIN_BLOCKED_DEACTIVATED',
+        targetUserId: user.id,
         entityType: 'users',
         entityId: user.id,
       })
@@ -331,6 +344,7 @@ export class AuthService {
     await this.auditService.log({
       performedBy: user.id,
       action: 'LOGIN_SUCCESS',
+      targetUserId: user.id,
       entityType: 'users',
       entityId: user.id,
       details: { activeRole },
@@ -399,14 +413,25 @@ export class AuthService {
     await withRlsContext(
       this.db,
       { id: user.id, activeRole: roles[0] as UserRole },
-      (tx) =>
-        tx
+      async (tx) => {
+        await tx
           .update(users)
           .set({
             passwordResetTokenHash: tokenHash,
             passwordResetTokenExpiresAt: expiresAt,
           })
-          .where(eq(users.id, user.id)),
+          .where(eq(users.id, user.id))
+        // In the same transaction as the stored token. Never the token or
+        // its hash in the entry — only when it stops working.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: user.id,
+          action: 'PASSWORD_RESET_REQUESTED',
+          targetUserId: user.id,
+          entityType: 'users',
+          entityId: user.id,
+          details: { expiresAt },
+        })
+      },
     )
 
     // The raw token — never the hash — is the only thing that ever leaves
@@ -434,13 +459,6 @@ export class AuthService {
           `Failed to send password reset email to ${user.email}: ${errorMessage(err)}`,
         ),
       )
-
-    await this.auditService.log({
-      performedBy: user.id,
-      action: 'PASSWORD_RESET_REQUESTED',
-      entityType: 'users',
-      entityId: user.id,
-    })
   }
 
   // Is this reset link still usable? (POST /auth/reset-password/check —
@@ -475,28 +493,31 @@ export class AuthService {
     await withRlsContext(
       this.db,
       { id: user.id, activeRole: roles[0] as UserRole },
-      (tx) =>
-        tx
+      async (tx) => {
+        await tx
           .update(users)
           .set({
             passwordHash: newPasswordHash,
             passwordResetTokenHash: null,
             passwordResetTokenExpiresAt: null,
           })
-          .where(eq(users.id, user.id)),
+          .where(eq(users.id, user.id))
+        // In the password's own transaction; the password itself (or its
+        // hash) never goes into an entry.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: user.id,
+          action: 'PASSWORD_RESET_COMPLETED',
+          targetUserId: user.id,
+          entityType: 'users',
+          entityId: user.id,
+        })
+      },
     )
 
     // The whole reason a password needed resetting might be that someone
     // else had access to the account — leaving their existing session
     // alive afterward would defeat the entire point of resetting it.
     await this.destroyAllSessionsForUser(user.id)
-
-    await this.auditService.log({
-      performedBy: user.id,
-      action: 'PASSWORD_RESET_COMPLETED',
-      entityType: 'users',
-      entityId: user.id,
-    })
   }
 
   // The account a reset token belongs to — or the one refusal for every way
@@ -555,12 +576,22 @@ export class AuthService {
     // encrypted. The two are deliberately different at this point: the
     // returned value here is shown to the user once, right now; what lands
     // in the database is never in plaintext at rest.
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    // MFA_SETUP_STARTED (added by the audit review, decided with the person
+    // 2026-10-21): a new secret is stored — not yet enabled. In the same
+    // transaction; never the secret, encrypted or not, in the entry.
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await tx
         .update(users)
         .set({ mfaSecret: encryptMfaSecret(secret) })
-        .where(eq(users.id, userId)),
-    )
+        .where(eq(users.id, userId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'MFA_SETUP_STARTED',
+        targetUserId: userId,
+        entityType: 'users',
+        entityId: userId,
+      })
+    })
 
     // The raw secret is included so an authenticator app that can't scan a
     // QR code (or a user who prefers typing it) has a manual-entry option —
@@ -593,15 +624,18 @@ export class AuthService {
       throw new BadRequestException('Invalid authentication code')
     }
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx.update(users).set({ mfaEnabled: true }).where(eq(users.id, userId)),
-    )
-
-    await this.auditService.log({
-      performedBy: userId,
-      action: 'MFA_ENABLED',
-      entityType: 'users',
-      entityId: userId,
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await tx
+        .update(users)
+        .set({ mfaEnabled: true })
+        .where(eq(users.id, userId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: userId,
+        action: 'MFA_ENABLED',
+        targetUserId: userId,
+        entityType: 'users',
+        entityId: userId,
+      })
     })
   }
 
@@ -630,18 +664,18 @@ export class AuthService {
       throw new BadRequestException('Invalid authentication code')
     }
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await tx
         .update(users)
         .set({ mfaEnabled: false, mfaSecret: null })
-        .where(eq(users.id, userId)),
-    )
-
-    await this.auditService.log({
-      performedBy: userId,
-      action: 'MFA_DISABLED',
-      entityType: 'users',
-      entityId: userId,
+        .where(eq(users.id, userId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: userId,
+        action: 'MFA_DISABLED',
+        targetUserId: userId,
+        entityType: 'users',
+        entityId: userId,
+      })
     })
   }
 
@@ -660,6 +694,19 @@ export class AuthService {
       secret: decryptMfaSecret(user.mfaSecret),
       token: code,
     })
+    // A wrong code at sign-in: the password was right, so repeated wrong
+    // codes against one account are the brute-force signal worth keeping
+    // (added by the audit review, decided with the person 2026-10-21).
+    // Awaited, like the other sign-in events.
+    if (!result.valid) {
+      await this.auditService.log({
+        performedBy: userId,
+        action: 'MFA_LOGIN_FAILURE',
+        targetUserId: userId,
+        entityType: 'users',
+        entityId: userId,
+      })
+    }
     return result.valid
   }
 

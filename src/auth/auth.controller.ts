@@ -35,6 +35,8 @@ import { Throttle, seconds } from '@nestjs/throttler'
 import { type Request, type Response } from 'express'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
+import { NotAudited } from '../common/decorators/not-audited.decorator'
 import { AuthService } from './auth.service'
 import { UsersService } from '../users/users.service'
 import { LoginDto } from './dto/login.dto'
@@ -74,6 +76,7 @@ export class AuthController {
   // Public, but self-limiting: AuthService.registerClinic() refuses to run
   // at all once any admin account exists — see the comment there.
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('register-clinic')
   async registerClinic(@Body() dto: RegisterClinicDto, @Req() req: Request) {
     const user = await this.authService.registerClinic(dto)
@@ -94,6 +97,7 @@ export class AuthController {
   // yet authenticated), which that model has no clean way to express — so
   // this route stopped using it entirely, rather than working around it.
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request) {
     const user = await this.authService.validateUser(
@@ -131,6 +135,7 @@ export class AuthController {
   // here — the session isn't authenticated yet, by design; this route's own
   // check of req.session.mfaPending is what stands in for a guard.
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('mfa/verify')
   async verifyMfaLogin(@Body() dto: MfaCodeDto, @Req() req: Request) {
     const pending = req.session.mfaPending
@@ -163,6 +168,7 @@ export class AuthController {
   // --- MFA enrollment (requires an already-authenticated session) ---
 
   @UseGuards(SessionAuthGuard)
+  @AuditedByService()
   @Post('mfa/setup')
   setupMfa(@CurrentUser() user: CurrentUser) {
     return this.authService.setupMfa(user.id, user)
@@ -177,6 +183,7 @@ export class AuthController {
   // downside for a legitimate user entering a fresh code.)
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('mfa/enable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async enableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
@@ -185,6 +192,7 @@ export class AuthController {
 
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('mfa/disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async disableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
@@ -198,8 +206,9 @@ export class AuthController {
   // activeRole, which re-triggers serializeUser and overwrites the stored
   // session data. Only lets someone switch to a role they actually hold.
   @UseGuards(SessionAuthGuard)
+  @AuditedByService()
   @Post('switch-role')
-  switchRole(
+  async switchRole(
     @Body() dto: SwitchRoleDto,
     @CurrentUser() user: CurrentUser,
     @Req() req: Request,
@@ -208,6 +217,23 @@ export class AuthController {
       throw new ForbiddenException(`You do not have the "${dto.role}" role`)
     }
     const updatedUser = { ...user, activeRole: dto.role }
+    // ROLE_SWITCHED (added by the audit review, decided with the person
+    // 2026-10-21): the role decides what data this session can read — an
+    // admin + practitioner moving into clinical data is worth a trace.
+    // Awaited BEFORE the switch, on AuditService's own connection (a session
+    // change, not a data change: no transaction to join) — no switch without
+    // its entry. "Switching" to the role already active changes nothing and
+    // writes nothing.
+    if (dto.role !== user.activeRole) {
+      await this.auditService.log({
+        performedBy: user.id,
+        action: 'ROLE_SWITCHED',
+        targetUserId: user.id,
+        entityType: 'users',
+        entityId: user.id,
+        details: { from: user.activeRole, to: dto.role },
+      })
+    }
     // The session's id BEFORE the login: req.login() regenerates the session
     // (a new id — Passport's protection against session fixation), and the
     // open sockets were authenticated with the old one.
@@ -227,6 +253,7 @@ export class AuthController {
 
   // == Logout ==
 
+  @AuditedByService()
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(@Req() req: Request, @Res() res: Response) {
@@ -235,6 +262,7 @@ export class AuthController {
       await this.auditService.log({
         performedBy: user.id,
         action: 'LOGOUT',
+        targetUserId: user.id,
         entityType: 'users',
         entityId: user.id,
       })
@@ -260,6 +288,7 @@ export class AuthController {
   // 204 — genuinely nothing to describe, on purpose: the whole point is
   // that success and "no such account" look identical from the outside.
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('forgot-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
@@ -267,6 +296,7 @@ export class AuthController {
   }
 
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
   @Post('reset-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   async resetPassword(@Body() dto: ResetPasswordDto) {
@@ -281,6 +311,7 @@ export class AuthController {
   // no about a token must not become a fast guessing oracle (the 256-bit
   // token makes guessing hopeless anyway; the limit keeps it that way).
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @NotAudited('Only checks a reset token; nothing changes')
   @Post('reset-password/check')
   @HttpCode(HttpStatus.OK)
   checkResetToken(@Body() dto: CheckResetTokenDto) {

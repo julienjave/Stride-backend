@@ -42,6 +42,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 
@@ -61,6 +62,7 @@ export class ClinicsController {
   // POST /auth/register-clinic, which only ever creates the very first one.
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateClinicDto) {
     return this.clinicsService.create(user, dto)
@@ -68,6 +70,7 @@ export class ClinicsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/members')
   addMember(
     @Param('id', ParseIntPipe) id: number,
@@ -79,6 +82,7 @@ export class ClinicsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/logo')
   @UseInterceptors(FileInterceptor('file', imageUploadOptions))
   uploadLogo(
@@ -96,6 +100,7 @@ export class ClinicsController {
   // clinic with no logo just returns the clinic unchanged.
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/logo')
   removeLogo(
     @Param('id', ParseIntPipe) id: number,
@@ -135,6 +140,7 @@ export class ClinicsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -148,6 +154,7 @@ export class ClinicsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id')
   deactivate(
     @Param('id', ParseIntPipe) id: number,
@@ -159,6 +166,7 @@ export class ClinicsController {
   // Admin-only, mirroring UsersController's reactivate exactly.
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/reactivate')
   reactivate(
     @Param('id', ParseIntPipe) id: number,
@@ -169,6 +177,7 @@ export class ClinicsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/members/:userId')
   removeMember(
     @Param('id', ParseIntPipe) id: number,

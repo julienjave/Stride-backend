@@ -34,6 +34,7 @@ import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
 import { CareTeamService } from '../care-team/care-team.service'
+import { changedFields } from '../common/changed-fields'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -95,10 +96,25 @@ export class ClinicsService {
 
   // --- POST ROUTES ---
 
+  // Every write below follows the audit convention (the audit review, Phase
+  // 6 — decisions §10): ONE entry per request that changes something, written
+  // in the change's own transaction; nothing written for a request that
+  // changes nothing. A clinic is organisation data: no targetUserId, except
+  // where a membership names the person concerned.
   async create(currentUser: CurrentUser, dto: CreateClinicDto) {
-    const [clinic] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.insert(clinics).values(dto).returning(),
-    )
+    const clinic = await withRlsContext(this.db, currentUser, async (tx) => {
+      const [row] = await tx.insert(clinics).values(dto).returning()
+      // The record is the request as validated (the jsonb column stores
+      // JSON.stringify's output, which leaves out fields not sent).
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'CLINIC_CREATED',
+        entityType: 'clinics',
+        entityId: row.id,
+        details: { record: dto },
+      })
+      return row
+    })
     return this.withLogoUrl(clinic)
   }
 
@@ -122,10 +138,24 @@ export class ClinicsService {
       throw new ConflictException('This user already belongs to this clinic')
     }
 
-    const [membership] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.insert(userClinics).values({ clinicId, userId }).returning(),
-    )
-    return membership
+    // Joining a clinic is what gives a practitioner directory access to its
+    // patients (and lets them join care teams there): the person concerned
+    // is the target.
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const [membership] = await tx
+        .insert(userClinics)
+        .values({ clinicId, userId })
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'CLINIC_MEMBER_ADDED',
+        targetUserId: userId,
+        entityType: 'user_clinics',
+        entityId: membership.id,
+        details: { clinicId },
+      })
+      return membership
+    })
   }
 
   // Fetches just enough of a clinic's raw row to know its current
@@ -149,15 +179,32 @@ export class ClinicsService {
     currentUser: CurrentUser,
     file: Express.Multer.File,
   ) {
-    const existing = await this.findRawForLogoOp(id)
+    await this.findRawForLogoOp(id)
     const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(clinics)
-        .set({ logoPath: objectKey })
-        .where(eq(clinics.id, id))
-        .returning(),
+    // The logo it replaces is read under the row's lock, inside the
+    // transaction — the one the entry names, and the one deleted below.
+    const { updated, existing } = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        const before = await this.lockClinic(tx, id)
+        const [row] = await tx
+          .update(clinics)
+          .set({ logoPath: objectKey })
+          .where(eq(clinics.id, id))
+          .returning()
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'CLINIC_LOGO_CHANGED',
+          entityType: 'clinics',
+          entityId: id,
+          details: {
+            changes: { logoPath: { from: before.logoPath, to: objectKey } },
+          },
+        })
+        return { updated: row, existing: before }
+      },
     )
     // Only AFTER the new file is safely uploaded and the DB successfully
     // points at it — deleting the OLD file at this point, not before,
@@ -173,17 +220,34 @@ export class ClinicsService {
 
   // Admin-only (enforced at the controller, same as updateLogo). Clears
   // logoPath back to null and deletes the underlying file from storage —
-  // idempotent if the clinic has no logo to begin with (existing.logoPath
-  // is null, so the delete call is simply skipped; the DB update is a
-  // harmless no-op UPDATE either way).
+  // idempotent if the clinic has no logo to begin with: then nothing is
+  // written at all (no UPDATE, no audit entry) and no file is deleted.
   async removeLogo(id: number, currentUser: CurrentUser) {
-    const existing = await this.findRawForLogoOp(id)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(clinics)
-        .set({ logoPath: null })
-        .where(eq(clinics.id, id))
-        .returning(),
+    await this.findRawForLogoOp(id)
+    const { updated, existing } = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        const before = await this.lockClinic(tx, id)
+        if (before.logoPath === null) {
+          return { updated: before, existing: before }
+        }
+        const [row] = await tx
+          .update(clinics)
+          .set({ logoPath: null })
+          .where(eq(clinics.id, id))
+          .returning()
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'CLINIC_LOGO_REMOVED',
+          entityType: 'clinics',
+          entityId: id,
+          details: {
+            changes: { logoPath: { from: before.logoPath, to: null } },
+          },
+        })
+        return { updated: row, existing: before }
+      },
     )
     // Same ordering rule as updateLogo() above: the DB is updated FIRST,
     // so if the storage delete below fails, the worst case is an
@@ -258,11 +322,30 @@ export class ClinicsService {
 
   // --- PATCH ROUTES ---
 
+  // Before → after for each field that really changed, read under the
+  // row's lock; a PATCH that changes nothing writes nothing.
   async update(id: number, currentUser: CurrentUser, dto: UpdateClinicDto) {
     await this.findOne(id)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.update(clinics).set(dto).where(eq(clinics.id, id)).returning(),
-    )
+    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockClinic(tx, id)
+      const changes = changedFields(before, { ...dto })
+      if (Object.keys(changes).length === 0) {
+        return before
+      }
+      const [row] = await tx
+        .update(clinics)
+        .set(dto)
+        .where(eq(clinics.id, id))
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'CLINIC_UPDATED',
+        entityType: 'clinics',
+        entityId: id,
+        details: { changes },
+      })
+      return row
+    })
     return this.withLogoUrl(updated)
   }
 
@@ -270,12 +353,8 @@ export class ClinicsService {
 
   async deactivate(id: number, currentUser: CurrentUser) {
     await this.findOne(id)
-    const [deactivated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(clinics)
-        .set({ isActive: false })
-        .where(eq(clinics.id, id))
-        .returning(),
+    const deactivated = await withRlsContext(this.db, currentUser, (tx) =>
+      this.setActive(tx, id, false, currentUser.id),
     )
     return this.withLogoUrl(deactivated)
   }
@@ -289,22 +368,13 @@ export class ClinicsService {
   // is exactly the kind of event this app's audit trail exists to
   // capture. The existing clinics_update RLS policy already covers a
   // plain UPDATE re-flipping is_active, so no new RLS policy was needed
-  // for this — only the route and this method.
+  // for this — only the route and this method. The entry is written in the
+  // same transaction as the change (setActive).
   async reactivate(id: number, currentUser: CurrentUser) {
     await this.findOne(id)
-    const [reactivated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(clinics)
-        .set({ isActive: true })
-        .where(eq(clinics.id, id))
-        .returning(),
+    const reactivated = await withRlsContext(this.db, currentUser, (tx) =>
+      this.setActive(tx, id, true, currentUser.id),
     )
-    await this.auditService.log({
-      performedBy: currentUser.id,
-      action: 'CLINIC_REACTIVATED',
-      entityType: 'clinics',
-      entityId: id,
-    })
     return this.withLogoUrl(reactivated)
   }
 
@@ -319,40 +389,106 @@ export class ClinicsService {
     currentUser: CurrentUser,
   ) {
     await this.findOne(clinicId)
-    const endedLinks = await withRlsContext(
-      this.db,
-      currentUser,
-      async (tx) => {
-        await tx
-          .delete(userClinics)
-          .where(
-            and(
-              eq(userClinics.clinicId, clinicId),
-              eq(userClinics.userId, userId),
-            ),
-          )
-        return this.careTeamService.endLinksWithoutSharedClinic(
-          tx,
-          userId,
-          currentUser.id,
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const removed = await tx
+        .delete(userClinics)
+        .where(
+          and(
+            eq(userClinics.clinicId, clinicId),
+            eq(userClinics.userId, userId),
+          ),
         )
-      },
-    )
-    // One audit entry per ended link, after the commit (see
-    // UsersService.create() for why not inside the transaction).
-    for (const link of endedLinks) {
-      await this.auditService.log({
-        performedBy: currentUser.id,
-        action: 'CARE_TEAM_ENDED',
-        targetUserId: link.patientId,
-        entityType: 'care_team_members',
-        entityId: link.id,
-        details: {
-          practitionerId: link.practitionerId,
-          reason: 'No longer share a clinic',
-          clinicId,
-        },
-      })
+        .returning({ id: userClinics.id })
+      const endedLinks = await this.careTeamService.endLinksWithoutSharedClinic(
+        tx,
+        userId,
+        currentUser.id,
+      )
+      // The ONE exception to "one entry per request" (decided with the
+      // person, 2026-10-21 — decisions §10): this act touches several
+      // records. The removal is one entry, about the member; each care-team
+      // link it ended is one more, about ITS patient — so "everything that
+      // happened to patient X" stays one query on target_user_id. All in
+      // this transaction: the membership, the links and their trail commit
+      // together or not at all. Not a member any more (nothing deleted):
+      // no removal entry.
+      if (removed.length > 0) {
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'CLINIC_MEMBER_REMOVED',
+          targetUserId: userId,
+          entityType: 'user_clinics',
+          entityId: removed[0].id,
+          details: {
+            clinicId,
+            endedCareTeamLinkIds: endedLinks.map((link) => link.id),
+          },
+        })
+      }
+      for (const link of endedLinks) {
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'CARE_TEAM_ENDED',
+          targetUserId: link.patientId,
+          entityType: 'care_team_members',
+          entityId: link.id,
+          details: {
+            practitionerId: link.practitionerId,
+            startedAt: link.startedAt,
+            endsAt: link.endsAt,
+            reason: 'No longer share a clinic',
+            clinicId,
+          },
+        })
+      }
+    })
+  }
+
+  // === HELPERS ============================================================
+
+  // The clinic's raw row, LOCKED until the end of the caller's transaction
+  // (SELECT … FOR UPDATE) — the same reason as UsersService.lockUser(): a
+  // second edit waits for the first, so each entry's "from" is exact.
+  // clinics_update allows admins only, the same people the controller lets
+  // through; a row it hides is answered like a missing clinic.
+  private async lockClinic(tx: DrizzleDb, id: number) {
+    const [row] = await tx
+      .select()
+      .from(clinics)
+      .where(eq(clinics.id, id))
+      .for('update')
+    if (!row) {
+      throw new NotFoundException(`Clinic ${id} not found`)
     }
+    return row
+  }
+
+  // Deactivates (false) or reactivates (true) a clinic with its ONE entry —
+  // or, already in that state, writes nothing. Returns the row as it is now.
+  private async setActive(
+    tx: DrizzleDb,
+    id: number,
+    isActive: boolean,
+    performedBy: number,
+  ) {
+    const before = await this.lockClinic(tx, id)
+    if (before.isActive === isActive) {
+      return before
+    }
+    const [row] = await tx
+      .update(clinics)
+      .set({ isActive })
+      .where(eq(clinics.id, id))
+      .returning()
+    await this.auditService.logInTransaction(tx, {
+      performedBy,
+      action: isActive ? 'CLINIC_REACTIVATED' : 'CLINIC_DEACTIVATED',
+      entityType: 'clinics',
+      entityId: id,
+      details: {
+        changes: { isActive: { from: before.isActive, to: isActive } },
+      },
+    })
+    return row
   }
 }

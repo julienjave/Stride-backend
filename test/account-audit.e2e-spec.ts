@@ -14,12 +14,13 @@ import {
   findLink,
 } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { OTP } from 'otplib'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 
-// The audit review, Phase 6 — slice 1a: account data (users, care teams,
-// invitations). Every write on these routes now follows the audit
-// convention (deferred-improvements.md, "Audit review"):
+// The audit review, Phase 6 — slices 1a (users, care teams, invitations) and
+// 1b (clinics, sign-in and account security). Every write on these routes
+// now follows the audit convention (deferred-improvements.md, "Audit review"):
 //   - ONE complete entry per request that changes something — what changed
 //     (before → after for edits, the record for creations), who did it, and
 //     whose account it concerns (target_user_id);
@@ -73,6 +74,7 @@ describe('Account audit trail (e2e)', () => {
   }
 
   // The generic interceptor's entries for these routes ("PATCH /users/12"),
+  // and since slice 1b for /clinics and /auth too,
   // which must never appear again. It writes AFTER the response,
   // fire-and-forget — so wait a moment first, or a late entry would be
   // missed and a test would pass for nothing.
@@ -80,7 +82,7 @@ describe('Account audit trail (e2e)', () => {
     await new Promise((resolve) => setTimeout(resolve, 200))
     const { rows } = await sessionPool.query<{ action: string }>(
       `SELECT action FROM audit_logs
-        WHERE action ~ '^(POST|PATCH|PUT|DELETE) /(users|invitations)'`,
+        WHERE action ~ '^(POST|PATCH|PUT|DELETE) /(users|invitations|clinics|auth)'`,
     )
     return rows.map((row) => row.action)
   }
@@ -757,6 +759,430 @@ describe('Account audit trail (e2e)', () => {
           [entries[1].entity_id],
         ),
       ).toBeNull()
+    })
+  })
+  // === CLINICS (slice 1b) =================================================
+
+  describe('clinics', () => {
+    // Every entry about one clinic (organisation data: no target user).
+    async function clinicTrail(clinicId: number) {
+      const { rows } = await sessionPool.query<AuditRow>(
+        `SELECT action, performed_by, target_user_id, entity_type,
+                entity_id::int AS entity_id, details
+           FROM audit_logs
+          WHERE entity_type = 'clinics' AND entity_id = $1
+          ORDER BY id`,
+        [clinicId],
+      )
+      return rows
+    }
+
+    it('records a new clinic, an edit before → after, and nothing for an unchanged one', async () => {
+      const email = uniqueEmail('clinic')
+      const created = await admin
+        .post('/clinics')
+        .send({ name: 'Audit Clinic Z', email })
+      expect(created.status).toBe(201)
+      const id = created.body.id as number
+      const edits = [
+        await admin.patch(`/clinics/${id}`).send({ name: 'Audit Clinic Zed' }),
+        await admin.patch(`/clinics/${id}`).send({ name: 'Audit Clinic Zed' }),
+      ]
+      expect(edits.map((res) => res.status)).toEqual([200, 200])
+
+      expect(await clinicTrail(id)).toEqual([
+        {
+          action: 'CLINIC_CREATED',
+          performed_by: adminId,
+          target_user_id: null,
+          entity_type: 'clinics',
+          entity_id: id,
+          details: { record: { name: 'Audit Clinic Z', email } },
+        },
+        {
+          action: 'CLINIC_UPDATED',
+          performed_by: adminId,
+          target_user_id: null,
+          entity_type: 'clinics',
+          entity_id: id,
+          details: {
+            changes: {
+              name: { from: 'Audit Clinic Z', to: 'Audit Clinic Zed' },
+            },
+          },
+        },
+      ])
+      expect(await genericEntries()).toEqual([])
+    })
+
+    it('records a logo, its removal, a deactivation and a reactivation — once each', async () => {
+      const created = await admin
+        .post('/clinics')
+        .send({ name: 'Audit Clinic Logo', email: uniqueEmail('logo') })
+      const id = created.body.id as number
+      const upload = await admin
+        .post(`/clinics/${id}/logo`)
+        .attach('file', Buffer.from('fake-logo-audit'), {
+          filename: 'logo.png',
+          contentType: 'image/png',
+        })
+      expect(upload.status).toBe(201)
+      const key = await one<string>(
+        'SELECT logo_path AS value FROM clinics WHERE id = $1',
+        [id],
+      )
+      const responses = [
+        await admin.delete(`/clinics/${id}/logo`),
+        await admin.delete(`/clinics/${id}/logo`), // nothing left: no entry
+        await admin.delete(`/clinics/${id}`),
+        await admin.delete(`/clinics/${id}`), // already: no entry
+        await admin.post(`/clinics/${id}/reactivate`),
+      ]
+      expect(responses.map((res) => res.status)).toEqual([
+        200, 200, 200, 200, 201,
+      ])
+
+      const base = {
+        performed_by: adminId,
+        target_user_id: null,
+        entity_type: 'clinics',
+        entity_id: id,
+      }
+      expect((await clinicTrail(id)).slice(1)).toEqual([
+        {
+          ...base,
+          action: 'CLINIC_LOGO_CHANGED',
+          details: { changes: { logoPath: { from: null, to: key } } },
+        },
+        {
+          ...base,
+          action: 'CLINIC_LOGO_REMOVED',
+          details: { changes: { logoPath: { from: key, to: null } } },
+        },
+        {
+          ...base,
+          action: 'CLINIC_DEACTIVATED',
+          details: { changes: { isActive: { from: true, to: false } } },
+        },
+        {
+          ...base,
+          action: 'CLINIC_REACTIVATED',
+          details: { changes: { isActive: { from: false, to: true } } },
+        },
+      ])
+      expect(await genericEntries()).toEqual([])
+    })
+
+    // Removing someone from a clinic can end care-team links: the removal is
+    // one entry about the member, and each ended link one more about ITS
+    // patient (decided with the person 2026-10-21) — all in one transaction.
+    it('records a membership added and removed, and each care-team link the removal ended, for its patient', async () => {
+      const patient = await newPatient() // practitioner A on the team, clinic X
+      const added = await admin
+        .post(`/clinics/${clinicYId}/members`)
+        .send({ userId: patient.id })
+      expect(added.status).toBe(201)
+      const membershipId = added.body.id as number
+      const xMembershipId = await one<number>(
+        'SELECT id AS value FROM user_clinics WHERE user_id = $1 AND clinic_id = $2',
+        [patient.id, clinicXId],
+      )
+      // Out of clinic X: A no longer shares a clinic with the patient.
+      const removed = await admin.delete(
+        `/clinics/${clinicXId}/members/${patient.id}`,
+      )
+      expect(removed.status).toBe(200)
+      const { rows: links } = await sessionPool.query<{
+        id: number
+        practitioner_id: number
+        started_at: Date
+        ends_at: Date
+      }>(
+        'SELECT id, practitioner_id, started_at, ends_at FROM care_team_members WHERE patient_id = $1',
+        [patient.id],
+      )
+      expect(links).toHaveLength(1)
+
+      expect((await trail(patient.id)).slice(1)).toEqual([
+        {
+          action: 'CLINIC_MEMBER_ADDED',
+          performed_by: adminId,
+          target_user_id: patient.id,
+          entity_type: 'user_clinics',
+          entity_id: membershipId,
+          details: { clinicId: clinicYId },
+        },
+        {
+          action: 'CLINIC_MEMBER_REMOVED',
+          performed_by: adminId,
+          target_user_id: patient.id,
+          entity_type: 'user_clinics',
+          entity_id: xMembershipId,
+          details: { clinicId: clinicXId, endedCareTeamLinkIds: [links[0].id] },
+        },
+        {
+          action: 'CARE_TEAM_ENDED',
+          performed_by: adminId,
+          target_user_id: patient.id,
+          entity_type: 'care_team_members',
+          entity_id: links[0].id,
+          details: {
+            practitionerId: practitionerAId,
+            startedAt: links[0].started_at.toISOString(),
+            endsAt: links[0].ends_at.toISOString(),
+            reason: 'No longer share a clinic',
+            clinicId: clinicXId,
+          },
+        },
+      ])
+      expect(await genericEntries()).toEqual([])
+    })
+  })
+
+  // === SIGN-IN AND ACCOUNT SECURITY (slice 1b) ============================
+
+  describe('sign-in and account security', () => {
+    const otp = new OTP({ strategy: 'totp' })
+    // A TOTP code still valid when the server checks it (the server accepts
+    // only the current 30-second window — see auth-recovery.e2e-spec.ts).
+    async function freshCode(secret: string): Promise<string> {
+      const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30)
+      if (secondsLeft < 5) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, secondsLeft * 1000 + 100),
+        )
+      }
+      return otp.generate({ secret })
+    }
+
+    // A fresh, activated patient (password 'password123'), and an agent.
+    async function readyPatient() {
+      const patient = await newPatient()
+      await activateAccount(sessionPool, patient.email)
+      return patient
+    }
+
+    it('records the founding of the deployment, naming the admin', async () => {
+      const { rows } = await sessionPool.query<AuditRow>(
+        `SELECT action, performed_by, target_user_id, entity_type,
+                entity_id::int AS entity_id, details
+           FROM audit_logs WHERE action = 'REGISTER_CLINIC'`,
+      )
+      expect(rows).toEqual([
+        {
+          action: 'REGISTER_CLINIC',
+          performed_by: adminId,
+          target_user_id: adminId,
+          entity_type: 'clinics',
+          entity_id: clinicXId,
+          details: { adminUserId: adminId },
+        },
+      ])
+    })
+
+    it('records a failed sign-in, a sign-in and a sign-out, each about the account', async () => {
+      const patient = await readyPatient()
+      const who = agent()
+      const responses = [
+        await who
+          .post('/auth/login')
+          .send({ email: patient.email, password: 'wrong-password' }),
+        await who
+          .post('/auth/login')
+          .send({ email: patient.email, password: 'password123' }),
+        await who.post('/auth/logout'),
+      ]
+      expect(responses.map((res) => res.status)).toEqual([401, 201, 204])
+
+      const base = {
+        performed_by: patient.id,
+        target_user_id: patient.id,
+        entity_type: 'users',
+        entity_id: patient.id,
+      }
+      expect((await trail(patient.id)).slice(1)).toEqual([
+        { ...base, action: 'LOGIN_FAILURE', details: null },
+        {
+          ...base,
+          action: 'LOGIN_SUCCESS',
+          details: { activeRole: 'patient' },
+        },
+        { ...base, action: 'LOGOUT', details: null },
+      ])
+      expect(await genericEntries()).toEqual([])
+    })
+
+    // Awaited before answering (decided with the person): no sign-in
+    // without its entry. Proof: refuse the entry (a planted trigger) — the
+    // sign-in must fail and no session be opened. Fire-and-forget, it would
+    // have succeeded and only the entry been lost.
+    it('refuses the sign-in when its entry cannot be written', async () => {
+      const patient = await readyPatient()
+      await sessionPool.query(`
+        CREATE FUNCTION aa_refuse_login() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            RAISE EXCEPTION 'audit insert refused (test)';
+          END $$;
+        CREATE TRIGGER aa_refuse_login
+          BEFORE INSERT ON audit_logs
+          FOR EACH ROW WHEN (NEW.action = 'LOGIN_SUCCESS')
+          EXECUTE FUNCTION aa_refuse_login();
+      `)
+      const who = agent()
+      try {
+        const res = await who
+          .post('/auth/login')
+          .send({ email: patient.email, password: 'password123' })
+        expect(res.status).toBe(500)
+      } finally {
+        await sessionPool.query(`
+          DROP TRIGGER aa_refuse_login ON audit_logs;
+          DROP FUNCTION aa_refuse_login();
+        `)
+      }
+      expect((await who.get('/auth/me')).status).toBe(401)
+    })
+
+    it('records MFA set up, enabled, a wrong code at sign-in, and disabled', async () => {
+      const patient = await readyPatient()
+      const who = agent()
+      await who
+        .post('/auth/login')
+        .send({ email: patient.email, password: 'password123' })
+      const setup = await who.post('/auth/mfa/setup')
+      expect(setup.status).toBe(201)
+      const secret = setup.body.secret as string
+      const enabled = await who
+        .post('/auth/mfa/enable')
+        .send({ code: await freshCode(secret) })
+      expect(enabled.status).toBe(204)
+      await who.post('/auth/logout')
+
+      const second = agent()
+      await second
+        .post('/auth/login')
+        .send({ email: patient.email, password: 'password123' })
+      const wrong = await second
+        .post('/auth/mfa/verify')
+        .send({ code: '000000' })
+      expect(wrong.status).toBe(401)
+      const right = await second
+        .post('/auth/mfa/verify')
+        .send({ code: await freshCode(secret) })
+      expect(right.status).toBe(201)
+      const disabled = await second
+        .post('/auth/mfa/disable')
+        .send({ code: await freshCode(secret) })
+      expect(disabled.status).toBe(204)
+
+      const actions = (await trail(patient.id)).map((entry) => entry.action)
+      expect(actions).toEqual([
+        'USER_CREATED',
+        'LOGIN_SUCCESS',
+        'MFA_SETUP_STARTED',
+        'MFA_ENABLED',
+        'LOGOUT',
+        // The password step of the second sign-in, then the wrong code.
+        'LOGIN_SUCCESS',
+        'MFA_LOGIN_FAILURE',
+        'MFA_DISABLED',
+      ])
+      const entries = await trail(patient.id)
+      // Never the secret, encrypted or not, in any entry.
+      expect(JSON.stringify(entries)).not.toContain(secret)
+      for (const entry of entries.slice(2)) {
+        expect(entry).toMatchObject({
+          performed_by: patient.id,
+          target_user_id: patient.id,
+          entity_type: 'users',
+          entity_id: patient.id,
+        })
+      }
+      expect(await genericEntries()).toEqual([])
+    })
+
+    it('records a role switch with its from and to — and nothing for "switching" to the active role', async () => {
+      const email = uniqueEmail('two-roles')
+      const who = agent()
+      const id = await createAndLogIn(who, {
+        email,
+        role: 'practitioner',
+        firstName: 'Two',
+        lastName: 'Roles',
+        licenseNumber: `AA-2R-${stamp}`,
+        clinicId: clinicXId,
+      })
+      const granted = await admin
+        .post(`/users/${id}/roles`)
+        .send({ role: 'admin', position: 'Lead' })
+      expect(granted.status).toBe(201)
+      // A fresh session sees the new role.
+      await who.post('/auth/logout')
+      await who
+        .post('/auth/login')
+        .send({ email, password: 'password123', role: 'practitioner' })
+      const switches = [
+        await who.post('/auth/switch-role').send({ role: 'practitioner' }),
+        await who.post('/auth/switch-role').send({ role: 'admin' }),
+      ]
+      expect(switches.map((res) => res.status)).toEqual([201, 201])
+
+      const switched = (await trail(id)).filter(
+        (entry) => entry.action === 'ROLE_SWITCHED',
+      )
+      expect(switched).toEqual([
+        {
+          action: 'ROLE_SWITCHED',
+          performed_by: id,
+          target_user_id: id,
+          entity_type: 'users',
+          entity_id: id,
+          details: { from: 'practitioner', to: 'admin' },
+        },
+      ])
+      expect(await genericEntries()).toEqual([])
+    })
+
+    it('records a reset requested and completed — and nothing for checking the link', async () => {
+      const patient = await readyPatient()
+      const requested = await agent()
+        .post('/auth/forgot-password')
+        .send({ email: patient.email })
+      expect(requested.status).toBe(204)
+      const token = findLink(
+        outbox.lastSentTo(patient.email),
+        '/reset-password',
+      ).searchParams.get('token')
+      const expiresAt = await one<Date>(
+        'SELECT password_reset_token_expires_at AS value FROM users WHERE id = $1',
+        [patient.id],
+      )
+      // A signed-in visitor checking the link: the route is @NotAudited.
+      const checked = await practitionerA
+        .post('/auth/reset-password/check')
+        .send({ token })
+      expect(checked.status).toBe(200)
+      const reset = await agent()
+        .post('/auth/reset-password')
+        .send({ token, newPassword: 'a-brand-new-password-1' })
+      expect(reset.status).toBe(204)
+
+      const base = {
+        performed_by: patient.id,
+        target_user_id: patient.id,
+        entity_type: 'users',
+        entity_id: patient.id,
+      }
+      expect((await trail(patient.id)).slice(1)).toEqual([
+        {
+          ...base,
+          action: 'PASSWORD_RESET_REQUESTED',
+          details: { expiresAt: expiresAt.toISOString() },
+        },
+        { ...base, action: 'PASSWORD_RESET_COMPLETED', details: null },
+      ])
+      expect(await genericEntries()).toEqual([])
     })
   })
 })

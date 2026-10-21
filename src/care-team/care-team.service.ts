@@ -144,6 +144,9 @@ export interface EndedLink {
   id: number
   patientId: number
   practitionerId: number
+  // The period the link granted access — for the audit entry of its end.
+  startedAt: Date
+  endsAt: Date | null
 }
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
@@ -704,6 +707,8 @@ export class CareTeamService {
         id: careTeamMembers.id,
         patientId: careTeamMembers.patientId,
         practitionerId: careTeamMembers.practitionerId,
+        startedAt: careTeamMembers.startedAt,
+        endsAt: careTeamMembers.endsAt,
       })
   }
 

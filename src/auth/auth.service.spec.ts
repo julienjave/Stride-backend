@@ -75,6 +75,16 @@ function fakeToPublic(user: {
   })
 }
 
+// AuditService since the audit review (slice 1b): a change of data writes its
+// entry through logInTransaction, in the change's own transaction; the
+// sign-in events (which change no data) through log(), awaited.
+function auditStub() {
+  return {
+    log: jest.fn().mockResolvedValue(undefined),
+    logInTransaction: jest.fn().mockResolvedValue(undefined),
+  }
+}
+
 describe('AuthService.validateUser', () => {
   let authService: AuthService
   let usersService: {
@@ -83,7 +93,7 @@ describe('AuthService.validateUser', () => {
     attachProfile: jest.Mock
     toPublic: jest.Mock
   }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
     usersService = {
@@ -99,9 +109,7 @@ describe('AuthService.validateUser', () => {
     // AuthService now calls auditService.log() from inside validateUser()
     // itself (LOGIN_SUCCESS/LOGIN_FAILURE) — this mock needs a real, callable
     // .log() method, not an empty object, or those calls would throw.
-    auditService = {
-      log: jest.fn().mockResolvedValue(undefined),
-    }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -157,9 +165,19 @@ describe('AuthService.validateUser', () => {
       'any-password',
     )
     expect(result).toBeNull()
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'LOGIN_FAILURE', performedBy: 1 }),
-    )
+    // Through log() — a sign-in changes no data, there's no transaction to
+    // join — and naming the account concerned.
+    expect(auditService.log.mock.calls).toStrictEqual([
+      [
+        {
+          performedBy: 1,
+          action: 'LOGIN_FAILURE',
+          targetUserId: 1,
+          entityType: 'users',
+          entityId: 1,
+        },
+      ],
+    ])
   })
 
   it('auto-selects the active role when the account has exactly one', async () => {
@@ -311,7 +329,7 @@ describe('AuthService.registerClinic', () => {
     transaction: jest.Mock
   }
   let usersService: { attachProfile: jest.Mock; toPublic: jest.Mock }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
     db = {
@@ -334,7 +352,7 @@ describe('AuthService.registerClinic', () => {
       attachProfile: jest.fn().mockImplementation((user: unknown) => user),
       toPublic: jest.fn().mockImplementation(fakeToPublic),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -441,9 +459,8 @@ describe('AuthService.registerClinic', () => {
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
       .mockReturnValueOnce({ values: jest.fn().mockResolvedValue(undefined) })
 
-    db.transaction.mockImplementation((cb: TransactionCallback) =>
-      cb({ insert }),
-    )
+    const tx = { insert }
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await authService.registerClinic({
       clinicName: 'Acme Clinic',
@@ -457,9 +474,22 @@ describe('AuthService.registerClinic', () => {
     expect(result.clinicId).toBe(501)
     expect(result.activeRole).toBe('admin')
     expect(result.roles).toEqual(['admin'])
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'REGISTER_CLINIC', entityId: 501 }),
-    )
+    // ONE entry, through the founding transaction itself; it names the
+    // clinic and the admin — and nothing of the request (the password).
+    expect(auditService.logInTransaction.mock.calls).toStrictEqual([
+      [
+        tx,
+        {
+          performedBy: 42,
+          action: 'REGISTER_CLINIC',
+          targetUserId: 42,
+          entityType: 'clinics',
+          entityId: 501,
+          details: { adminUserId: 42 },
+        },
+      ],
+    ])
+    expect(auditService.log).not.toHaveBeenCalled()
     // The users insert's .returning() is a raw row, never routed through
     // UsersService.toPublic() — regression coverage for that bypass.
     expect(result).not.toHaveProperty('passwordHash')
@@ -574,7 +604,7 @@ describe('AuthService.forgotPassword', () => {
   }
   let db: { transaction: jest.Mock }
   let emailService: { sendPasswordResetEmail: jest.Mock }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
     usersService = {
@@ -602,7 +632,7 @@ describe('AuthService.forgotPassword', () => {
     emailService = {
       sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -631,9 +661,27 @@ describe('AuthService.forgotPassword', () => {
       'jane@example.com',
       expect.stringMatching(/^[0-9a-f]{64}$/),
     )
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'PASSWORD_RESET_REQUESTED' }),
-    )
+    // In the token's own transaction (the first argument is the mocked
+    // transaction, not the module's db); never the token in it — only when
+    // it stops working, an hour from now.
+    const [entryTx, entry] = auditService.logInTransaction.mock.calls[0] as [
+      unknown,
+      { details: { expiresAt: Date } },
+    ]
+    expect(entryTx).not.toBe(db)
+    expect(entryTx).toHaveProperty('update')
+    expect(entry).toStrictEqual({
+      performedBy: 1,
+      action: 'PASSWORD_RESET_REQUESTED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+      details: { expiresAt: entry.details.expiresAt },
+    })
+    const inMinutes = (entry.details.expiresAt.getTime() - Date.now()) / 60_000
+    expect(inMinutes).toBeGreaterThan(59)
+    expect(inMinutes).toBeLessThanOrEqual(60)
+    expect(auditService.log).not.toHaveBeenCalled()
   })
 
   // The email is sent without waiting (the 204 must not reveal whether
@@ -700,7 +748,7 @@ describe('AuthService.resetPassword', () => {
     execute: jest.Mock
   }
   let usersService: { getRolesForUser: jest.Mock }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
     db = {
@@ -717,7 +765,7 @@ describe('AuthService.resetPassword', () => {
     usersService = {
       getRolesForUser: jest.fn().mockResolvedValue(['patient']),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -774,16 +822,15 @@ describe('AuthService.resetPassword', () => {
     })
     // withRlsContext() sets two session GUCs via tx.execute() before
     // invoking the callback, which then issues the real UPDATE via tx.
-    db.transaction.mockImplementation((cb: TransactionCallback) =>
-      cb({
-        execute: jest.fn().mockResolvedValue(undefined),
-        update: jest.fn().mockReturnValue({
-          set: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue(undefined),
-          }),
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnValue({
+        set: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue(undefined),
         }),
       }),
-    )
+    }
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     await authService.resetPassword('valid-token', 'newpassword123')
 
@@ -791,12 +838,20 @@ describe('AuthService.resetPassword', () => {
     // else had access to the account — this confirms all existing sessions
     // are torn down, not just that the password itself changed.
     expect(db.execute).toHaveBeenCalled()
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'PASSWORD_RESET_COMPLETED',
-        performedBy: 1,
-      }),
-    )
+    // In the new password's own transaction; no password (nor its hash) in it.
+    expect(auditService.logInTransaction.mock.calls).toStrictEqual([
+      [
+        tx,
+        {
+          performedBy: 1,
+          action: 'PASSWORD_RESET_COMPLETED',
+          targetUserId: 1,
+          entityType: 'users',
+          entityId: 1,
+        },
+      ],
+    ])
+    expect(auditService.log).not.toHaveBeenCalled()
   })
 })
 
@@ -809,7 +864,7 @@ describe('AuthService.checkResetToken', () => {
     transaction: jest.Mock
     execute: jest.Mock
   }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
   const expiresAt = new Date(Date.now() + 30 * 60_000)
 
   beforeEach(async () => {
@@ -818,7 +873,7 @@ describe('AuthService.checkResetToken', () => {
       transaction: jest.fn(),
       execute: jest.fn(),
     }
-    auditService = { log: jest.fn() }
+    auditService = auditStub()
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -895,7 +950,7 @@ describe('AuthService.enableMfa', () => {
     query: { users: { findFirst: jest.Mock } }
     transaction: jest.Mock
   }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
   const currentUser = { id: 1, activeRole: UserRole.PATIENT }
 
   beforeEach(async () => {
@@ -914,7 +969,7 @@ describe('AuthService.enableMfa', () => {
         }),
       ),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -953,9 +1008,19 @@ describe('AuthService.enableMfa', () => {
 
     await authService.enableMfa(1, '123456', currentUser)
 
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'MFA_ENABLED', performedBy: 1 }),
-    )
+    const [entryTx, entry] = auditService.logInTransaction.mock.calls[0] as [
+      unknown,
+      unknown,
+    ]
+    expect(entryTx).toHaveProperty('update')
+    expect(entry).toStrictEqual({
+      performedBy: 1,
+      action: 'MFA_ENABLED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+    })
+    expect(auditService.log).not.toHaveBeenCalled()
   })
 })
 
@@ -965,7 +1030,7 @@ describe('AuthService.disableMfa', () => {
     query: { users: { findFirst: jest.Mock } }
     transaction: jest.Mock
   }
-  let auditService: { log: jest.Mock }
+  let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
   const currentUser = { id: 1, activeRole: UserRole.PATIENT }
 
   beforeEach(async () => {
@@ -984,7 +1049,7 @@ describe('AuthService.disableMfa', () => {
         }),
       ),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -1034,24 +1099,36 @@ describe('AuthService.disableMfa', () => {
 
     await authService.disableMfa(1, '123456', currentUser)
 
-    expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'MFA_DISABLED', performedBy: 1 }),
-    )
+    const [entryTx, entry] = auditService.logInTransaction.mock.calls[0] as [
+      unknown,
+      unknown,
+    ]
+    expect(entryTx).toHaveProperty('update')
+    expect(entry).toStrictEqual({
+      performedBy: 1,
+      action: 'MFA_DISABLED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+    })
+    expect(auditService.log).not.toHaveBeenCalled()
   })
 })
 
 describe('AuthService.verifyMfaCode', () => {
   let authService: AuthService
   let db: { query: { users: { findFirst: jest.Mock } } }
+  let auditService: ReturnType<typeof auditStub>
 
   beforeEach(async () => {
     db = { query: { users: { findFirst: jest.fn() } } }
+    auditService = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: UsersService, useValue: {} },
-        { provide: AuditService, useValue: {} },
+        { provide: AuditService, useValue: auditService },
         { provide: EmailService, useValue: {} },
         { provide: DRIZZLE, useValue: db },
       ],
@@ -1073,5 +1150,30 @@ describe('AuthService.verifyMfaCode', () => {
 
     const result = await authService.verifyMfaCode(1, '123456')
     expect(result).toBe(true)
+    // Nothing to record for a right code — the sign-in itself is recorded
+    // by the login step.
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  // A wrong code after a right password: the brute-force signal (added by
+  // the audit review, 2026-10-21). Through log(), awaited — no data changes.
+  it('records a wrong code as MFA_LOGIN_FAILURE against the account', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 7, mfaSecret: 'SECRET' })
+    stubTotp(authService, false)
+
+    const result = await authService.verifyMfaCode(7, '000000')
+
+    expect(result).toBe(false)
+    expect(auditService.log.mock.calls).toStrictEqual([
+      [
+        {
+          performedBy: 7,
+          action: 'MFA_LOGIN_FAILURE',
+          targetUserId: 7,
+          entityType: 'users',
+          entityId: 7,
+        },
+      ],
+    ])
   })
 })

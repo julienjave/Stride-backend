@@ -21,6 +21,7 @@ import { lastValueFrom, of } from 'rxjs'
 import type { AuditService } from '../../audit/audit.service'
 import { AuditLogInterceptor } from './audit-log.interceptor'
 import { AuditedByService } from '../decorators/audited-by-service.decorator'
+import { NotAudited } from '../decorators/not-audited.decorator'
 
 // An interceptor wraps a route handler: Nest gives it the request (inside
 // an ExecutionContext) and the handler (a CallHandler whose handle()
@@ -151,6 +152,48 @@ describe('AuditLogInterceptor', () => {
     )
 
     expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  // A POST that changes nothing says so with @NotAudited(reason): nothing to
+  // record (the audit review, slice 1b — the reset-link check).
+  it('records nothing for a route tagged @NotAudited(reason)', async () => {
+    function checkHandler() {}
+    NotAudited('Only checks a token; nothing changes')(checkHandler)
+
+    await run(
+      {
+        method: 'POST',
+        originalUrl: '/auth/reset-password/check',
+        params: {},
+        user: admin,
+      },
+      { email: 'a@example.com' },
+      checkHandler,
+    )
+
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  // The URL prefix that used to exempt every /auth route is gone: an /auth
+  // route WITHOUT a tag is recorded like any other — so a new auth route
+  // can't slip by unrecorded just because of where it lives.
+  it('records an untagged /auth route like any other mutating request', async () => {
+    await run(
+      {
+        method: 'POST',
+        originalUrl: '/auth/some-new-route',
+        params: {},
+        user: admin,
+      },
+      null,
+    )
+
+    expect(auditService.log).toHaveBeenCalledWith({
+      performedBy: 1,
+      action: 'POST /auth/some-new-route',
+      entityType: 'auth',
+      entityId: undefined,
+    })
   })
 
   // Audit writes are fire-and-forget: a failure must not fail the request
