@@ -46,8 +46,7 @@ import { AuditedByService } from '../common/decorators/audited-by-service.decora
 // admin has no care team (the To-do is "my patients"), and a patient never
 // sees alerts about themselves — they are the care team's workflow.
 //
-// The list is a read: no @AuditedByService (the interceptor logs writes
-// only). Logging READS of clinical data is the whole-app audit review's
+// The list is a read: no @AuditedByService (the tag is for writes). Logging READS of clinical data is the whole-app audit review's
 // question (Phase 6), for every read route at once. The review is a write,
 // audited by the service (the convention).
 @UseGuards(SessionAuthGuard, RolesGuard)

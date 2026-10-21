@@ -8,6 +8,36 @@ import { ExercisesService } from './exercises.service'
 import { StorageService } from '../storage/storage.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
+import { AuditService } from '../audit/audit.service'
+
+// AuditService since the audit review (slice 1c): every write's ONE entry
+// goes through logInTransaction, inside its transaction. A fresh stub before
+// EVERY test (this top-level beforeEach runs before each block's own).
+function auditStub() {
+  return {
+    log: jest.fn().mockResolvedValue(undefined),
+    logInTransaction: jest
+      .fn<Promise<void>, [unknown, Record<string, unknown>]>()
+      .mockResolvedValue(undefined),
+  }
+}
+let audit: ReturnType<typeof auditStub>
+beforeEach(() => {
+  audit = auditStub()
+})
+
+// lockExercise()'s SELECT … FOR UPDATE, on a block's mocked db (tx === db in
+// these blocks): answers `row` — the exercise as it is INSIDE the
+// transaction, which every write now decides from. Returns the .for() mock.
+function lockRow(db: object, row: Record<string, unknown>) {
+  const forUpdate = jest.fn().mockResolvedValue([row])
+  Object.assign(db, {
+    select: jest.fn(() => ({
+      from: () => ({ where: () => ({ for: forUpdate }) }),
+    })),
+  })
+  return forUpdate
+}
 
 describe('ExercisesService.assertCanModify (via update)', () => {
   let exercisesService: ExercisesService
@@ -41,11 +71,19 @@ describe('ExercisesService.assertCanModify (via update)', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         { provide: StorageService, useValue: {} },
       ],
     }).compile()
 
     exercisesService = moduleRef.get(ExercisesService)
+    lockRow(db, {
+      id: 1,
+      source: 'custom',
+      createdBy: 7,
+      name: 'Original',
+      mediaUrls: [],
+    })
   })
 
   it('allows the practitioner who created a custom exercise to modify it', async () => {
@@ -66,6 +104,40 @@ describe('ExercisesService.assertCanModify (via update)', () => {
       // value now — an empty mediaUrls array means an empty images
       // array, not the field disappearing entirely.
     ).resolves.toEqual({ id: 1, name: 'Updated', images: [] })
+    // ONE entry, in the same transaction (tx === db): before → after, the
+    // "before" read under the lock. The library holds no patient data: no
+    // targetUserId.
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'EXERCISE_UPDATED',
+          entityType: 'exercises',
+          entityId: 1,
+          details: { changes: { name: { from: 'Original', to: 'Updated' } } },
+        },
+      ],
+    ])
+  })
+
+  // The convention: an edit that changes nothing writes nothing.
+  it('writes nothing — no UPDATE, no entry — when the values sent are already stored', async () => {
+    db.query.exercises.findFirst.mockResolvedValue({
+      id: 1,
+      source: 'custom',
+      createdBy: 7,
+      mediaUrls: [],
+    })
+
+    await exercisesService.update(
+      1,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      { name: 'Original' },
+    )
+
+    expect(db.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 
   it('allows an admin to modify any exercise, including one they did not create', async () => {
@@ -163,6 +235,7 @@ describe('ExercisesService.reorderImages', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         {
           provide: StorageService,
           // Every returned exercise now goes through withImages, which
@@ -182,6 +255,12 @@ describe('ExercisesService.reorderImages', () => {
     }).compile()
 
     exercisesService = moduleRef.get(ExercisesService)
+    lockRow(db, {
+      id: 1,
+      source: 'custom',
+      createdBy: 7,
+      mediaUrls: ['a.jpg', 'b.jpg', 'c.jpg'],
+    })
   })
 
   it('accepts a reordering that is an exact permutation of the current images', async () => {
@@ -204,6 +283,35 @@ describe('ExercisesService.reorderImages', () => {
         { objectKey: 'b.jpg', url: 'https://signed.example/b.jpg' },
       ],
     })
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'EXERCISE_PHOTOS_REORDERED',
+          entityType: 'exercises',
+          entityId: 1,
+          details: {
+            order: {
+              from: ['a.jpg', 'b.jpg', 'c.jpg'],
+              to: ['c.jpg', 'a.jpg', 'b.jpg'],
+            },
+          },
+        },
+      ],
+    ])
+  })
+
+  // The same order again changes nothing: no UPDATE, no entry.
+  it('writes nothing for the order the gallery already has', async () => {
+    await exercisesService.reorderImages(
+      1,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      ['a.jpg', 'b.jpg', 'c.jpg'],
+    )
+
+    expect(db.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 
   it('rejects a reordering that drops an existing image', async () => {
@@ -302,11 +410,18 @@ describe('ExercisesService.removeImage', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         { provide: StorageService, useValue: storageService },
       ],
     }).compile()
 
     exercisesService = moduleRef.get(ExercisesService)
+    lockRow(db, {
+      id: 1,
+      source: 'custom',
+      createdBy: 7,
+      mediaUrls: ['a.jpg', 'b.jpg'],
+    })
   })
 
   it('removes an image key that belongs to this exercise', async () => {
@@ -330,6 +445,18 @@ describe('ExercisesService.removeImage', () => {
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
       storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'EXERCISE_PHOTO_REMOVED',
+          entityType: 'exercises',
+          entityId: 1,
+          details: { removed: 'a.jpg' },
+        },
+      ],
+    ])
   })
 
   it('throws NotFoundException for a key that does not belong to this exercise', async () => {
@@ -355,6 +482,7 @@ describe('ExercisesService.findOne', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         { provide: StorageService, useValue: {} },
       ],
     }).compile()
@@ -382,6 +510,7 @@ describe('ExercisesService.findOneForDisplay', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         {
           provide: StorageService,
           useValue: {
@@ -469,6 +598,7 @@ describe('ExercisesService.findAll', () => {
       providers: [
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
         { provide: StorageService, useValue: {} },
       ],
     }).compile()

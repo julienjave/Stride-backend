@@ -24,6 +24,7 @@ import { InvitationsService } from './invitations.service'
 import { InvitationTokenDto } from './dto/invitation-token.dto'
 import { AcceptInvitationDto } from './dto/accept-invitation.dto'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
+import { NotAudited } from '../common/decorators/not-audited.decorator'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -43,6 +44,9 @@ export class PublicInvitationsController {
   // The page loads this once, so a modest limit; 200, not the default 201
   // for a POST — nothing is created.
   @Throttle({ default: { limit: 10, ttl: seconds(60) } })
+  @NotAudited(
+    'Only reads an invitation, to show the accept page; nothing changes',
+  )
   @Post('lookup')
   @HttpCode(HttpStatus.OK)
   lookup(@Body() dto: InvitationTokenDto) {
@@ -53,9 +57,7 @@ export class PublicInvitationsController {
   // slow), so the limit protects the server's CPU as much as anything. 204,
   // like reset-password: the next step is the sign-in page, and there's
   // nothing to return. Audited by the service (INVITATION_ACCEPTED, in the
-  // accepting transaction); the generic interceptor never saw this route
-  // anyway — it has no signed-in user — so the tag states the rule rather
-  // than changing behaviour.
+  // accepting transaction).
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
   @Post('accept')

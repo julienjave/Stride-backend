@@ -54,16 +54,17 @@ export class AuditService {
 
   // Deliberately NOT run through withRlsContext() — audit_logs' INSERT policy
   // is WITH CHECK (true) (see the "Row-Level Security" writeup), so it needs no
-  // session context to succeed, unlike medical_files' write-side policy. This
-  // method is also called on nearly every mutating request across the app via
-  // the global AuditLogInterceptor, including calls made before authentication
-  // succeeds (e.g. LOGIN_FAILURE, logged against the account the attempt named,
+  // session context to succeed, unlike medical_files' write-side policy. Since
+  // the audit review (Phase 6) it writes only the sign-in events, which
+  // change no data and so have no transaction to join — including calls made
+  // before authentication succeeds (e.g. LOGIN_FAILURE, logged against the
+  // account the attempt named,
   // by a caller who is specifically NOT authenticated as that account) — a
   // write-side policy modeled on medical_files' (checking the writer's own
   // session against performedBy) would incorrectly reject exactly those calls.
-  // Wrapping this in a transaction for RLS context would add real overhead on
-  // the app's hottest write path for zero security benefit. Leave it a plain
-  // insert.
+  // Wrapping this in a transaction for RLS context would add overhead for
+  // zero security benefit. Leave it a plain insert, AWAITED by its callers:
+  // a sign-in is not answered without its entry.
   async log(entry: AuditEntry): Promise<void> {
     await this.db.insert(auditLogs).values(entry)
   }

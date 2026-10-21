@@ -18,7 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
-import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core'
+import { APP_GUARD, APP_FILTER } from '@nestjs/core'
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler'
 import { LoggerModule } from 'nestjs-pino'
 import { DrizzleModule } from './database/drizzle.module'
@@ -35,7 +35,6 @@ import { SessionsModule } from './sessions/sessions.module'
 import { AlertsModule } from './alerts/alerts.module'
 import { MessagingModule } from './messaging/messaging.module'
 import { AuditModule } from './audit/audit.module'
-import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor'
 import { HttpExceptionFilter } from './common/filters/http-exception.filter'
 import { MedicalFilesModule } from './medical-files/medical-files.module'
 import { HealthModule } from './health/health.module'
@@ -98,7 +97,12 @@ import { throttlerOptions } from './config/rate-limits'
     // Applying ThrottlerGuard globally here — every route in the app gets the
     // baseline limit automatically, no controller has to remember to add it.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
+    // No global audit interceptor any more (removed by the audit review,
+    // slice 1c — decisions §10): every route that changes data is tagged
+    // @AuditedByService() and its service writes ONE complete entry in the
+    // change's own transaction; a mutating route that changes nothing is
+    // tagged @NotAudited(reason). src/audit/audit-tags.spec.ts fails if a
+    // route has neither.
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],
 })

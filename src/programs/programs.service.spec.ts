@@ -9,6 +9,7 @@ import { DrizzleQueryError } from 'drizzle-orm'
 import { ProgramsService } from './programs.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
+import { AuditService } from '../audit/audit.service'
 import {
   programTemplates,
   templateExercises,
@@ -20,6 +21,35 @@ import {
 // workouts (no workoutId), which orderExercisesByWorkout handles by keeping
 // their own order.
 const ONE_WORKOUT = [{ id: 900, templateId: 1, name: null, sortOrder: 0 }]
+
+// AuditService since the audit review (slice 1c): every write's ONE entry
+// goes through logInTransaction, inside its transaction. A fresh stub before
+// EVERY test (this top-level beforeEach runs before each block's own).
+function auditStub() {
+  return {
+    log: jest.fn().mockResolvedValue(undefined),
+    logInTransaction: jest
+      .fn<Promise<void>, [unknown, Record<string, unknown>]>()
+      .mockResolvedValue(undefined),
+  }
+}
+let audit: ReturnType<typeof auditStub>
+beforeEach(() => {
+  audit = auditStub()
+})
+
+// lockTemplate()'s SELECT … FOR UPDATE, on a block's mocked db (tx === db in
+// these blocks): answers `row` — the template as it is INSIDE the
+// transaction, the "before" an entry records. Returns the .for() mock.
+function lockRow(db: object, row: Record<string, unknown>) {
+  const forUpdate = jest.fn().mockResolvedValue([row])
+  Object.assign(db, {
+    select: jest.fn(() => ({
+      from: () => ({ where: () => ({ for: forUpdate }) }),
+    })),
+  })
+  return forUpdate
+}
 
 describe('ProgramsService.update (and assertCanModify through it)', () => {
   let programsService: ProgramsService
@@ -63,10 +93,15 @@ describe('ProgramsService.update (and assertCanModify through it)', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
+    lockRow(db, { id: 1, practitionerId: 7, title: 'Old', description: null })
   })
 
   it('allows the owning practitioner to modify their own template', async () => {
@@ -82,6 +117,36 @@ describe('ProgramsService.update (and assertCanModify through it)', () => {
     )
 
     expect(setMock).toHaveBeenCalledWith({ title: 'Updated' })
+    // ONE entry in the same transaction: before (read under the lock) →
+    // after. Templates hold no patient data: no targetUserId.
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'TEMPLATE_UPDATED',
+          entityType: 'program_templates',
+          entityId: 1,
+          details: { changes: { title: { from: 'Old', to: 'Updated' } } },
+        },
+      ],
+    ])
+  })
+
+  it('writes nothing — no UPDATE, no entry — for a title that is already stored', async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+    })
+
+    await programsService.update(
+      1,
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      { title: 'Old' },
+    )
+
+    expect(setMock).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 
   it('returns the full enriched template via findOne — not the bare updated row', async () => {
@@ -192,7 +257,11 @@ describe('ProgramsService.archive', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
@@ -202,6 +271,7 @@ describe('ProgramsService.archive', () => {
     db.query.programTemplates.findFirst
       .mockResolvedValueOnce({ id: 1, practitionerId: 7, isArchived: false })
       .mockResolvedValueOnce({ id: 1, practitionerId: 7, isArchived: true })
+    lockRow(db, { id: 1, practitionerId: 7, title: 'Knee', isArchived: false })
 
     const result = await programsService.archive(1, {
       id: 7,
@@ -216,6 +286,36 @@ describe('ProgramsService.archive', () => {
       workouts: ONE_WORKOUT,
       exercises: [],
     })
+    // What the template WAS — after archiving, no list shows it.
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'TEMPLATE_ARCHIVED',
+          entityType: 'program_templates',
+          entityId: 1,
+          details: { title: 'Knee' },
+        },
+      ],
+    ])
+  })
+
+  it('writes nothing for a template that is already archived', async () => {
+    db.query.programTemplates.findFirst.mockResolvedValue({
+      id: 1,
+      practitionerId: 7,
+      isArchived: true,
+    })
+    lockRow(db, { id: 1, practitionerId: 7, title: 'Knee', isArchived: true })
+
+    await programsService.archive(1, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    })
+
+    expect(setMock).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 
   it('rejects a non-owning practitioner without writing anything', async () => {
@@ -347,7 +447,11 @@ describe('ProgramsService.duplicate', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
@@ -588,7 +692,11 @@ describe('ProgramsService.addExercise', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
@@ -743,28 +851,34 @@ describe('ProgramsService.reorderExercises', () => {
       // ProgramsService.reorderExercises for why. withRlsContext() also
       // issues two set_config calls via tx.execute() before invoking this
       // callback's own body, hence the added execute() mock below.
-      transaction: jest.fn().mockImplementation((cb: any) =>
-        cb({
-          query: {
-            templateWorkouts: {
-              findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+      transaction: jest
+        .fn()
+        .mockImplementation((cb: (tx: unknown) => unknown) =>
+          cb({
+            query: {
+              templateWorkouts: {
+                findMany: jest.fn().mockResolvedValue(ONE_WORKOUT),
+              },
+              templateExercises: {
+                findMany: jest.fn().mockResolvedValue([
+                  { id: 100, exerciseId: 50 },
+                  { id: 101, exerciseId: 51 },
+                  { id: 102, exerciseId: 52 },
+                ]),
+              },
             },
-            templateExercises: {
-              findMany: jest.fn().mockResolvedValue([
-                { id: 100, exerciseId: 50 },
-                { id: 101, exerciseId: 51 },
-                { id: 102, exerciseId: 52 },
-              ]),
-            },
-          },
-          update: txUpdate,
-          execute: jest.fn().mockResolvedValue(undefined),
-        }),
-      ),
+            update: txUpdate,
+            execute: jest.fn().mockResolvedValue(undefined),
+          }),
+        ),
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
@@ -860,7 +974,11 @@ describe('ProgramsService.findOne', () => {
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
@@ -981,9 +1099,26 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
         exercises: { findMany: jest.fn().mockResolvedValue([]) },
       },
       update: jest.fn(),
-      delete: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
+      // DELETE … RETURNING: the removed row, as the entry records it.
+      delete: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          returning: jest.fn().mockResolvedValue([
+            {
+              id: 50,
+              templateId: 1,
+              workoutId: 900,
+              exerciseId: 6,
+              sets: 3,
+              reps: 10,
+              durationInSeconds: null,
+              weight: null,
+              weightUnit: null,
+              sortOrder: 0,
+              notes: null,
+            },
+          ]),
+        }),
+      }),
       // withRlsContext() wraps the actual DELETE in db.transaction()/
       // db.execute() — tx === db here, so the mocked delete() above still
       // resolves against this same object.
@@ -992,10 +1127,15 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
     }
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
 
     programsService = moduleRef.get(ProgramsService)
+    lockRow(db, { id: 1, practitionerId: 7 })
   })
 
   it('throws NotFoundException when the exercise row does not belong to this template', async () => {
@@ -1026,6 +1166,7 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
     db.query.templateExercises.findFirst.mockResolvedValue({
       id: 50,
       templateId: 1,
+      sets: 3,
     })
     db.update.mockReturnValue({
       set: jest.fn().mockReturnValue({
@@ -1069,6 +1210,22 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
         },
       ],
     })
+    // Before → after, from the row read inside the transaction.
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'TEMPLATE_EXERCISE_UPDATED',
+          entityType: 'program_templates',
+          entityId: 1,
+          details: {
+            templateExerciseId: 50,
+            changes: { sets: { from: 3, to: 5 } },
+          },
+        },
+      ],
+    ])
   })
 
   it('removes the exercise row, then returns the full enriched template via findOne', async () => {
@@ -1092,6 +1249,32 @@ describe('ProgramsService IDOR checks (updateExercise / removeExercise)', () => 
     })
 
     expect(db.delete).toHaveBeenCalled()
+    // The row as it was when it went, whole.
+    expect(audit.logInTransaction.mock.calls).toStrictEqual([
+      [
+        db,
+        {
+          performedBy: 7,
+          action: 'TEMPLATE_EXERCISE_REMOVED',
+          entityType: 'program_templates',
+          entityId: 1,
+          details: {
+            exercise: {
+              id: 50,
+              workoutId: 900,
+              exerciseId: 6,
+              sets: 3,
+              reps: 10,
+              durationInSeconds: null,
+              weight: null,
+              weightUnit: null,
+              sortOrder: 0,
+              notes: null,
+            },
+          },
+        },
+      ],
+    ])
     expect(result).toEqual({
       id: 1,
       practitionerId: 7,
@@ -1126,7 +1309,7 @@ describe('ProgramsService.removeWorkout — losing the race to an added exercise
     // offers `.for` for the lock.
     const where = () =>
       Object.assign(Promise.resolve([{ exerciseCount: 0 }]), {
-        for: jest.fn().mockResolvedValue([]),
+        for: jest.fn().mockResolvedValue([{ id: 1, practitionerId: 7 }]),
       })
     const tx = {
       execute: jest.fn().mockResolvedValue(undefined),
@@ -1150,7 +1333,11 @@ describe('ProgramsService.removeWorkout — losing the race to an added exercise
       transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
     }
     const moduleRef = await Test.createTestingModule({
-      providers: [ProgramsService, { provide: DRIZZLE, useValue: db }],
+      providers: [
+        ProgramsService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: AuditService, useValue: audit },
+      ],
     }).compile()
     programsService = moduleRef.get(ProgramsService)
   })

@@ -51,7 +51,7 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 // Every write here is @AuditedByService() (the audit review, Phase 6): its
 // service method writes ONE complete entry — USER_CREATED, _ROLE_GRANTED,
 // _UPDATED, _AVATAR_CHANGED / _REMOVED, _DEACTIVATED, _REACTIVATED — in the
-// change's own transaction, and the generic interceptor stays out.
+// change's own transaction.
 @UseGuards(SessionAuthGuard)
 @ApiTags('Users')
 @Controller('users')

@@ -34,6 +34,8 @@ import { StorageService } from '../storage/storage.service'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
+import { AuditService } from '../audit/audit.service'
+import { changedFields } from '../common/changed-fields'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -44,15 +46,24 @@ export class ExercisesService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storageService: StorageService,
+    private readonly auditService: AuditService,
   ) {}
+
+  // Every write below follows the audit convention (the audit review, Phase
+  // 6 — decisions §10; the library joined it in slice 1c): ONE entry per
+  // request that changes something, in the change's own transaction, read
+  // from the row as it is under a lock (lockExercise); nothing written for a
+  // request that changes nothing. The library holds no patient data, so the
+  // entries have no targetUserId — they say who changed which exercise, and
+  // how.
 
   // === ROUTES =============================================================
 
   // --- POST ROUTES ---
 
   async create(currentUser: CurrentUser, dto: CreateExerciseDto) {
-    const [exercise] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    const exercise = await withRlsContext(this.db, currentUser, async (tx) => {
+      const [row] = await tx
         .insert(exercises)
         .values({
           name: dto.name,
@@ -64,8 +75,16 @@ export class ExercisesService {
           source: 'custom',
           createdBy: currentUser.id,
         })
-        .returning(),
-    )
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_CREATED',
+        entityType: 'exercises',
+        entityId: row.id,
+        details: { record: dto },
+      })
+      return row
+    })
     return this.withImages(exercise)
   }
 
@@ -90,13 +109,24 @@ export class ExercisesService {
       newKeys.push(objectKey)
     }
 
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    // Appended to the list as it is NOW, under the lock — read before the
+    // upload, a photo added meanwhile by another request would be dropped.
+    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockExercise(tx, id)
+      const [row] = await tx
         .update(exercises)
-        .set({ mediaUrls: [...exercise.mediaUrls, ...newKeys] })
+        .set({ mediaUrls: [...before.mediaUrls, ...newKeys] })
         .where(eq(exercises.id, id))
-        .returning(),
-    )
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_PHOTOS_ADDED',
+        entityType: 'exercises',
+        entityId: id,
+        details: { added: newKeys },
+      })
+      return row
+    })
     return this.withImages(updated)
   }
 
@@ -243,9 +273,26 @@ export class ExercisesService {
   async update(id: number, currentUser: CurrentUser, dto: UpdateExerciseDto) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx.update(exercises).set(dto).where(eq(exercises.id, id)).returning(),
-    )
+    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockExercise(tx, id)
+      const changes = changedFields(before, { ...dto })
+      if (Object.keys(changes).length === 0) {
+        return before
+      }
+      const [row] = await tx
+        .update(exercises)
+        .set(dto)
+        .where(eq(exercises.id, id))
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_UPDATED',
+        entityType: 'exercises',
+        entityId: id,
+        details: { changes },
+      })
+      return row
+    })
     return this.withImages(updated)
   }
 
@@ -263,37 +310,51 @@ export class ExercisesService {
     currentUser: CurrentUser,
     newOrder: string[],
   ) {
-    const exercise = await this.findOne(id)
-    this.assertCanModify(exercise, currentUser)
+    this.assertCanModify(await this.findOne(id), currentUser)
 
-    const currentSet = new Set(exercise.mediaUrls)
-    // Same fix as the two reorderExercises methods — a genuine permutation
-    // check needs length + no-internal-duplicates + valid-membership
-    // together. Here specifically, since mediaUrls gets OVERWRITTEN
-    // directly with newOrder (not looped per-row like the two exercise
-    // reorder methods), the old, incomplete check could let a client
-    // submit an array with a duplicated image key padding it to the right
-    // unique count — silently DROPPING a real image from the gallery
-    // entirely, replaced by a duplicate of another, rather than just
-    // producing a sortOrder gap.
-    const isSamePermutation =
-      newOrder.length === exercise.mediaUrls.length &&
-      new Set(newOrder).size === newOrder.length &&
-      newOrder.every((key) => currentSet.has(key))
+    // Checked against the list as it is under the lock: a photo added or
+    // removed by another request meanwhile makes this order out of date.
+    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
+      const exercise = await this.lockExercise(tx, id)
+      const currentSet = new Set(exercise.mediaUrls)
+      // Same fix as the two reorderExercises methods — a genuine permutation
+      // check needs length + no-internal-duplicates + valid-membership
+      // together. Here specifically, since mediaUrls gets OVERWRITTEN
+      // directly with newOrder (not looped per-row like the two exercise
+      // reorder methods), the old, incomplete check could let a client
+      // submit an array with a duplicated image key padding it to the right
+      // unique count — silently DROPPING a real image from the gallery
+      // entirely, replaced by a duplicate of another, rather than just
+      // producing a sortOrder gap.
+      const isSamePermutation =
+        newOrder.length === exercise.mediaUrls.length &&
+        new Set(newOrder).size === newOrder.length &&
+        newOrder.every((key) => currentSet.has(key))
 
-    if (!isSamePermutation) {
-      throw new BadRequestException(
-        'The new order must contain exactly the same images as the current gallery, just reordered',
-      )
-    }
+      if (!isSamePermutation) {
+        throw new BadRequestException(
+          'The new order must contain exactly the same images as the current gallery, just reordered',
+        )
+      }
+      // The same order again changes nothing: no UPDATE, no entry.
+      if (newOrder.every((key, index) => key === exercise.mediaUrls[index])) {
+        return exercise
+      }
 
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+      const [row] = await tx
         .update(exercises)
         .set({ mediaUrls: newOrder })
         .where(eq(exercises.id, id))
-        .returning(),
-    )
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_PHOTOS_REORDERED',
+        entityType: 'exercises',
+        entityId: id,
+        details: { order: { from: exercise.mediaUrls, to: newOrder } },
+      })
+      return row
+    })
     return this.withImages(updated)
   }
 
@@ -302,39 +363,62 @@ export class ExercisesService {
   async archive(id: number, currentUser: CurrentUser) {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
-    const [archived] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    const archived = await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockExercise(tx, id)
+      // Already archived: nothing changes, nothing is written.
+      if (before.isArchived) {
+        return before
+      }
+      const [row] = await tx
         .update(exercises)
         .set({ isArchived: true })
         .where(eq(exercises.id, id))
-        .returning(),
-    )
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_ARCHIVED',
+        entityType: 'exercises',
+        entityId: id,
+      })
+      return row
+    })
     return this.withImages(archived)
   }
 
   // Validates the key actually belongs to THIS exercise before deleting anything
   async removeImage(id: number, currentUser: CurrentUser, objectKey: string) {
-    const exercise = await this.findOne(id)
-    this.assertCanModify(exercise, currentUser)
-
-    if (!exercise.mediaUrls.includes(objectKey)) {
-      throw new NotFoundException('This image does not belong to this exercise')
-    }
+    this.assertCanModify(await this.findOne(id), currentUser)
 
     // The row stops listing the photo FIRST, and only then is the file
     // deleted — the same order as avatars and clinic logos. (This used to
     // be the other way round: if the UPDATE below failed after the file was
     // already gone, the exercise kept listing a photo that no longer
     // existed, and it showed as a broken image.)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    // Checked under the lock, inside the transaction: the key must belong to
+    // the exercise as it is NOW (a 404 thrown here writes nothing).
+    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
+      const exercise = await this.lockExercise(tx, id)
+      if (!exercise.mediaUrls.includes(objectKey)) {
+        throw new NotFoundException(
+          'This image does not belong to this exercise',
+        )
+      }
+      const [row] = await tx
         .update(exercises)
         .set({
           mediaUrls: exercise.mediaUrls.filter((url) => url !== objectKey),
         })
         .where(eq(exercises.id, id))
-        .returning(),
-    )
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'EXERCISE_PHOTO_REMOVED',
+        entityType: 'exercises',
+        entityId: id,
+        details: { removed: objectKey },
+      })
+      return row
+    })
 
     // Best-effort: the removal is already saved, so a storage hiccup here
     // leaves an orphaned file (logged), not an error response.
@@ -344,6 +428,24 @@ export class ExercisesService {
   }
 
   // === HELPER FUNCTIONS =====================================================
+
+  // The exercise's row, LOCKED until the end of the caller's transaction
+  // (SELECT … FOR UPDATE): a second write to the same exercise waits, then
+  // reads what the first wrote — so each entry's "before" is exact, and two
+  // photo uploads can't overwrite each other's list. Under row security FOR
+  // UPDATE also asks the exercises UPDATE policy: the people allowed to change
+  // it. A row it hides is answered like a missing exercise.
+  private async lockExercise(tx: DrizzleDb, id: number) {
+    const [row] = await tx
+      .select()
+      .from(exercises)
+      .where(eq(exercises.id, id))
+      .for('update')
+    if (!row) {
+      throw new NotFoundException(`Exercise ${id} not found`)
+    }
+    return row
+  }
 
   // A practitioner is restricted to their own custom exercises:
   // an admin can correct anything, including the shared api-sourced library.

@@ -437,8 +437,7 @@ export class AuthService {
     // The raw token — never the hash — is the only thing that ever leaves
     // this server.
     //
-    // Fire-and-forget, deliberately — same tradeoff as the audit
-    // interceptor's own dispatched write (see docs/journal/10). Awaiting
+    // Fire-and-forget, deliberately (see docs/journal/10). Awaiting
     // this here previously meant a live Resend round-trip (hundreds of ms)
     // ran before the response, while the unknown-email early return above
     // responds in single-digit ms — a timing side-channel that let a

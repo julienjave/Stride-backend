@@ -44,6 +44,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 
@@ -61,6 +62,7 @@ export class ExercisesController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateExerciseDto) {
     return this.exercisesService.create(user, dto)
@@ -71,6 +73,7 @@ export class ExercisesController {
   // request, delivered as an array via @UploadedFiles().
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/images')
   @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
   uploadImages(
@@ -108,6 +111,7 @@ export class ExercisesController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -119,6 +123,7 @@ export class ExercisesController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/images')
   reorderImages(
     @Param('id', ParseIntPipe) id: number,
@@ -132,6 +137,7 @@ export class ExercisesController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,
@@ -142,6 +148,7 @@ export class ExercisesController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/images')
   removeImage(
     @Param('id', ParseIntPipe) id: number,

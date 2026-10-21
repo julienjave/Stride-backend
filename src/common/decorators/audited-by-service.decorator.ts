@@ -23,22 +23,21 @@ import { SetMetadata } from '@nestjs/common'
 
 // "This route's service writes its own, detailed audit entry."
 //
-// The global AuditLogInterceptor records every mutating request generically:
-// who, when, the method + URL, the entity's id — but never WHAT changed (it
-// only sees the request from the outside). For changes to clinical data
-// that isn't enough: an audit trail must let someone reconstruct what a
-// record was before and after (HIPAA's audit controls and integrity rules).
-// Only the service knows that, so the service writes the entry — inside the
-// same transaction as the change, so the two commit or roll back together.
+// For changes to clinical and account data, an audit trail must let someone
+// reconstruct what a record was before and after (HIPAA's audit controls
+// and integrity rules). Only the service knows that, so the service writes
+// the entry — inside the same transaction as the change, so the two commit
+// or roll back together (AuditService.logInTransaction).
 //
-// This decorator tells the interceptor to stay out of it for such routes,
-// so each change has ONE complete entry instead of a complete one plus a
-// vague duplicate. Same mechanism as @Roles(): SetMetadata tags the route,
-// and the interceptor reads the tag back with Nest's Reflector.
+// The tag itself writes nothing: it states, at the route, that the route is
+// covered. Every route with a mutating HTTP method carries it — or
+// @NotAudited(reason) for one that changes nothing — and
+// src/audit/audit-tags.spec.ts fails for a route with neither. (Until the
+// audit review's slice 1c, a global interceptor wrote a generic
+// "METHOD /url" entry for untagged routes, and this tag told it to stay
+// out; the interceptor is gone, every route now being covered.)
 //
-// Convention (decided 2026-10-10): every NEW route that changes clinical
-// data uses this, with an entry written by its service via
-// AuditService.logInTransaction(). Older routes are covered by the generic
-// entry until the audit review (deferred-improvements.md, "Audit review").
+// Same mechanism as @Roles(): SetMetadata tags the handler, and a reader
+// (here the test) gets the tag back with Nest's Reflector.
 export const AUDITED_BY_SERVICE_KEY = 'auditedByService'
 export const AuditedByService = () => SetMetadata(AUDITED_BY_SERVICE_KEY, true)

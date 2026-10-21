@@ -20,19 +20,18 @@
 import { Global, Module } from '@nestjs/common'
 import { AuditService } from './audit.service'
 import { AuditController } from './audit.controller'
-import { AuditLogInterceptor } from '../common/interceptors/audit-log.interceptor'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 // @Global() — the same reasoning as DrizzleModule: audit logging is a
 // genuinely cross-cutting concern needed by multiple otherwise-unrelated
-// modules (AuthModule calls it directly; the global interceptor needs it
-// too), imported once here rather than every consuming module repeating
+// modules (every service that changes data writes its own entries), imported
+// once here rather than every consuming module repeating
 // the import.
 @Global()
 @Module({
   controllers: [AuditController],
-  providers: [AuditService, AuditLogInterceptor],
+  providers: [AuditService],
   exports: [AuditService],
 })
 export class AuditModule {}

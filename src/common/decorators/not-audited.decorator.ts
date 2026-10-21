@@ -24,8 +24,9 @@ import { SetMetadata } from '@nestjs/common'
 // "This route is a POST (or PATCH / PUT / DELETE) that changes no data, so it
 // writes no audit entry." The counterpart of @AuditedByService(): every
 // route with a mutating HTTP method must carry ONE of the two (the audit
-// review, Phase 6 — decisions §10), so "nobody thought about this route" is
-// never the reason a change goes unrecorded.
+// review, Phase 6 — decisions §10; src/audit/audit-tags.spec.ts checks it),
+// so "nobody thought about this route" is never the reason a change goes
+// unrecorded.
 //
 // Why a route would use a POST without changing anything: the body hides a
 // secret the URL would expose in logs (a reset or invitation token checked

@@ -98,8 +98,8 @@ export class AssignedProgramsController {
   }
 
   // The four EXERCISE routes below (add, edit / move, reorder, remove)
-  // predate the audit convention and relied on the generic interceptor,
-  // which records only "PATCH /assigned-programs/1/exercises/3" — not that
+  // predate the audit convention and relied on the generic interceptor (gone
+  // since the audit review), which recorded only "PATCH /assigned-programs/1/exercises/3" — not that
   // sets went from 3 to 4. Step 3b-0 brought them to it: tagged
   // @AuditedByService(), each writes ONE complete entry (before → after) in
   // its own transaction, and each answers with the full program.
@@ -187,7 +187,7 @@ export class AssignedProgramsController {
   // module). Every role may ask; the service checks it's someone who may
   // see this program.
   // What cancelling / completing would do today — for the confirmation
-  // dialog. A read: no @AuditedByService (the interceptor only logs writes).
+  // dialog. A read: no @AuditedByService (the tag is for writes).
   @Get(':id/closing')
   closingPreview(
     @Param('id', ParseIntPipe) id: number,
@@ -390,8 +390,7 @@ export class AssignedProgramsController {
   // roles as every other change to a program; the service checks the care
   // team on top. NEW routes that change a patient's prescription, so they
   // follow the audit convention: @AuditedByService() — the service writes
-  // one complete entry in the change's own transaction, and the generic
-  // interceptor stays out of the way.
+  // one complete entry in the change's own transaction.
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)

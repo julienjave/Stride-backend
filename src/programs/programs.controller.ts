@@ -42,6 +42,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
@@ -61,6 +62,7 @@ export class ProgramsController {
   // though admins can correct/archive afterward.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateTemplateDto) {
     return this.programsService.create(user, dto)
@@ -68,6 +70,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/exercises')
   addExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -89,6 +92,7 @@ export class ProgramsController {
   // ParseIntPipe validate the source id like every other :id here.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
   @Post(':id/duplicate')
   duplicate(
     @Param('id', ParseIntPipe) id: number,
@@ -113,6 +117,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -124,6 +129,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/exercises/:templateExerciseId')
   updateExercise(
     @Param('id', ParseIntPipe) id: number,
@@ -145,6 +151,7 @@ export class ProgramsController {
   // image reordering.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/exercises')
   reorderExercises(
     @Param('id', ParseIntPipe) id: number,
@@ -165,12 +172,13 @@ export class ProgramsController {
   // rename it, reorder them, delete an empty one. Same roles as the
   // template's other edits; the service checks it's the owner (or an
   // admin). Each answers with the full template, like every write here.
-  // No @AuditedByService(): a template holds no patient data, so the generic
-  // interceptor's entry is enough (the audit convention covers clinical and
-  // account data — decided 2026-10-10).
+  // Audited by the service like every write here: templates joined the audit
+  // convention in the audit review (slice 1c, 2026-10-21 — decisions §10),
+  // although they hold no patient data — one kind of entry everywhere.
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/workouts')
   addWorkout(
     @Param('id', ParseIntPipe) id: number,
@@ -184,6 +192,7 @@ export class ProgramsController {
   // exercises).
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/workouts')
   reorderWorkouts(
     @Param('id', ParseIntPipe) id: number,
@@ -195,6 +204,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Patch(':id/workouts/:workoutId')
   renameWorkout(
     @Param('id', ParseIntPipe) id: number,
@@ -207,6 +217,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/workouts/:workoutId')
   removeWorkout(
     @Param('id', ParseIntPipe) id: number,
@@ -220,6 +231,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id')
   archive(
     @Param('id', ParseIntPipe) id: number,
@@ -230,6 +242,7 @@ export class ProgramsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Delete(':id/exercises/:templateExerciseId')
   removeExercise(
     @Param('id', ParseIntPipe) id: number,

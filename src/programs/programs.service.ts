@@ -56,6 +56,8 @@ import {
   isForeignKeyViolation,
   TEMPLATE_EXERCISES_WORKOUT_FK,
 } from '../database/pg-errors'
+import { AuditService } from '../audit/audit.service'
+import { changedFields } from '../common/changed-fields'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -64,13 +66,50 @@ type CurrentUser = { id: number; activeRole: UserRole }
 // Prepended to a duplicated template's title — see buildDuplicateTitle.
 const DUPLICATE_TITLE_PREFIX = 'Copy of '
 
+// The audit entries' pictures of a row — the same shapes as the assigned
+// programs' (exerciseForAudit, workoutForAudit), so one viewer reads both.
+// Plain object copies, so an entry never depends on what the row type
+// happens to carry.
+function templateExerciseForAudit(row: typeof templateExercises.$inferSelect) {
+  return {
+    id: row.id,
+    workoutId: row.workoutId,
+    exerciseId: row.exerciseId,
+    sets: row.sets,
+    reps: row.reps,
+    durationInSeconds: row.durationInSeconds,
+    weight: row.weight,
+    weightUnit: row.weightUnit,
+    sortOrder: row.sortOrder,
+    notes: row.notes,
+  }
+}
+function templateWorkoutForAudit(
+  workout: typeof templateWorkouts.$inferSelect,
+) {
+  return { id: workout.id, name: workout.name, sortOrder: workout.sortOrder }
+}
+
 @Injectable()
 export class ProgramsService {
   // No ExercisesModule import needed here, deliberately — validating that
   // an exerciseId exists is just another query against the shared, global
   // DRIZZLE db, the same "no cross-module dependency for a shared table"
   // reasoning used for Clinics/Users.
-  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DrizzleDb,
+    private readonly auditService: AuditService,
+  ) {}
+
+  // Every write below follows the audit convention (the audit review, Phase
+  // 6 — decisions §10; templates joined it in slice 1c): ONE entry per
+  // request that changes something, in the change's own transaction —
+  // decided from what is stored NOW, under the template's lock
+  // (lockTemplate) where a "before" matters; nothing written for a request
+  // that changes nothing. Templates hold no patient data: no targetUserId.
+  // The template's id is the entityId of every entry (a workout's or an
+  // exercise row's id is in the details), so "everything about template 7"
+  // is one query.
 
   // === ROUTES =============================================================
 
@@ -92,9 +131,17 @@ export class ProgramsService {
           description: dto.description,
         })
         .returning()
-      await tx
+      const [workout] = await tx
         .insert(templateWorkouts)
         .values({ templateId: template.id, sortOrder: 0 })
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_CREATED',
+        entityType: 'program_templates',
+        entityId: template.id,
+        details: { record: dto, workout: templateWorkoutForAudit(workout) },
+      })
       return template
     })
   }
@@ -124,8 +171,8 @@ export class ProgramsService {
       'template',
     )
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const [row] = await tx
         .insert(templateExercises)
         .values({
           templateId,
@@ -139,8 +186,16 @@ export class ProgramsService {
           sortOrder: dto.sortOrder,
           notes: dto.notes,
         })
-        .returning(),
-    )
+        .returning()
+      // The whole row as added, prescription included.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_EXERCISE_ADDED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { exercise: templateExerciseForAudit(row) },
+      })
+    })
     // Returns the FULL enriched template, not just the one inserted row
     // — matches reorderExercises' own existing convention (see its
     // final line), and gives the frontend everything it needs to
@@ -223,12 +278,26 @@ export class ProgramsService {
         )
       }
 
+      // The order before, from the stored positions; the same order again
+      // changes nothing: no writes, no entry.
+      const from = [...currentRows]
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+        .map((row) => row.id)
+      if (from.every((id, index) => id === newOrder[index])) return
+
       for (const [index, templateExerciseId] of newOrder.entries()) {
         await tx
           .update(templateExercises)
           .set({ sortOrder: index })
           .where(eq(templateExercises.id, templateExerciseId))
       }
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_EXERCISES_REORDERED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { workoutId, from, to: newOrder },
+      })
     })
 
     return this.findOne(templateId)
@@ -337,6 +406,15 @@ export class ProgramsService {
           )
         }
 
+        // An entry for the NEW template, naming where it came from (the
+        // source didn't change, so it gets none).
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'TEMPLATE_DUPLICATED',
+          entityType: 'program_templates',
+          entityId: copy.id,
+          details: { sourceTemplateId: sourceId, title: copy.title },
+        })
         return copy.id
       },
     )
@@ -385,13 +463,22 @@ export class ProgramsService {
   async update(id: number, currentUser: CurrentUser, dto: UpdateTemplateDto) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockTemplate(tx, id)
+      const changes = changedFields(before, { ...dto })
+      if (Object.keys(changes).length === 0) return
+      await tx
         .update(programTemplates)
         .set(dto)
         .where(eq(programTemplates.id, id))
-        .returning(),
-    )
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_UPDATED',
+        entityType: 'program_templates',
+        entityId: id,
+        details: { changes },
+      })
+    })
     // Returns the FULL enriched template, not the bare updated row — the
     // same consistency fix updateExercise needed. The frontend writes
     // this response straight into the template's cache entry; a bare
@@ -408,12 +495,18 @@ export class ProgramsService {
   ) {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
-    const row = await this.findTemplateExerciseOrThrow(
-      templateId,
-      templateExerciseId,
-    )
+    await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
     await withRlsContext(this.db, currentUser, async (tx) => {
+      // The row as it is now, read after taking the template's lock (every
+      // write to a template's exercises goes through it): the "before" of
+      // the entry, and what a move is judged against.
+      await this.lockTemplate(tx, templateId)
+      const row = await this.findTemplateExerciseOrThrow(
+        templateId,
+        templateExerciseId,
+        tx,
+      )
       const changes = { ...dto }
       // Moving the exercise to another workout: it must be one of this
       // template's (404 otherwise), and — unless the request also says where
@@ -429,10 +522,20 @@ export class ProgramsService {
           changes.sortOrder = await this.nextExercisePosition(tx, dto.workoutId)
         }
       }
+      // Only what really changes; nothing → no UPDATE, no entry.
+      const diff = changedFields(row, { ...changes })
+      if (Object.keys(diff).length === 0) return
       await tx
         .update(templateExercises)
         .set(changes)
         .where(eq(templateExercises.id, templateExerciseId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_EXERCISE_UPDATED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { templateExerciseId, changes: diff },
+      })
     })
     // Returns the FULL enriched template, not just the bare updated row
     // — matches addExercise/removeExercise/reorderExercises' own
@@ -471,12 +574,22 @@ export class ProgramsService {
       await this.lockTemplate(tx, templateId)
       const workouts = await this.findWorkouts(tx, templateId)
       assertCanAddWorkout(workouts.length)
-      await tx.insert(templateWorkouts).values({
-        templateId,
-        name: normalizeWorkoutName(dto.name),
-        // After the last one. (max + 1, not length: positions can have gaps
-        // after a delete, and `length` could repeat one that's in use.)
-        sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
+      const [added] = await tx
+        .insert(templateWorkouts)
+        .values({
+          templateId,
+          name: normalizeWorkoutName(dto.name),
+          // After the last one. (max + 1, not length: positions can have
+          // gaps after a delete, and `length` could repeat one in use.)
+          sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
+        })
+        .returning()
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_WORKOUT_ADDED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { workout: templateWorkoutForAudit(added) },
       })
     })
     return this.findOne(templateId)
@@ -491,15 +604,24 @@ export class ProgramsService {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, async (tx) => {
-      resolveWorkoutId(
-        workoutId,
-        await this.findWorkouts(tx, templateId),
-        'template',
-      )
+      await this.lockTemplate(tx, templateId)
+      const workouts = await this.findWorkouts(tx, templateId)
+      resolveWorkoutId(workoutId, workouts, 'template')
+      const before = workouts.find((w) => w.id === workoutId)!
+      const name = normalizeWorkoutName(dto.name)
+      // The same name again changes nothing.
+      if (name === before.name) return
       await tx
         .update(templateWorkouts)
-        .set({ name: normalizeWorkoutName(dto.name) })
+        .set({ name })
         .where(eq(templateWorkouts.id, workoutId))
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_WORKOUT_RENAMED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { workoutId, name: { from: before.name, to: name } },
+      })
     })
     return this.findOne(templateId)
   }
@@ -515,6 +637,7 @@ export class ProgramsService {
     const template = await this.findTemplateOrThrow(templateId)
     this.assertCanModify(template, currentUser)
     await withRlsContext(this.db, currentUser, async (tx) => {
+      await this.lockTemplate(tx, templateId)
       const workouts = await this.findWorkouts(tx, templateId)
       if (
         !isPermutationOf(
@@ -526,12 +649,23 @@ export class ProgramsService {
           'The new order must contain exactly the workouts currently in this template, just reordered',
         )
       }
+      // Ids, first = A: enough to say which workout became which letter.
+      // The same order again changes nothing.
+      const currentOrder = orderWorkouts(workouts).map((w) => w.id)
+      if (newOrder.every((id, index) => id === currentOrder[index])) return
       for (const [index, workoutId] of newOrder.entries()) {
         await tx
           .update(templateWorkouts)
           .set({ sortOrder: index })
           .where(eq(templateWorkouts.id, workoutId))
       }
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_WORKOUTS_REORDERED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { order: { from: currentOrder, to: newOrder } },
+      })
     })
     return this.findOne(templateId)
   }
@@ -561,6 +695,18 @@ export class ProgramsService {
         await tx
           .delete(templateWorkouts)
           .where(eq(templateWorkouts.id, workoutId))
+        // What the workout WAS — after the delete, nothing shows it.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'TEMPLATE_WORKOUT_REMOVED',
+          entityType: 'program_templates',
+          entityId: templateId,
+          details: {
+            workout: templateWorkoutForAudit(
+              workouts.find((w) => w.id === workoutId)!,
+            ),
+          },
+        })
       })
     } catch (error) {
       // An exercise added to this workout between the count above and the
@@ -582,13 +728,22 @@ export class ProgramsService {
   async archive(id: number, currentUser: CurrentUser) {
     const template = await this.findTemplateOrThrow(id)
     this.assertCanModify(template, currentUser)
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      const before = await this.lockTemplate(tx, id)
+      // Already archived: nothing changes, nothing is written.
+      if (before.isArchived) return
+      await tx
         .update(programTemplates)
         .set({ isArchived: true })
         .where(eq(programTemplates.id, id))
-        .returning(),
-    )
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_ARCHIVED',
+        entityType: 'program_templates',
+        entityId: id,
+        details: { title: before.title },
+      })
+    })
     // Same convention as update() above. findOne() doesn't filter on
     // isArchived, so this still finds the row it just archived — and the
     // response now carries isArchived: true alongside the exercises.
@@ -604,11 +759,28 @@ export class ProgramsService {
     this.assertCanModify(template, currentUser)
     await this.findTemplateExerciseOrThrow(templateId, templateExerciseId)
 
-    await withRlsContext(this.db, currentUser, (tx) =>
-      tx
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      // DELETE … RETURNING: the row as it was at the moment it went — the
+      // entry records it whole. Nothing returned (removed by a concurrent
+      // request meanwhile): nothing changed here, nothing is written.
+      const [removed] = await tx
         .delete(templateExercises)
-        .where(eq(templateExercises.id, templateExerciseId)),
-    )
+        .where(
+          and(
+            eq(templateExercises.id, templateExerciseId),
+            eq(templateExercises.templateId, templateId),
+          ),
+        )
+        .returning()
+      if (!removed) return
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_EXERCISE_REMOVED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: { exercise: templateExerciseForAudit(removed) },
+      })
+    })
     // Same reasoning as addExercise's own change — the frontend needs
     // the post-removal state to re-render the list, not just a bare
     // success signal.
@@ -652,12 +824,20 @@ export class ProgramsService {
   // case is a template with no workout at all.) Under row-level security,
   // FOR UPDATE also requires the UPDATE policy to allow the row — the
   // template's owner or an admin, the same people allowed to change it.
+  //
+  // It returns the row as it is under the lock — the "before" an audit entry
+  // records (the audit review, slice 1c). A row the UPDATE policy hides is
+  // answered like a missing template.
   private async lockTemplate(tx: DrizzleDb, templateId: number) {
-    await tx
-      .select({ id: programTemplates.id })
+    const [row] = await tx
+      .select()
       .from(programTemplates)
       .where(eq(programTemplates.id, templateId))
       .for('update')
+    if (!row) {
+      throw new NotFoundException(`Program template ${templateId} not found`)
+    }
+    return row
   }
 
   // The position after the last exercise of a workout (0 for an empty one).
@@ -688,8 +868,9 @@ export class ProgramsService {
   private async findTemplateExerciseOrThrow(
     templateId: number,
     templateExerciseId: number,
+    executor: DrizzleDb = this.db,
   ) {
-    const row = await this.db.query.templateExercises.findFirst({
+    const row = await executor.query.templateExercises.findFirst({
       where: and(
         eq(templateExercises.id, templateExerciseId),
         eq(templateExercises.templateId, templateId),
