@@ -63,11 +63,11 @@ export class AuditLogInterceptor implements NestInterceptor {
     // transaction, and a generic one beside it would only be a vague
     // duplicate. getAllAndOverride looks at the handler first, then its
     // controller class, so a whole controller could be tagged at once. The
-    // two URL prefixes are the older way of saying the same thing, kept
-    // until the audit review moves them to the decorator.
+    // URL prefix is the older way of saying the same thing, kept until the
+    // audit review moves /auth to the decorator (medical files moved in
+    // Phase 6: their one write is tagged).
     const isExplicitlyAudited =
       originalUrl.startsWith('/auth') ||
-      originalUrl.startsWith('/medical-files') ||
       this.reflector.getAllAndOverride<boolean | undefined>(
         AUDITED_BY_SERVICE_KEY,
         [context.getHandler(), context.getClass()],

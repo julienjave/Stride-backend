@@ -80,6 +80,7 @@ import {
   CONVERSATIONS,
   CUSTOM_EXERCISES,
   DEMO_PASSWORD,
+  MEDICAL_FILES,
   TEMPLATES,
   type AccountKey,
   type ClinicKey,
@@ -751,14 +752,53 @@ async function run(): Promise<void> {
       }
     }
 
-    // --- 7. Deactivations, last (a deactivated account can't be acted on) ---
+    // --- 7. Medical files (Phase 6) ---
+    // Written as the OWNER, with past moments, like the messages: the app
+    // stamps an entry with now() (0050's trigger, which exempts the owner).
+    // In the dataset's order, so an amendment always comes after the entry
+    // it corrects, whose id it needs — `medicalFileIds` maps each entry's key
+    // to the id the database gave it. The CHECKs and the foreign keys of 0049
+    // hold for the owner too.
+    const medicalFileIds = new Map<string, number>()
+    for (const entry of MEDICAL_FILES) {
+      const amendsId = entry.amends
+        ? medicalFileIds.get(entry.amends.key)
+        : undefined
+      if (entry.amends && amendsId === undefined) {
+        throw new Error(
+          `Medical file entry ${entry.key} amends ${entry.amends.key}, which isn't seeded before it`,
+        )
+      }
+      const { rows } = await owner.query<{ id: number }>(
+        `INSERT INTO medical_files
+           (patient_id, created_by, created_at, entry_type, subjective, objective, assessment, plan, amends_id, amendment_reason)
+         VALUES ($1, $2, ($3::date + $4::time) AT TIME ZONE 'UTC', $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id`,
+        [
+          idOf(entry.patient),
+          idOf(entry.author),
+          addDays(today, -entry.daysAgo),
+          entry.at,
+          entry.entryType,
+          entry.subjective ?? null,
+          entry.objective ?? null,
+          entry.assessment ?? null,
+          entry.plan ?? null,
+          amendsId ?? null,
+          entry.amends?.reason ?? null,
+        ],
+      )
+      medicalFileIds.set(entry.key, rows[0].id)
+    }
+
+    // --- 8. Deactivations, last (a deactivated account can't be acted on) ---
     for (const account of ACCOUNTS) {
       if (account.kind === 'patient' && account.deactivated) {
         await users.softDelete(idOf(account.key), admin)
       }
     }
 
-    // --- 8. What was made ---
+    // --- 9. What was made ---
     console.log(
       `\nDone. Every account with a password uses: ${DEMO_PASSWORD}\n`,
     )

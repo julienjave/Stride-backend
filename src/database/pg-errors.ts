@@ -157,6 +157,17 @@ export const MESSAGE_CONTENT_FIXED = 'message_content_fixed'
 export const MESSAGE_READ_BY_RECIPIENT = 'message_read_by_recipient'
 export const MESSAGE_DELETE_WINDOW = 'message_delete_window'
 export const CONVERSATION_PARTICIPANTS_FIXED = 'conversation_participants_fixed'
+// Medical files (Phase 6, migration 0049). The CHECK "at least one section"
+// is the only judge of that rule (the DTO checks one field at a time); the
+// composite foreign key and the not-self CHECK refuse an amendsId that names
+// no entry of this patient; the unique index lets an entry be amended once.
+// MedicalFilesService turns each into its answer (400, 400, 409).
+export const MEDICAL_FILES_HAS_CONTENT = 'medical_files_has_content'
+export const MEDICAL_FILES_NOT_SELF_AMENDING = 'medical_files_not_self_amending'
+export const MEDICAL_FILES_AMENDS_SAME_PATIENT_FK =
+  'medical_files_amends_same_patient_fk'
+export const MEDICAL_FILES_ONE_AMENDMENT_PER_ENTRY =
+  'medical_files_one_amendment_per_entry'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

@@ -158,3 +158,22 @@ made, through the app's own code); the seed announces it just before.
     both still read their history; neither can write until Alex rejoins.
   - A message can be deleted by its sender while it is **unread and at most
     15 minutes old** — the seeded ones are all older; send a new one to try.
+- **Medical files** (`GET /medical-files`; the screens come with Phase 6's
+  frontend): each entry is a SOAP note — Subjective, Objective, Assessment,
+  Plan — written by a practitioner on the patient's care team. Entries are
+  never edited or deleted; a correction is an **amendment** (a new entry that
+  points at the old one, with a reason), and the old one stays, marked as
+  amended.
+  - **Pat** (by Alex): an initial assessment the day the knee program
+    started; a progress note 11 days ago that recorded the **wrong knee**,
+    **amended** the same morning ("The wrong knee was recorded…"); and a short
+    note from yesterday with only Subjective and Plan.
+  - **Jo** (by Sam): an initial assessment when the back program started.
+  - **Robin**: an initial assessment by Sam (Riverside), a **discharge
+    summary** by Sam when the first block was cancelled, and a progress note
+    by Blake (Harbour).
+  - Admins read **no medical file** (`admin@stride.test` gets a 403; the
+    database hides the rows too). Every read is in the audit log —
+    `MEDICAL_FILE_VIEWED` (the list, with the entries shown) and
+    `MEDICAL_FILE_ENTRY_VIEWED` (one entry) — including a patient reading
+    their own.

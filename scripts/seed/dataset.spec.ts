@@ -30,6 +30,11 @@ import {
   seedSessionWorkouts,
 } from './session-history'
 import { MESSAGE_MAX_LENGTH } from '../../src/database/schema/messaging.schema'
+import {
+  AMENDMENT_REASON_MAX_LENGTH,
+  MEDICAL_FILE_SECTION_MAX_LENGTH,
+} from '../../src/database/schema/medical-files.schema'
+import { SOAP_SECTIONS } from '../../src/medical-files/medical-file-rules'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -39,6 +44,7 @@ import {
   CONVERSATIONS,
   CUSTOM_EXERCISES,
   DEMO_PASSWORD,
+  MEDICAL_FILES,
   TEMPLATES,
   type AccountKey,
   type PatientAccount,
@@ -602,6 +608,75 @@ describe('the seeded conversations', () => {
     expect(unreadBy('patient')).toBe(true)
     expect(unreadBy('practitioner')).toBe(true)
     expect(CONVERSATIONS.some((c) => c.archivedBy)).toBe(true)
+  })
+})
+
+// The seeded medical files (Phase 6): what the seed and the database
+// (0049's CHECKs and foreign keys, which hold for the owner too) require of
+// them, checked before anything is written.
+describe('the seeded medical files', () => {
+  const careTeamOf = (key: AccountKey) => {
+    const patient = byKey.get(key)
+    if (patient?.kind !== 'patient') return []
+    return [patient.createdBy, ...(patient.alsoOnCareTeam ?? [])]
+  }
+  // A moment as minutes before the seed's day ends — bigger = older.
+  const age = (e: { daysAgo: number; at: string }) => {
+    const [hours, minutes] = e.at.split(':').map(Number)
+    return e.daysAgo * 24 * 60 - (hours * 60 + minutes)
+  }
+
+  it("has unique keys, and each author on the patient's care team", () => {
+    const keys = MEDICAL_FILES.map((e) => e.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    for (const entry of MEDICAL_FILES) {
+      expect(byKey.get(entry.patient)?.kind).toBe('patient')
+      expect(careTeamOf(entry.patient)).toContain(entry.author)
+    }
+  })
+
+  it('writes only entries the database accepts, all in the past', () => {
+    for (const entry of MEDICAL_FILES) {
+      const sections = SOAP_SECTIONS.map((section) => entry[section]).filter(
+        (text) => text !== undefined,
+      )
+      expect(sections.length).toBeGreaterThan(0)
+      for (const text of sections) {
+        expect(text).toMatch(/\S/)
+        expect(text.length).toBeLessThanOrEqual(MEDICAL_FILE_SECTION_MAX_LENGTH)
+      }
+      expect(entry.at).toMatch(/^([01]\d|2[0-3]):[0-5]\d$/)
+      expect(entry.daysAgo).toBeGreaterThanOrEqual(1)
+    }
+  })
+
+  // The seed writes in the dataset's order and needs the corrected entry's
+  // id: it must come BEFORE, belong to the same patient (the composite
+  // foreign key), be older, and be corrected only once (the unique index).
+  it('amends only an earlier, older entry of the same patient, once each, with a reason', () => {
+    const amended = new Set<string>()
+    MEDICAL_FILES.forEach((entry, index) => {
+      if (!entry.amends) return
+      const earlier = MEDICAL_FILES.slice(0, index)
+      const original = earlier.find((e) => e.key === entry.amends?.key)
+      expect(original?.patient).toBe(entry.patient)
+      expect(age(original!)).toBeGreaterThan(age(entry))
+      expect(amended.has(entry.amends.key)).toBe(false)
+      amended.add(entry.amends.key)
+      expect(entry.amends.reason).toMatch(/\S/)
+      expect(entry.amends.reason.length).toBeLessThanOrEqual(
+        AMENDMENT_REASON_MAX_LENGTH,
+      )
+    })
+  })
+
+  it('shows every entry type and an amendment, for a patient who can log in', () => {
+    expect(new Set(MEDICAL_FILES.map((e) => e.entryType))).toEqual(
+      new Set(['initial_assessment', 'progress_note', 'discharge_summary']),
+    )
+    const amendment = MEDICAL_FILES.find((e) => e.amends)
+    const patient = byKey.get(amendment!.patient)
+    expect(patient?.kind === 'patient' && patient.invitation).toBe('accepted')
   })
 })
 

@@ -33,14 +33,21 @@ import { CreateMedicalFileDto } from './dto/create-medical-file.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
-// No PATCH, no DELETE routes anywhere in this controller — deliberate, not
-// an incomplete module. See MedicalFilesService for the reasoning.
-@UseGuards(SessionAuthGuard)
+// A patient's medical file (Phase 6, 2026-10-20). Practitioners and patients
+// only: admins get 403 on every route (decided with the person, the same as
+// messaging — and migration 0050 hides every row from them too).
+//
+// No PATCH and no DELETE, deliberately: entries are append-only, and a
+// correction is a new entry that amends the old one (POST with amendsId).
+// The reads are audited too — by the service, in the read's transaction.
+@UseGuards(SessionAuthGuard, RolesGuard)
+@Roles(UserRole.PRACTITIONER, UserRole.PATIENT)
 @ApiTags('Medical Files')
 @Controller('medical-files')
 export class MedicalFilesController {
@@ -50,8 +57,11 @@ export class MedicalFilesController {
 
   // --- POST ROUTES ---
 
-  @UseGuards(RolesGuard)
+  // Writing clinical content: practitioners only. @Roles on the method
+  // REPLACES the controller's list for this route (the guard reads the
+  // handler's first — getAllAndOverride).
   @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
   @Post()
   create(@CurrentUser() user: CurrentUser, @Body() dto: CreateMedicalFileDto) {
     return this.medicalFilesService.create(user, dto)
@@ -59,17 +69,17 @@ export class MedicalFilesController {
 
   // --- GET ROUTES ---
 
-  // Patient: their own history, no query param needed. Practitioner/admin:
-  // must specify which patient's file to view.
+  // A patient: their own file (no parameter needed). A practitioner: the
+  // patient they name. `optional: true` lets the parameter be absent, and
+  // anything present must be an integer ("abc" → 400 — it used to become
+  // NaN and reach the database).
   @Get()
   findAll(
     @CurrentUser() user: CurrentUser,
-    @Query('patientId') patientId?: string,
+    @Query('patientId', new ParseIntPipe({ optional: true }))
+    patientId?: number,
   ) {
-    return this.medicalFilesService.findAll(
-      user,
-      patientId ? Number(patientId) : undefined,
-    )
+    return this.medicalFilesService.findAll(user, patientId)
   }
 
   @Get(':id')

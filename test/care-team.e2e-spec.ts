@@ -210,11 +210,12 @@ describe('Care team (e2e)', () => {
       clinicId: clinicY.body.id,
     })
 
-    // One medical file for patient1, inserted directly (as the owner, which
-    // bypasses RLS): the database-level checks below need a clinical row to
-    // be (in)visible.
+    // One medical file entry for patient1, inserted directly (as the owner,
+    // which bypasses RLS): the database-level checks below need a clinical
+    // row to be (in)visible. A SOAP note since Phase 6 (migration 0049): an
+    // entry type and at least one section.
     await sessionPool.query(
-      'INSERT INTO medical_files (patient_id, created_by) VALUES ($1, $2)',
+      "INSERT INTO medical_files (patient_id, created_by, entry_type, plan) VALUES ($1, $2, 'progress_note', 'Seeded for the care-team checks')",
       [patient1Id, adminId],
     )
 
@@ -253,7 +254,7 @@ describe('Care team (e2e)', () => {
 
       const newFile = await practitionerA
         .post('/medical-files')
-        .send({ patientId: patient1Id, clinicalData: { note: 'x' } })
+        .send({ patientId: patient1Id, entryType: 'progress_note', plan: 'x' })
       expect(newFile.status).toBe(403)
 
       const conversation = await practitionerA
@@ -289,13 +290,15 @@ describe('Care team (e2e)', () => {
       )
       expect(rows[0].count).toBe('0')
 
-      // …while the admin session (as a control) does see it: the row is there.
-      const asAdmin = await asUser<{ count: string }>(
-        adminId,
-        'admin',
+      // …while the patient's own session (as a control) does see it: the row
+      // is there. (Not the admin's any more: admins read no medical file
+      // since Phase 6, migration 0050.)
+      const asPatient = await asUser<{ count: string }>(
+        patient1Id,
+        'patient',
         sql`SELECT count(*) FROM medical_files WHERE patient_id = ${patient1Id}`,
       )
-      expect(asAdmin[0].count).toBe('1')
+      expect(asPatient[0].count).toBe('1')
     })
   })
 

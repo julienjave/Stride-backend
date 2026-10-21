@@ -723,3 +723,143 @@ export const CONVERSATIONS: SeedConversation[] = [
     ],
   },
 ]
+
+// --- MEDICAL FILES (Phase 6) -------------------------------------------------------------------------------
+
+// One entry of a patient's medical file — a SOAP note (decided 2026-10-20).
+// Written as the database OWNER with a past moment: the app stamps an entry
+// with now() (0050's trigger, which exempts the owner), and a demo file
+// needs a history. The CHECKs of 0049 hold for the owner too — the dataset
+// spec tries every entry against the same rules first.
+export interface SeedMedicalEntry {
+  // A name for this entry, so an amendment can say which one it corrects.
+  key: string
+  patient: AccountKey
+  // On the patient's care team (the API would refuse anyone else).
+  author: AccountKey
+  // When: this many days before the seed's day, at this UTC time — never
+  // the seed's own day (the same reason as the messages).
+  daysAgo: number
+  at: string
+  entryType: 'initial_assessment' | 'progress_note' | 'discharge_summary'
+  subjective?: string
+  objective?: string
+  assessment?: string
+  plan?: string
+  // An amendment: the key of the EARLIER entry of the same patient it
+  // corrects (each entry corrected at most once), and why.
+  amends?: { key: string; reason: string }
+}
+
+export const MEDICAL_FILES: SeedMedicalEntry[] = [
+  {
+    // Pat's first visit, the day the knee program started (21 days ago).
+    key: 'pat-initial',
+    patient: 'pat',
+    author: 'alex',
+    daysAgo: 21,
+    at: '09:00',
+    entryType: 'initial_assessment',
+    subjective:
+      'Right knee pain for 3 months, worse on stairs and after sitting. Pain 6/10 at worst. Goal: return to weekend hiking.',
+    objective:
+      'Right knee flexion 110°, extension full. Mild effusion. Pain on resisted knee extension. Single-leg squat: knee drifts inward.',
+    assessment:
+      'Patellofemoral pain, right knee, with reduced quadriceps and hip strength.',
+    plan: 'Home program: Knee Rehab — Phase 1 (mobility and strength, 3 days a week). Ice after sessions if warm. Review in 10 days.',
+  },
+  {
+    // A follow-up with a mistake in it: the LEFT knee recorded…
+    key: 'pat-review',
+    patient: 'pat',
+    author: 'alex',
+    daysAgo: 11,
+    at: '09:30',
+    entryType: 'progress_note',
+    subjective:
+      'Stairs easier. Pain 4/10 at worst. Missed one session (illness).',
+    objective: 'Left knee flexion 120°, no effusion.',
+    assessment: 'Progressing as expected.',
+    plan: 'Continue the program; add the strength workout on Wednesdays.',
+  },
+  {
+    // …corrected the same morning by an AMENDMENT: a complete new version,
+    // pointing at the old one — which stays, marked as amended.
+    key: 'pat-review-corrected',
+    patient: 'pat',
+    author: 'alex',
+    daysAgo: 11,
+    at: '11:15',
+    entryType: 'progress_note',
+    subjective:
+      'Stairs easier. Pain 4/10 at worst. Missed one session (illness).',
+    objective: 'Right knee flexion 120°, no effusion.',
+    assessment: 'Progressing as expected.',
+    plan: 'Continue the program; add the strength workout on Wednesdays.',
+    amends: {
+      key: 'pat-review',
+      reason: 'The wrong knee was recorded: the right knee was measured.',
+    },
+  },
+  {
+    // A short note with only two sections — the others are optional.
+    key: 'pat-pain-note',
+    patient: 'pat',
+    author: 'alex',
+    daysAgo: 1,
+    at: '21:10',
+    entryType: 'progress_note',
+    subjective:
+      'Sharp pain at the end of the movement in the last session (noted on the session, 9/10 difficulty).',
+    plan: "Stop short of the painful range and skip the band until Friday's visit; reassess then.",
+  },
+  {
+    // Jo, assessed by Sam when the back program started (17 days ago).
+    key: 'jo-initial',
+    patient: 'jo',
+    author: 'sam',
+    daysAgo: 17,
+    at: '14:00',
+    entryType: 'initial_assessment',
+    subjective:
+      'Low back stiffness in the mornings for 6 weeks, desk job. No leg symptoms.',
+    objective:
+      'Lumbar flexion limited to mid-shin, painless. Neurological screen normal.',
+    assessment: 'Non-specific low back pain, mechanical.',
+    plan: 'Lower Back Mobility, 3 times a week. Walk daily. Review in 3 weeks.',
+  },
+  {
+    // Robin: two clinics, two authors — and a first block that ended.
+    key: 'robin-initial',
+    patient: 'robin',
+    author: 'sam',
+    daysAgo: 21,
+    at: '10:30',
+    entryType: 'initial_assessment',
+    subjective: 'Left knee pain after a fall while running, 4 weeks ago.',
+    objective: 'Left knee flexion 100°. Ligament tests negative.',
+    assessment: 'Knee sprain, recovering.',
+    plan: 'Knee Rehab twice a week.',
+  },
+  {
+    key: 'robin-discharge',
+    patient: 'robin',
+    author: 'sam',
+    daysAgo: 1,
+    at: '16:00',
+    entryType: 'discharge_summary',
+    assessment:
+      'First block stopped: pain rose after every session (3 to 7 at the last). Not progressing on this program.',
+    plan: 'Block cancelled; a lighter second block assigned. Blake to review at Harbour.',
+  },
+  {
+    key: 'robin-harbour',
+    patient: 'robin',
+    author: 'blake',
+    daysAgo: 1,
+    at: '17:30',
+    entryType: 'progress_note',
+    subjective: 'Pain 5/10 after sessions, mostly when going downhill.',
+    plan: 'Review the second block after its first week.',
+  },
+]
