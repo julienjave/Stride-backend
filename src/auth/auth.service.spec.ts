@@ -800,6 +800,95 @@ describe('AuthService.resetPassword', () => {
   })
 })
 
+// The reset page's pre-check (2026-10-21): the SAME lookup as the reset —
+// every dead link refused with the reset's own words — and a pure read.
+describe('AuthService.checkResetToken', () => {
+  let authService: AuthService
+  let db: {
+    query: { users: { findFirst: jest.Mock } }
+    transaction: jest.Mock
+    execute: jest.Mock
+  }
+  let auditService: { log: jest.Mock }
+  const expiresAt = new Date(Date.now() + 30 * 60_000)
+
+  beforeEach(async () => {
+    db = {
+      query: { users: { findFirst: jest.fn() } },
+      transaction: jest.fn(),
+      execute: jest.fn(),
+    }
+    auditService = { log: jest.fn() }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: UsersService, useValue: {} },
+        { provide: AuditService, useValue: auditService },
+        { provide: EmailService, useValue: {} },
+        { provide: DRIZZLE, useValue: db },
+      ],
+    }).compile()
+    authService = moduleRef.get(AuthService)
+  })
+
+  it("answers the account's email and the link's expiry, and changes nothing", async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: 'hash',
+      passwordResetTokenExpiresAt: expiresAt,
+    })
+
+    await expect(
+      authService.checkResetToken('valid-token'),
+    ).resolves.toStrictEqual({
+      email: 'jane@example.com',
+      expiresAt,
+    })
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a token that matches nothing', undefined],
+    [
+      'an account with no password yet',
+      {
+        id: 1,
+        email: 'x@example.com',
+        passwordHash: null,
+        passwordResetTokenExpiresAt: expiresAt,
+      },
+    ],
+    [
+      'an expired token',
+      {
+        id: 1,
+        email: 'x@example.com',
+        passwordHash: 'hash',
+        passwordResetTokenExpiresAt: new Date(Date.now() - 1000),
+      },
+    ],
+    [
+      'a token with no expiry',
+      {
+        id: 1,
+        email: 'x@example.com',
+        passwordHash: 'hash',
+        passwordResetTokenExpiresAt: null,
+      },
+    ],
+  ])("refuses %s with the reset's own words", async (_name, row) => {
+    db.query.users.findFirst.mockResolvedValue(row)
+    await expect(authService.checkResetToken('some-token')).rejects.toThrow(
+      new BadRequestException(
+        'This password reset link is invalid or has expired',
+      ),
+    )
+  })
+})
+
 describe('AuthService.enableMfa', () => {
   let authService: AuthService
   let db: {

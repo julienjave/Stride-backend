@@ -63,6 +63,11 @@ interface RegisterClinicResult {
   adminProfile?: { position: string | null }
 }
 
+// The one refusal for a dead reset link — the check and the reset say it
+// alike (the frontend shows it as is).
+export const INVALID_RESET_LINK_MESSAGE =
+  'This password reset link is invalid or has expired'
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name)
@@ -438,27 +443,27 @@ export class AuthService {
     })
   }
 
+  // Is this reset link still usable? (POST /auth/reset-password/check —
+  // Phase 6, decided with the person 2026-10-21.) The reset page asks BEFORE
+  // the person chooses a new password, so a dead link is said at once instead
+  // of after they typed one. A pure read: nothing changes, the token stays
+  // valid, nothing is audited (it changes no data, and reveals nothing the
+  // reset itself wouldn't — the same refusal, word for word).
+  //
+  // The answer: the account's EMAIL — for the page's read-only username
+  // field, so a password manager saves the new password under the right
+  // account (the invitation page does the same) — and when the link
+  // expires. Only the token's holder gets them, and the token was emailed to
+  // that very address: holding it already proves access to the inbox.
+  async checkResetToken(
+    rawToken: string,
+  ): Promise<{ email: string; expiresAt: Date }> {
+    const { user, expiresAt } = await this.findUserByResetToken(rawToken)
+    return { email: user.email, expiresAt }
+  }
+
   async resetPassword(rawToken: string, newPassword: string): Promise<void> {
-    const tokenHash = createHash('sha256').update(rawToken).digest('hex')
-
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.passwordResetTokenHash, tokenHash),
-    })
-
-    // The passwordHash check is defence in depth: forgotPassword() never
-    // issues a reset token to an account without a password, so a match
-    // here would mean a token got there some other way — and then the
-    // reset must still not become a way around the invitation.
-    if (
-      !user ||
-      user.passwordHash === null ||
-      !user.passwordResetTokenExpiresAt ||
-      user.passwordResetTokenExpiresAt < new Date()
-    ) {
-      throw new BadRequestException(
-        'This password reset link is invalid or has expired',
-      )
-    }
+    const { user } = await this.findUserByResetToken(rawToken)
 
     const newPasswordHash = await bcrypt.hash(newPassword, 10)
 
@@ -492,6 +497,37 @@ export class AuthService {
       entityType: 'users',
       entityId: user.id,
     })
+  }
+
+  // The account a reset token belongs to — or the one refusal for every way
+  // a link can be dead: never issued, already used (the hash is cleared on
+  // success), replaced by a newer request (one pending token per account),
+  // expired, or on an account with no password. Shared by the check and the
+  // reset, so the page's "this link works" and the reset's own judgement can
+  // never disagree.
+  //
+  // The passwordHash check is defence in depth: forgotPassword() never
+  // issues a reset token to an account without a password, so a match here
+  // would mean a token got there some other way — and then the reset must
+  // still not become a way around the invitation.
+  private async findUserByResetToken(rawToken: string) {
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex')
+
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.passwordResetTokenHash, tokenHash),
+    })
+
+    if (
+      !user ||
+      user.passwordHash === null ||
+      !user.passwordResetTokenExpiresAt ||
+      user.passwordResetTokenExpiresAt < new Date()
+    ) {
+      throw new BadRequestException(INVALID_RESET_LINK_MESSAGE)
+    }
+    // Returned apart, already checked: TypeScript can't carry the narrowing
+    // ("not null") across the return, and the caller needs it non-null.
+    return { user, expiresAt: user.passwordResetTokenExpiresAt }
   }
 
   // === MFA (TOTP) ===========================================================

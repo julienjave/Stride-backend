@@ -35,6 +35,15 @@ describe('AuthController MFA route throttling', () => {
     }
   }
 
+  // The reset link's pre-check is a public yes/no about a token: the same
+  // tight limit as the reset itself.
+  it('applies the reset-password throttle to reset-password/check', () => {
+    expect(readThrottle('resetPassword').limit).toBe(5)
+    expect(readThrottle('checkResetToken')).toEqual(
+      readThrottle('resetPassword'),
+    )
+  })
+
   it('applies the same throttle to mfa/enable and mfa/disable as mfa/verify', () => {
     const verifyThrottle = readThrottle('verifyMfaLogin')
     expect(verifyThrottle.limit).toBe(5)

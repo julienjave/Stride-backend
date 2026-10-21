@@ -504,6 +504,119 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     ])
   })
 
+  // The reset page's pre-check (2026-10-21): a real link, checked without
+  // being used; then refused once it is used, replaced or expired — the
+  // reset's own words each time.
+  describe('reset-password/check', () => {
+    const check = (token: unknown) =>
+      request(app.getHttpServer())
+        .post('/auth/reset-password/check')
+        .send({ token })
+    const DEAD = ['This password reset link is invalid or has expired']
+
+    // A fresh account, activated, with a reset requested: its token.
+    async function resetLinkFor(email: string): Promise<string> {
+      const created = await adminAgent.post('/users').send({
+        email,
+        role: 'patient',
+        firstName: 'Check',
+        lastName: 'Link',
+        dateOfBirth: '1990-01-01',
+      })
+      expect(created.status).toBe(201)
+      await activateAccount(sessionPool, email, 'password123')
+      return requestLink(email)
+    }
+    async function requestLink(email: string): Promise<string> {
+      const forgot = await request(app.getHttpServer())
+        .post('/auth/forgot-password')
+        .send({ email })
+      expect(forgot.status).toBe(204)
+      const token = findLink(
+        outbox.lastSentTo(email),
+        '/reset-password',
+      ).searchParams.get('token')
+      expect(token).toMatch(/^[0-9a-f]{64}$/)
+      return token as string
+    }
+
+    it("answers the account's email and the link's expiry, without using the link", async () => {
+      const email = 'check-ok@example.com'
+      const token = await resetLinkFor(email)
+      const { rows } = await sessionPool.query<{ expires: Date }>(
+        'SELECT password_reset_token_expires_at AS expires FROM users WHERE email = $1',
+        [email],
+      )
+
+      const first = await check(token)
+      expect(first.status).toBe(200)
+      expect(first.body).toStrictEqual({
+        email,
+        expiresAt: rows[0].expires.toISOString(),
+      })
+      // Asked twice: still usable — a check never consumes the link…
+      expect((await check(token)).status).toBe(200)
+      // …and the reset still works with it.
+      const reset = await request(app.getHttpServer())
+        .post('/auth/reset-password')
+        .send({ token, newPassword: 'checked-then-reset-1' })
+      expect(reset.status).toBe(204)
+
+      // Used: dead.
+      const after = await check(token)
+      expect(after.status).toBe(400)
+      expect(after.body.message).toEqual(DEAD)
+    })
+
+    it('refuses a link replaced by a newer request', async () => {
+      const email = 'check-replaced@example.com'
+      const older = await resetLinkFor(email)
+      const newer = await requestLink(email)
+      expect((await check(older)).body.message).toEqual(DEAD)
+      expect((await check(newer)).status).toBe(200)
+    })
+
+    it('refuses an expired link', async () => {
+      const email = 'check-expired@example.com'
+      const token = await resetLinkFor(email)
+      await sessionPool.query(
+        "UPDATE users SET password_reset_token_expires_at = now() - interval '1 second' WHERE email = $1",
+        [email],
+      )
+      const res = await check(token)
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual(DEAD)
+    })
+
+    it('refuses a token never issued, and a body without a token', async () => {
+      const unknown = await check('f'.repeat(64))
+      expect(unknown.status).toBe(400)
+      expect(unknown.body.message).toEqual(DEAD)
+
+      const missing = await check(undefined)
+      expect(missing.status).toBe(400)
+      expect(missing.body.message).toEqual(
+        expect.arrayContaining(['token must be a string']),
+      )
+    })
+
+    it('writes nothing to the audit log', async () => {
+      const email = 'check-audit@example.com'
+      const token = await resetLinkFor(email)
+      const count = async () =>
+        Number(
+          (
+            await sessionPool.query<{ n: string }>(
+              'SELECT count(*) AS n FROM audit_logs',
+            )
+          ).rows[0].n,
+        )
+      const before = await count()
+      expect((await check(token)).status).toBe(200)
+      expect(await count()).toBe(before)
+    })
+  })
+
   it('rejects a reset-password attempt with a token that was never issued', async () => {
     const res = await request(app.getHttpServer())
       .post('/auth/reset-password')

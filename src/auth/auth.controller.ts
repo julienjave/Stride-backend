@@ -42,6 +42,7 @@ import { RegisterClinicDto } from './dto/register-clinic.dto'
 import { SwitchRoleDto } from './dto/switch-role.dto'
 import { ForgotPasswordDto } from './dto/forgot-password.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { CheckResetTokenDto } from './dto/check-reset-token.dto'
 import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
 import { MessagingEvents } from '../messaging/messaging-events'
@@ -270,6 +271,20 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto.token, dto.newPassword)
+  }
+
+  // Is a reset link still usable? The reset page asks first (decided
+  // 2026-10-21), so a dead link is said before anyone types a password.
+  // 200 { email, expiresAt } or the reset's own 400. A POST although it only
+  // reads: the token travels in the body, never in a URL that gets logged.
+  // The same throttle as its neighbours — a public route that answers yes or
+  // no about a token must not become a fast guessing oracle (the 256-bit
+  // token makes guessing hopeless anyway; the limit keeps it that way).
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @Post('reset-password/check')
+  @HttpCode(HttpStatus.OK)
+  checkResetToken(@Body() dto: CheckResetTokenDto) {
+    return this.authService.checkResetToken(dto.token)
   }
 
   // --- GET ROUTES ---
