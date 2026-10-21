@@ -218,7 +218,24 @@ export class InvitationsService {
           .where(and(eq(invitations.userId, userId), openInvitation()))
           .returning({ id: invitations.id })
         const created = await this.insertInvitation(tx, userId, actor.id)
-        return { ...created, resent: closed.length > 0 }
+        const resent = closed.length > 0
+        // ONE entry, in this transaction: the new invitation, and — for a
+        // resend — the one it replaced (closed above, in the same act).
+        // Whether the EMAIL went out is decided after the commit (below);
+        // the invitation row records it (email_sent_at), so the entry
+        // doesn't have to wait for it.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: actor.id,
+          action: resent ? 'INVITATION_RESENT' : 'INVITATION_SENT',
+          targetUserId: userId,
+          entityType: 'invitations',
+          entityId: created.invitation.id,
+          details: {
+            expiresAt: created.invitation.expiresAt,
+            ...(resent ? { replacedIds: closed.map((row) => row.id) } : {}),
+          },
+        })
+        return { ...created, resent }
       })
     } catch (error) {
       // Two "send" clicks at the same moment: each transaction closed what
@@ -243,15 +260,6 @@ export class InvitationsService {
       actor,
     )
 
-    await this.auditService.log({
-      performedBy: actor.id,
-      action: issued.resent ? 'INVITATION_RESENT' : 'INVITATION_SENT',
-      targetUserId: userId,
-      entityType: 'invitations',
-      entityId: issued.invitation.id,
-      details: { emailSent },
-    })
-
     const summary = await this.findSummaryOrThrow(issued.invitation.id, actor)
     return { ...summary, emailSent }
   }
@@ -267,25 +275,25 @@ export class InvitationsService {
     // The "still open?" condition is part of the UPDATE itself (same
     // pattern as ending a care-team link): two simultaneous revokes can't
     // both succeed, and the second one gets a clean 404.
-    const [revoked] = await withRlsContext(this.db, actor, (tx) =>
-      tx
+    const revoked = await withRlsContext(this.db, actor, async (tx) => {
+      const [row] = await tx
         .update(invitations)
         .set({ revokedAt: sql`now()`, revokedBy: actor.id })
         .where(and(eq(invitations.userId, userId), openInvitation()))
-        .returning({ id: invitations.id }),
-    )
-    if (!revoked) {
-      throw new NotFoundException(
-        'This account has no open invitation to revoke',
-      )
-    }
-
-    await this.auditService.log({
-      performedBy: actor.id,
-      action: 'INVITATION_REVOKED',
-      targetUserId: userId,
-      entityType: 'invitations',
-      entityId: revoked.id,
+        .returning({ id: invitations.id })
+      if (!row) {
+        throw new NotFoundException(
+          'This account has no open invitation to revoke',
+        )
+      }
+      await this.auditService.logInTransaction(tx, {
+        performedBy: actor.id,
+        action: 'INVITATION_REVOKED',
+        targetUserId: userId,
+        entityType: 'invitations',
+        entityId: row.id,
+      })
+      return row
     })
 
     return this.findSummaryOrThrow(revoked.id, actor)
@@ -417,86 +425,81 @@ export class InvitationsService {
     // limit.
     const passwordHash = await bcrypt.hash(password, 10)
 
-    const accepted = await withInvitationTokenContext(
-      this.db,
-      tokenHash,
-      async (tx) => {
-        // THE single-use guarantee: one conditional UPDATE. Its WHERE
-        // re-checks "still open and not expired" at the moment of writing,
-        // and Postgres locks the row while doing it. If two tabs submit at
-        // once, the second UPDATE waits for the first to commit, re-reads
-        // the row, finds accepted_at set, and matches nothing — no
-        // read-then-write gap for both to slip through.
-        const [row] = await tx
-          .update(invitations)
-          .set({ acceptedAt: sql`now()` })
-          .where(
-            and(
-              eq(invitations.tokenHash, tokenHash),
-              openInvitation(),
-              gt(invitations.expiresAt, sql`now()`),
-            ),
-          )
-          .returning({ id: invitations.id, userId: invitations.userId })
+    await withInvitationTokenContext(this.db, tokenHash, async (tx) => {
+      // THE single-use guarantee: one conditional UPDATE. Its WHERE
+      // re-checks "still open and not expired" at the moment of writing,
+      // and Postgres locks the row while doing it. If two tabs submit at
+      // once, the second UPDATE waits for the first to commit, re-reads
+      // the row, finds accepted_at set, and matches nothing — no
+      // read-then-write gap for both to slip through.
+      const [row] = await tx
+        .update(invitations)
+        .set({ acceptedAt: sql`now()` })
+        .where(
+          and(
+            eq(invitations.tokenHash, tokenHash),
+            openInvitation(),
+            gt(invitations.expiresAt, sql`now()`),
+          ),
+        )
+        .returning({ id: invitations.id, userId: invitations.userId })
 
-        if (!row) {
-          // Not accepted — work out why, for the right 404 or 410. These
-          // checks run AFTER the decisive UPDATE, so they only explain the
-          // outcome; they never decide it.
-          const invitation = await this.findByTokenHash(tx, tokenHash)
-          assertUsable(
-            invitation,
-            await this.findAccount(tx, invitation.userId),
-          )
-          // A pending, usable invitation that the UPDATE didn't match can
-          // only be one that expired in the instant between the two
-          // statements.
-          throw gone('expired')
-        }
+      if (!row) {
+        // Not accepted — work out why, for the right 404 or 410. These
+        // checks run AFTER the decisive UPDATE, so they only explain the
+        // outcome; they never decide it.
+        const invitation = await this.findByTokenHash(tx, tokenHash)
+        assertUsable(invitation, await this.findAccount(tx, invitation.userId))
+        // A pending, usable invitation that the UPDATE didn't match can
+        // only be one that expired in the instant between the two
+        // statements.
+        throw gone('expired')
+      }
 
-        const account = await this.findAccount(tx, row.userId)
-        // Throwing here rolls the whole transaction back, including the
-        // accepted_at just written: a deactivated account's invitation
-        // stays unaccepted.
-        if (!account.isActive) throw gone('deactivated')
+      const account = await this.findAccount(tx, row.userId)
+      // Throwing here rolls the whole transaction back, including the
+      // accepted_at just written: a deactivated account's invitation
+      // stays unaccepted.
+      if (!account.isActive) throw gone('deactivated')
 
-        // users_update (migration 0007) lets a session update its OWN row.
-        // This transaction has no session, but the invitation just accepted
-        // proves who it acts for — the same "synthetic self-context"
-        // reasoning as AuthService.resetPassword(). The role value is inert
-        // here (that branch never reads it), but the setting must hold a
-        // real role.
-        const [role] = await tx
-          .select({ role: userRoles.role })
-          .from(userRoles)
-          .where(eq(userRoles.userId, account.id))
-          .orderBy(asc(userRoles.role))
-          .limit(1)
-        await applyUserContext(tx, {
-          id: account.id,
-          activeRole: role.role as UserRole,
-        })
+      // users_update (migration 0007) lets a session update its OWN row.
+      // This transaction has no session, but the invitation just accepted
+      // proves who it acts for — the same "synthetic self-context"
+      // reasoning as AuthService.resetPassword(). The role value is inert
+      // here (that branch never reads it), but the setting must hold a
+      // real role.
+      const [role] = await tx
+        .select({ role: userRoles.role })
+        .from(userRoles)
+        .where(eq(userRoles.userId, account.id))
+        .orderBy(asc(userRoles.role))
+        .limit(1)
+      await applyUserContext(tx, {
+        id: account.id,
+        activeRole: role.role as UserRole,
+      })
 
-        // "AND password_hash IS NULL": an account that somehow already has
-        // a password is never overwritten through an invitation.
-        const updated = await tx
-          .update(users)
-          .set({ passwordHash })
-          .where(and(eq(users.id, account.id), isNull(users.passwordHash)))
-          .returning({ id: users.id })
-        if (updated.length === 0) throw gone('accepted')
+      // "AND password_hash IS NULL": an account that somehow already has
+      // a password is never overwritten through an invitation.
+      const updated = await tx
+        .update(users)
+        .set({ passwordHash })
+        .where(and(eq(users.id, account.id), isNull(users.passwordHash)))
+        .returning({ id: users.id })
+      if (updated.length === 0) throw gone('accepted')
 
-        return row
-      },
-    )
-
-    // Performed by the account itself: accepting is the person's own act.
-    await this.auditService.log({
-      performedBy: accepted.userId,
-      action: 'INVITATION_ACCEPTED',
-      targetUserId: accepted.userId,
-      entityType: 'invitations',
-      entityId: accepted.id,
+      // Performed by the account itself: accepting is the person's own
+      // act. In this transaction, with the password it set: no account
+      // becomes usable without its entry. (audit_logs' INSERT policy is
+      // WITH CHECK (true), so the token context here is enough.) The
+      // password itself never goes into an entry — not even its hash.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: row.userId,
+        action: 'INVITATION_ACCEPTED',
+        targetUserId: row.userId,
+        entityType: 'invitations',
+        entityId: row.id,
+      })
     })
   }
 

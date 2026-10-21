@@ -33,6 +33,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -65,6 +66,7 @@ export class InvitationsController {
   // Sends an invitation: the first one, or a new one replacing the open
   // one ("resend") — the same act from the caller's point of view. 201:
   // a new invitation is created every time.
+  @AuditedByService()
   @Post(':id/invitations')
   send(
     @Param('id', ParseIntPipe) userId: number,
@@ -77,6 +79,7 @@ export class InvitationsController {
   // invitation is closed and stays in the history (same reasoning as
   // POST /users/:id/care-team/:practitionerId/end). 200: it returns the
   // revoked invitation, and creates nothing.
+  @AuditedByService()
   @Post(':id/invitations/revoke')
   @HttpCode(HttpStatus.OK)
   revoke(

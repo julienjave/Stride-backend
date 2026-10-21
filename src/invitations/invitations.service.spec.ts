@@ -47,7 +47,19 @@ describe('InvitationsService', () => {
   }
   let careTeamService: { isOnCareTeam: jest.Mock }
   let emailService: { sendInvitationEmail: jest.Mock }
-  let auditService: { log: jest.Mock }
+  // Since the audit review: every entry goes through logInTransaction, in
+  // the write's own transaction; log() (after the commit) is kept in the
+  // stub only to assert it's no longer used.
+  let auditService: {
+    log: jest.Mock
+    logInTransaction: jest.Mock<
+      Promise<void>,
+      [unknown, Record<string, unknown>]
+    >
+  }
+
+  // When a new invitation expires, as the INSERT returns it.
+  const EXPIRES = new Date('2031-03-08T10:00:00Z')
 
   const admin = { id: 1, activeRole: UserRole.ADMIN }
   const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER }
@@ -91,7 +103,9 @@ describe('InvitationsService', () => {
       }),
       insert: jest.fn().mockReturnValue({
         values: jest.fn().mockReturnValue({
-          returning: jest.fn().mockResolvedValue([{ id: 100, userId: 42 }]),
+          returning: jest
+            .fn()
+            .mockResolvedValue([{ id: 100, userId: 42, expiresAt: EXPIRES }]),
         }),
       }),
     }
@@ -109,7 +123,12 @@ describe('InvitationsService', () => {
     emailService = {
       sendInvitationEmail: jest.fn().mockResolvedValue(undefined),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    auditService = {
+      log: jest.fn().mockResolvedValue(undefined),
+      logInTransaction: jest
+        .fn<Promise<void>, [unknown, Record<string, unknown>]>()
+        .mockResolvedValue(undefined),
+    }
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -202,32 +221,49 @@ describe('InvitationsService', () => {
       expect(db.transaction).not.toHaveBeenCalled()
     })
 
+    // ONE entry, in the transaction that creates the invitation (the first
+    // argument is that tx), written BEFORE the email is even tried.
     it('reports a first invitation as sent, and returns whether the email went out', async () => {
-      fakeTransaction([])
-      jest.spyOn(service, 'deliver').mockResolvedValue(true)
+      const tx = fakeTransaction([])
+      const deliver = jest.spyOn(service, 'deliver').mockResolvedValue(true)
 
       await expect(service.send(42, admin)).resolves.toEqual({
         ...summary,
         emailSent: true,
       })
-      expect(auditService.log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: 'INVITATION_SENT',
-          targetUserId: 42,
-          details: { emailSent: true },
-        }),
-      )
+      expect(auditService.logInTransaction).toHaveBeenCalledTimes(1)
+      const [entryTx, entry] = auditService.logInTransaction.mock.calls[0]
+      expect(entryTx).toBe(tx)
+      expect(entry).toStrictEqual({
+        performedBy: 1,
+        action: 'INVITATION_SENT',
+        targetUserId: 42,
+        entityType: 'invitations',
+        entityId: 100,
+        details: { expiresAt: EXPIRES },
+      })
+      expect(
+        auditService.logInTransaction.mock.invocationCallOrder[0],
+      ).toBeLessThan(deliver.mock.invocationCallOrder[0])
+      expect(auditService.log).not.toHaveBeenCalled()
     })
 
     // The UPDATE closed an open invitation: this was a resend.
-    it('reports a replacement as resent', async () => {
+    // …naming the invitation(s) it replaced: one act, one entry.
+    it('reports a replacement as resent, naming the invitation it replaced', async () => {
       fakeTransaction([{ id: 99 }])
       jest.spyOn(service, 'deliver').mockResolvedValue(true)
 
       await service.send(42, admin)
-      expect(auditService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'INVITATION_RESENT' }),
-      )
+      const [, entry] = auditService.logInTransaction.mock.calls[0]
+      expect(entry).toStrictEqual({
+        performedBy: 1,
+        action: 'INVITATION_RESENT',
+        targetUserId: 42,
+        entityType: 'invitations',
+        entityId: 100,
+        details: { expiresAt: EXPIRES, replacedIds: [99] },
+      })
     })
 
     // The invitation is saved either way; the person who sent it learns
@@ -239,9 +275,10 @@ describe('InvitationsService', () => {
       await expect(service.send(42, admin)).resolves.toMatchObject({
         emailSent: false,
       })
-      expect(auditService.log).toHaveBeenCalledWith(
-        expect.objectContaining({ details: { emailSent: false } }),
-      )
+      // The entry is the same whatever the email did: it records the
+      // invitation; email_sent_at (left NULL by deliver) records the email.
+      expect(auditService.logInTransaction).toHaveBeenCalledTimes(1)
+      expect(auditService.log).not.toHaveBeenCalled()
     })
 
     // The partial unique index's verdict when two sends race (the error
@@ -372,19 +409,23 @@ describe('InvitationsService', () => {
       await expect(service.revoke(42, admin)).rejects.toThrow(
         new NotFoundException('This account has no open invitation to revoke'),
       )
+      expect(auditService.logInTransaction).not.toHaveBeenCalled()
       expect(auditService.log).not.toHaveBeenCalled()
     })
 
-    it('revokes the open invitation and records who did it', async () => {
-      fakeTransaction([{ id: 99 }])
+    it('revokes the open invitation and records who did it, in the same transaction', async () => {
+      const tx = fakeTransaction([{ id: 99 }])
       await expect(service.revoke(42, admin)).resolves.toEqual(summary)
-      expect(auditService.log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          performedBy: 1,
-          action: 'INVITATION_REVOKED',
-          entityId: 99,
-        }),
-      )
+      const [entryTx, entry] = auditService.logInTransaction.mock.calls[0]
+      expect(entryTx).toBe(tx)
+      expect(entry).toStrictEqual({
+        performedBy: 1,
+        action: 'INVITATION_REVOKED',
+        targetUserId: 42,
+        entityType: 'invitations',
+        entityId: 99,
+      })
+      expect(auditService.log).not.toHaveBeenCalled()
     })
   })
 })

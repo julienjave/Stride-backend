@@ -34,6 +34,7 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -84,6 +85,7 @@ export class CareTeamController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/care-team')
   add(
     @Param('id', ParseIntPipe) patientId: number,
@@ -97,6 +99,7 @@ export class CareTeamController {
   // deleted — the link gets an end date and stays in the history.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/care-team/:practitionerId/end')
   end(
     @Param('id', ParseIntPipe) patientId: number,

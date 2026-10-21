@@ -357,8 +357,8 @@ export class CareTeamService {
 
     let link: typeof careTeamMembers.$inferSelect
     try {
-      const inserted = await withRlsContext(this.db, actor, (tx) =>
-        tx
+      link = await withRlsContext(this.db, actor, async (tx) => {
+        const [inserted] = await tx
           .insert(careTeamMembers)
           .values({
             patientId,
@@ -367,9 +367,29 @@ export class CareTeamService {
             createdBy: actor.id,
             reason: dto.reason ?? null,
           })
-          .returning(),
-      )
-      link = inserted[0]
+          .returning()
+        // The accountability this route rests on (no approval step — see
+        // above): ONE entry, in the link's own transaction, so a link can't
+        // exist without it. JOINED when the caller adds themselves, ADDED
+        // when they add a colleague.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: actor.id,
+          action:
+            practitionerId === actor.id
+              ? 'CARE_TEAM_JOINED'
+              : 'CARE_TEAM_MEMBER_ADDED',
+          targetUserId: patientId,
+          entityType: 'care_team_members',
+          entityId: inserted.id,
+          details: {
+            practitionerId,
+            startedAt: inserted.startedAt,
+            endsAt: inserted.endsAt,
+            reason: inserted.reason,
+          },
+        })
+        return inserted
+      })
     } catch (error) {
       // The exclusion constraint's verdict, not a check-before-insert: two
       // simultaneous "Join" clicks can't both succeed (see pg-errors.ts).
@@ -380,22 +400,6 @@ export class CareTeamService {
       }
       throw error
     }
-
-    await this.auditService.log({
-      performedBy: actor.id,
-      action:
-        practitionerId === actor.id
-          ? 'CARE_TEAM_JOINED'
-          : 'CARE_TEAM_MEMBER_ADDED',
-      targetUserId: patientId,
-      entityType: 'care_team_members',
-      entityId: link.id,
-      details: {
-        practitionerId,
-        endsAt: link.endsAt,
-        reason: link.reason,
-      },
-    })
 
     return this.findEntryOrThrow(link.id, actor)
   }
@@ -422,8 +426,8 @@ export class CareTeamService {
     // a separate read first: if two requests end the same link at once, the
     // second updates nothing and gets a 404, instead of overwriting the
     // first one's ends_at/ended_by.
-    const [ended] = await withRlsContext(this.db, actor, (tx) =>
-      tx
+    const ended = await withRlsContext(this.db, actor, async (tx) => {
+      const [row] = await tx
         .update(careTeamMembers)
         .set({ endsAt: sql`now()`, endedBy: actor.id })
         .where(
@@ -433,21 +437,29 @@ export class CareTeamService {
             activePeriod(),
           ),
         )
-        .returning(),
-    )
-    if (!ended) {
-      throw new NotFoundException(
-        'This practitioner has no active care-team membership for this patient',
-      )
-    }
-
-    await this.auditService.log({
-      performedBy: actor.id,
-      action: 'CARE_TEAM_ENDED',
-      targetUserId: patientId,
-      entityType: 'care_team_members',
-      entityId: ended.id,
-      details: { practitionerId },
+        .returning()
+      // Thrown INSIDE the transaction: nothing was updated, and the entry
+      // below is never reached — a refused request writes no entry.
+      if (!row) {
+        throw new NotFoundException(
+          'This practitioner has no active care-team membership for this patient',
+        )
+      }
+      // The period the link covered, start and end — "who could read this
+      // patient's file, and when" — answerable from the entry alone.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: actor.id,
+        action: 'CARE_TEAM_ENDED',
+        targetUserId: patientId,
+        entityType: 'care_team_members',
+        entityId: row.id,
+        details: {
+          practitionerId,
+          startedAt: row.startedAt,
+          endsAt: row.endsAt,
+        },
+      })
+      return row
     })
 
     return this.findEntryOrThrow(ended.id, actor)
@@ -646,8 +658,9 @@ export class CareTeamService {
   // UsersService.create(): a practitioner who creates a patient joins their
   // care team at once — otherwise they couldn't open the patient they just
   // created. Runs in create()'s own transaction (`tx`), so the patient, their
-  // clinic membership and this link all exist, or none of them do. The
-  // caller writes the audit entry once that transaction has committed.
+  // clinic membership and this link all exist, or none of them do. No entry
+  // of its own: the caller's USER_CREATED entry names this link
+  // (careTeamLinkId) — one request, one entry.
   async linkCreator(tx: DrizzleDb, patientId: number, practitionerId: number) {
     const [link] = await tx
       .insert(careTeamMembers)

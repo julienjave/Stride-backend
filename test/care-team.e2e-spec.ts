@@ -524,11 +524,19 @@ describe('Care team (e2e)', () => {
         endedBy: null,
       })
 
-      // Accountability: the join is in the audit log.
+      // Accountability: the join is in the audit log — with the moment the
+      // link began, as stored (test/account-audit.e2e-spec.ts covers the
+      // rest of the trail).
       const { rows } = await sessionPool.query(
         `SELECT performed_by, action, target_user_id, details
            FROM audit_logs WHERE action = 'CARE_TEAM_JOINED'`,
       )
+      const startedAt = (
+        await sessionPool.query<{ started_at: Date }>(
+          'SELECT started_at FROM care_team_members WHERE id = $1',
+          [res.body.id],
+        )
+      ).rows[0].started_at
       expect(rows).toEqual([
         {
           performed_by: practitionerAId,
@@ -536,6 +544,7 @@ describe('Care team (e2e)', () => {
           target_user_id: patient1Id,
           details: {
             practitionerId: practitionerAId,
+            startedAt: startedAt.toISOString(),
             endsAt: null,
             reason: 'First assessment',
           },

@@ -27,6 +27,20 @@ function invitationsStub() {
   }
 }
 
+// AuditService since the audit review: every account write goes through
+// logInTransaction (inside its transaction); log() — the after-commit
+// path — must no longer be used by any of them, so it's here to be asserted
+// NOT called. Typed with logInTransaction's real arguments, so mock.calls
+// is typed too.
+function auditStub() {
+  return {
+    log: jest.fn().mockResolvedValue(undefined),
+    logInTransaction: jest
+      .fn<Promise<void>, [unknown, Record<string, unknown>]>()
+      .mockResolvedValue(undefined),
+  }
+}
+
 function careTeamStub() {
   return {
     isOnCareTeam: jest.fn().mockResolvedValue(false),
@@ -97,7 +111,7 @@ describe('UsersService.create', () => {
   let usersService: UsersService
   let careTeam: ReturnType<typeof careTeamStub>
   let invitations: ReturnType<typeof invitationsStub>
-  let auditLog: jest.Mock
+  let audit: ReturnType<typeof auditStub>
   let db: {
     query: { users: { findFirst: jest.Mock } }
     transaction: jest.Mock
@@ -110,16 +124,14 @@ describe('UsersService.create', () => {
       transaction: jest.fn(),
       select: jest.fn(),
     }
+    audit = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        {
-          provide: AuditService,
-          useValue: { log: jest.fn().mockResolvedValue(undefined) },
-        },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -127,7 +139,6 @@ describe('UsersService.create', () => {
 
     usersService = moduleRef.get(UsersService)
     careTeam = moduleRef.get(CareTeamService)
-    auditLog = moduleRef.get<{ log: jest.Mock }>(AuditService).log
     invitations = moduleRef.get(InvitationsService)
   })
 
@@ -227,20 +238,8 @@ describe('UsersService.create', () => {
     expect(result.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
 
     // The creator joins the care team INSIDE the same transaction (same tx
-    // object), so the patient and the link exist together or not at all…
+    // object), so the patient and the link exist together or not at all.
     expect(careTeam.linkCreator).toHaveBeenCalledWith(tx, 10, 7)
-    // …and it's audited, after the transaction.
-    expect(auditLog).toHaveBeenCalledWith({
-      performedBy: 7,
-      action: 'CARE_TEAM_JOINED',
-      targetUserId: 10,
-      entityType: 'care_team_members',
-      entityId: 900,
-      details: { practitionerId: 7, reason: 'Created the patient' },
-    })
-    expect(auditLog.mock.invocationCallOrder[0]).toBeGreaterThan(
-      careTeam.linkCreator.mock.invocationCallOrder[0],
-    )
 
     // Invitations: no password is ever written — the users INSERT carries
     // no passwordHash at all…
@@ -268,14 +267,38 @@ describe('UsersService.create', () => {
       'raw-token',
       { id: 7, activeRole: UserRole.PRACTITIONER },
     )
-    expect(auditLog).toHaveBeenCalledWith({
+    // The whole creation is ONE audit entry, written through the SAME
+    // transaction (the first argument is `tx` itself — so it commits or
+    // rolls back with the account): the account as sent, with the link and
+    // the invitation named in it. toStrictEqual: no other key may be there.
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toStrictEqual({
       performedBy: 7,
-      action: 'INVITATION_SENT',
+      action: 'USER_CREATED',
       targetUserId: 10,
-      entityType: 'invitations',
-      entityId: 500,
-      details: { emailSent: true },
+      entityType: 'users',
+      entityId: 10,
+      details: {
+        record: {
+          email: 'patient@example.com',
+          role: UserRole.PATIENT,
+          firstName: 'New',
+          lastName: 'Patient',
+          dateOfBirth: '1990-01-01',
+          clinicId: 3,
+        },
+        careTeamLinkId: 900,
+        invitationId: 500,
+      },
     })
+    // Written once the link and the invitation exist (it names both)…
+    expect(audit.logInTransaction.mock.invocationCallOrder[0]).toBeGreaterThan(
+      invitations.insertInvitation.mock.invocationCallOrder[0],
+    )
+    // …and nothing is logged outside the transaction any more.
+    expect(audit.log).not.toHaveBeenCalled()
     // …and reported in the response.
     expect(result.invitation).toEqual({
       id: 500,
@@ -318,12 +341,14 @@ describe('UsersService.create', () => {
     )
 
     expect(result.invitation.emailSent).toBe(false)
-    expect(auditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'INVITATION_SENT',
-        details: { emailSent: false },
-      }),
+    // The entry was written in the transaction, BEFORE the email was even
+    // tried: what the email does can't change what the trail says. (The
+    // invitation row records whether it went out — deliver's job.)
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    expect(audit.logInTransaction.mock.invocationCallOrder[0]).toBeLessThan(
+      invitations.deliver.mock.invocationCallOrder[0],
     )
+    expect(audit.log).not.toHaveBeenCalled()
   })
 
   it('does not put an ADMIN who creates a patient on the care team', async () => {
@@ -359,11 +384,26 @@ describe('UsersService.create', () => {
     )
 
     expect(careTeam.linkCreator).not.toHaveBeenCalled()
-    // Audit entries ARE written now (INVITATION_SENT, for every new
-    // account) — just never a care-team join for an admin.
-    expect(auditLog).not.toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'CARE_TEAM_JOINED' }),
-    )
+    // The entry names no care-team link: the KEY is absent (toStrictEqual),
+    // not merely undefined — an admin joined nobody's team.
+    const [, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entry).toStrictEqual({
+      performedBy: 1,
+      action: 'USER_CREATED',
+      targetUserId: 10,
+      entityType: 'users',
+      entityId: 10,
+      details: {
+        record: {
+          email: 'p@example.com',
+          role: UserRole.PATIENT,
+          firstName: 'New',
+          lastName: 'Patient',
+          dateOfBirth: '1990-01-01',
+        },
+        invitationId: 500,
+      },
+    })
   })
 
   it('rejects an email that already belongs to another account', async () => {
@@ -588,6 +628,7 @@ describe('UsersService.create', () => {
 
 describe('UsersService.grantRole', () => {
   let usersService: UsersService
+  let audit: ReturnType<typeof auditStub>
   let db: {
     query: {
       users: { findFirst: jest.Mock }
@@ -633,16 +674,14 @@ describe('UsersService.grantRole', () => {
         }),
       }),
     })
+    audit = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        {
-          provide: AuditService,
-          useValue: { log: jest.fn().mockResolvedValue(undefined) },
-        },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -702,6 +741,24 @@ describe('UsersService.grantRole', () => {
 
     // userRoles insert + practitionerProfiles insert, since none existed yet.
     expect(insert).toHaveBeenCalledTimes(2)
+    // ONE entry, through the same transaction, with the profile the role
+    // came with — the values really inserted (specialties defaulted to [],
+    // no bio → null), so the entry reads like the row.
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toStrictEqual({
+      performedBy: 9,
+      action: 'USER_ROLE_GRANTED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+      details: {
+        role: UserRole.PRACTITIONER,
+        profile: { licenseNumber: 'PT-2', specialties: [], bio: null },
+      },
+    })
+    expect(audit.log).not.toHaveBeenCalled()
   })
 
   it('grants a new role without duplicating an already-existing profile', async () => {
@@ -733,6 +790,17 @@ describe('UsersService.grantRole', () => {
 
     // Only the userRoles insert — the existing profile must not be re-inserted.
     expect(insert).toHaveBeenCalledTimes(1)
+    // …and the entry says so: profile null — the request's licenseNumber
+    // was NOT used, and the trail mustn't claim it was.
+    const [, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entry).toStrictEqual({
+      performedBy: 9,
+      action: 'USER_ROLE_GRANTED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+      details: { role: UserRole.PRACTITIONER, profile: null },
+    })
   })
 
   it('turns a duplicate licenseNumber on the new practitioner profile into a 409', async () => {
@@ -1067,6 +1135,7 @@ describe('UsersService.findOne', () => {
 
 describe('UsersService.update', () => {
   let usersService: UsersService
+  let audit: ReturnType<typeof auditStub>
   let db: {
     query: {
       users: { findFirst: jest.Mock }
@@ -1091,16 +1160,14 @@ describe('UsersService.update', () => {
       select: jest.fn(),
       transaction: jest.fn(),
     }
+    audit = auditStub()
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        {
-          provide: AuditService,
-          useValue: { log: jest.fn().mockResolvedValue(undefined) },
-        },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1175,6 +1242,9 @@ describe('UsersService.update', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  // The "before" values — firstName and the practitioner profile — come
+  // from reads INSIDE the transaction (accountTx's first values); the
+  // response from the reads after the writes (its second values).
   it('updates a plain users column together with practitionerProfiles fields in the same transaction', async () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
@@ -1188,53 +1258,27 @@ describe('UsersService.update', () => {
         }),
       }),
     })
-
-    const usersUpdateChain = {
-      set: jest.fn().mockReturnValue({
-        where: jest.fn().mockReturnValue({
-          returning: jest.fn().mockResolvedValue([
-            {
-              id: 1,
-              email: 'prac@example.com',
-              firstName: 'Updated',
-              lastName: 'Titioner',
-              avatarPath: null,
-              isActive: true,
-            },
-          ]),
-        }),
-      }),
-    }
-    const profileUpdateChain = {
-      set: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
-    }
-    const tx = {
-      execute: jest.fn().mockResolvedValue(undefined),
-      update: jest
-        .fn()
-        .mockReturnValueOnce(usersUpdateChain)
-        .mockReturnValueOnce(profileUpdateChain),
-      select: jest.fn().mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      query: {
-        practitionerProfiles: {
-          findFirst: jest.fn().mockResolvedValue({
-            userId: 1,
-            licenseNumber: 'PT-NEW',
-            specialties: ['ortho'],
-            bio: 'Updated bio.',
-          }),
-        },
+    const { tx, set } = accountTx({
+      locked: { id: 1, email: 'prac@example.com', firstName: 'Prac' },
+      roles: [UserRole.PRACTITIONER],
+      after: {
+        id: 1,
+        email: 'prac@example.com',
+        firstName: 'Updated',
+        lastName: 'Titioner',
+        avatarPath: null,
+        isActive: true,
       },
-    }
+      practitioner: [
+        { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
+        {
+          userId: 1,
+          licenseNumber: 'PT-NEW',
+          specialties: ['ortho'],
+          bio: 'Updated bio.',
+        },
+      ],
+    })
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await usersService.update(
@@ -1254,11 +1298,88 @@ describe('UsersService.update', () => {
       specialties: ['ortho'],
       bio: 'Updated bio.',
     })
-    expect(profileUpdateChain.set).toHaveBeenCalledWith({
-      licenseNumber: 'PT-NEW',
-      specialties: ['ortho'],
-      bio: 'Updated bio.',
+    // The users row, then the profile — each with exactly its own fields.
+    expect(set.mock.calls).toEqual([
+      [{ firstName: 'Updated' }],
+      [
+        {
+          licenseNumber: 'PT-NEW',
+          specialties: ['ortho'],
+          bio: 'Updated bio.',
+        },
+      ],
+    ])
+    // ONE entry, through the same transaction: every field, before → after.
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toStrictEqual({
+      performedBy: 9,
+      action: 'USER_UPDATED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+      details: {
+        changes: {
+          firstName: { from: 'Prac', to: 'Updated' },
+          licenseNumber: { from: 'PT-1', to: 'PT-NEW' },
+          specialties: { from: [], to: ['ortho'] },
+          bio: { from: null, to: 'Updated bio.' },
+        },
+      },
     })
+  })
+
+  // The "before" values are read UNDER A LOCK: two simultaneous edits of one
+  // profile take turns, so each entry's "from" is what that edit replaced.
+  it('reads the values it replaces under a row lock (FOR UPDATE), before writing', async () => {
+    mockPractitionerTarget()
+    const { tx, lockFor } = accountTx({
+      locked: { id: 1, firstName: 'Prac' },
+      roles: [UserRole.PRACTITIONER],
+      practitioner: [
+        { licenseNumber: 'PT-1', specialties: [], bio: null },
+        { licenseNumber: 'PT-1', specialties: [], bio: null },
+      ],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    await usersService.update(
+      1,
+      { firstName: 'Changed' },
+      { id: 9, activeRole: UserRole.ADMIN },
+    )
+
+    expect(lockFor).toHaveBeenCalledWith('update')
+    expect(lockFor.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.update.mock.invocationCallOrder[0],
+    )
+  })
+
+  // The convention: a request that changes nothing writes nothing. A
+  // profile field saved unchanged, a list re-sent in the same order —
+  // neither is a change.
+  it('writes nothing — no UPDATE, no audit entry — when every value sent is already stored', async () => {
+    mockPractitionerTarget()
+    const { tx } = accountTx({
+      locked: { id: 1, firstName: 'Prac' },
+      roles: [UserRole.PRACTITIONER],
+      practitioner: [
+        { licenseNumber: 'PT-1', specialties: ['ortho', 'sports'], bio: 'B' },
+        { licenseNumber: 'PT-1', specialties: ['ortho', 'sports'], bio: 'B' },
+      ],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    const result = await usersService.update(
+      1,
+      { firstName: 'Prac', specialties: ['ortho', 'sports'] },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+    expect(result.firstName).toBe('Prac')
   })
 
   // No `users`-table field in the dto at all — update() must skip the
@@ -1278,41 +1399,14 @@ describe('UsersService.update', () => {
         }),
       }),
     })
-
-    const profileUpdateChain = {
-      set: jest
-        .fn()
-        .mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) }),
-    }
-    const tx = {
-      execute: jest.fn().mockResolvedValue(undefined),
-      update: jest.fn().mockReturnValue(profileUpdateChain),
-      query: {
-        users: {
-          findFirst: jest.fn().mockResolvedValue({
-            id: 3,
-            email: 'patient@example.com',
-            firstName: 'Patient',
-            lastName: 'Three',
-            avatarPath: null,
-            isActive: true,
-          }),
-        },
-        patientProfiles: {
-          findFirst: jest
-            .fn()
-            .mockResolvedValue({ userId: 3, dateOfBirth: '1985-05-05' }),
-        },
-      },
-      select: jest.fn().mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-    }
+    const { tx, set } = accountTx({
+      locked: { id: 3, email: 'patient@example.com', firstName: 'Patient' },
+      roles: [UserRole.PATIENT],
+      patient: [
+        { userId: 3, dateOfBirth: '1980-01-01' },
+        { userId: 3, dateOfBirth: '1985-05-05' },
+      ],
+    })
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await usersService.update(
@@ -1323,8 +1417,17 @@ describe('UsersService.update', () => {
 
     expect(tx.query.users.findFirst).toHaveBeenCalled()
     expect(result.patientProfile).toEqual({ dateOfBirth: '1985-05-05' })
-    expect(profileUpdateChain.set).toHaveBeenCalledWith({
-      dateOfBirth: '1985-05-05',
+    expect(set.mock.calls).toEqual([[{ dateOfBirth: '1985-05-05' }]])
+    const [, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entry).toStrictEqual({
+      performedBy: 3,
+      action: 'USER_UPDATED',
+      targetUserId: 3,
+      entityType: 'users',
+      entityId: 3,
+      details: {
+        changes: { dateOfBirth: { from: '1980-01-01', to: '1985-05-05' } },
+      },
     })
   })
 
@@ -1347,50 +1450,25 @@ describe('UsersService.update', () => {
     })
   }
 
-  // A transaction whose only write is the practitioner_profiles UPDATE.
-  // `profileWhere` is what that UPDATE's final .where() returns, so a test
-  // can make the write succeed or fail.
-  function mockProfileOnlyTransaction(profileWhere: jest.Mock) {
-    const profileUpdateChain = {
-      set: jest.fn().mockReturnValue({ where: profileWhere }),
+  // A transaction for a practitioner (id 1) whose profile is PT-1 /
+  // ['ortho'] / 'Bio.' before the request. `updateResult` decides what each
+  // UPDATE does (succeed, or fail like the database would). Returns the
+  // shared `set` mock: what reached each UPDATE, in order.
+  function mockProfileOnlyTransaction(updateResult?: () => Promise<unknown>) {
+    const profile = {
+      userId: 1,
+      licenseNumber: 'PT-1',
+      specialties: ['ortho'],
+      bio: 'Bio.',
     }
-    const tx = {
-      execute: jest.fn().mockResolvedValue(undefined),
-      update: jest.fn().mockReturnValue(profileUpdateChain),
-      query: {
-        users: {
-          findFirst: jest.fn().mockResolvedValue({
-            id: 1,
-            email: 'prac@example.com',
-            firstName: 'Prac',
-            lastName: 'Titioner',
-            avatarPath: null,
-            isActive: true,
-          }),
-        },
-        practitionerProfiles: {
-          findFirst: jest.fn().mockResolvedValue({
-            userId: 1,
-            licenseNumber: 'PT-1',
-            specialties: ['ortho'],
-            bio: 'Bio.',
-          }),
-        },
-      },
-      select: jest.fn().mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-    }
-    // Typed callback — calling an `any` is exactly what the no-unsafe-call
-    // lint rule flags (the file's other mocks use TransactionCallback, at
-    // the top; this one can name its stub's own type).
-    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
-    return profileUpdateChain
+    const { tx, set } = accountTx({
+      locked: { id: 1, email: 'prac@example.com', firstName: 'Prac' },
+      roles: [UserRole.PRACTITIONER],
+      practitioner: [profile, profile],
+      updateResult,
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+    return set
   }
 
   it('refuses a practitioner changing their OWN licenseNumber — 403, before any write', async () => {
@@ -1415,9 +1493,7 @@ describe('UsersService.update', () => {
   // practitioner, and allowed once switched to admin.
   it('allows the same license change once the caller is ACTING as admin', async () => {
     mockPractitionerTarget()
-    const profileUpdateChain = mockProfileOnlyTransaction(
-      jest.fn().mockResolvedValue(undefined),
-    )
+    const set = mockProfileOnlyTransaction()
 
     await usersService.update(
       1,
@@ -1426,16 +1502,12 @@ describe('UsersService.update', () => {
     )
 
     // What actually reached the UPDATE — exactly the license, nothing else.
-    expect(profileUpdateChain.set).toHaveBeenCalledWith({
-      licenseNumber: 'PT-NEW',
-    })
+    expect(set.mock.calls).toEqual([[{ licenseNumber: 'PT-NEW' }]])
   })
 
   it('still lets a practitioner change their own specialties and bio', async () => {
     mockPractitionerTarget()
-    const profileUpdateChain = mockProfileOnlyTransaction(
-      jest.fn().mockResolvedValue(undefined),
-    )
+    const set = mockProfileOnlyTransaction()
 
     await usersService.update(
       1,
@@ -1443,17 +1515,14 @@ describe('UsersService.update', () => {
       { id: 1, activeRole: UserRole.PRACTITIONER },
     )
 
-    expect(profileUpdateChain.set).toHaveBeenCalledWith({
-      specialties: ['ortho', 'sports'],
-      bio: 'New bio.',
-    })
+    expect(set.mock.calls).toEqual([
+      [{ specialties: ['ortho', 'sports'], bio: 'New bio.' }],
+    ])
   })
 
   it('turns a duplicate licenseNumber into a 409 ConflictException, not a 500', async () => {
     mockPractitionerTarget()
-    mockProfileOnlyTransaction(
-      jest.fn().mockRejectedValue(duplicateLicenseError()),
-    )
+    mockProfileOnlyTransaction(() => Promise.reject(duplicateLicenseError()))
 
     await expect(
       usersService.update(
@@ -1466,6 +1535,8 @@ describe('UsersService.update', () => {
         'This license number is already registered to another practitioner',
       ),
     )
+    // The write failed, so no entry claims it happened.
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 
   // The translation must be narrow: any OTHER failure keeps its own
@@ -1473,7 +1544,7 @@ describe('UsersService.update', () => {
   it('rethrows any other database error unchanged', async () => {
     mockPractitionerTarget()
     const otherError = new Error('connection terminated')
-    mockProfileOnlyTransaction(jest.fn().mockRejectedValue(otherError))
+    mockProfileOnlyTransaction(() => Promise.reject(otherError))
 
     await expect(
       usersService.update(
@@ -1487,48 +1558,25 @@ describe('UsersService.update', () => {
   // --- preferredWeightUnit is self-only ---
 
   // A transaction whose only write is the `users` UPDATE — the preference
-  // is a plain users column. Returns that UPDATE's chain so a test can
-  // check exactly what reached .set().
+  // is a plain users column, 'kg' before. Returns the shared `set` mock.
   function mockUsersOnlyTransaction() {
-    const usersUpdateChain = {
-      set: jest.fn().mockReturnValue({
-        where: jest.fn().mockReturnValue({
-          returning: jest.fn().mockResolvedValue([
-            {
-              id: 1,
-              email: 'prac@example.com',
-              firstName: 'Prac',
-              lastName: 'Titioner',
-              preferredWeightUnit: 'lbs',
-            },
-          ]),
-        }),
-      }),
-    }
-    const tx = {
-      execute: jest.fn().mockResolvedValue(undefined),
-      update: jest.fn().mockReturnValue(usersUpdateChain),
-      select: jest.fn().mockReturnValue({
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ role: UserRole.PRACTITIONER }]),
-          innerJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      query: {
-        practitionerProfiles: {
-          findFirst: jest.fn().mockResolvedValue({
-            userId: 1,
-            licenseNumber: 'PT-1',
-            specialties: [],
-            bio: null,
-          }),
-        },
+    const { tx, set } = accountTx({
+      locked: { id: 1, firstName: 'Prac', preferredWeightUnit: 'kg' },
+      roles: [UserRole.PRACTITIONER],
+      after: {
+        id: 1,
+        email: 'prac@example.com',
+        firstName: 'Prac',
+        lastName: 'Titioner',
+        preferredWeightUnit: 'lbs',
       },
-    }
-    db.transaction.mockImplementation((cb: (t: typeof tx) => unknown) => cb(tx))
-    return usersUpdateChain
+      practitioner: [
+        { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
+        { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
+      ],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+    return set
   }
 
   // Two callers who DO pass the controller's "may edit this profile"
@@ -1560,7 +1608,7 @@ describe('UsersService.update', () => {
 
   it('lets a user change their own weight unit, written to the users row', async () => {
     mockPractitionerTarget()
-    const usersUpdateChain = mockUsersOnlyTransaction()
+    const set = mockUsersOnlyTransaction()
 
     const result = await usersService.update(
       1,
@@ -1568,9 +1616,7 @@ describe('UsersService.update', () => {
       { id: 1, activeRole: UserRole.PRACTITIONER },
     )
 
-    expect(usersUpdateChain.set).toHaveBeenCalledWith({
-      preferredWeightUnit: 'lbs',
-    })
+    expect(set.mock.calls).toEqual([[{ preferredWeightUnit: 'lbs' }]])
     expect(result.preferredWeightUnit).toBe('lbs')
   })
 })
@@ -1587,7 +1633,7 @@ describe('UsersService.reactivate', () => {
     select: jest.Mock
     transaction: jest.Mock
   }
-  let auditService: { log: jest.Mock }
+  let audit: ReturnType<typeof auditStub>
 
   beforeEach(async () => {
     db = {
@@ -1602,7 +1648,7 @@ describe('UsersService.reactivate', () => {
       select: jest.fn(),
       transaction: jest.fn(),
     }
-    auditService = { log: jest.fn().mockResolvedValue(undefined) }
+    audit = auditStub()
 
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
@@ -1618,7 +1664,7 @@ describe('UsersService.reactivate', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
-        { provide: AuditService, useValue: auditService },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1638,31 +1684,23 @@ describe('UsersService.reactivate', () => {
 
   it('sets isActive back to true on the SAME row and returns the reactivated user', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
-
-    const set = jest.fn().mockReturnValue({
-      where: jest.fn().mockReturnValue({
-        returning: jest.fn().mockResolvedValue([
-          {
-            id: 5,
-            email: 'returning-patient@example.com',
-            isActive: true,
-          },
-        ]),
-      }),
+    const { tx, set } = accountTx({
+      locked: {
+        id: 5,
+        email: 'returning-patient@example.com',
+        isActive: false,
+      },
+      roles: [UserRole.PATIENT],
+      after: { id: 5, email: 'returning-patient@example.com', isActive: true },
     })
-    db.transaction.mockImplementation((cb: TransactionCallback) =>
-      cb({
-        execute: jest.fn().mockResolvedValue(undefined),
-        update: () => ({ set }),
-      }),
-    )
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     const result = await usersService.reactivate(5, {
       id: 1,
       activeRole: UserRole.ADMIN,
     })
 
-    expect(set).toHaveBeenCalledWith({ isActive: true })
+    expect(set.mock.calls).toEqual([[{ isActive: true }]])
     expect(result).toEqual({
       id: 5,
       email: 'returning-patient@example.com',
@@ -1674,31 +1712,151 @@ describe('UsersService.reactivate', () => {
     })
   })
 
-  it('audit-logs the reactivation, naming who performed it and which account was affected', async () => {
+  // In the reactivation's own transaction, naming the account (targetUserId
+  // — the old entry had none, so "what happened to this account" missed it).
+  it('audits the reactivation in its transaction, naming who did it and whose account it was', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
-    db.transaction.mockImplementation((cb: TransactionCallback) =>
-      cb({
-        execute: jest.fn().mockResolvedValue(undefined),
-        update: () => ({
-          set: () => ({
-            where: () => ({
-              returning: jest
-                .fn()
-                .mockResolvedValue([{ id: 5, isActive: true }]),
-            }),
-          }),
-        }),
-      }),
-    )
+    const { tx, lockFor } = accountTx({
+      locked: { id: 5, isActive: false },
+      roles: [UserRole.PATIENT],
+      after: { id: 5, isActive: true },
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
     await usersService.reactivate(5, { id: 42, activeRole: UserRole.ADMIN })
 
-    expect(auditService.log).toHaveBeenCalledWith({
+    expect(lockFor).toHaveBeenCalledWith('update')
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toStrictEqual({
       performedBy: 42,
       action: 'USER_REACTIVATED',
+      targetUserId: 5,
       entityType: 'users',
       entityId: 5,
+      details: { changes: { isActive: { from: false, to: true } } },
     })
+    expect(audit.log).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing — no UPDATE, no entry — for an account that is already active', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: true })
+    const { tx } = accountTx({
+      locked: { id: 5, email: 'active@example.com', isActive: true },
+      roles: [UserRole.PATIENT],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    const result = await usersService.reactivate(5, {
+      id: 42,
+      activeRole: UserRole.ADMIN,
+    })
+
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+    expect(result.isActive).toBe(true)
+  })
+})
+
+// Deactivation: the same helper as reactivation (setActive), the other way.
+// Same module set-up as the reactivate block above.
+describe('UsersService.softDelete', () => {
+  let usersService: UsersService
+  let db: {
+    query: {
+      users: { findFirst: jest.Mock }
+      patientProfiles: { findFirst: jest.Mock }
+    }
+    select: jest.Mock
+    transaction: jest.Mock
+  }
+  let audit: ReturnType<typeof auditStub>
+
+  beforeEach(async () => {
+    db = {
+      // findOne() (the 404 pre-check) attaches the patient profile.
+      query: {
+        users: { findFirst: jest.fn() },
+        patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      },
+      select: jest.fn().mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+          innerJoin: jest.fn().mockReturnValue({
+            where: jest.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+      transaction: jest.fn(),
+    }
+    audit = auditStub()
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: storageStub() },
+        { provide: AuditService, useValue: audit },
+        { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
+      ],
+    }).compile()
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('sets isActive to false and audits it in the same transaction', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 6, isActive: true })
+    const { tx, set } = accountTx({
+      locked: { id: 6, isActive: true },
+      roles: [UserRole.PATIENT],
+      after: { id: 6, isActive: false },
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    const result = await usersService.softDelete(6, {
+      id: 7,
+      activeRole: UserRole.PRACTITIONER,
+    })
+
+    expect(set.mock.calls).toEqual([[{ isActive: false }]])
+    expect(result.isActive).toBe(false)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toStrictEqual({
+      performedBy: 7,
+      action: 'USER_DEACTIVATED',
+      targetUserId: 6,
+      entityType: 'users',
+      entityId: 6,
+      details: { changes: { isActive: { from: true, to: false } } },
+    })
+  })
+
+  it('writes nothing for an account that is already deactivated', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 6, isActive: false })
+    const { tx } = accountTx({
+      locked: { id: 6, isActive: false },
+      roles: [UserRole.PATIENT],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    await usersService.softDelete(6, { id: 1, activeRole: UserRole.ADMIN })
+
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
+
+  // lockUser() under row security: a row the UPDATE policy hides comes
+  // back as nothing — answered like a missing user, and nothing written.
+  it('answers 404 when the locked read finds no row (hidden by the UPDATE policy)', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 6, isActive: true })
+    const { tx } = accountTx({ locked: undefined, roles: [UserRole.PATIENT] })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    await expect(
+      usersService.softDelete(6, { id: 7, activeRole: UserRole.PRACTITIONER }),
+    ).rejects.toThrow(new NotFoundException('User 6 not found'))
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
   })
 })
 
@@ -1783,8 +1941,84 @@ describe('UsersService.findAll', () => {
 // are what the raw users row looks like, and what the UPDATE returns —
 // everything after that (roles, clinics) resolves to "none", since none of
 // these tests are about roles or clinic membership.
+// A transaction for the account writes since the audit review (update,
+// reactivate, softDelete, the avatar). They read their "before" values
+// INSIDE the transaction: lockUser()'s SELECT … FOR UPDATE (→ `locked`) and
+// profileValues()'s three profile reads (→ each pair's FIRST value); the
+// response then reads the "after" state (`after`, and each pair's SECOND
+// value — attachProfile() only reads the profiles of roles the user holds).
+//
+// One mocked tx.select serves three queries: getRolesForUser() awaits
+// .from().where() directly (→ `roles`), lockUser() adds .for('update')
+// (→ `locked`), attachProfile() uses .innerJoin() (→ no clinics).
+//
+// Every UPDATE goes through ONE shared `set` mock, so a test reads what was
+// written, in order, from set.mock.calls. Its where() is a LAZY thenable:
+// awaited directly (update()'s writes) or through .returning() (setActive,
+// the avatar), it runs `updateResult` only when awaited — so a rejecting
+// one (a duplicate license) fails exactly the write that awaits it.
+type ProfilePair = [before: object | undefined, after: object | undefined]
+function accountTx(options: {
+  locked: Record<string, unknown> | undefined
+  roles: UserRole[]
+  after?: Record<string, unknown>
+  practitioner?: ProfilePair
+  patient?: ProfilePair
+  admin?: ProfilePair
+  updateResult?: () => Promise<unknown>
+}) {
+  const result = options.updateResult ?? (() => Promise.resolve(undefined))
+  const after = options.after ?? options.locked
+  const lockFor = jest
+    .fn()
+    .mockResolvedValue(options.locked ? [options.locked] : [])
+  const set = jest.fn((values: Record<string, unknown>) => ({
+    values,
+    where: jest.fn(() => ({
+      then: (
+        resolve: (value: unknown) => unknown,
+        reject: (error: unknown) => unknown,
+      ) => result().then(resolve, reject),
+      returning: () => result().then(() => [after]),
+    })),
+  }))
+  const profile = (pair?: ProfilePair) => ({
+    findFirst: jest
+      .fn()
+      .mockResolvedValueOnce(pair?.[0])
+      .mockResolvedValue(pair?.[1]),
+  })
+  const rolesRows = options.roles.map((role) => ({ role }))
+  const tx = {
+    execute: jest.fn().mockResolvedValue(undefined),
+    update: jest.fn(() => ({ set })),
+    select: jest.fn(() => ({
+      from: jest.fn(() => ({
+        where: jest.fn(() =>
+          Object.assign(Promise.resolve(rolesRows), { for: lockFor }),
+        ),
+        innerJoin: jest.fn(() => ({
+          where: jest.fn().mockResolvedValue([]),
+        })),
+      })),
+    })),
+    query: {
+      users: { findFirst: jest.fn().mockResolvedValue(after) },
+      practitionerProfiles: profile(options.practitioner),
+      patientProfiles: profile(options.patient),
+      adminProfiles: profile(options.admin),
+    },
+  }
+  return { tx, set, lockFor }
+}
+
 function avatarTestDb() {
+  // lockUser()'s SELECT … FOR UPDATE: the row as it is INSIDE the
+  // transaction — the avatarPath the change really replaces. Each test sets
+  // it (none by default: a missing row).
+  const lock = jest.fn().mockResolvedValue([])
   const db = {
+    lock,
     query: { users: { findFirst: jest.fn() } },
     update: jest.fn(),
     // withRlsContext() runs the UPDATE inside db.transaction() and sets two
@@ -1793,10 +2027,11 @@ function avatarTestDb() {
     execute: jest.fn().mockResolvedValue(undefined),
     transaction: jest.fn(),
     // getRolesForUser() (.from().where()) and attachProfile()'s clinic join
-    // (.from().innerJoin().where()) — both resolving to nothing.
+    // (.from().innerJoin().where()) — both resolving to nothing; lockUser()
+    // adds .for('update') to the first, answered by `lock`.
     select: jest.fn().mockReturnValue({
       from: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([]),
+        where: jest.fn(() => Object.assign(Promise.resolve([]), { for: lock })),
         innerJoin: jest.fn().mockReturnValue({
           where: jest.fn().mockResolvedValue([]),
         }),
@@ -1912,6 +2147,7 @@ describe('UsersService.toPublic', () => {
 describe('UsersService.updateAvatar', () => {
   let usersService: UsersService
   let db: ReturnType<typeof avatarTestDb>
+  let audit: ReturnType<typeof auditStub>
   let storageService: {
     // Typed with upload()'s real argument list (objectKey, buffer,
     // contentType), so mock.calls below is typed too, not `any`.
@@ -1922,6 +2158,7 @@ describe('UsersService.updateAvatar', () => {
 
   beforeEach(async () => {
     db = avatarTestDb()
+    audit = auditStub()
     storageService = {
       upload: jest
         .fn<Promise<void>, [string, Buffer, string]>()
@@ -1938,7 +2175,7 @@ describe('UsersService.updateAvatar', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
-        { provide: AuditService, useValue: {} },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -1959,6 +2196,7 @@ describe('UsersService.updateAvatar', () => {
 
   it('uploads the file under a new key, stores that key, and returns avatarUrl — never avatarPath', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 5, avatarPath: null })
+    db.lock.mockResolvedValue([{ id: 5, avatarPath: null }])
     const set = mockUpdateReturning(db, {
       id: 5,
       avatarPath: 'avatars/5/NEW.png',
@@ -1982,13 +2220,32 @@ describe('UsersService.updateAvatar', () => {
     })
     // No previous photo, so nothing to clean up.
     expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
+    // ONE entry, in the transaction (tx === db in this mock): the storage
+    // keys before and after — a key names the file for good, a signed URL
+    // expires in minutes.
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(db)
+    expect(entry).toStrictEqual({
+      performedBy: 5,
+      action: 'USER_AVATAR_CHANGED',
+      targetUserId: 5,
+      entityType: 'users',
+      entityId: 5,
+      details: { changes: { avatarPath: { from: null, to: uploadedKey } } },
+    })
   })
 
-  it('deletes the OLD file — only after the new one is uploaded and the row points at it', async () => {
+  // The file deleted is the one the row pointed at UNDER THE LOCK — not the
+  // one read before the upload: if another upload landed in between, that
+  // newer photo is the one being replaced. Here the early read says
+  // EARLIER.png and the locked read OLD.png: OLD.png is replaced, and named.
+  it('deletes the OLD file — the one read under the lock — only after the new one is uploaded and the row points at it', async () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 5,
-      avatarPath: 'avatars/5/OLD.png',
+      avatarPath: 'avatars/5/EARLIER.png',
     })
+    db.lock.mockResolvedValue([{ id: 5, avatarPath: 'avatars/5/OLD.png' }])
     mockUpdateReturning(db, { id: 5, avatarPath: 'avatars/5/NEW.png' })
 
     await usersService.updateAvatar(5, fakeAvatar, selfUser)
@@ -1997,6 +2254,15 @@ describe('UsersService.updateAvatar', () => {
     expect(storageService.deleteUnreferenced).toHaveBeenCalledWith(
       'avatars/5/OLD.png',
     )
+    const [, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entry.details).toStrictEqual({
+      changes: {
+        avatarPath: {
+          from: 'avatars/5/OLD.png',
+          to: storageService.upload.mock.calls[0][0],
+        },
+      },
+    })
     // invocationCallOrder: a global counter Jest stamps on every mock call
     // — a lower number means an earlier call.
     const deleteOrder =
@@ -2011,6 +2277,7 @@ describe('UsersService.updateAvatar', () => {
 describe('UsersService.removeAvatar', () => {
   let usersService: UsersService
   let db: ReturnType<typeof avatarTestDb>
+  let audit: ReturnType<typeof auditStub>
   let storageService: {
     deleteUnreferenced: jest.Mock
     getPresignedUrlOrNull: jest.Mock
@@ -2018,6 +2285,7 @@ describe('UsersService.removeAvatar', () => {
 
   beforeEach(async () => {
     db = avatarTestDb()
+    audit = auditStub()
     storageService = {
       deleteUnreferenced: jest.fn().mockResolvedValue(undefined),
       getPresignedUrlOrNull: jest.fn().mockResolvedValue(null),
@@ -2027,7 +2295,7 @@ describe('UsersService.removeAvatar', () => {
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageService },
-        { provide: AuditService, useValue: {} },
+        { provide: AuditService, useValue: audit },
         { provide: CareTeamService, useValue: careTeamStub() },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
@@ -2051,6 +2319,7 @@ describe('UsersService.removeAvatar', () => {
       id: 5,
       avatarPath: 'avatars/5/OLD.png',
     })
+    db.lock.mockResolvedValue([{ id: 5, avatarPath: 'avatars/5/OLD.png' }])
     const set = mockUpdateReturning(db, { id: 5, avatarPath: null })
 
     const result = await usersService.removeAvatar(5, selfUser)
@@ -2064,15 +2333,31 @@ describe('UsersService.removeAvatar', () => {
       storageService.deleteUnreferenced.mock.invocationCallOrder[0],
     )
     expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(db)
+    expect(entry).toStrictEqual({
+      performedBy: 5,
+      action: 'USER_AVATAR_REMOVED',
+      targetUserId: 5,
+      entityType: 'users',
+      entityId: 5,
+      details: {
+        changes: { avatarPath: { from: 'avatars/5/OLD.png', to: null } },
+      },
+    })
   })
 
-  it('is idempotent — succeeds without touching storage when there was no photo', async () => {
+  // Nothing to remove changes nothing — so nothing is written: no UPDATE,
+  // no entry (the convention), and storage is left alone.
+  it('is idempotent — succeeds without touching storage, the row or the audit log when there was no photo', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 5, avatarPath: null })
-    mockUpdateReturning(db, { id: 5, avatarPath: null })
+    db.lock.mockResolvedValue([{ id: 5, avatarPath: null }])
 
     const result = await usersService.removeAvatar(5, selfUser)
 
     expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
     expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
   })
 })

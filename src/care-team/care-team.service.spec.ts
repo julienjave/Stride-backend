@@ -46,6 +46,8 @@ const practitioner: Actor = { id: 4, activeRole: UserRole.PRACTITIONER }
 const colleague = 5
 const admin: Actor = { id: 1, activeRole: UserRole.ADMIN }
 const PATIENT_ID = 10
+// When a link began, as the database returns it (pinned far from today).
+const STARTED = new Date('2031-03-01T09:00:00Z')
 
 // Turns a Drizzle `sql` object into what Postgres would actually receive:
 // the SQL text (with $1, $2… placeholders) and the parameter values. It's
@@ -102,7 +104,11 @@ function exclusionError() {
 
 describe('CareTeamService', () => {
   let service: CareTeamService
+  // Since the audit review, every write's entry goes through
+  // logInTransaction (inside the write's transaction); `auditLog` is the
+  // old after-commit log(), kept to assert it is NOT used.
   let auditLog: jest.Mock
+  let auditInTx: jest.Mock<Promise<void>, [unknown, Record<string, unknown>]>
   let presign: jest.Mock
   // A fake Drizzle client. withRlsContext() calls db.transaction(fn) and,
   // inside, tx.execute() twice to set the session context; here tx === db,
@@ -139,12 +145,20 @@ describe('CareTeamService', () => {
         },
         {
           provide: AuditService,
-          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+          useValue: {
+            log: jest.fn().mockResolvedValue(undefined),
+            logInTransaction: jest
+              .fn<Promise<void>, [unknown, Record<string, unknown>]>()
+              .mockResolvedValue(undefined),
+          },
         },
       ],
     }).compile()
     service = moduleRef.get(CareTeamService)
     auditLog = moduleRef.get<{ log: jest.Mock }>(AuditService).log
+    auditInTx = moduleRef.get<{ logInTransaction: typeof auditInTx }>(
+      AuditService,
+    ).logInTransaction
     presign = moduleRef.get<{ getPresignedUrlOrNull: jest.Mock }>(
       StorageService,
     ).getPresignedUrlOrNull
@@ -380,10 +394,19 @@ describe('CareTeamService', () => {
       givenEntries([entry(55)])
     }
 
-    it('with an empty body, the practitioner joins: inserted, audited AFTER, and returned', async () => {
+    // The link and its entry in ONE transaction (tx === db in this mock):
+    // the entry follows the insert inside it, so a link can't exist without
+    // its trail — the accountability this route rests on.
+    it('with an empty body, the practitioner joins: inserted, audited in the same transaction, and returned', async () => {
       givenAllowed()
       const values = mockInsertReturning([
-        { id: 55, practitionerId: 4, endsAt: null, reason: null },
+        {
+          id: 55,
+          practitionerId: 4,
+          startedAt: STARTED,
+          endsAt: null,
+          reason: null,
+        },
       ])
 
       await expect(
@@ -397,24 +420,39 @@ describe('CareTeamService', () => {
         createdBy: 4,
         reason: null,
       })
-      expect(auditLog).toHaveBeenCalledWith({
+      expect(auditInTx).toHaveBeenCalledTimes(1)
+      const [entryTx, logged] = auditInTx.mock.calls[0]
+      expect(entryTx).toBe(db)
+      expect(logged).toStrictEqual({
         performedBy: 4,
         action: 'CARE_TEAM_JOINED',
         targetUserId: PATIENT_ID,
         entityType: 'care_team_members',
         entityId: 55,
-        details: { practitionerId: 4, endsAt: null, reason: null },
+        details: {
+          practitionerId: 4,
+          startedAt: STARTED,
+          endsAt: null,
+          reason: null,
+        },
       })
-      expect(auditLog.mock.invocationCallOrder[0]).toBeGreaterThan(
+      expect(auditInTx.mock.invocationCallOrder[0]).toBeGreaterThan(
         values.mock.invocationCallOrder[0],
       )
+      expect(auditLog).not.toHaveBeenCalled()
     })
 
     it('adds a colleague, with a planned end and a reason, audited as MEMBER_ADDED', async () => {
       givenAllowed()
       const endsAt = new Date(Date.now() + 7 * 24 * 3600 * 1000)
       const values = mockInsertReturning([
-        { id: 56, practitionerId: colleague, endsAt, reason: 'Holiday cover' },
+        {
+          id: 56,
+          practitionerId: colleague,
+          startedAt: STARTED,
+          endsAt,
+          reason: 'Holiday cover',
+        },
       ])
 
       await service.addMember(
@@ -434,16 +472,20 @@ describe('CareTeamService', () => {
         createdBy: 4,
         reason: 'Holiday cover',
       })
-      expect(auditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: 'CARE_TEAM_MEMBER_ADDED',
-          details: {
-            practitionerId: colleague,
-            endsAt,
-            reason: 'Holiday cover',
-          },
-        }),
-      )
+      const [, logged] = auditInTx.mock.calls[0]
+      expect(logged).toStrictEqual({
+        performedBy: 4,
+        action: 'CARE_TEAM_MEMBER_ADDED',
+        targetUserId: PATIENT_ID,
+        entityType: 'care_team_members',
+        entityId: 56,
+        details: {
+          practitionerId: colleague,
+          startedAt: STARTED,
+          endsAt,
+          reason: 'Holiday cover',
+        },
+      })
     })
 
     // Every 400 below asserts its exact message, not only "some
@@ -558,6 +600,7 @@ describe('CareTeamService', () => {
       await expect(
         service.addMember(PATIENT_ID, {}, practitioner),
       ).rejects.toThrow(ConflictException)
+      expect(auditInTx).not.toHaveBeenCalled()
       expect(auditLog).not.toHaveBeenCalled()
     })
 
@@ -603,7 +646,10 @@ describe('CareTeamService', () => {
       'lets %s end it: end date + ended_by set, audited, returned',
       async (_who, actor) => {
         givenEntries([entry(60)])
-        const set = mockUpdateReturning([{ id: 60 }])
+        const endedAt = new Date('2031-03-04T10:00:00Z')
+        const set = mockUpdateReturning([
+          { id: 60, startedAt: STARTED, endsAt: endedAt },
+        ])
 
         await expect(
           service.endMembership(PATIENT_ID, 4, actor),
@@ -615,14 +661,19 @@ describe('CareTeamService', () => {
         expect(changes.endedBy).toBe(actor.id)
         // ends_at = the DATABASE's now(), not the app server's clock.
         expect(render(changes.endsAt).sql).toBe('now()')
-        expect(auditLog).toHaveBeenCalledWith({
+        // In the same transaction, with the period the link covered — who
+        // could read this patient's file, from when to when.
+        const [entryTx, logged] = auditInTx.mock.calls[0]
+        expect(entryTx).toBe(db)
+        expect(logged).toStrictEqual({
           performedBy: actor.id,
           action: 'CARE_TEAM_ENDED',
           targetUserId: PATIENT_ID,
           entityType: 'care_team_members',
           entityId: 60,
-          details: { practitionerId: 4 },
+          details: { practitionerId: 4, startedAt: STARTED, endsAt: endedAt },
         })
+        expect(auditLog).not.toHaveBeenCalled()
       },
     )
 
@@ -632,6 +683,7 @@ describe('CareTeamService', () => {
       await expect(
         service.endMembership(PATIENT_ID, 4, practitioner),
       ).rejects.toThrow(NotFoundException)
+      expect(auditInTx).not.toHaveBeenCalled()
       expect(auditLog).not.toHaveBeenCalled()
     })
   })

@@ -43,10 +43,15 @@ import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
+import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
+// Every write here is @AuditedByService() (the audit review, Phase 6): its
+// service method writes ONE complete entry — USER_CREATED, _ROLE_GRANTED,
+// _UPDATED, _AVATAR_CHANGED / _REMOVED, _DEACTIVATED, _REACTIVATED — in the
+// change's own transaction, and the generic interceptor stays out.
 @UseGuards(SessionAuthGuard)
 @ApiTags('Users')
 @Controller('users')
@@ -59,6 +64,7 @@ export class UsersController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
   @Post()
   create(@CurrentUser() currentUser: CurrentUser, @Body() dto: CreateUserDto) {
     return this.usersService.create(dto, currentUser)
@@ -67,6 +73,7 @@ export class UsersController {
   // Admin-only: grants an existing user an ADDITIONAL role
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/roles')
   grantRole(
     @Param('id', ParseIntPipe) id: number,
@@ -80,6 +87,7 @@ export class UsersController {
   // body, extracts the single part named "file", validates/buffers it per
   // imageUploadOptions, and makes the result available via @UploadedFile()
   // below — the file-upload equivalent of @Body() + a DTO for JSON routes.
+  @AuditedByService()
   @Post(':id/avatar')
   @UseInterceptors(FileInterceptor('file', imageUploadOptions))
   uploadAvatar(
@@ -139,6 +147,7 @@ export class UsersController {
 
   // --- PATCH ROUTES ---
 
+  @AuditedByService()
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
@@ -169,6 +178,7 @@ export class UsersController {
   // two very different actions should never share a route. Express matches
   // the full path, so DELETE /users/5 and DELETE /users/5/avatar can't be
   // confused for each other.
+  @AuditedByService()
   @Delete(':id/avatar')
   removeAvatar(
     @Param('id', ParseIntPipe) id: number,
@@ -184,6 +194,7 @@ export class UsersController {
 
   // Self (any role deactivating their own account), a practitioner
   // deactivating one of their own patients, or an admin acting on anyone.
+  @AuditedByService()
   @Delete(':id')
   async remove(
     @Param('id', ParseIntPipe) id: number,
@@ -209,6 +220,7 @@ export class UsersController {
   // account is treated more conservatively than removing it.
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
+  @AuditedByService()
   @Post(':id/reactivate')
   reactivate(
     @Param('id', ParseIntPipe) id: number,

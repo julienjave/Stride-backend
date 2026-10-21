@@ -46,13 +46,11 @@ import {
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
 } from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
+import { changedFields } from '../common/changed-fields'
 import { InvitationsService } from '../invitations/invitations.service'
 import type { InvitationStatus } from '../invitations/invitation-status'
 import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
-import {
-  CareTeamService,
-  CREATED_PATIENT_REASON,
-} from '../care-team/care-team.service'
+import { CareTeamService } from '../care-team/care-team.service'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -268,6 +266,32 @@ export class UsersService {
           requestingUser.id,
         )
 
+        // ONE entry for the whole creation, in this transaction (the audit
+        // convention): the account as created, plus what came with it — the
+        // creator's care-team link and the first invitation. They are parts
+        // of one act ("Alex added a patient"), so they are one entry; three
+        // entries for one request would read as three separate decisions.
+        // The record is the request as validated: every field a
+        // CreateUserDto can carry is account data, none of it a secret (no
+        // password exists yet). Fields the request didn't send are
+        // `undefined` on the DTO instance, and the jsonb column stores
+        // JSON.stringify's output, which leaves them out — the stored record
+        // is exactly what was sent. Whether the invitation EMAIL went out is
+        // not here — it happens after the commit, and the invitation row
+        // itself records it (email_sent_at).
+        await this.auditService.logInTransaction(tx, {
+          performedBy: requestingUser.id,
+          action: 'USER_CREATED',
+          targetUserId: user.id,
+          entityType: 'users',
+          entityId: user.id,
+          details: {
+            record: dto,
+            ...(creatorLink ? { careTeamLinkId: creatorLink.id } : {}),
+            invitationId: issued.invitation.id,
+          },
+        })
+
         const roles = [dto.role]
         return this.attachProfile(
           { ...(await this.toPublic(user)), roles },
@@ -276,23 +300,6 @@ export class UsersService {
         )
       }),
     )
-
-    // After the commit, not inside the transaction: AuditService writes on
-    // its own connection, so logging from inside could record a link that
-    // a later failure then rolls back.
-    if (creatorLink) {
-      await this.auditService.log({
-        performedBy: requestingUser.id,
-        action: 'CARE_TEAM_JOINED',
-        targetUserId: created.id,
-        entityType: 'care_team_members',
-        entityId: creatorLink.id,
-        details: {
-          practitionerId: requestingUser.id,
-          reason: CREATED_PATIENT_REASON,
-        },
-      })
-    }
 
     // Unreachable — the transaction always sets it — but it tells
     // TypeScript (and a reader) that the code below has an invitation.
@@ -309,14 +316,6 @@ export class UsersService {
       issued.token,
       requestingUser,
     )
-    await this.auditService.log({
-      performedBy: requestingUser.id,
-      action: 'INVITATION_SENT',
-      targetUserId: created.id,
-      entityType: 'invitations',
-      entityId: issued.invitation.id,
-      details: { emailSent },
-    })
 
     const invitation: CreatedUserInvitation = {
       id: issued.invitation.id,
@@ -350,12 +349,20 @@ export class UsersService {
         // Only creates the profile row if this user doesn't already have one
         // for this role (relevant if a role was previously granted, then
         // somehow re-granted after removal — defensive, not expected in
-        // normal use, but cheap to guard against).
+        // normal use, but cheap to guard against). `profile` keeps what WAS
+        // inserted, for the audit entry: null when an existing profile was
+        // kept (the request's profile fields were then not used).
+        let profile: Record<string, unknown> | null = null
         if (dto.role === UserRole.PRACTITIONER) {
           const hasProfile = await tx.query.practitionerProfiles.findFirst({
             where: eq(practitionerProfiles.userId, userId),
           })
           if (!hasProfile) {
+            profile = {
+              licenseNumber: dto.licenseNumber!,
+              specialties: dto.specialties ?? [],
+              bio: dto.bio ?? null,
+            }
             await tx.insert(practitionerProfiles).values({
               userId,
               licenseNumber: dto.licenseNumber!,
@@ -368,6 +375,7 @@ export class UsersService {
             where: eq(patientProfiles.userId, userId),
           })
           if (!hasProfile) {
+            profile = { dateOfBirth: dto.dateOfBirth! }
             await tx
               .insert(patientProfiles)
               .values({ userId, dateOfBirth: dto.dateOfBirth! })
@@ -377,11 +385,25 @@ export class UsersService {
             where: eq(adminProfiles.userId, userId),
           })
           if (!hasProfile) {
+            profile = { position: dto.position ?? null }
             await tx
               .insert(adminProfiles)
               .values({ userId, position: dto.position })
           }
         }
+
+        // Granting a role widens what an account can do (a patient who
+        // becomes a practitioner can read clinical data): exactly the kind
+        // of change an access review looks for. One entry, in this
+        // transaction, with the profile the role came with.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'USER_ROLE_GRANTED',
+          targetUserId: userId,
+          entityType: 'users',
+          entityId: userId,
+          details: { role: dto.role, profile },
+        })
 
         return this.getRolesForUser(userId, tx)
       }),
@@ -405,15 +427,37 @@ export class UsersService {
     file: Express.Multer.File,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    const existing = await this.findRawOrThrow(id)
+    await this.findRawOrThrow(id)
     const objectKey = `avatars/${id}/${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(users)
-        .set({ avatarPath: objectKey })
-        .where(eq(users.id, id))
-        .returning(),
+    // The previous key is read INSIDE the transaction, under the row's lock
+    // (lockUser): the photo it replaces is then certainly the one the audit
+    // entry names — and the one deleted below. The transaction returns both
+    // the updated row and that key.
+    const { updated, previousPath } = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        const before = await this.lockUser(tx, id)
+        const [row] = await tx
+          .update(users)
+          .set({ avatarPath: objectKey })
+          .where(eq(users.id, id))
+          .returning()
+        // Storage keys, not URLs: a signed URL expires in minutes, the key
+        // says for good which file was shown before and after.
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'USER_AVATAR_CHANGED',
+          targetUserId: id,
+          entityType: 'users',
+          entityId: id,
+          details: {
+            changes: { avatarPath: { from: before.avatarPath, to: objectKey } },
+          },
+        })
+        return { updated: row, previousPath: before.avatarPath }
+      },
     )
     // Order matters: upload the new file, point the row at it, and only
     // THEN delete the old one. If anything before this line fails, the
@@ -424,8 +468,8 @@ export class UsersService {
     // so a storage hiccup while cleaning up the OLD file must not turn this
     // successful upload into an error — it just leaves an orphaned file
     // (logged). See StorageService.deleteUnreferenced().
-    if (existing.avatarPath) {
-      await this.storageService.deleteUnreferenced(existing.avatarPath)
+    if (previousPath) {
+      await this.storageService.deleteUnreferenced(previousPath)
     }
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
@@ -655,44 +699,73 @@ export class UsersService {
     // already holds — a 409, not a 500 (see translateDuplicateLicense).
     return translateDuplicateLicense(() =>
       withRlsContext(this.db, currentUser, async (tx) => {
-        const updated =
-          Object.keys(userFields).length > 0
-            ? (
-                await tx
-                  .update(users)
-                  .set(userFields)
-                  .where(eq(users.id, id))
-                  .returning()
-              )[0]
-            : await tx.query.users.findFirst({ where: eq(users.id, id) })
+        // Every value this PATCH may change, as it is NOW: the user's row
+        // (locked until the commit — two simultaneous edits of one profile
+        // take turns, so each entry's "from" is what that edit really
+        // replaced) and the profile rows. Then only what really differs.
+        const before = {
+          ...(await this.lockUser(tx, id)),
+          ...(await this.profileValues(tx, id)),
+        }
+        const changes = changedFields(before, {
+          ...userFields,
+          licenseNumber,
+          specialties,
+          bio,
+          dateOfBirth,
+          position,
+        })
 
-        if (
-          licenseNumber !== undefined ||
-          specialties !== undefined ||
-          bio !== undefined
-        ) {
-          await tx
-            .update(practitionerProfiles)
-            .set({
-              ...(licenseNumber !== undefined && { licenseNumber }),
-              ...(specialties !== undefined && { specialties }),
-              ...(bio !== undefined && { bio }),
-            })
-            .where(eq(practitionerProfiles.userId, id))
-        }
-        if (dateOfBirth !== undefined) {
-          await tx
-            .update(patientProfiles)
-            .set({ dateOfBirth })
-            .where(eq(patientProfiles.userId, id))
-        }
-        if (position !== undefined) {
-          await tx
-            .update(adminProfiles)
-            .set({ position })
-            .where(eq(adminProfiles.userId, id))
+        // The convention's "a request that changes nothing writes nothing":
+        // no UPDATE, no entry. (Saving a form unchanged is common — the
+        // profile page's fields each save on their own.)
+        if (Object.keys(changes).length > 0) {
+          if (Object.keys(userFields).length > 0) {
+            await tx.update(users).set(userFields).where(eq(users.id, id))
+          }
+          if (
+            licenseNumber !== undefined ||
+            specialties !== undefined ||
+            bio !== undefined
+          ) {
+            await tx
+              .update(practitionerProfiles)
+              .set({
+                ...(licenseNumber !== undefined && { licenseNumber }),
+                ...(specialties !== undefined && { specialties }),
+                ...(bio !== undefined && { bio }),
+              })
+              .where(eq(practitionerProfiles.userId, id))
+          }
+          if (dateOfBirth !== undefined) {
+            await tx
+              .update(patientProfiles)
+              .set({ dateOfBirth })
+              .where(eq(patientProfiles.userId, id))
+          }
+          if (position !== undefined) {
+            await tx
+              .update(adminProfiles)
+              .set({ position })
+              .where(eq(adminProfiles.userId, id))
+          }
+          // Before → after for each changed field. A patient's date of
+          // birth and address are personal health information under HIPAA;
+          // they belong in the trail of WHO changed them — the audit log is
+          // readable by admins only (audit_logs_select).
+          await this.auditService.logInTransaction(tx, {
+            performedBy: currentUser.id,
+            action: 'USER_UPDATED',
+            targetUserId: id,
+            entityType: 'users',
+            entityId: id,
+            details: { changes },
+          })
         }
 
+        const updated = await tx.query.users.findFirst({
+          where: eq(users.id, id),
+        })
         const roles = await this.getRolesForUser(id, tx)
         return this.attachProfile(
           { ...(await this.toPublic(updated!)), roles },
@@ -712,12 +785,8 @@ export class UsersService {
     currentUser: { id: number; activeRole: UserRole },
   ) {
     await this.findOne(id)
-    const [deactivated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(users)
-        .set({ isActive: false })
-        .where(eq(users.id, id))
-        .returning(),
+    const deactivated = await withRlsContext(this.db, currentUser, (tx) =>
+      this.setActive(tx, id, false, currentUser.id),
     )
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
@@ -741,20 +810,41 @@ export class UsersService {
     id: number,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    const existing = await this.findRawOrThrow(id)
-    const [updated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(users)
-        .set({ avatarPath: null })
-        .where(eq(users.id, id))
-        .returning(),
+    await this.findRawOrThrow(id)
+    const { updated, previousPath } = await withRlsContext(
+      this.db,
+      currentUser,
+      async (tx) => {
+        const before = await this.lockUser(tx, id)
+        // No photo to remove: nothing changes, so nothing is written — no
+        // UPDATE and no audit entry (the idempotent case above).
+        if (before.avatarPath === null) {
+          return { updated: before, previousPath: null }
+        }
+        const [row] = await tx
+          .update(users)
+          .set({ avatarPath: null })
+          .where(eq(users.id, id))
+          .returning()
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'USER_AVATAR_REMOVED',
+          targetUserId: id,
+          entityType: 'users',
+          entityId: id,
+          details: {
+            changes: { avatarPath: { from: before.avatarPath, to: null } },
+          },
+        })
+        return { updated: row, previousPath: before.avatarPath }
+      },
     )
     // Same order as updateAvatar(), same reason: the row stops pointing at
     // the file BEFORE the file is deleted, so a failed delete leaves an
     // orphaned file, never a user pointing at a missing one. Best-effort
     // for the same reason too: the removal is already saved.
-    if (existing.avatarPath) {
-      await this.storageService.deleteUnreferenced(existing.avatarPath)
+    if (previousPath) {
+      await this.storageService.deleteUnreferenced(previousPath)
     }
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
@@ -786,24 +876,12 @@ export class UsersService {
     currentUser: { id: number; activeRole: UserRole },
   ) {
     await this.findOne(id)
-    const [reactivated] = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .update(users)
-        .set({ isActive: true })
-        .where(eq(users.id, id))
-        .returning(),
+    // "Who restored access to which account, and when" is exactly the kind
+    // of event HIPAA's audit controls exist to capture — written in the
+    // same transaction as the change (setActive), so the two can't part.
+    const reactivated = await withRlsContext(this.db, currentUser, (tx) =>
+      this.setActive(tx, id, true, currentUser.id),
     )
-    // Audit logging is not optional here — this app treats "who restored
-    // access to which account, and when" as exactly the kind of event
-    // HIPAA's audit-controls technical safeguard exists to capture,
-    // matching the precedent already set by LOGIN_SUCCESS/LOGIN_FAILURE/
-    // PASSWORD_RESET_REQUESTED elsewhere in this codebase.
-    await this.auditService.log({
-      performedBy: currentUser.id,
-      action: 'USER_REACTIVATED',
-      entityType: 'users',
-      entityId: id,
-    })
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
       { ...(await this.toPublic(reactivated)), roles },
@@ -812,6 +890,89 @@ export class UsersService {
   }
 
   // === HELPER FUNCTIONS =====================================================
+
+  // The user's raw row, LOCKED until the end of the caller's transaction
+  // (SELECT … FOR UPDATE). Every write to an account reads its "before"
+  // values through this, inside its own transaction: a second request for
+  // the same account then waits at this line until the first has committed,
+  // and reads what the first one wrote. Without the lock, two edits could
+  // both read the same old value, and the second entry would claim to have
+  // replaced a value that was in fact already gone.
+  //
+  // Under row-level security, FOR UPDATE also asks the table's UPDATE policy
+  // (users_update: self, an admin, or a managing practitioner) — the very
+  // people the controller lets through. A row that policy hides is answered
+  // like a missing one.
+  private async lockUser(tx: DrizzleDb, id: number) {
+    const [row] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, id))
+      .for('update')
+    if (!row) {
+      throw new NotFoundException(`User ${id} not found`)
+    }
+    return row
+  }
+
+  // The profile fields a PATCH may change, as stored now, flattened to the
+  // names UpdateUserDto uses — so changedFields() can compare them with the
+  // request. Only the profiles the account HAS: a field of a missing profile
+  // is refused before this (update()'s role checks).
+  private async profileValues(tx: DrizzleDb, id: number) {
+    const [practitioner, patient, admin] = await Promise.all([
+      tx.query.practitionerProfiles.findFirst({
+        where: eq(practitionerProfiles.userId, id),
+      }),
+      tx.query.patientProfiles.findFirst({
+        where: eq(patientProfiles.userId, id),
+      }),
+      tx.query.adminProfiles.findFirst({
+        where: eq(adminProfiles.userId, id),
+      }),
+    ])
+    return {
+      ...(practitioner && {
+        licenseNumber: practitioner.licenseNumber,
+        specialties: practitioner.specialties,
+        bio: practitioner.bio,
+      }),
+      ...(patient && { dateOfBirth: patient.dateOfBirth }),
+      ...(admin && { position: admin.position }),
+    }
+  }
+
+  // Deactivates (false) or reactivates (true) an account, inside the
+  // caller's transaction, with its ONE audit entry — or, when the account is
+  // already in that state, changes and writes nothing (the convention).
+  // Returns the row as it now is.
+  private async setActive(
+    tx: DrizzleDb,
+    id: number,
+    isActive: boolean,
+    performedBy: number,
+  ) {
+    const before = await this.lockUser(tx, id)
+    if (before.isActive === isActive) {
+      return before
+    }
+    const [row] = await tx
+      .update(users)
+      .set({ isActive })
+      .where(eq(users.id, id))
+      .returning()
+    await this.auditService.logInTransaction(tx, {
+      performedBy,
+      action: isActive ? 'USER_REACTIVATED' : 'USER_DEACTIVATED',
+      targetUserId: id,
+      entityType: 'users',
+      entityId: id,
+      details: {
+        changes: { isActive: { from: before.isActive, to: isActive } },
+      },
+    })
+    return row
+  }
 
   // The raw `users` row, or a 404. RAW means unstripped — passwordHash,
   // avatarPath and all — which is exactly why it's private: its callers
