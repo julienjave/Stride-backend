@@ -18,6 +18,7 @@
 import { AuditService } from './audit.service'
 import { auditLogs } from '../database/schema'
 import type { DrizzleDb } from '../database/drizzle.provider'
+import type { AuditEntry } from './audit.service'
 
 // A stand-in for a Drizzle connection or transaction: insert(table) →
 // values(row), recording what was inserted where.
@@ -28,7 +29,7 @@ function fakeDb() {
 }
 
 describe('AuditService.logInTransaction', () => {
-  const entry = {
+  const entry: AuditEntry = {
     performedBy: 7,
     action: 'ASSIGNED_PROGRAM_SCHEDULE_SET',
     targetUserId: 20,
@@ -67,7 +68,7 @@ describe('AuditService.logInTransaction', () => {
 describe('AuditService.logReads', () => {
   // A practitioner (7) reading two patients' data, and an admin's own read
   // (9 reading 9 — e.g. an account that is also a patient).
-  const read = (performedBy: number, targetUserId: number) => ({
+  const read = (performedBy: number, targetUserId: number): AuditEntry => ({
     performedBy,
     action: 'PROGRAMS_VIEWED',
     targetUserId,
@@ -120,5 +121,28 @@ describe('AuditService.logReads', () => {
     await expect(service.logReads([read(7, 20)])).rejects.toThrow(
       'insert failed',
     )
+  })
+})
+
+describe('AuditService.actions', () => {
+  // The screen's action filter: every action, by name, with its kind — no
+  // database involved.
+  it('lists every action with its kind, sorted by name', () => {
+    const own = fakeDb()
+    const service = new AuditService(own.db)
+
+    const list = service.actions()
+
+    expect(list).toHaveLength(95)
+    expect(list.map((item) => item.action)).toEqual(
+      list.map((item) => item.action).sort(),
+    )
+    expect(list.at(-1)).toStrictEqual({
+      action: 'USER_UPDATED',
+      kind: 'change',
+    })
+    expect(list).toContainEqual({ action: 'SESSION_VIEWED', kind: 'view' })
+    expect(list).toContainEqual({ action: 'LOGIN_FAILURE', kind: 'sign_in' })
+    expect(own.insert).not.toHaveBeenCalled()
   })
 })

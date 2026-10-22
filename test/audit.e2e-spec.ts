@@ -188,7 +188,7 @@ describe('Audit (e2e)', () => {
     expect(res.status).toBe(200)
     expect(res.body.data.length).toBeGreaterThan(0)
     expect(
-      res.body.data.every((entry: any) => entry.performedBy === adminId),
+      res.body.data.every((entry: any) => entry.performer.id === adminId),
     ).toBe(true)
   })
 

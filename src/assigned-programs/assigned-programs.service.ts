@@ -84,6 +84,7 @@ import {
 } from './program-summary'
 import { AuditService } from '../audit/audit.service'
 import { perPatient } from '../audit/clinical-reads'
+import type { AuditAction } from '../audit/audit-vocabulary'
 import { StorageService } from '../storage/storage.service'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
 import { assertProgramOpen, planClosing } from './program-state'
@@ -2155,7 +2156,7 @@ export class AssignedProgramsService {
   private logProgramRead(
     currentUser: CurrentUser,
     program: { id: number; patientId: number },
-    action: string,
+    action: AuditAction,
     details?: Record<string, unknown>,
   ) {
     return this.auditService.logReads([

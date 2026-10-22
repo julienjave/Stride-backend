@@ -43,6 +43,14 @@ export class AuditController {
 
   // --- GET ROUTES ---
 
+  // The list of actions, for the screen's action filter (the audit log
+  // viewer, 2026-10-21). A STATIC path: declared before any `:param`
+  // route would be, so Nest never reads "actions" as an id.
+  @Get('actions')
+  actions() {
+    return this.auditService.actions()
+  }
+
   @Get()
   findAll(
     @CurrentUser() user: CurrentUser,
