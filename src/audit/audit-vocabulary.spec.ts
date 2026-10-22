@@ -45,7 +45,9 @@ describe('audit vocabulary', () => {
     it('names each stored entity type, both spellings included', () => {
       expect(areaOf('assigned-programs')).toBe('Programs')
       expect(areaOf('medical_files')).toBe('Medical files')
-      expect(areaOf('alerts')).toBe('To-do')
+      expect(areaOf('alerts')).toBe('For review')
+      expect(areaOf('session_reviews')).toBe('For review')
+      expect(areaOf('program_alert_reviews')).toBe('For review')
     })
 
     it('shows an entity type it does not know as stored', () => {

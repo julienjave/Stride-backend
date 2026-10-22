@@ -147,7 +147,7 @@ export const AUDIT_ACTIONS = {
   SESSION_SKIPPED: 'change',
   SESSION_VIEWED: 'view',
 
-  // The practitioners' To-do (pain and attendance alerts)
+  // The practitioners' "For review" list (pain and attendance alerts)
   SESSION_REVIEWED: 'change',
   PROGRAM_ALERT_REVIEWED: 'change',
   ALERTS_VIEWED: 'view',
@@ -183,9 +183,11 @@ export const AUDIT_AREAS = {
   program_templates: 'Templates',
   'assigned-programs': 'Programs',
   sessions: 'Sessions',
-  session_reviews: 'To-do',
-  program_alert_reviews: 'To-do',
-  alerts: 'To-do',
+  // "For review", as the practitioner's home calls it since 2026-10-19 — not
+  // "To-do", a name kept free for a real to-do list (roadmap, Phase 7).
+  session_reviews: 'For review',
+  program_alert_reviews: 'For review',
+  alerts: 'For review',
   conversations: 'Messages',
   messages: 'Messages',
   medical_files: 'Medical files',
