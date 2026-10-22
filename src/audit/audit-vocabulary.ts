@@ -60,6 +60,11 @@ export const AUDIT_ACTIONS = {
   MFA_DISABLED: 'change',
   PASSWORD_RESET_REQUESTED: 'change',
   PASSWORD_RESET_COMPLETED: 'change',
+  // Changing one's own sign-in email (decisions §12): asked (the address
+  // asked for), confirmed from the new inbox (from → to), cancelled (why).
+  EMAIL_CHANGE_REQUESTED: 'change',
+  EMAIL_CHANGE_CONFIRMED: 'change',
+  EMAIL_CHANGE_CANCELLED: 'change',
 
   // Accounts
   USER_CREATED: 'change',
@@ -175,6 +180,8 @@ export type AuditAction = keyof typeof AUDIT_ACTIONS
 // entity_type as stored → what the viewer shows.
 export const AUDIT_AREAS = {
   users: 'Accounts',
+  // A pending change of sign-in email is about the account too.
+  email_change_requests: 'Accounts',
   invitations: 'Invitations',
   care_team_members: 'Care teams',
   clinics: 'Clinics',

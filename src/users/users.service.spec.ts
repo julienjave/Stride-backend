@@ -1812,12 +1812,13 @@ describe('UsersService.softDelete', () => {
     usersService = moduleRef.get(UsersService)
   })
 
-  it('sets isActive to false and audits it in the same transaction', async () => {
+  it('sets isActive to false, ends the sessions and audits it all in the same transaction', async () => {
     db.query.users.findFirst.mockResolvedValue({ id: 6, isActive: true })
     const { tx, set } = accountTx({
       locked: { id: 6, isActive: true },
       roles: [UserRole.PATIENT],
       after: { id: 6, isActive: false },
+      sessions: ['phone', 'laptop'],
     })
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
@@ -1827,7 +1828,9 @@ describe('UsersService.softDelete', () => {
     })
 
     expect(set.mock.calls).toEqual([[{ isActive: false }]])
-    expect(result.isActive).toBe(false)
+    expect(result.user.isActive).toBe(false)
+    // The ended sessions answered, for the controller to close their sockets.
+    expect(result.endedSessionIds).toEqual(['phone', 'laptop'])
     const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
     expect(entryTx).toBe(tx)
     expect(entry).toStrictEqual({
@@ -1836,7 +1839,10 @@ describe('UsersService.softDelete', () => {
       targetUserId: 6,
       entityType: 'users',
       entityId: 6,
-      details: { changes: { isActive: { from: true, to: false } } },
+      details: {
+        changes: { isActive: { from: true, to: false } },
+        signedOutSessions: 2,
+      },
     })
   })
 
@@ -1848,10 +1854,14 @@ describe('UsersService.softDelete', () => {
     })
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
-    await usersService.softDelete(6, { id: 1, activeRole: UserRole.ADMIN })
+    const result = await usersService.softDelete(6, {
+      id: 1,
+      activeRole: UserRole.ADMIN,
+    })
 
     expect(tx.update).not.toHaveBeenCalled()
     expect(audit.logInTransaction).not.toHaveBeenCalled()
+    expect(result.endedSessionIds).toEqual([])
   })
 
   // lockUser() under row security: a row the UPDATE policy hides comes
@@ -1975,6 +1985,10 @@ function accountTx(options: {
   patient?: ProfilePair
   admin?: ProfilePair
   updateResult?: () => Promise<unknown>
+  // The ids a session DELETE answers (RETURNING sid) — a deactivation ends
+  // the account's sessions. The same execute() also sets the RLS context,
+  // whose answer nobody reads.
+  sessions?: string[]
 }) {
   const result = options.updateResult ?? (() => Promise.resolve(undefined))
   const after = options.after ?? options.locked
@@ -1999,7 +2013,9 @@ function accountTx(options: {
   })
   const rolesRows = options.roles.map((role) => ({ role }))
   const tx = {
-    execute: jest.fn().mockResolvedValue(undefined),
+    execute: jest.fn().mockResolvedValue({
+      rows: (options.sessions ?? []).map((sid) => ({ sid })),
+    }),
     update: jest.fn(() => ({ set })),
     select: jest.fn(() => ({
       from: jest.fn(() => ({

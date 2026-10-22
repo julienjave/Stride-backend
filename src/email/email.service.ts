@@ -40,6 +40,30 @@ export interface InvitationEmail {
   validForDays: number
 }
 
+// The four emails of a change of sign-in address ("Change email", decisions
+// §12), gathered by EmailChangeService. The NEW address is never written in
+// full to the OLD inbox — EmailChangeService passes it masked
+// (email-change/mask-email.ts), the person's choice.
+export interface EmailChangeConfirmationEmail {
+  // The NEW address: the link proves it receives mail.
+  to: string
+  firstName: string
+  rawToken: string
+  validForHours: number
+}
+
+export interface EmailChangeNoticeEmail {
+  // The OLD address — the account's sign-in until the change is confirmed.
+  to: string
+  firstName: string
+  maskedNewEmail: string
+}
+
+export interface EmailChangeRequestedNoticeEmail extends EmailChangeNoticeEmail {
+  // The cancel link's token: the old inbox may stop the change.
+  rawCancelToken: string
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 // Decides WHAT each email says — subject, HTML and plain-text bodies, the
@@ -117,6 +141,102 @@ export class EmailService {
         '',
         'If it has expired, ask your clinic to send you a new one.',
         "If you weren't expecting this invitation, you can ignore this email.",
+      ].join('\n'),
+    })
+  }
+
+  // To the NEW address: the link that makes the change. Rejects if the
+  // transport couldn't send (EmailChangeService logs it — fire-and-forget,
+  // like the reset email, so a taken address and a free one take the same
+  // time to answer).
+  async sendEmailChangeConfirmation(
+    email: EmailChangeConfirmationEmail,
+  ): Promise<void> {
+    const confirmUrl = `${frontendUrl()}/confirm-email?token=${email.rawToken}`
+    const validity = `${email.validForHours} hours`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Confirm your new email address for Stride',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>You asked to use this address to sign in to Stride.</p>
+             <p><a href="${escapeHtml(confirmUrl)}">Confirm this address</a> — this link expires in ${validity}. Until then, your account keeps its current address.</p>
+             <p>If you didn't ask for this, you can ignore this email: nothing changes.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'You asked to use this address to sign in to Stride.',
+        '',
+        `Confirm this address: ${confirmUrl}`,
+        `This link expires in ${validity}. Until then, your account keeps its current address.`,
+        '',
+        "If you didn't ask for this, you can ignore this email: nothing changes.",
+      ].join('\n'),
+    })
+  }
+
+  // To the NEW address when it already belongs to an account (decisions
+  // §12, "reveal nothing"): the person asking is told "check your inbox"
+  // either way, and only whoever reads THIS inbox learns the address is
+  // taken. No name, no link — the email says nothing about either account.
+  async sendEmailChangeAddressTaken(to: string): Promise<void> {
+    await this.transport.send({
+      from: senderAddress(),
+      to,
+      subject: 'This address already has a Stride account',
+      html: `<p>Someone asked to use this address to sign in to Stride, but it already belongs to a Stride account, so it can't be used for another one.</p>
+             <p>If it was you, sign in with this address instead — or use "Forgot your password?" on the sign-in page.</p>
+             <p>If it wasn't you, you can ignore this email: nothing changes.</p>`,
+      text: [
+        "Someone asked to use this address to sign in to Stride, but it already belongs to a Stride account, so it can't be used for another one.",
+        '',
+        'If it was you, sign in with this address instead — or use "Forgot your password?" on the sign-in page.',
+        '',
+        "If it wasn't you, you can ignore this email: nothing changes.",
+      ].join('\n'),
+    })
+  }
+
+  // To the OLD address when a change is asked for: what is about to happen,
+  // and the link that stops it. The address the change goes to is masked.
+  async sendEmailChangeRequestedNotice(
+    email: EmailChangeRequestedNoticeEmail,
+  ): Promise<void> {
+    const cancelUrl = `${frontendUrl()}/cancel-email-change?token=${email.rawCancelToken}`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'A change of your Stride sign-in email was requested',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Someone signed in to your Stride account asked to change its sign-in email to ${escapeHtml(email.maskedNewEmail)}. Nothing changes until that address confirms it.</p>
+             <p>If this wasn't you, <a href="${escapeHtml(cancelUrl)}">cancel the change</a>, then reset your password from the sign-in page — someone may know it.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        `Someone signed in to your Stride account asked to change its sign-in email to ${email.maskedNewEmail}. Nothing changes until that address confirms it.`,
+        '',
+        `If this wasn't you, cancel the change: ${cancelUrl}`,
+        'Then reset your password from the sign-in page — someone may know it.',
+      ].join('\n'),
+    })
+  }
+
+  // To the OLD address once the change is made: the last email it receives
+  // about this account.
+  async sendEmailChangedNotice(email: EmailChangeNoticeEmail): Promise<void> {
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Your Stride sign-in email was changed',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Your Stride account now signs in with ${escapeHtml(email.maskedNewEmail)}, and was signed out on your other devices. This address will no longer receive emails about it.</p>
+             <p>If this wasn't you, contact your clinic straight away.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        `Your Stride account now signs in with ${email.maskedNewEmail}, and was signed out on your other devices. This address will no longer receive emails about it.`,
+        '',
+        "If this wasn't you, contact your clinic straight away.",
       ].join('\n'),
     })
   }

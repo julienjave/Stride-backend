@@ -536,7 +536,13 @@ describe('Account audit trail (e2e)', () => {
           target_user_id: patient.id,
           entity_type: 'users',
           entity_id: patient.id,
-          details: { changes: { isActive: { from: true, to: false } } },
+          // How many sessions the deactivation ended (test/users.e2e-spec.ts
+          // pins it): a number — not 0, though this patient never signed in:
+          // earlier suites' sessions can carry the same id.
+          details: {
+            changes: { isActive: { from: true, to: false } },
+            signedOutSessions: expect.any(Number),
+          },
         },
         {
           action: 'USER_REACTIVATED',

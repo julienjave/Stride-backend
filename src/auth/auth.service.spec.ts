@@ -777,13 +777,15 @@ describe('AuthService.resetPassword', () => {
   let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
+    const endedSessions = { rows: [{ sid: 'device-1' }, { sid: 'device-2' }] }
     db = {
       query: { users: { findFirst: jest.fn() } },
       transaction: jest.fn(),
       // destroyAllSessionsForUser() calls this.db.execute() directly (raw
       // SQL against connect-pg-simple's session table), separate from the
       // tx.execute() withRlsContext() issues inside db.transaction() below.
-      execute: jest.fn().mockResolvedValue(undefined),
+      // It answers the deleted sessions' ids (RETURNING sid) — two devices.
+      execute: jest.fn().mockResolvedValue(endedSessions),
     }
     // resetPassword() now fetches the target user's real roles to build a
     // synthetic self-context for withRlsContext() — see the comment on the
@@ -841,30 +843,46 @@ describe('AuthService.resetPassword', () => {
     ).rejects.toThrow(BadRequestException)
   })
 
+  // The reset's transaction: the password UPDATE (awaited as it is), then
+  // the pending email changes cancelled (`.returning()` says which). One
+  // `where()` serves both: a promise that also has `returning`.
+  function resetTx(cancelledChanges: { id: number }[]) {
+    const returning = jest.fn().mockResolvedValue(cancelledChanges)
+    const set = jest.fn().mockReturnValue({
+      where: jest.fn(() =>
+        Object.assign(Promise.resolve(undefined), { returning }),
+      ),
+    })
+    const tx = {
+      execute: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockReturnValue({ set }),
+    }
+    return { tx, set }
+  }
+
   it('resets the password and destroys existing sessions for a valid, unexpired token', async () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
     })
     // withRlsContext() sets two session GUCs via tx.execute() before
-    // invoking the callback, which then issues the real UPDATE via tx.
-    const tx = {
-      execute: jest.fn().mockResolvedValue(undefined),
-      update: jest.fn().mockReturnValue({
-        set: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    }
+    // invoking the callback, which then issues the real UPDATEs via tx.
+    const { tx } = resetTx([])
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
 
-    await authService.resetPassword('valid-token', 'newpassword123')
+    const result = await authService.resetPassword(
+      'valid-token',
+      'newpassword123',
+    )
 
     // The whole reason a password needed resetting might be that someone
     // else had access to the account — this confirms all existing sessions
-    // are torn down, not just that the password itself changed.
+    // are torn down, not just that the password itself changed. Their ids
+    // are answered, so the controller can close their sockets too.
     expect(db.execute).toHaveBeenCalled()
-    // In the new password's own transaction; no password (nor its hash) in it.
+    expect(result).toStrictEqual({ endedSessionIds: ['device-1', 'device-2'] })
+    // In the new password's own transaction; no password (nor its hash) in
+    // it — and, with no email change pending, no details at all.
     expect(auditService.logInTransaction.mock.calls).toStrictEqual([
       [
         tx,
@@ -878,6 +896,36 @@ describe('AuthService.resetPassword', () => {
       ],
     ])
     expect(auditService.log).not.toHaveBeenCalled()
+  })
+
+  // "Change email" (decisions §12): a reset cancels a pending change of
+  // sign-in email, in the same transaction, and its entry names it.
+  it('cancels a pending email change, naming it in the entry', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+    })
+    const { tx, set } = resetTx([{ id: 7 }])
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    await authService.resetPassword('valid-token', 'newpassword123')
+
+    // The second UPDATE's values: the email change, cancelled for its reason.
+    const [, [cancelled]] = set.mock.calls as [unknown[], unknown[]]
+    expect(cancelled).toMatchObject({ cancelReason: 'password_reset' })
+    expect(auditService.logInTransaction.mock.calls).toStrictEqual([
+      [
+        tx,
+        {
+          performedBy: 1,
+          action: 'PASSWORD_RESET_COMPLETED',
+          targetUserId: 1,
+          entityType: 'users',
+          entityId: 1,
+          details: { cancelledEmailChangeRequestId: 7 },
+        },
+      ],
+    ])
   })
 })
 

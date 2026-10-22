@@ -49,6 +49,108 @@ describe('EmailService', () => {
     process.env = { ...originalEnv }
   })
 
+  // "Change email" (decisions §12): four emails, two inboxes. What each
+  // must hold — the right recipient, the right link — and what each must
+  // NOT: the new address in full in the old inbox, a link in the
+  // "already taken" email, anything a person typed unescaped in HTML.
+  describe('the email-change emails', () => {
+    it('sends the confirm link to the NEW address, in both bodies, with its validity', async () => {
+      await service.sendEmailChangeConfirmation({
+        to: 'new@example.com',
+        firstName: 'Pat',
+        rawToken: 'tok123',
+        validForHours: 24,
+      })
+
+      const email = send.mock.calls[0][0]
+      const link = 'https://app.stride.test/confirm-email?token=tok123'
+      expect(email.to).toBe('new@example.com')
+      expect(email.subject).toBe('Confirm your new email address for Stride')
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+      expect(email.text).toContain('This link expires in 24 hours.')
+    })
+
+    it('tells a taken address so, with no link and no name', async () => {
+      await service.sendEmailChangeAddressTaken('taken@example.com')
+
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('taken@example.com')
+      expect(email.subject).toBe('This address already has a Stride account')
+      expect(email.html).not.toContain('href')
+      expect(email.text).not.toContain('http')
+    })
+
+    it('sends the OLD address the masked new one and the cancel link', async () => {
+      await service.sendEmailChangeRequestedNotice({
+        to: 'old@example.com',
+        firstName: 'Pat',
+        maskedNewEmail: 'n•••@e•••.com',
+        rawCancelToken: 'cancel456',
+      })
+
+      const email = send.mock.calls[0][0]
+      const link = 'https://app.stride.test/cancel-email-change?token=cancel456'
+      expect(email.to).toBe('old@example.com')
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+      expect(email.text).toContain('to n•••@e•••.com.')
+    })
+
+    it('tells the OLD address the change is made, masked, with no link', async () => {
+      await service.sendEmailChangedNotice({
+        to: 'old@example.com',
+        firstName: 'Pat',
+        maskedNewEmail: 'n•••@e•••.com',
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('old@example.com')
+      expect(email.subject).toBe('Your Stride sign-in email was changed')
+      expect(email.text).toContain('now signs in with n•••@e•••.com')
+      expect(email.html).not.toContain('href')
+    })
+
+    // A first name is typed by a person: in HTML it must stay text.
+    it.each([
+      [
+        'confirmation',
+        (name: string) =>
+          service.sendEmailChangeConfirmation({
+            to: 'n@x.com',
+            firstName: name,
+            rawToken: 't',
+            validForHours: 24,
+          }),
+      ],
+      [
+        'change-requested notice',
+        (name: string) =>
+          service.sendEmailChangeRequestedNotice({
+            to: 'o@x.com',
+            firstName: name,
+            maskedNewEmail: 'n•••@x•••.com',
+            rawCancelToken: 't',
+          }),
+      ],
+      [
+        'email-changed notice',
+        (name: string) =>
+          service.sendEmailChangedNotice({
+            to: 'o@x.com',
+            firstName: name,
+            maskedNewEmail: 'n•••@x•••.com',
+          }),
+      ],
+    ])('escapes the first name in the %s', async (_what, sendIt) => {
+      await sendIt('<b>Pat</b>')
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('&lt;b&gt;Pat&lt;/b&gt;')
+      expect(email.html).not.toContain('<b>Pat</b>')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

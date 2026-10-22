@@ -36,6 +36,7 @@ import {
 import { ApiTags } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { UsersService } from './users.service'
+import { MessagingEvents } from '../messaging/messaging-events'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
 import { GrantRoleDto } from './dto/grant-role.dto'
@@ -56,7 +57,11 @@ import { imageUploadOptions } from '../common/config/image-upload.config'
 @ApiTags('Users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    // Deactivating an account closes its messaging sockets (remove, below).
+    private readonly messagingEvents: MessagingEvents,
+  ) {}
 
   // === ROUTES =============================================================
 
@@ -211,7 +216,17 @@ export class UsersController {
         'You do not have permission to deactivate this account',
       )
     }
-    return this.usersService.softDelete(id, currentUser)
+    const { user, endedSessionIds } = await this.usersService.softDelete(
+      id,
+      currentUser,
+    )
+    // The deactivation ended the account's sessions; their sockets too, or a
+    // deactivated person's open tab would keep receiving messages (a socket
+    // is checked once, at its handshake) — as logout does for one session.
+    for (const sessionId of endedSessionIds) {
+      this.messagingEvents.disconnectSession(sessionId)
+    }
+    return user
   }
 
   // Admin-only, deliberately — no self-service or managing-practitioner

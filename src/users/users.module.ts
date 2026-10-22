@@ -23,13 +23,21 @@ import { UsersService } from './users.service'
 import { StorageModule } from '../storage/storage.module'
 import { CareTeamModule } from '../care-team/care-team.module'
 import { InvitationsModule } from '../invitations/invitations.module'
+import { MessagingEventsModule } from '../messaging/messaging-events.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 // InvitationsModule: create() sends each new account its first invitation.
 // (InvitationsModule deliberately doesn't import UsersModule back.)
+// MessagingEventsModule: deactivating an account closes its sockets
+// (UsersController.remove). It imports nothing, so no cycle.
 @Module({
-  imports: [StorageModule, CareTeamModule, InvitationsModule],
+  imports: [
+    StorageModule,
+    CareTeamModule,
+    InvitationsModule,
+    MessagingEventsModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

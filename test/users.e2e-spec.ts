@@ -18,6 +18,7 @@ import {
   findLink,
 } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { MessagingEvents } from '../src/messaging/messaging-events'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 
@@ -407,6 +408,72 @@ describe('Users (e2e)', () => {
     // Regression coverage: DELETE /users/:id (soft-delete) goes through the
     // same attachProfile() pattern as GET/PATCH.
     expect(deleteRes.body.patientProfile).toEqual({ dateOfBirth: '1990-01-01' })
+  })
+
+  // Deactivating signs the account out everywhere — its sessions deleted in
+  // the deactivation's transaction, their messaging sockets closed (a socket
+  // is checked once, at its handshake, so a deactivated person's open tab
+  // would otherwise keep receiving messages; found 2026-10-22). The sessions
+  // are read just before: the session table outlives each suite's TRUNCATE,
+  // and earlier suites' sessions can carry this account's id too — every one
+  // of them must go.
+  it('signs a deactivated account out everywhere, closing its sockets', async () => {
+    const email = `signed-out-${Date.now()}@example.com`
+    const create = await admin.post('/users').send({
+      email,
+      role: 'patient',
+      firstName: 'Signed',
+      lastName: 'Out',
+      dateOfBirth: '1990-01-01',
+    })
+    expect(create.status).toBe(201)
+    const id = create.body.id as number
+    await activateAccount(sessionPool, email)
+    const phone = request.agent(app.getHttpServer())
+    const laptop = request.agent(app.getHttpServer())
+    for (const device of [phone, laptop]) {
+      const login = await device
+        .post('/auth/login')
+        .send({ email, password: 'password123' })
+      expect(login.status).toBe(201)
+    }
+    const sessionsOf = async () =>
+      (
+        await sessionPool.query<{ sid: string }>(
+          `SELECT sid FROM session
+            WHERE (sess::jsonb)->'passport'->'user'->>'id' = $1`,
+          [String(id)],
+        )
+      ).rows.map((row) => row.sid)
+    const before = await sessionsOf()
+    expect(before.length).toBeGreaterThanOrEqual(2)
+    const disconnect = jest.spyOn(app.get(MessagingEvents), 'disconnectSession')
+
+    const res = await admin.delete(`/users/${id}`)
+    const closed = disconnect.mock.calls.map(([sid]) => sid)
+    disconnect.mockRestore()
+
+    expect(res.status).toBe(200)
+    expect(res.body.isActive).toBe(false)
+    expect(await sessionsOf()).toEqual([])
+    expect(closed.sort()).toEqual([...before].sort())
+    expect((await phone.get('/auth/me')).status).toBe(401)
+    expect((await laptop.get('/auth/me')).status).toBe(401)
+    const { rows } = await sessionPool.query<{
+      details: Record<string, unknown>
+    }>(
+      `SELECT details FROM audit_logs
+        WHERE action = 'USER_DEACTIVATED' AND target_user_id = $1`,
+      [id],
+    )
+    expect(rows).toEqual([
+      {
+        details: {
+          changes: { isActive: { from: true, to: false } },
+          signedOutSessions: before.length,
+        },
+      },
+    ])
   })
 
   it('lets a managing practitioner deactivate one of their own patients', async () => {

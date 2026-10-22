@@ -24,7 +24,7 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
 import { randomBytes, createHash } from 'crypto'
 import { OTP } from 'otplib'
@@ -36,6 +36,7 @@ import {
   adminProfiles,
   userClinics,
   userRoles,
+  emailChangeRequests,
 } from '../database/schema'
 import { UsersService } from '../users/users.service'
 import { UserRole } from '../users/dto/create-user.dto'
@@ -470,7 +471,12 @@ export class AuthService {
     return { email: user.email, expiresAt }
   }
 
-  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+  // Answers the ids of the sessions it ended: the controller closes their
+  // sockets (see destroyAllSessionsForUser).
+  async resetPassword(
+    rawToken: string,
+    newPassword: string,
+  ): Promise<{ endedSessionIds: string[] }> {
     const { user } = await this.findUserByResetToken(rawToken)
 
     const newPasswordHash = await bcrypt.hash(newPassword, 10)
@@ -492,6 +498,21 @@ export class AuthService {
             passwordResetTokenExpiresAt: null,
           })
           .where(eq(users.id, user.id))
+        // A pending change of sign-in email is cancelled too (decisions §12):
+        // whoever resets may be recovering from someone who knew the password
+        // — and asked to move the account to their own inbox. Its confirm
+        // link dies with it. Named in the reset's ONE entry.
+        const cancelledChanges = await tx
+          .update(emailChangeRequests)
+          .set({ cancelledAt: sql`now()`, cancelReason: 'password_reset' })
+          .where(
+            and(
+              eq(emailChangeRequests.userId, user.id),
+              isNull(emailChangeRequests.confirmedAt),
+              isNull(emailChangeRequests.cancelledAt),
+            ),
+          )
+          .returning({ id: emailChangeRequests.id })
         // In the password's own transaction; the password itself (or its
         // hash) never goes into an entry.
         await this.auditService.logInTransaction(tx, {
@@ -500,6 +521,13 @@ export class AuthService {
           targetUserId: user.id,
           entityType: 'users',
           entityId: user.id,
+          ...(cancelledChanges.length > 0
+            ? {
+                details: {
+                  cancelledEmailChangeRequestId: cancelledChanges[0].id,
+                },
+              }
+            : {}),
         })
       },
     )
@@ -507,7 +535,7 @@ export class AuthService {
     // The whole reason a password needed resetting might be that someone
     // else had access to the account — leaving their existing session
     // alive afterward would defeat the entire point of resetting it.
-    await this.destroyAllSessionsForUser(user.id)
+    return { endedSessionIds: await this.destroyAllSessionsForUser(user.id) }
   }
 
   // The account a reset token belongs to — or the one refusal for every way
@@ -709,9 +737,16 @@ export class AuthService {
   // exactly this situation. Session data is stored as JSON in the "sess"
   // column, matching the shape SessionSerializer writes: reaching the
   // stored user id means walking that same JSON path back out.
-  private async destroyAllSessionsForUser(userId: number): Promise<void> {
-    await this.db.execute(
-      sql`DELETE FROM session WHERE (sess::jsonb)->'passport'->'user'->>'id' = ${String(userId)}`,
+  //
+  // RETURNING the ids (found 2026-10-22, with "Change email"): deleting a
+  // session ends its HTTP requests, but not a messaging socket opened with
+  // it — a socket is authenticated once, at its handshake, and would keep
+  // receiving messages. The caller closes them (MessagingEvents.
+  // disconnectSession), as logout does for its one session.
+  private async destroyAllSessionsForUser(userId: number): Promise<string[]> {
+    const ended = await this.db.execute<{ sid: string }>(
+      sql`DELETE FROM session WHERE (sess::jsonb)->'passport'->'user'->>'id' = ${String(userId)} RETURNING sid`,
     )
+    return ended.rows.map((row) => row.sid)
   }
 }

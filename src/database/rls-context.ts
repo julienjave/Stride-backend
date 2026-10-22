@@ -96,3 +96,36 @@ export async function withInvitationTokenContext<T>(
     return fn(tx)
   })
 }
+
+// Which of an email change's two links a request holds ("Change email",
+// decisions §12): the CONFIRM link (emailed to the new address) or the
+// CANCEL link (emailed to the old one). Each has its own setting, read by
+// its own branch of the email_change_requests policies (migration 0054), so
+// a token can only ever reach the column it came from.
+export type EmailChangeLink = {
+  kind: 'confirm' | 'cancel'
+  tokenHash: string
+}
+
+const EMAIL_CHANGE_TOKEN_SETTINGS = {
+  confirm: 'app.email_change_token_hash',
+  cancel: 'app.email_change_cancel_token_hash',
+} as const
+
+// The token holder's context for an email change link — the same mechanism
+// as withInvitationTokenContext above: the HASH in a transaction-local
+// setting, so the transaction sees exactly the one request with that hash.
+// A confirmation then also acts as the account (applyUserContext, once the
+// request has said whose it is) to change users.email.
+export async function withEmailChangeTokenContext<T>(
+  db: DrizzleDb,
+  link: EmailChangeLink,
+  fn: (tx: DrizzleDb) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config(${EMAIL_CHANGE_TOKEN_SETTINGS[link.kind]}, ${link.tokenHash}, true)`,
+    )
+    return fn(tx)
+  })
+}

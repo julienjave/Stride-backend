@@ -25,6 +25,7 @@ import {
   findLink,
 } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { MessagingEvents } from '../src/messaging/messaging-events'
 
 // Runs against a REAL Postgres + RustFS (same as npm run start:dev would),
 // not mocks — this is deliberately testing the whole real pipeline: guards,
@@ -471,10 +472,29 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     expect(token).toMatch(/^[0-9a-f]{64}$/)
     expect(resetEmail.html).toContain(`href="${link.href}"`)
 
+    // The sessions the reset must end — and, with them, their messaging
+    // sockets (a socket is authenticated once, at its handshake: without
+    // closing it, a signed-out device keeps receiving messages). At least
+    // this agent's; maybe more: the session table is never emptied between
+    // suites, and each suite restarts user ids, so earlier suites' sessions
+    // can carry this account's id (12 of them in one full run). Whatever
+    // their number, every one the reset deletes must have its socket closed.
+    const { rows: before } = await sessionPool.query<{ sid: string }>(
+      `SELECT sid FROM session
+        WHERE (sess::jsonb)->'passport'->'user'->>'id' =
+              (SELECT id::text FROM users WHERE email = $1)`,
+      [email],
+    )
+    expect(before.length).toBeGreaterThan(0)
+    const disconnect = jest.spyOn(app.get(MessagingEvents), 'disconnectSession')
+
     const resetRes = await request(app.getHttpServer())
       .post('/auth/reset-password')
       .send({ token, newPassword })
+    const closed = disconnect.mock.calls.map(([sid]) => sid)
+    disconnect.mockRestore()
     expect(resetRes.status).toBe(204)
+    expect(closed.sort()).toEqual(before.map((row) => row.sid).sort())
 
     // Read as the owner connection (sessionPool), which isn't subject to
     // RLS — this checks the stored row itself, not what any route shows.

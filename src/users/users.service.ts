@@ -24,7 +24,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common'
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
@@ -85,6 +85,18 @@ async function translateDuplicateLicense<T>(write: () => Promise<T>) {
     }
     throw error
   }
+}
+
+// Every session of an account, deleted — the ids answered (RETURNING sid) so
+// their messaging sockets can be closed. Raw SQL: the "session" table belongs
+// to connect-pg-simple, outside Drizzle's schema (AuthService's
+// destroyAllSessionsForUser explains the JSON path). In the caller's
+// transaction.
+async function endSessions(tx: DrizzleDb, userId: number): Promise<string[]> {
+  const ended = await tx.execute<{ sid: string }>(
+    sql`DELETE FROM session WHERE (sess::jsonb)->'passport'->'user'->>'id' = ${String(userId)} RETURNING sid`,
+  )
+  return ended.rows.map((row) => row.sid)
 }
 
 // Creating an account can collide on two values: the email (any role) and a
@@ -792,19 +804,25 @@ export class UsersService {
 
   // Soft delete only — matches the is_active pattern from the schema. There is
   // deliberately no method here that issues a real DELETE against users.
+  //
+  // Answers the account AND the ids of the sessions the deactivation ended:
+  // the controller closes their messaging sockets (see setActive).
   async softDelete(
     id: number,
     currentUser: { id: number; activeRole: UserRole },
   ) {
     await this.findOne(id)
-    const deactivated = await withRlsContext(this.db, currentUser, (tx) =>
-      this.setActive(tx, id, false, currentUser.id),
+    const { row, endedSessionIds } = await withRlsContext(
+      this.db,
+      currentUser,
+      (tx) => this.setActive(tx, id, false, currentUser.id),
     )
     const roles = await this.getRolesForUser(id)
-    return this.attachProfile(
-      { ...(await this.toPublic(deactivated)), roles },
+    const user = await this.attachProfile(
+      { ...(await this.toPublic(row)), roles },
       roles,
     )
+    return { user, endedSessionIds }
   }
 
   // Clears the avatar: the row goes back to avatarPath = null (so every
@@ -891,8 +909,10 @@ export class UsersService {
     // "Who restored access to which account, and when" is exactly the kind
     // of event HIPAA's audit controls exist to capture — written in the
     // same transaction as the change (setActive), so the two can't part.
-    const reactivated = await withRlsContext(this.db, currentUser, (tx) =>
-      this.setActive(tx, id, true, currentUser.id),
+    const { row: reactivated } = await withRlsContext(
+      this.db,
+      currentUser,
+      (tx) => this.setActive(tx, id, true, currentUser.id),
     )
     const roles = await this.getRolesForUser(id)
     return this.attachProfile(
@@ -957,22 +977,37 @@ export class UsersService {
   // Deactivates (false) or reactivates (true) an account, inside the
   // caller's transaction, with its ONE audit entry — or, when the account is
   // already in that state, changes and writes nothing (the convention).
-  // Returns the row as it now is.
+  // Returns the row as it now is, and the sessions a deactivation ended.
+  //
+  // DEACTIVATING ENDS THE ACCOUNT'S SESSIONS (found 2026-10-22, with "Change
+  // email"). HTTP was already safe — every request re-reads the account and
+  // SessionSerializer refuses an inactive one — but a messaging socket is
+  // checked once, at its handshake: a deactivated person's open tab kept
+  // receiving messages. The sessions are deleted in THIS transaction (an
+  // account is never deactivated with its sessions left, nor the other way
+  // round), their ids answered so the caller closes the sockets after the
+  // commit, and the entry says how many (as an email change's does).
   private async setActive(
     tx: DrizzleDb,
     id: number,
     isActive: boolean,
     performedBy: number,
-  ) {
+  ): Promise<{ row: typeof users.$inferSelect; endedSessionIds: string[] }> {
     const before = await this.lockUser(tx, id)
     if (before.isActive === isActive) {
-      return before
+      return { row: before, endedSessionIds: [] }
     }
     const [row] = await tx
       .update(users)
       .set({ isActive })
       .where(eq(users.id, id))
       .returning()
+    // Only on deactivation. Reactivating could run the same DELETE and find
+    // nothing: an inactive account holds no session (signing in refuses it,
+    // and deactivating deleted them all) — a mutation making reactivation
+    // end sessions too changed nothing a test could see. The condition just
+    // spares that query, and says what deactivation means.
+    const endedSessionIds = isActive ? [] : await endSessions(tx, id)
     await this.auditService.logInTransaction(tx, {
       performedBy,
       action: isActive ? 'USER_REACTIVATED' : 'USER_DEACTIVATED',
@@ -981,9 +1016,10 @@ export class UsersService {
       entityId: id,
       details: {
         changes: { isActive: { from: before.isActive, to: isActive } },
+        ...(isActive ? {} : { signedOutSessions: endedSessionIds.length }),
       },
     })
-    return row
+    return { row, endedSessionIds }
   }
 
   // The raw `users` row, or a 404. RAW means unstripped — passwordHash,

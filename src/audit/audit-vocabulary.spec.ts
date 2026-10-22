@@ -86,7 +86,10 @@ describe('audit vocabulary', () => {
 
     it('puts every other action among the changes', () => {
       const changes = actionsOfKind('change')
-      expect(changes).toHaveLength(95 - 9 - 6)
+      // 98 actions (the 3 email-change ones since 2026-10-22), 9 views, 6
+      // sign-ins.
+      expect(changes).toHaveLength(98 - 9 - 6)
+      expect(changes).toContain('EMAIL_CHANGE_CONFIRMED')
       expect(changes).toContain('CONVERSATION_READ')
       expect(changes).toContain('REGISTER_CLINIC')
     })

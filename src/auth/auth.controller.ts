@@ -300,7 +300,16 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto.token, dto.newPassword)
+    const { endedSessionIds } = await this.authService.resetPassword(
+      dto.token,
+      dto.newPassword,
+    )
+    // Every device was signed out (the reason a reset exists: someone else
+    // may have had access) — their sockets too, or a signed-out device would
+    // keep receiving messages. Same as logout, for every session at once.
+    for (const sessionId of endedSessionIds) {
+      this.messagingEvents.disconnectSession(sessionId)
+    }
   }
 
   // Is a reset link still usable? The reset page asks first (decided
