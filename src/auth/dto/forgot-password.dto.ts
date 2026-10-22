@@ -18,10 +18,15 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsEmail, MaxLength } from 'class-validator'
+import { NormalizeEmail } from '../../common/email-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class ForgotPasswordDto {
+  // Trimmed and A–Z lowercased before validation (emails are case-insensitive
+  // — common/email-address.ts): a reset asked with other capitals finds the
+  // account.
+  @NormalizeEmail()
   @IsEmail()
   @MaxLength(255)
   email!: string

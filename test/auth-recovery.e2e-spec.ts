@@ -579,9 +579,14 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     it('refuses an expired link', async () => {
       const email = 'check-expired@example.com'
       const token = await resetLinkFor(email)
+      // Backdated with NODE's clock, not the database's now(): the app
+      // decides "expired" with `new Date()` (findUserByResetToken), and two
+      // clocks drift — a Postgres container a second ahead of the host
+      // (seen under WSL2, 2026-10-22) left `now() - 1 second` still in
+      // Node's future, and the link alive.
       await sessionPool.query(
-        "UPDATE users SET password_reset_token_expires_at = now() - interval '1 second' WHERE email = $1",
-        [email],
+        'UPDATE users SET password_reset_token_expires_at = $1 WHERE email = $2',
+        [new Date(Date.now() - 1000), email],
       )
       const res = await check(token)
       expect(res.status).toBe(400)

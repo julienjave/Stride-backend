@@ -27,6 +27,7 @@ import {
   ValidateIf,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
+import { NormalizeEmail } from '../../common/email-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -96,6 +97,11 @@ export class RegisterClinicDto {
   clinicWebsite?: string
 
   // Founding admin account fields
+  // Trimmed and A–Z lowercased before validation (emails are case-insensitive
+  // — common/email-address.ts). Not clinicEmail above: that is the clinic's
+  // CONTACT address, shown to patients, not anyone's sign-in — stored as
+  // typed.
+  @NormalizeEmail()
   @IsEmail()
   @MaxLength(255)
   email!: string

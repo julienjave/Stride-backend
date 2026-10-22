@@ -55,7 +55,9 @@ import { DrizzleQueryError } from 'drizzle-orm'
 import {
   PG_UNIQUE_VIOLATION,
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+  USERS_EMAIL_UNIQUE,
 } from '../database/pg-errors'
+import { DUPLICATE_EMAIL_MESSAGE } from '../common/email-address'
 
 // What UsersService hands to db.transaction(): a function of the
 // transaction. The mocks call it with a small stub of their own; `unknown`
@@ -63,20 +65,24 @@ import {
 // and return through it unchecked — no-unsafe-call / no-unsafe-return).
 type TransactionCallback = (tx: unknown) => unknown
 
-// What a duplicate licenseNumber really looks like by the time it reaches
+// What a duplicate value really looks like by the time it reaches
 // UsersService: node-postgres's error (code 23505 + the constraint's name),
 // wrapped by drizzle in a DrizzleQueryError. Built with drizzle's real
 // error class rather than a hand-made look-alike, so these tests exercise
 // the same shape production code sees.
-function duplicateLicenseError() {
+function uniqueViolationError(constraint: string) {
   return new DrizzleQueryError(
-    'insert into "practitioner_profiles" ...',
+    'insert into ...',
     [],
     Object.assign(new Error('duplicate key value violates unique constraint'), {
       code: PG_UNIQUE_VIOLATION,
-      constraint: PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+      constraint,
     }),
   )
+}
+
+function duplicateLicenseError() {
+  return uniqueViolationError(PRACTITIONER_LICENSE_NUMBER_UNIQUE)
 }
 
 // attachProfile() now unconditionally looks up clinic membership for
@@ -406,11 +412,12 @@ describe('UsersService.create', () => {
     })
   })
 
-  it('rejects an email that already belongs to another account', async () => {
-    db.query.users.findFirst.mockResolvedValue({
-      id: 1,
-      email: 'taken@example.com',
-    })
+  // The email's UNIQUE constraint is the one judge since emails became
+  // case-insensitive (Phase 6): no read beforehand, the insert's refusal is
+  // translated. Its own message — not the license's, which the same
+  // transaction could also hit.
+  it('turns the email constraint refusing the insert into a 409 with its own message', async () => {
+    db.transaction.mockRejectedValue(uniqueViolationError(USERS_EMAIL_UNIQUE))
 
     await expect(
       usersService.create(
@@ -422,7 +429,9 @@ describe('UsersService.create', () => {
         },
         { id: 1, activeRole: UserRole.ADMIN },
       ),
-    ).rejects.toThrow(ConflictException)
+    ).rejects.toThrow(new ConflictException(DUPLICATE_EMAIL_MESSAGE))
+    // Nothing was created, so nothing may be emailed.
+    expect(invitations.deliver).not.toHaveBeenCalled()
   })
 
   // licenseNumber is UNIQUE in the database. Before this fix, a duplicate

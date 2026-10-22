@@ -168,6 +168,16 @@ export const MEDICAL_FILES_AMENDS_SAME_PATIENT_FK =
   'medical_files_amends_same_patient_fk'
 export const MEDICAL_FILES_ONE_AMENDMENT_PER_ENTRY =
   'medical_files_one_amendment_per_entry'
+// Emails (Phase 6, "Change email", pass 1 — migration 0052). The UNIQUE
+// constraint on users.email (drizzle's name, migration 0000) — case-
+// insensitive in effect since every email is stored normalised: two requests
+// creating the same account race to it, and translateDuplicateEmail
+// (common/email-address.ts) turns the loser's 23505 into the 409. And the
+// CHECK that every stored email IS normalised — no translation: every write
+// normalises first (the DTOs' @NormalizeEmail()), so reaching it is a bug
+// that should stay a loud 500.
+export const USERS_EMAIL_UNIQUE = 'users_email_unique'
+export const USERS_EMAIL_NORMALIZED = 'users_email_normalized'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

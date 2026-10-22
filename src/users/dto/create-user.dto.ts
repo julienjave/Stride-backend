@@ -31,6 +31,7 @@ import {
   ValidateIf,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
+import { NormalizeEmail } from '../../common/email-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -43,6 +44,10 @@ export enum UserRole {
 }
 
 export class CreateUserDto {
+  // Trimmed and A–Z lowercased before validation (emails are case-insensitive
+  // — common/email-address.ts): the account is stored, and invited, under the
+  // one spelling the database accepts.
+  @NormalizeEmail()
   @IsEmail()
   @MaxLength(255)
   email!: string

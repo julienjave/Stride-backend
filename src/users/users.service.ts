@@ -50,6 +50,7 @@ import { changedFields } from '../common/changed-fields'
 import { InvitationsService } from '../invitations/invitations.service'
 import type { InvitationStatus } from '../invitations/invitation-status'
 import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
+import { translateDuplicateEmail } from '../common/email-address'
 import { CareTeamService } from '../care-team/care-team.service'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
@@ -64,7 +65,7 @@ import { CareTeamService } from '../care-team/care-team.service'
 // is taken", a client-side problem with a specific, fixable cause.
 //
 // Why catch the database error instead of checking first (a findFirst on
-// licenseNumber before writing, like the email check in create()): a
+// licenseNumber before writing, as create() once did for the email): a
 // check-then-write has a race window — two requests can both pass the
 // check before either writes (see deferred-improvements.md, "TOCTOU").
 // The UNIQUE constraint is the only thing that decides atomically, so
@@ -84,6 +85,15 @@ async function translateDuplicateLicense<T>(write: () => Promise<T>) {
     }
     throw error
   }
+}
+
+// Creating an account can collide on two values: the email (any role) and a
+// practitioner's license number. Each refusal becomes its own 409 — the
+// email's from common/email-address.ts (shared with registerClinic, which
+// creates the founding admin), the license's above. Composed here so
+// create() reads as one call.
+function translateDuplicateAccount<T>(write: () => Promise<T>) {
+  return translateDuplicateEmail(() => translateDuplicateLicense(write))
 }
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
@@ -168,13 +178,6 @@ export class UsersService {
       }
     }
 
-    const existing = await this.db.query.users.findFirst({
-      where: eq(users.email, dto.email),
-    })
-    if (existing) {
-      throw new ConflictException('A user with this email already exists')
-    }
-
     // Set inside the transaction when a practitioner creates a patient (see
     // below), read after it has committed to write the audit entry.
     let creatorLink: { id: number } | undefined
@@ -183,8 +186,12 @@ export class UsersService {
     let issued:
       Awaited<ReturnType<InvitationsService['insertInvitation']>> | undefined
 
-    // Wrapped: creating a practitioner inserts their licenseNumber.
-    const created = await translateDuplicateLicense(() =>
+    // Wrapped: the email may be taken — the UNIQUE constraint is the one
+    // judge (no read beforehand: two requests could both read "free"); and
+    // creating a practitioner inserts their licenseNumber. dto.email arrives
+    // normalised (@NormalizeEmail() on the DTO), so "taken" ignores case.
+    // A refusal aborts the transaction: no account, no invitation, no entry.
+    const created = await translateDuplicateAccount(() =>
       withRlsContext(this.db, requestingUser, async (tx) => {
         const [user] = await tx
           .insert(users)
@@ -596,6 +603,11 @@ export class UsersService {
   // INTERNAL USE ONLY — the one method in this service that does NOT strip
   // passwordHash. Never call this from a controller; it exists purely for
   // AuthService to compare a login attempt's password against the real hash.
+  //
+  // `email` must already be normalised (common/email-address.ts): stored
+  // emails are, so a plain equality is the case-insensitive match. Its two
+  // callers (sign-in, forgot password) receive it from a DTO with
+  // @NormalizeEmail().
   async findByEmailWithHash(email: string) {
     return this.db.query.users.findFirst({ where: eq(users.email, email) })
   }

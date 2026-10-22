@@ -25,10 +25,14 @@ import {
   IsEnum,
 } from 'class-validator'
 import { UserRole } from '../../users/dto/create-user.dto'
+import { NormalizeEmail } from '../../common/email-address'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 export class LoginDto {
+  // Trimmed and A–Z lowercased before validation (emails are case-insensitive
+  // — common/email-address.ts): 'Pat@Stride.test' signs in to pat@stride.test.
+  @NormalizeEmail()
   @IsEmail()
   @MaxLength(255)
   email!: string

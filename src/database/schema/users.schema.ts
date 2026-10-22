@@ -29,7 +29,9 @@ import {
   pgEnum,
   unique,
   index,
+  check,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { clinics } from './clinics.schema'
 import { weightUnitEnum } from './weight-unit.schema'
 
@@ -40,67 +42,92 @@ import { weightUnitEnum } from './weight-unit.schema'
 // (an insert with any other string fails at the DB layer, not just in application code).
 export const roleEnum = pgEnum('role', ['admin', 'practitioner', 'patient'])
 
-export const users = pgTable('users', {
-  id: serial('id').primaryKey(),
-  email: varchar('email', { length: 255 }).notNull().unique(),
-  // NULL = the person hasn't chosen a password yet: the account was created
-  // by invitation (decisions §3) and the invitation hasn't been accepted.
-  // Such an account can't log in, and can't get in through forgot/reset
-  // password either — accepting the invitation is its only way in (see
-  // AuthService.validateUser / forgotPassword / resetPassword). A NULL rather
-  // than a fake "unusable" hash, so "has this person set a password?" is a
-  // fact the code and the database can ask directly.
-  passwordHash: varchar('password_hash', { length: 255 }),
-  firstName: varchar('first_name', { length: 100 }).notNull(),
-  lastName: varchar('last_name', { length: 100 }).notNull(),
-  avatarPath: varchar('avatar_path', { length: 500 }),
-  phone: varchar('phone', { length: 50 }),
-  // Same address model as clinics.schema.ts — see that file's comments
-  // for the full reasoning (optional as a unit, core-fields-required-
-  // together enforced at the DTO layer, country as ISO 3166-1 alpha-2,
-  // state as free text since not every country has a fixed list).
-  addressLine1: varchar('address_line1', { length: 255 }),
-  addressLine2: varchar('address_line2', { length: 255 }),
-  addressCity: varchar('address_city', { length: 100 }),
-  addressState: varchar('address_state', { length: 100 }),
-  addressPostalCode: varchar('address_postal_code', { length: 20 }),
-  addressCountry: varchar('address_country', { length: 2 }),
-  isActive: boolean('is_active').notNull().default(true),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  passwordResetTokenHash: varchar('password_reset_token_hash', { length: 255 }),
-  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', {
-    withTimezone: true,
+export const users = pgTable(
+  'users',
+  {
+    id: serial('id').primaryKey(),
+    // Stored in ONE spelling — trimmed, A–Z lowercased (common/email-address.ts,
+    // normalizeEmail) — since the "Change email" item (Phase 6, decided with
+    // the person 2026-10-22): emails are case-insensitive. So this UNIQUE
+    // (users_email_unique) means "unique ignoring case", and every lookup is a
+    // plain equality. The CHECK below makes the database refuse any other
+    // spelling.
+    email: varchar('email', { length: 255 }).notNull().unique(),
+    // NULL = the person hasn't chosen a password yet: the account was created
+    // by invitation (decisions §3) and the invitation hasn't been accepted.
+    // Such an account can't log in, and can't get in through forgot/reset
+    // password either — accepting the invitation is its only way in (see
+    // AuthService.validateUser / forgotPassword / resetPassword). A NULL rather
+    // than a fake "unusable" hash, so "has this person set a password?" is a
+    // fact the code and the database can ask directly.
+    passwordHash: varchar('password_hash', { length: 255 }),
+    firstName: varchar('first_name', { length: 100 }).notNull(),
+    lastName: varchar('last_name', { length: 100 }).notNull(),
+    avatarPath: varchar('avatar_path', { length: 500 }),
+    phone: varchar('phone', { length: 50 }),
+    // Same address model as clinics.schema.ts — see that file's comments
+    // for the full reasoning (optional as a unit, core-fields-required-
+    // together enforced at the DTO layer, country as ISO 3166-1 alpha-2,
+    // state as free text since not every country has a fixed list).
+    addressLine1: varchar('address_line1', { length: 255 }),
+    addressLine2: varchar('address_line2', { length: 255 }),
+    addressCity: varchar('address_city', { length: 100 }),
+    addressState: varchar('address_state', { length: 100 }),
+    addressPostalCode: varchar('address_postal_code', { length: 20 }),
+    addressCountry: varchar('address_country', { length: 2 }),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    passwordResetTokenHash: varchar('password_reset_token_hash', {
+      length: 255,
+    }),
+    passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', {
+      withTimezone: true,
+    }),
+    // Nullable — only present once MFA setup has been initiated. isEnabled
+    // gates whether login actually requires it; a generated-but-unconfirmed
+    // secret sitting here is harmless, since it has no effect until enabled.
+    // Worth being explicit about a real, deliberate scope limitation: this is
+    // stored in plain text, not encrypted at rest — unlike passwordHash
+    // (one-way, useless even with full database read access), a TOTP secret
+    // must remain genuinely readable to verify codes, so anyone with raw
+    // database access could compute valid codes for any account with MFA
+    // enabled. Production would need application-level encryption of this
+    // column with a key held separately from the database itself (e.g. a KMS).
+    mfaSecret: varchar('mfa_secret', { length: 255 }),
+    mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+    // The unit this person thinks in. It's used in two places: it's the unit
+    // pre-selected when they type a new weight (a practitioner building a
+    // program), and the unit every weight is DISPLAYED in for them
+    // (converted on screen when a weight was saved in the other unit).
+    // Stored weights are never converted — each keeps the unit it was
+    // prescribed in (see weight-unit.schema.ts).
+    //
+    // NOT NULL with a DEFAULT: every user always has a preference, so no
+    // code anywhere has to handle "no preference yet". The default also
+    // fills the column in for every EXISTING row when the migration adds
+    // it — Postgres can't add a NOT NULL column to a table that already has
+    // rows unless it knows what to put in them.
+    preferredWeightUnit: weightUnitEnum('preferred_weight_unit')
+      .notNull()
+      .default('kg'),
+  },
+  (table) => ({
+    // The database's half of normalizeEmail(): the stored email equals
+    // itself trimmed and with A–Z lowercased. COLLATE "C" pins lower() to
+    // A–Z whatever the server's locale — the app's rule exactly (see
+    // normalizeEmail on why the two must agree). btrim() removes spaces at
+    // both ends. Whatever writes an email — the app, the seed, a query typed
+    // by hand — can't store 'Jane@x.com' next to 'jane@x.com'. Added by
+    // migration 0052, which normalised the existing rows first (after
+    // refusing to run if two of them would collide).
+    emailNormalized: check(
+      'users_email_normalized',
+      sql`${table.email} = btrim(lower(${table.email} COLLATE "C"))`,
+    ),
   }),
-  // Nullable — only present once MFA setup has been initiated. isEnabled
-  // gates whether login actually requires it; a generated-but-unconfirmed
-  // secret sitting here is harmless, since it has no effect until enabled.
-  // Worth being explicit about a real, deliberate scope limitation: this is
-  // stored in plain text, not encrypted at rest — unlike passwordHash
-  // (one-way, useless even with full database read access), a TOTP secret
-  // must remain genuinely readable to verify codes, so anyone with raw
-  // database access could compute valid codes for any account with MFA
-  // enabled. Production would need application-level encryption of this
-  // column with a key held separately from the database itself (e.g. a KMS).
-  mfaSecret: varchar('mfa_secret', { length: 255 }),
-  mfaEnabled: boolean('mfa_enabled').notNull().default(false),
-  // The unit this person thinks in. It's used in two places: it's the unit
-  // pre-selected when they type a new weight (a practitioner building a
-  // program), and the unit every weight is DISPLAYED in for them
-  // (converted on screen when a weight was saved in the other unit).
-  // Stored weights are never converted — each keeps the unit it was
-  // prescribed in (see weight-unit.schema.ts).
-  //
-  // NOT NULL with a DEFAULT: every user always has a preference, so no
-  // code anywhere has to handle "no preference yet". The default also
-  // fills the column in for every EXISTING row when the migration adds
-  // it — Postgres can't add a NOT NULL column to a table that already has
-  // rows unless it knows what to put in them.
-  preferredWeightUnit: weightUnitEnum('preferred_weight_unit')
-    .notNull()
-    .default('kg'),
-})
+)
 
 // One person can hold several roles (e.g. a clinic owner who is both admin
 // AND a treating practitioner) — this is why it's its own table with a

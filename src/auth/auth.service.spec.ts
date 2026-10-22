@@ -13,6 +13,9 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
+import { DrizzleQueryError } from 'drizzle-orm'
+import { PG_UNIQUE_VIOLATION, USERS_EMAIL_UNIQUE } from '../database/pg-errors'
+import { DUPLICATE_EMAIL_MESSAGE } from '../common/email-address'
 
 // What AuthService hands to db.transaction(): a function of the
 // transaction. The mocks call it with a small stub of their own; `unknown`
@@ -393,17 +396,24 @@ describe('AuthService.registerClinic', () => {
   })
 
   // Regression coverage for a real bug: registerClinic() inserts directly
-  // into `users` inside its own transaction, bypassing UsersService.create()
-  // entirely — which is where every other signup path gets its duplicate-
-  // email check for free. Before this fix, a colliding email here hit the
-  // raw Postgres unique constraint, unhandled, and surfaced as a bare 500
-  // via the catch-all exception filter instead of a proper 409.
-  it('refuses to run when the email is already in use by any existing account', async () => {
+  // into `users` inside its own transaction, and a colliding email once hit
+  // the raw Postgres unique constraint, unhandled — a bare 500 instead of a
+  // 409. Since emails became case-insensitive (Phase 6), the constraint is
+  // the one judge (no read beforehand): its refusal of the transaction is
+  // translated. Built as drizzle delivers it — node-postgres's error wrapped
+  // in a DrizzleQueryError.
+  it('turns the email constraint refusing the transaction into a 409', async () => {
     db.query.userRoles.findFirst.mockResolvedValue(undefined)
-    db.query.users.findFirst.mockResolvedValue({
-      id: 99,
-      email: 'admin@example.com',
-    })
+    db.transaction.mockRejectedValue(
+      new DrizzleQueryError(
+        'insert into "users" ...',
+        [],
+        Object.assign(new Error('duplicate key value'), {
+          code: PG_UNIQUE_VIOLATION,
+          constraint: USERS_EMAIL_UNIQUE,
+        }),
+      ),
+    )
 
     await expect(
       authService.registerClinic({
@@ -414,11 +424,27 @@ describe('AuthService.registerClinic', () => {
         firstName: 'New',
         lastName: 'Admin',
       }),
-    ).rejects.toThrow(ConflictException)
+    ).rejects.toThrow(new ConflictException(DUPLICATE_EMAIL_MESSAGE))
+  })
 
-    // Same reasoning as the admin-already-exists case just above: a
-    // rejected request should never open a transaction at all.
-    expect(db.transaction).not.toHaveBeenCalled()
+  // Any OTHER failure of the transaction is not a taken email: it reaches
+  // the caller as it was (a 500 through the exception filter), never turned
+  // into a misleading 409.
+  it('rethrows any other failure of the transaction unchanged', async () => {
+    db.query.userRoles.findFirst.mockResolvedValue(undefined)
+    const failure = new Error('connection terminated')
+    db.transaction.mockRejectedValue(failure)
+
+    await expect(
+      authService.registerClinic({
+        clinicName: 'Acme Clinic',
+        clinicEmail: 'clinic@example.com',
+        email: 'admin@example.com',
+        password: 'password123',
+        firstName: 'New',
+        lastName: 'Admin',
+      }),
+    ).rejects.toBe(failure)
   })
 
   it('creates the founding clinic + admin when no administrator exists yet', async () => {
