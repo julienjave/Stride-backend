@@ -17,14 +17,15 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsMfaCode } from '../../mfa/totp'
+import { IsSecondFactorCode } from '../../mfa/second-factor'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
-// A two-factor code alone: the second step of signing in (POST
-// /auth/mfa/verify) and confirming set-up (POST /auth/mfa/enable). 6 digits
-// (mfa/totp.ts — it used to be any 6 characters).
+// The second step of signing in (POST /auth/mfa/verify): a code from the
+// authenticator app (6 digits) or one of the recovery codes
+// (mfa/second-factor.ts). Confirming set-up has its own DTO (EnableMfaDto):
+// it takes only an app code.
 export class MfaCodeDto {
-  @IsMfaCode()
+  @IsSecondFactorCode()
   code!: string
 }

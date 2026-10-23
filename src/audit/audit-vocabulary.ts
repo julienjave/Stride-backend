@@ -58,6 +58,13 @@ export const AUDIT_ACTIONS = {
   MFA_SETUP_STARTED: 'change',
   MFA_ENABLED: 'change',
   MFA_DISABLED: 'change',
+  // Two-factor recovery (decisions §14, pass 2): a recovery code spent —
+  // with how many are left — wherever a code is asked (a security event, so
+  // under "sign-ins" with the wrong codes); new codes replacing the old;
+  // an admin turning someone's two-factor sign-in off.
+  MFA_RECOVERY_CODE_USED: 'sign_in',
+  MFA_RECOVERY_CODES_REGENERATED: 'change',
+  MFA_RESET_BY_ADMIN: 'change',
   PASSWORD_RESET_REQUESTED: 'change',
   PASSWORD_RESET_COMPLETED: 'change',
   // Changing one's own password from the profile (decisions §13): the

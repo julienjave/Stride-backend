@@ -21,6 +21,7 @@ import { Module } from '@nestjs/common'
 import { UsersModule } from '../users/users.module'
 import { EmailModule } from '../email/email.module'
 import { MessagingEventsModule } from '../messaging/messaging-events.module'
+import { MfaModule } from '../mfa/mfa.module'
 import { EmailChangeController } from './email-change.controller'
 import { EmailChangeService } from './email-change.service'
 
@@ -31,7 +32,9 @@ import { EmailChangeService } from './email-change.service'
 // email (the four messages), messaging events (closing the sockets of the
 // sessions a confirmation ends).
 @Module({
-  imports: [UsersModule, EmailModule, MessagingEventsModule],
+  // MfaModule: the step-up (StepUpService) — the second factor for an
+  // account with two-factor sign-in on.
+  imports: [UsersModule, EmailModule, MessagingEventsModule, MfaModule],
   controllers: [EmailChangeController],
   providers: [EmailChangeService],
 })

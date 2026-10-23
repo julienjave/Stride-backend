@@ -12,14 +12,17 @@ import { AppModule } from '../src/app.module'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
-import { getDatabaseUrl } from '../src/config/database-url'
+import { getAppDatabaseUrl, getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { MessagingEvents } from '../src/messaging/messaging-events'
 import { encryptMfaSecret } from '../src/auth/mfa-secret-crypto'
+import { WRONG_PASSWORD_MESSAGE } from '../src/common/current-password'
+import { MFA_CODE_REQUIRED_MESSAGE } from '../src/mfa/step-up.service'
 import {
-  MFA_CODE_REQUIRED_MESSAGE,
-  WRONG_PASSWORD_MESSAGE,
-} from '../src/common/current-password'
+  INVALID_RECOVERY_CODE_MESSAGE,
+  SECOND_FACTOR_FORMAT_MESSAGE,
+} from '../src/mfa/second-factor'
+import { hashRecoveryCode } from '../src/mfa/recovery-codes'
 import {
   INVALID_MFA_CODE_MESSAGE,
   MFA_CODE_ALREADY_USED_MESSAGE,
@@ -29,6 +32,7 @@ import {
 import {
   MFA_ALREADY_ON_MESSAGE,
   MFA_NOT_ON_MESSAGE,
+  MFA_RESET_OWN_MESSAGE,
   MFA_SETUP_FIRST_MESSAGE,
 } from '../src/mfa/mfa.service'
 
@@ -53,6 +57,7 @@ describe('Two-factor sign-in (e2e)', () => {
 
   let app: INestApplication
   let sessionPool: Pool
+  let appPool: Pool
   let outbox: InMemoryEmailTransport
 
   const agent = () => request.agent(app.getHttpServer())
@@ -129,16 +134,19 @@ describe('Two-factor sign-in (e2e)', () => {
     who.post('/auth/mfa/verify').send({ code })
 
   // Set up and turned on, the code then forgotten (so the test's next code
-  // isn't refused as already used). Answers the secret.
-  async function turnOn(person: { id: number; signedIn: Agent }) {
+  // isn't refused as already used). Answers the secret and the recovery codes
+  // `enable` answered (`turnOnWithCodes`), or the secret alone (`turnOn`).
+  async function turnOnWithCodes(person: { id: number; signedIn: Agent }) {
     const res = await setup(person.signedIn)
     expect(res.status).toBe(201)
     const secret = res.body.secret as string
-    expect(
-      (await enable(person.signedIn, await freshCode(secret))).status,
-    ).toBe(204)
+    const enabled = await enable(person.signedIn, await freshCode(secret))
+    expect(enabled.status).toBe(200)
     await forgetUsedCode(person.id)
-    return secret
+    return { secret, codes: enabled.body.recoveryCodes as string[] }
+  }
+  async function turnOn(person: { id: number; signedIn: Agent }) {
+    return (await turnOnWithCodes(person)).secret
   }
 
   // --- Reading as the owner (no row security) -------------------------------
@@ -245,6 +253,7 @@ describe('Two-factor sign-in (e2e)', () => {
     )
     // Same session setup as main.ts (see users.e2e-spec.ts for why).
     sessionPool = new Pool({ connectionString: getDatabaseUrl() })
+    appPool = new Pool({ connectionString: getAppDatabaseUrl() })
     const PgSessionStore = connectPgSimple(session)
     app.use(
       session({
@@ -295,6 +304,7 @@ describe('Two-factor sign-in (e2e)', () => {
   afterAll(async () => {
     await app.close()
     await sessionPool.end()
+    await appPool.end()
   })
 
   // === The database's half ====================================================
@@ -392,7 +402,7 @@ describe('Two-factor sign-in (e2e)', () => {
       expect(withFirst.status).toBe(400)
       expect(withFirst.body.message).toEqual([INVALID_MFA_CODE_MESSAGE])
       expect((await enable(pat.signedIn, await freshCode(second))).status).toBe(
-        204,
+        200,
       )
 
       expect((await mfaEntries(pat.id)).map((e) => e.details)).toEqual([
@@ -468,7 +478,7 @@ describe('Two-factor sign-in (e2e)', () => {
         enable(pat.signedIn, await freshCode(secret)),
       )
 
-      expect(res.status).toBe(204)
+      expect(res.status).toBe(200)
       const after = await sessionsOf(pat.id)
       expect(after).toHaveLength(1)
       expect(closed).toEqual(sessionsBefore.filter((s) => !after.includes(s)))
@@ -543,7 +553,7 @@ describe('Two-factor sign-in (e2e)', () => {
       const secret = (await setup(pat.signedIn)).body.secret as string
       // 20 seconds left at least: every use below falls in this window.
       const code = await freshCode(secret, 20)
-      expect((await enable(pat.signedIn, code)).status).toBe(204)
+      expect((await enable(pat.signedIn, code)).status).toBe(200)
       const later = agent()
       await signIn(later, pat.email)
 
@@ -635,7 +645,7 @@ describe('Two-factor sign-in (e2e)', () => {
         currentPassword: 'password123',
       })
       expect(noCode.status).toBe(400)
-      expect(noCode.body.message).toContain(MFA_CODE_FORMAT_MESSAGE)
+      expect(noCode.body.message).toContain(SECOND_FACTOR_FORMAT_MESSAGE)
       // A wrong password with a GOOD code: refused for the password, and the
       // code isn't spent (the step stays as it was).
       const wrongPassword = await disable(pat.signedIn, {
@@ -792,20 +802,650 @@ describe('Two-factor sign-in (e2e)', () => {
       const pat = await newPerson()
       const password = await changePassword(pat.signedIn, { mfaCode: null })
       expect(password.status).toBe(400)
-      expect(password.body.message).toContain('mfaCode must be a string')
+      expect(password.body.message).toEqual([SECOND_FACTOR_FORMAT_MESSAGE])
       const email = await changeEmail(
         pat.signedIn,
         `mfa-null-${stamp}@example.com`,
         { mfaCode: null },
       )
       expect(email.status).toBe(400)
-      expect(email.body.message).toContain('mfaCode must be a string')
+      expect(email.body.message).toEqual([SECOND_FACTOR_FORMAT_MESSAGE])
     })
 
     // An account without two-factor: the password alone, as before.
     it('asks nothing more of an account without two-factor', async () => {
       const pat = await newPerson()
       expect((await changePassword(pat.signedIn, {})).status).toBe(204)
+    })
+  })
+
+  // === Pass 2 — recovery codes =================================================
+
+  // --- Helpers for pass 2 ----------------------------------------------------
+
+  // The account's recovery codes as stored (the owner reads past row
+  // security): hash and whether used.
+  async function recoveryRows(userId: number) {
+    const { rows } = await sessionPool.query<{
+      code_hash: string
+      used: boolean
+    }>(
+      `SELECT code_hash, used_at IS NOT NULL AS used
+         FROM mfa_recovery_codes WHERE user_id = $1 ORDER BY id`,
+      [userId],
+    )
+    return rows
+  }
+
+  const recoveryCodesLeft = async (who: Agent) =>
+    (await who.get('/auth/mfa/recovery-codes')).body as { remaining: number }
+
+  const regenerate = (who: Agent, body: object) =>
+    who.post('/auth/mfa/recovery-codes').send(body)
+
+  // One statement as the app (row security applies), with a request's
+  // settings, in a transaction always rolled back. The rows, or the error's
+  // code and constraint (the helper of test/email-change.e2e-spec.ts).
+  async function asApp(
+    userId: number,
+    role: string,
+    statement: string,
+    params: unknown[] = [],
+  ): Promise<
+    { rows: Record<string, unknown>[] } | { code?: string; constraint?: string }
+  > {
+    const client = await appPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        "SELECT set_config('app.current_user_id', $1, true), set_config('app.current_role', $2, true)",
+        [String(userId), role],
+      )
+      const { rows } = await client.query<Record<string, unknown>>(
+        statement,
+        params,
+      )
+      return { rows }
+    } catch (error) {
+      const { code, constraint } = error as {
+        code?: string
+        constraint?: string
+      }
+      return { code, constraint }
+    } finally {
+      await client.query('ROLLBACK')
+      client.release()
+    }
+  }
+
+  describe('recovery codes', () => {
+    // Shown once; only their KEYED hashes stored.
+    it('are answered by enable — 10 of them — and stored as keyed hashes only', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+
+      expect(codes).toHaveLength(10)
+      expect(new Set(codes).size).toBe(10)
+      for (const code of codes)
+        expect(code).toMatch(/^[a-z2-9]{5}-[a-z2-9]{5}$/)
+      const rows = await recoveryRows(pat.id)
+      expect(rows.map((row) => row.code_hash)).toEqual(
+        codes.map((code) => hashRecoveryCode(code)),
+      )
+      expect(rows.every((row) => !row.used)).toBe(true)
+      expect(JSON.stringify(rows)).not.toContain(codes[0])
+      expect(await recoveryCodesLeft(pat.signedIn)).toStrictEqual({
+        remaining: 10,
+      })
+    })
+
+    // At sign-in, once: then refused — and recorded, with its reason.
+    it('sign in once each — written in any case, with a space — with an entry and a notice', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const sentBefore = outbox.sentTo(pat.email).length
+
+      const first = agent()
+      await signIn(first, pat.email)
+      const typed = codes[0].toUpperCase().replace('-', ' ')
+      const res = await verify(first, ` ${typed} `)
+      expect(res.status).toBe(201)
+      expect((await first.get('/auth/me')).status).toBe(200)
+
+      const again = agent()
+      await signIn(again, pat.email)
+      const reused = await verify(again, codes[0])
+      expect(reused.status).toBe(401)
+      expect(reused.body.message).toEqual([INVALID_RECOVERY_CODE_MESSAGE])
+
+      const entries = (await mfaEntries(pat.id)).slice(2)
+      expect(entries).toStrictEqual([
+        {
+          action: 'MFA_RECOVERY_CODE_USED',
+          performed_by: pat.id,
+          target_user_id: pat.id,
+          entity_type: 'users',
+          entity_id: pat.id,
+          details: { remaining: 9 },
+        },
+        expect.objectContaining({
+          action: 'MFA_LOGIN_FAILURE',
+          details: { reason: 'wrong_recovery_code' },
+        }),
+      ])
+      const sent = outbox.sentTo(pat.email).slice(sentBefore)
+      expect(sent.map((email) => email.subject)).toEqual([
+        'A recovery code was used on your Stride account',
+      ])
+      expect(sent[0].text).toContain('You have 9 recovery codes left.')
+      expect(await recoveryCodesLeft(pat.signedIn)).toStrictEqual({
+        remaining: 9,
+      })
+      expect((await recoveryRows(pat.id)).map((row) => row.used)).toEqual([
+        true,
+        ...Array<boolean>(9).fill(false),
+      ])
+    })
+
+    // "Wherever a code is asked": the step-ups, and turning MFA off — the
+    // person who lost the phone has nothing else.
+    // Each use leaves its notice — sent by each caller after ITS commit
+    // (StepUpService's receipt), so each caller is checked.
+    it('pass the step-ups of both changes, and turn two-factor off — which deletes them', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const sentBefore = outbox.sentTo(pat.email).length
+
+      const changed = await pat.signedIn.post('/auth/password').send({
+        currentPassword: 'password123',
+        newPassword: 'a-new-password',
+        mfaCode: codes[3],
+      })
+      expect(changed.status).toBe(204)
+      const asked = await pat.signedIn.post('/auth/email-change').send({
+        newEmail: `mfa-moved-${stamp}@example.com`,
+        currentPassword: 'a-new-password',
+        mfaCode: codes[5],
+      })
+      expect(asked.status).toBe(201)
+      const off = await disable(pat.signedIn, {
+        currentPassword: 'a-new-password',
+        code: codes[4],
+      })
+      expect(off.status).toBe(204)
+
+      const subjects = outbox
+        .sentTo(pat.email)
+        .slice(sentBefore)
+        .map((email) => email.subject)
+      expect(
+        subjects.filter(
+          (s) => s === 'A recovery code was used on your Stride account',
+        ),
+      ).toHaveLength(3)
+
+      expect(await recoveryRows(pat.id)).toEqual([])
+      expect(await recoveryCodesLeft(pat.signedIn)).toStrictEqual({
+        remaining: 0,
+      })
+      expect(
+        (await mfaEntries(pat.id)).map((entry) => [
+          entry.action,
+          entry.details,
+        ]),
+      ).toEqual([
+        ['MFA_SETUP_STARTED', null],
+        ['MFA_ENABLED', { signedOutSessions: 0 }],
+        ['MFA_RECOVERY_CODE_USED', { remaining: 9 }],
+        ['MFA_RECOVERY_CODE_USED', { remaining: 8 }],
+        ['MFA_RECOVERY_CODE_USED', { remaining: 7 }],
+        ['MFA_DISABLED', null],
+      ])
+    })
+
+    // A code is only ever valid for its OWN account: someone else's code —
+    // found, phished — signs nobody else in, and isn't spent either. (Two
+    // layers say it: the spend's account condition and the UPDATE policy;
+    // the mutation run removed both at once to prove this test sees it.)
+    it("are refused for another account — and someone else's stays unspent", async () => {
+      const pat = await newPerson()
+      const jo = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      await turnOn(jo)
+      const later = agent()
+      await signIn(later, jo.email)
+
+      const res = await verify(later, codes[0])
+
+      expect(res.status).toBe(401)
+      expect(res.body.message).toEqual([INVALID_RECOVERY_CODE_MESSAGE])
+      expect((await recoveryRows(pat.id)).every((row) => !row.used)).toBe(true)
+    })
+
+    // A code for an APP is what confirms set-up: a recovery code there is
+    // refused by its shape (and none exists yet anyway).
+    it('are not accepted to confirm set-up', async () => {
+      const pat = await newPerson()
+      await setup(pat.signedIn)
+      const res = await enable(pat.signedIn, 'abcde-23456')
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([MFA_CODE_FORMAT_MESSAGE])
+    })
+
+    // Two sign-ins with ONE recovery code: the other connection holds the
+    // first one's write — the code marked used, not yet committed. The
+    // second's UPDATE waits on that row, then re-reads it (used) and changes
+    // nothing: refused. (Without `used_at IS NULL` it would match the used
+    // row and meet the guard: a 500.)
+    it('used twice at once: the second waits for the first, then is refused', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const later = agent()
+      await signIn(later, pat.email)
+
+      const { waited, res } = await whileHolding(
+        `UPDATE mfa_recovery_codes SET used_at = now()
+          WHERE user_id = $1 AND code_hash = $2`,
+        [pat.id, hashRecoveryCode(codes[0])],
+        () => verify(later, codes[0]),
+      )
+
+      expect(waited).toBe(true)
+      expect(res.status).toBe(401)
+      expect(res.body.message).toEqual([INVALID_RECOVERY_CODE_MESSAGE])
+    })
+  })
+
+  describe('new recovery codes', () => {
+    it('ask for the password and a second factor, then replace every old code', async () => {
+      const pat = await newPerson()
+      const { secret, codes } = await turnOnWithCodes(pat)
+
+      const noCode = await regenerate(pat.signedIn, {
+        currentPassword: 'password123',
+      })
+      expect(noCode.status).toBe(400)
+      const wrongPassword = await regenerate(pat.signedIn, {
+        currentPassword: 'not-my-password',
+        code: await freshCode(secret),
+      })
+      expect(wrongPassword.status).toBe(400)
+      expect(wrongPassword.body.message).toEqual([WRONG_PASSWORD_MESSAGE])
+      expect(await recoveryRows(pat.id)).toHaveLength(10)
+
+      const res = await regenerate(pat.signedIn, {
+        currentPassword: 'password123',
+        code: await freshCode(secret),
+      })
+
+      expect(res.status).toBe(201)
+      const fresh = res.body.recoveryCodes as string[]
+      expect(fresh).toHaveLength(10)
+      expect(fresh.filter((code) => codes.includes(code))).toEqual([])
+      expect((await recoveryRows(pat.id)).map((row) => row.code_hash)).toEqual(
+        fresh.map((code) => hashRecoveryCode(code)),
+      )
+      const later = agent()
+      await signIn(later, pat.email)
+      expect((await verify(later, codes[1])).status).toBe(401)
+      expect((await verify(later, fresh[1])).status).toBe(201)
+      expect(
+        (await mfaEntries(pat.id)).find(
+          (entry) => entry.action === 'MFA_RECOVERY_CODES_REGENERATED',
+        ),
+      ).toStrictEqual({
+        action: 'MFA_RECOVERY_CODES_REGENERATED',
+        performed_by: pat.id,
+        target_user_id: pat.id,
+        entity_type: 'users',
+        entity_id: pat.id,
+        details: { replacedUnused: 10 },
+      })
+    })
+
+    // With an old recovery code as the second factor: it is spent first
+    // (its own entry), then every old code goes — 9 unused were given up.
+    it('may be asked with an old recovery code, which is spent first', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const sentBefore = outbox.sentTo(pat.email).length
+
+      const res = await regenerate(pat.signedIn, {
+        currentPassword: 'password123',
+        code: codes[0],
+      })
+
+      expect(res.status).toBe(201)
+      expect(
+        (await mfaEntries(pat.id))
+          .slice(2)
+          .map((entry) => [entry.action, entry.details]),
+      ).toEqual([
+        ['MFA_RECOVERY_CODE_USED', { remaining: 9 }],
+        ['MFA_RECOVERY_CODES_REGENERATED', { replacedUnused: 9 }],
+      ])
+      expect(await recoveryRows(pat.id)).toHaveLength(10)
+      expect(
+        outbox
+          .sentTo(pat.email)
+          .slice(sentBefore)
+          .map((email) => email.subject),
+      ).toEqual(['A recovery code was used on your Stride account'])
+    })
+
+    it('are refused when two-factor is off', async () => {
+      const pat = await newPerson()
+      const res = await regenerate(pat.signedIn, {
+        currentPassword: 'password123',
+        code: '123456',
+      })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([MFA_NOT_ON_MESSAGE])
+    })
+  })
+
+  // === Pass 2 — the admin reset ================================================
+
+  describe('the admin reset', () => {
+    // A fresh admin, signed in, for each test — so one admin's two-factor
+    // state never leaks into the next test.
+    async function newAdmin() {
+      counter += 1
+      const email = `mfa-admin-${counter}-${stamp}@example.com`
+      const res = await admin.post('/users').send({
+        email,
+        role: 'admin',
+        firstName: 'Ana',
+        lastName: 'Admin',
+      })
+      expect(res.status).toBe(201)
+      const id = await activateAccount(sessionPool, email)
+      const signedIn = agent()
+      expect((await signIn(signedIn, email)).status).toBe(201)
+      return { id, email, signedIn }
+    }
+    const reset = (who: Agent, id: number, body: object) =>
+      who.post(`/users/${id}/mfa/reset`).send(body)
+
+    it('is for admins only', async () => {
+      const pat = await newPerson()
+      const other = await newPerson()
+      await turnOn(other)
+      const res = await reset(pat.signedIn, other.id, {
+        currentPassword: 'password123',
+      })
+      expect(res.status).toBe(403)
+      expect((await mfaColumnsOf(other.id)).mfa_enabled).toBe(true)
+    })
+
+    // Never one's own account (the person's choice).
+    it("refuses an admin's own account", async () => {
+      const ana = await newAdmin()
+      const res = await reset(ana.signedIn, ana.id, {
+        currentPassword: 'password123',
+      })
+      expect(res.status).toBe(403)
+      expect(res.body.message).toEqual([MFA_RESET_OWN_MESSAGE])
+    })
+
+    it("asks for the admin's password — a wrong one changes nothing", async () => {
+      const ana = await newAdmin()
+      const pat = await newPerson()
+      await turnOn(pat)
+      const before = await mfaColumnsOf(pat.id)
+
+      const res = await reset(ana.signedIn, pat.id, {
+        currentPassword: 'not-my-password',
+      })
+
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([WRONG_PASSWORD_MESSAGE])
+      expect(await mfaColumnsOf(pat.id)).toStrictEqual(before)
+      expect(await recoveryRows(pat.id)).toHaveLength(10)
+    })
+
+    // Off; secret, step and codes gone; EVERY session of the account ended
+    // and its socket closed (the admin's stays); one entry by the admin
+    // about the account; a notice to the account.
+    it('turns it off for the account — its sessions ended, an entry, a notice', async () => {
+      const ana = await newAdmin()
+      const pat = await newPerson()
+      await turnOn(pat)
+      const elsewhere = agent()
+      await signIn(elsewhere, pat.email)
+      // The second device is mid sign-in (password done, code pending):
+      // its session row exists already, and must go too.
+      const patSessions = await sessionsOf(pat.id)
+      const sentBefore = outbox.sentTo(pat.email).length
+
+      const { res, closed } = await closingSockets(() =>
+        reset(ana.signedIn, pat.id, { currentPassword: 'password123' }),
+      )
+
+      expect(res.status).toBe(204)
+      expect(await mfaColumnsOf(pat.id)).toStrictEqual({
+        mfa_enabled: false,
+        mfa_secret: null,
+        mfa_last_used_step: null,
+      })
+      expect(await recoveryRows(pat.id)).toEqual([])
+      expect(await sessionsOf(pat.id)).toEqual([])
+      expect(closed).toEqual(patSessions)
+      expect((await pat.signedIn.get('/auth/me')).status).toBe(401)
+      expect((await ana.signedIn.get('/auth/me')).status).toBe(200)
+      const entries = await mfaEntries(pat.id)
+      expect(entries[entries.length - 1]).toStrictEqual({
+        action: 'MFA_RESET_BY_ADMIN',
+        performed_by: ana.id,
+        target_user_id: pat.id,
+        entity_type: 'users',
+        entity_id: pat.id,
+        details: { signedOutSessions: patSessions.length },
+      })
+      const sent = outbox.sentTo(pat.email).slice(sentBefore)
+      expect(sent.map((email) => email.subject)).toEqual([
+        'Two-factor sign-in was turned off for your Stride account',
+      ])
+      // Signing in now asks the password only.
+      expect((await signIn(agent(), pat.email)).body).toMatchObject({
+        email: pat.email,
+      })
+    })
+
+    it('refuses when two-factor is off, and for an account that does not exist', async () => {
+      const ana = await newAdmin()
+      const pat = await newPerson()
+      const off = await reset(ana.signedIn, pat.id, {
+        currentPassword: 'password123',
+      })
+      expect(off.status).toBe(400)
+      expect(off.body.message).toEqual([MFA_NOT_ON_MESSAGE])
+      const missing = await reset(ana.signedIn, 999_999, {
+        currentPassword: 'password123',
+      })
+      expect(missing.status).toBe(404)
+      expect(missing.body.message).toEqual(['User 999999 not found'])
+    })
+
+    // The ADMIN's own step-up: an admin with two-factor on gives their own
+    // code too — a stolen admin session plus a phished password isn't enough.
+    it('asks an admin with two-factor on for their own code', async () => {
+      const ana = await newAdmin()
+      const anaSecret = await turnOn(ana)
+      const pat = await newPerson()
+      await turnOn(pat)
+
+      const noCode = await reset(ana.signedIn, pat.id, {
+        currentPassword: 'password123',
+      })
+      expect(noCode.status).toBe(400)
+      expect(noCode.body.message).toEqual([MFA_CODE_REQUIRED_MESSAGE])
+      const res = await reset(ana.signedIn, pat.id, {
+        currentPassword: 'password123',
+        mfaCode: await freshCode(anaSecret),
+      })
+      expect(res.status).toBe(204)
+      expect((await mfaColumnsOf(pat.id)).mfa_enabled).toBe(false)
+    })
+
+    // A recovery code is accepted there too — spent from the ADMIN's codes,
+    // its entry and notice about the admin.
+    it("takes one of the admin's recovery codes, with its entry and notice", async () => {
+      const ana = await newAdmin()
+      const { codes } = await turnOnWithCodes(ana)
+      const pat = await newPerson()
+      await turnOn(pat)
+      const sentBefore = outbox.sentTo(ana.email).length
+
+      const res = await reset(ana.signedIn, pat.id, {
+        currentPassword: 'password123',
+        mfaCode: codes[0],
+      })
+
+      expect(res.status).toBe(204)
+      expect(
+        (await mfaEntries(ana.id)).map((entry) => [
+          entry.action,
+          entry.details,
+        ]),
+      ).toContainEqual(['MFA_RECOVERY_CODE_USED', { remaining: 9 }])
+      expect(
+        outbox
+          .sentTo(ana.email)
+          .slice(sentBefore)
+          .map((email) => email.subject),
+      ).toEqual(['A recovery code was used on your Stride account'])
+    })
+  })
+
+  // === Pass 2 — the database's half =============================================
+
+  describe('recovery codes in the database', () => {
+    it('are visible to their owner only — an admin may delete them, never add any', async () => {
+      const pat = await newPerson()
+      const other = await newPerson()
+      await turnOn(pat)
+      const ana = await sessionPool.query<{ id: number }>(
+        'SELECT id FROM users WHERE email = $1',
+        [`mfa-admin-${stamp}@example.com`],
+      )
+      const adminId = ana.rows[0].id
+      const count =
+        'SELECT count(*)::int AS n FROM mfa_recovery_codes WHERE user_id = $1'
+
+      expect(await asApp(pat.id, 'patient', count, [pat.id])).toEqual({
+        rows: [{ n: 10 }],
+      })
+      expect(await asApp(other.id, 'patient', count, [pat.id])).toEqual({
+        rows: [{ n: 0 }],
+      })
+      // The same admin id acting as a patient sees nothing either.
+      expect(await asApp(adminId, 'patient', count, [pat.id])).toEqual({
+        rows: [{ n: 0 }],
+      })
+      // Counted (a DELETE without RETURNING answers no rows either way).
+      expect(
+        await asApp(
+          adminId,
+          'admin',
+          `WITH d AS (DELETE FROM mfa_recovery_codes WHERE user_id = $1 RETURNING 1)
+           SELECT count(*)::int AS n FROM d`,
+          [pat.id],
+        ),
+      ).toEqual({ rows: [{ n: 10 }] })
+      expect(
+        await asApp(
+          adminId,
+          'admin',
+          'INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)',
+          [pat.id, 'a'.repeat(64)],
+        ),
+      ).toMatchObject({ code: '42501' })
+      // Another patient can't mark someone's code used, nor delete it:
+      // they see no row, so nothing is changed.
+      const touched = await asApp(
+        other.id,
+        'patient',
+        `WITH u AS (UPDATE mfa_recovery_codes SET used_at = now() WHERE user_id = $1 RETURNING 1),
+              d AS (DELETE FROM mfa_recovery_codes WHERE user_id = $1 RETURNING 1)
+         SELECT (SELECT count(*) FROM u)::int AS updated, (SELECT count(*) FROM d)::int AS deleted`,
+        [pat.id],
+      )
+      expect(touched).toEqual({ rows: [{ updated: 0, deleted: 0 }] })
+    })
+
+    // The guard: born unused, used once, never otherwise changed — each
+    // refusal with its constraint's name. As the app, the owner's context.
+    it('a code is born unused, used once, and otherwise never changes', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const hash = hashRecoveryCode(codes[0])
+      await sessionPool.query(
+        'UPDATE mfa_recovery_codes SET used_at = now() WHERE code_hash = $1',
+        [hash],
+      )
+      const asPat = (statement: string, params: unknown[]) =>
+        asApp(pat.id, 'patient', statement, params)
+
+      expect(
+        await asPat(
+          'INSERT INTO mfa_recovery_codes (user_id, code_hash, used_at) VALUES ($1, $2, now())',
+          [pat.id, 'b'.repeat(64)],
+        ),
+      ).toMatchObject({
+        code: '23514',
+        constraint: 'mfa_recovery_code_starts_unused',
+      })
+      expect(
+        await asPat(
+          'UPDATE mfa_recovery_codes SET used_at = NULL WHERE code_hash = $1',
+          [hash],
+        ),
+      ).toMatchObject({
+        code: '23514',
+        constraint: 'mfa_recovery_code_used_once',
+      })
+      const unused = hashRecoveryCode(codes[1])
+      expect(
+        await asPat(
+          'UPDATE mfa_recovery_codes SET code_hash = $2 WHERE code_hash = $1',
+          [unused, 'c'.repeat(64)],
+        ),
+      ).toMatchObject({ code: '23514', constraint: 'mfa_recovery_code_fixed' })
+      expect(
+        await asPat(
+          'UPDATE mfa_recovery_codes SET used_at = NULL WHERE code_hash = $1',
+          [unused],
+        ),
+      ).toMatchObject({
+        code: '23514',
+        constraint: 'mfa_recovery_code_only_marked_used',
+      })
+      // Marking it used works — at the database's moment, whatever is sent.
+      const marked = await asPat(
+        `UPDATE mfa_recovery_codes SET used_at = '2001-01-01'
+          WHERE code_hash = $1 RETURNING used_at > now() - interval '1 minute' AS recent`,
+        [unused],
+      )
+      expect(marked).toEqual({ rows: [{ recent: true }] })
+      // A new code's creation moment is the database's, whatever is sent.
+      const born = await asPat(
+        `INSERT INTO mfa_recovery_codes (user_id, code_hash, created_at)
+         VALUES ($1, $2, '2001-01-01')
+         RETURNING created_at > now() - interval '1 minute' AS recent`,
+        [pat.id, 'd'.repeat(64)],
+      )
+      expect(born).toEqual({ rows: [{ recent: true }] })
+      // And the stored shape: a hash, never a raw code.
+      expect(
+        await asPat(
+          'INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)',
+          [pat.id, codes[2]],
+        ),
+      ).toMatchObject({
+        code: '23514',
+        constraint: 'mfa_recovery_codes_hash_shape',
+      })
     })
   })
 })

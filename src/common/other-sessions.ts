@@ -49,3 +49,20 @@ export async function endOtherSessions(
   )
   return ended.rows.map((row) => row.sid)
 }
+
+// Every session of the account — for an admin's reset of someone ELSE's
+// two-factor sign-in (decisions §14): the admin's own session isn't the
+// account's, so there is nothing to keep (passing it to endOtherSessions
+// would be a condition that can never match). The same SQL otherwise, in the
+// caller's transaction, the ids answered for their sockets.
+export async function endAllSessions(
+  tx: DrizzleDb,
+  userId: number,
+): Promise<string[]> {
+  const ended = await tx.execute<{ sid: string }>(
+    sql`DELETE FROM session
+           WHERE (sess::jsonb)->'passport'->'user'->>'id' = ${String(userId)}
+       RETURNING sid`,
+  )
+  return ended.rows.map((row) => row.sid)
+}

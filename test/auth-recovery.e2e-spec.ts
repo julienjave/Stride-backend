@@ -251,7 +251,8 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     const enableRes = await mfa
       .post('/auth/mfa/enable')
       .send({ code: enableCode })
-    expect(enableRes.status).toBe(204)
+    // 200 with the recovery codes (MFA enrolment, pass 2).
+    expect(enableRes.status).toBe(200)
 
     // Also leaves this account with a genuinely pending password-reset
     // token — forgot-password doesn't touch the current session, only

@@ -20,7 +20,7 @@
 import { IsString, MaxLength, MinLength, ValidateIf } from 'class-validator'
 import { IsCurrentPassword } from '../../common/current-password'
 import { isPresent } from '../../common/validators/is-present'
-import { IsMfaCode } from '../../mfa/totp'
+import { IsSecondFactorCode } from '../../mfa/second-factor'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -45,10 +45,10 @@ export class ChangePasswordDto {
   newPassword!: string
 
   // The step-up's second half, for an account with two-factor sign-in on
-  // (the service asks for it then). Optional here — the DTO can't know the
+  // (the service asks for it then): a code from the app or a recovery code. Optional here — the DTO can't know the
   // account — but when SENT it must be a code: `ValidateIf(isPresent)`, not
   // `IsOptional()`, so `null` is refused rather than passed on as "no code".
   @ValidateIf(isPresent)
-  @IsMfaCode()
+  @IsSecondFactorCode()
   mfaCode?: string
 }

@@ -20,6 +20,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Post,
@@ -32,21 +33,24 @@ import { type Request } from 'express'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
-import { MfaCodeDto } from '../auth/dto/mfa-code.dto'
-import { MfaService, type MfaSetup } from './mfa.service'
+import { MfaService, type MfaSetup, type RecoveryCodes } from './mfa.service'
 import { SetupMfaDto } from './dto/setup-mfa.dto'
+import { EnableMfaDto } from './dto/enable-mfa.dto'
 import { DisableMfaDto } from './dto/disable-mfa.dto'
+import { RegenerateRecoveryCodesDto } from './dto/regenerate-recovery-codes.dto'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
-// Turning two-factor sign-in on and off (MFA enrolment, Phase 6). The same
-// addresses as when these routes lived in AuthController — /auth/mfa/… — in a
-// module of their own, like the email and password changes. The sign-in step
-// itself (mfa/verify) stays in AuthController: it ends with req.login().
+// Turning two-factor sign-in on and off, and its recovery codes (MFA
+// enrolment, Phase 6). The same addresses as when these routes lived in
+// AuthController — /auth/mfa/… — in a module of their own, like the email
+// and password changes. The sign-in step itself (mfa/verify) stays in
+// AuthController: it ends with req.login(). An admin's reset of someone
+// else's: MfaAdminController.
 //
 // Every route: a signed-in session, every role (it's about the account), and
-// the sign-in limit — 5 a minute. Each checks a password or a code, so none
-// may become a way to guess one from a stolen session.
+// each WRITE the sign-in limit — 5 a minute: each checks a password or a
+// code, so none may become a way to guess one from a stolen session.
 @ApiTags('auth')
 @Controller('auth/mfa')
 export class MfaController {
@@ -64,18 +68,20 @@ export class MfaController {
     return this.mfaService.setup(user, dto.currentPassword)
   }
 
-  // 204. This browser's session id: the one session kept when the others end.
+  // 200 with the 10 recovery codes — shown once (only their hashes are
+  // kept). 200, not 204, since pass 2: the answer has a body now. This
+  // browser's session id: the one session kept when the others end.
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
   @Post('enable')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async enable(
+  @HttpCode(HttpStatus.OK)
+  enable(
     @CurrentUser() user: CurrentUser,
-    @Body() dto: MfaCodeDto,
+    @Body() dto: EnableMfaDto,
     @Req() req: Request,
-  ): Promise<void> {
-    await this.mfaService.enable(user, dto.code, req.sessionID)
+  ): Promise<RecoveryCodes> {
+    return this.mfaService.enable(user, dto.code, req.sessionID)
   }
 
   @UseGuards(SessionAuthGuard)
@@ -88,5 +94,30 @@ export class MfaController {
     @Body() dto: DisableMfaDto,
   ): Promise<void> {
     await this.mfaService.disable(user, dto.currentPassword, dto.code)
+  }
+
+  // How many recovery codes are left — a read of one's own count (no codes,
+  // no hashes), not audited.
+  @UseGuards(SessionAuthGuard)
+  @Get('recovery-codes')
+  recoveryCodesLeft(
+    @CurrentUser() user: CurrentUser,
+  ): Promise<{ remaining: number }> {
+    return this.mfaService.recoveryCodesLeft(user)
+  }
+
+  // 201 with ten NEW codes, the old ones deleted.
+  @UseGuards(SessionAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  @AuditedByService()
+  @Post('recovery-codes')
+  regenerateRecoveryCodes(
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: RegenerateRecoveryCodesDto,
+  ): Promise<RecoveryCodes> {
+    return this.mfaService.regenerateRecoveryCodes(user, {
+      currentPassword: dto.currentPassword,
+      mfaCode: dto.code,
+    })
   }
 }

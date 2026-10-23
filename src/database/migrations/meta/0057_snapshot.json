@@ -1,0 +1,3644 @@
+{
+  "id": "2309ff24-9a32-4442-a0dd-04fbeffed427",
+  "prevId": "c98930c2-29f1-4369-bd4c-e5e397ad8b78",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.clinics": {
+      "name": "clinics",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phone": {
+          "name": "phone",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_line1": {
+          "name": "address_line1",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_line2": {
+          "name": "address_line2",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_city": {
+          "name": "address_city",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_state": {
+          "name": "address_state",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_postal_code": {
+          "name": "address_postal_code",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_country": {
+          "name": "address_country",
+          "type": "varchar(2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "website": {
+          "name": "website",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "logo_path": {
+          "name": "logo_path",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.admin_profiles": {
+      "name": "admin_profiles",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "admin_profiles_user_id_users_id_fk": {
+          "name": "admin_profiles_user_id_users_id_fk",
+          "tableFrom": "admin_profiles",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.patient_profiles": {
+      "name": "patient_profiles",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "date_of_birth": {
+          "name": "date_of_birth",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "patient_profiles_user_id_users_id_fk": {
+          "name": "patient_profiles_user_id_users_id_fk",
+          "tableFrom": "patient_profiles",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.practitioner_profiles": {
+      "name": "practitioner_profiles",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "license_number": {
+          "name": "license_number",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "specialties": {
+          "name": "specialties",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "bio": {
+          "name": "bio",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "practitioner_profiles_user_id_users_id_fk": {
+          "name": "practitioner_profiles_user_id_users_id_fk",
+          "tableFrom": "practitioner_profiles",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "practitioner_profiles_license_number_unique": {
+          "name": "practitioner_profiles_license_number_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "license_number"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user_clinics": {
+      "name": "user_clinics",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "clinic_id": {
+          "name": "clinic_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "user_clinics_user_id_idx": {
+          "name": "user_clinics_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "user_clinics_clinic_id_idx": {
+          "name": "user_clinics_clinic_id_idx",
+          "columns": [
+            {
+              "expression": "clinic_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_clinics_user_id_users_id_fk": {
+          "name": "user_clinics_user_id_users_id_fk",
+          "tableFrom": "user_clinics",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "user_clinics_clinic_id_clinics_id_fk": {
+          "name": "user_clinics_clinic_id_clinics_id_fk",
+          "tableFrom": "user_clinics",
+          "tableTo": "clinics",
+          "columnsFrom": [
+            "clinic_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "user_clinics_user_clinic_unique": {
+          "name": "user_clinics_user_clinic_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "clinic_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user_roles": {
+      "name": "user_roles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "user_roles_user_id_idx": {
+          "name": "user_roles_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "user_roles_user_id_users_id_fk": {
+          "name": "user_roles_user_id_users_id_fk",
+          "tableFrom": "user_roles",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "user_roles_user_role_unique": {
+          "name": "user_roles_user_role_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "role"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_name": {
+          "name": "first_name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_name": {
+          "name": "last_name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "avatar_path": {
+          "name": "avatar_path",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "phone": {
+          "name": "phone",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_line1": {
+          "name": "address_line1",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_line2": {
+          "name": "address_line2",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_city": {
+          "name": "address_city",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_state": {
+          "name": "address_state",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_postal_code": {
+          "name": "address_postal_code",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address_country": {
+          "name": "address_country",
+          "type": "varchar(2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "password_reset_token_hash": {
+          "name": "password_reset_token_hash",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_reset_token_expires_at": {
+          "name": "password_reset_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_secret": {
+          "name": "mfa_secret",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_enabled": {
+          "name": "mfa_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "mfa_last_used_step": {
+          "name": "mfa_last_used_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "preferred_weight_unit": {
+          "name": "preferred_weight_unit",
+          "type": "weight_unit",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'kg'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "users_email_normalized": {
+          "name": "users_email_normalized",
+          "value": "\"users\".\"email\" = btrim(lower(\"users\".\"email\" COLLATE \"C\"))"
+        },
+        "users_mfa_enabled_has_secret": {
+          "name": "users_mfa_enabled_has_secret",
+          "value": "NOT \"users\".\"mfa_enabled\" OR \"users\".\"mfa_secret\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.care_team_members": {
+      "name": "care_team_members",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practitioner_id": {
+          "name": "practitioner_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "care_team_members_practitioner_id_idx": {
+          "name": "care_team_members_practitioner_id_idx",
+          "columns": [
+            {
+              "expression": "practitioner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "care_team_members_patient_id_idx": {
+          "name": "care_team_members_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "care_team_members_patient_id_users_id_fk": {
+          "name": "care_team_members_patient_id_users_id_fk",
+          "tableFrom": "care_team_members",
+          "tableTo": "users",
+          "columnsFrom": [
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "care_team_members_practitioner_id_users_id_fk": {
+          "name": "care_team_members_practitioner_id_users_id_fk",
+          "tableFrom": "care_team_members",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practitioner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "care_team_members_created_by_users_id_fk": {
+          "name": "care_team_members_created_by_users_id_fk",
+          "tableFrom": "care_team_members",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "care_team_members_ended_by_users_id_fk": {
+          "name": "care_team_members_ended_by_users_id_fk",
+          "tableFrom": "care_team_members",
+          "tableTo": "users",
+          "columnsFrom": [
+            "ended_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "care_team_members_not_self": {
+          "name": "care_team_members_not_self",
+          "value": "\"care_team_members\".\"patient_id\" <> \"care_team_members\".\"practitioner_id\""
+        },
+        "care_team_members_ends_after_start": {
+          "name": "care_team_members_ends_after_start",
+          "value": "\"care_team_members\".\"ends_at\" IS NULL OR \"care_team_members\".\"ends_at\" >= \"care_team_members\".\"started_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.invitations": {
+      "name": "invitations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invited_by": {
+          "name": "invited_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email_sent_at": {
+          "name": "email_sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by": {
+          "name": "revoked_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "invitations_one_open_per_user": {
+          "name": "invitations_one_open_per_user",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"invitations\".\"accepted_at\" IS NULL AND \"invitations\".\"revoked_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "invitations_user_id_idx": {
+          "name": "invitations_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "invitations_user_id_users_id_fk": {
+          "name": "invitations_user_id_users_id_fk",
+          "tableFrom": "invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "invitations_invited_by_users_id_fk": {
+          "name": "invitations_invited_by_users_id_fk",
+          "tableFrom": "invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "invited_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "invitations_revoked_by_users_id_fk": {
+          "name": "invitations_revoked_by_users_id_fk",
+          "tableFrom": "invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "invitations_token_hash_unique": {
+          "name": "invitations_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "invitations_accepted_or_revoked": {
+          "name": "invitations_accepted_or_revoked",
+          "value": "\"invitations\".\"accepted_at\" IS NULL OR \"invitations\".\"revoked_at\" IS NULL"
+        },
+        "invitations_revoked_with_actor": {
+          "name": "invitations_revoked_with_actor",
+          "value": "(\"invitations\".\"revoked_at\" IS NULL) = (\"invitations\".\"revoked_by\" IS NULL)"
+        },
+        "invitations_expires_after_creation": {
+          "name": "invitations_expires_after_creation",
+          "value": "\"invitations\".\"expires_at\" > \"invitations\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.email_change_requests": {
+      "name": "email_change_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "new_email": {
+          "name": "new_email",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cancel_token_hash": {
+          "name": "cancel_token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancel_reason": {
+          "name": "cancel_reason",
+          "type": "email_change_cancel_reason",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "email_change_requests_one_open_per_user": {
+          "name": "email_change_requests_one_open_per_user",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"email_change_requests\".\"confirmed_at\" IS NULL AND \"email_change_requests\".\"cancelled_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "email_change_requests_user_id_idx": {
+          "name": "email_change_requests_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "email_change_requests_user_id_users_id_fk": {
+          "name": "email_change_requests_user_id_users_id_fk",
+          "tableFrom": "email_change_requests",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "email_change_requests_token_hash_unique": {
+          "name": "email_change_requests_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        },
+        "email_change_requests_cancel_token_hash_unique": {
+          "name": "email_change_requests_cancel_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "cancel_token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "email_change_requests_confirmed_or_cancelled": {
+          "name": "email_change_requests_confirmed_or_cancelled",
+          "value": "\"email_change_requests\".\"confirmed_at\" IS NULL OR \"email_change_requests\".\"cancelled_at\" IS NULL"
+        },
+        "email_change_requests_cancelled_with_reason": {
+          "name": "email_change_requests_cancelled_with_reason",
+          "value": "(\"email_change_requests\".\"cancelled_at\" IS NULL) = (\"email_change_requests\".\"cancel_reason\" IS NULL)"
+        },
+        "email_change_requests_expires_after_creation": {
+          "name": "email_change_requests_expires_after_creation",
+          "value": "\"email_change_requests\".\"expires_at\" > \"email_change_requests\".\"created_at\""
+        },
+        "email_change_requests_new_email_normalized": {
+          "name": "email_change_requests_new_email_normalized",
+          "value": "\"email_change_requests\".\"new_email\" = btrim(lower(\"email_change_requests\".\"new_email\" COLLATE \"C\"))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.mfa_recovery_codes": {
+      "name": "mfa_recovery_codes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code_hash": {
+          "name": "code_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "mfa_recovery_codes_user_id_users_id_fk": {
+          "name": "mfa_recovery_codes_user_id_users_id_fk",
+          "tableFrom": "mfa_recovery_codes",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "mfa_recovery_codes_user_code_unique": {
+          "name": "mfa_recovery_codes_user_code_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "code_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "mfa_recovery_codes_hash_shape": {
+          "name": "mfa_recovery_codes_hash_shape",
+          "value": "\"mfa_recovery_codes\".\"code_hash\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.medical_files": {
+      "name": "medical_files",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "entry_type": {
+          "name": "entry_type",
+          "type": "medical_file_entry_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subjective": {
+          "name": "subjective",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "objective": {
+          "name": "objective",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "assessment": {
+          "name": "assessment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "plan": {
+          "name": "plan",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amends_id": {
+          "name": "amends_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amendment_reason": {
+          "name": "amendment_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "medical_files_patient_id_idx": {
+          "name": "medical_files_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "medical_files_patient_id_users_id_fk": {
+          "name": "medical_files_patient_id_users_id_fk",
+          "tableFrom": "medical_files",
+          "tableTo": "users",
+          "columnsFrom": [
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "medical_files_created_by_users_id_fk": {
+          "name": "medical_files_created_by_users_id_fk",
+          "tableFrom": "medical_files",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "medical_files_amends_same_patient_fk": {
+          "name": "medical_files_amends_same_patient_fk",
+          "tableFrom": "medical_files",
+          "tableTo": "medical_files",
+          "columnsFrom": [
+            "amends_id",
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id",
+            "patient_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "medical_files_id_patient_unique": {
+          "name": "medical_files_id_patient_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "patient_id"
+          ]
+        },
+        "medical_files_one_amendment_per_entry": {
+          "name": "medical_files_one_amendment_per_entry",
+          "nullsNotDistinct": false,
+          "columns": [
+            "amends_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "medical_files_not_self_amending": {
+          "name": "medical_files_not_self_amending",
+          "value": "\"medical_files\".\"amends_id\" IS NULL OR \"medical_files\".\"amends_id\" <> \"medical_files\".\"id\""
+        },
+        "medical_files_has_content": {
+          "name": "medical_files_has_content",
+          "value": "num_nonnulls(\"medical_files\".\"subjective\", \"medical_files\".\"objective\", \"medical_files\".\"assessment\", \"medical_files\".\"plan\") >= 1"
+        },
+        "medical_files_sections_valid": {
+          "name": "medical_files_sections_valid",
+          "value": "(subjective IS NULL OR (subjective ~ '\\S' AND char_length(subjective) <= 10000)) AND (objective IS NULL OR (objective ~ '\\S' AND char_length(objective) <= 10000)) AND (assessment IS NULL OR (assessment ~ '\\S' AND char_length(assessment) <= 10000)) AND (plan IS NULL OR (plan ~ '\\S' AND char_length(plan) <= 10000))"
+        },
+        "medical_files_amendment_reason_valid": {
+          "name": "medical_files_amendment_reason_valid",
+          "value": "(\"medical_files\".\"amends_id\" IS NULL) = (\"medical_files\".\"amendment_reason\" IS NULL) AND (\"medical_files\".\"amendment_reason\" IS NULL OR (\"medical_files\".\"amendment_reason\" ~ '\\S' AND char_length(\"medical_files\".\"amendment_reason\") <= 500))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.conversations": {
+      "name": "conversations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "practitioner_id": {
+          "name": "practitioner_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practitioner_archived_at": {
+          "name": "practitioner_archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "patient_archived_at": {
+          "name": "patient_archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "conversations_practitioner_id_idx": {
+          "name": "conversations_practitioner_id_idx",
+          "columns": [
+            {
+              "expression": "practitioner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_patient_id_idx": {
+          "name": "conversations_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversations_practitioner_id_users_id_fk": {
+          "name": "conversations_practitioner_id_users_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practitioner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversations_patient_id_users_id_fk": {
+          "name": "conversations_patient_id_users_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "conversations_practitioner_patient_unique": {
+          "name": "conversations_practitioner_patient_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "practitioner_id",
+            "patient_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.messages": {
+      "name": "messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sender_id": {
+          "name": "sender_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_body": {
+          "name": "message_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "read_at": {
+          "name": "read_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "messages_conversation_id_id_idx": {
+          "name": "messages_conversation_id_id_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "messages_unread_idx": {
+          "name": "messages_unread_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"messages\".\"read_at\" IS NULL AND \"messages\".\"deleted_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "messages_conversation_id_conversations_id_fk": {
+          "name": "messages_conversation_id_conversations_id_fk",
+          "tableFrom": "messages",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "messages_sender_id_users_id_fk": {
+          "name": "messages_sender_id_users_id_fk",
+          "tableFrom": "messages",
+          "tableTo": "users",
+          "columnsFrom": [
+            "sender_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "messages_body_not_blank": {
+          "name": "messages_body_not_blank",
+          "value": "\"messages\".\"message_body\" ~ '\\S'"
+        },
+        "messages_body_max_length": {
+          "name": "messages_body_max_length",
+          "value": "char_length(\"messages\".\"message_body\") <= 5000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.exercises": {
+      "name": "exercises",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_muscles": {
+          "name": "primary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "secondary_muscles": {
+          "name": "secondary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "equipment": {
+          "name": "equipment",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "instructions": {
+          "name": "instructions",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_urls": {
+          "name": "media_urls",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "source": {
+          "name": "source",
+          "type": "exercise_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_archived": {
+          "name": "is_archived",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {
+        "exercises_external_id_unique": {
+          "name": "exercises_external_id_unique",
+          "columns": [
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"exercises\".\"external_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "exercises_created_by_users_id_fk": {
+          "name": "exercises_created_by_users_id_fk",
+          "tableFrom": "exercises",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.assigned_program_exercises": {
+      "name": "assigned_program_exercises",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workout_id": {
+          "name": "workout_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exercise_id": {
+          "name": "exercise_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_muscles": {
+          "name": "primary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "secondary_muscles": {
+          "name": "secondary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "equipment": {
+          "name": "equipment",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "instructions": {
+          "name": "instructions",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sets": {
+          "name": "sets",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reps": {
+          "name": "reps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_in_seconds": {
+          "name": "duration_in_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight": {
+          "name": "weight",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight_unit": {
+          "name": "weight_unit",
+          "type": "weight_unit",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retired_at": {
+          "name": "retired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retired_by": {
+          "name": "retired_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "use_library_images": {
+          "name": "use_library_images",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "media_urls": {
+          "name": "media_urls",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        }
+      },
+      "indexes": {
+        "assigned_program_exercises_assigned_program_id_idx": {
+          "name": "assigned_program_exercises_assigned_program_id_idx",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "assigned_program_exercises_assigned_program_id_assigned_programs_id_fk": {
+          "name": "assigned_program_exercises_assigned_program_id_assigned_programs_id_fk",
+          "tableFrom": "assigned_program_exercises",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "assigned_program_exercises_exercise_id_exercises_id_fk": {
+          "name": "assigned_program_exercises_exercise_id_exercises_id_fk",
+          "tableFrom": "assigned_program_exercises",
+          "tableTo": "exercises",
+          "columnsFrom": [
+            "exercise_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "assigned_program_exercises_retired_by_users_id_fk": {
+          "name": "assigned_program_exercises_retired_by_users_id_fk",
+          "tableFrom": "assigned_program_exercises",
+          "tableTo": "users",
+          "columnsFrom": [
+            "retired_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "assigned_program_exercises_workout_fk": {
+          "name": "assigned_program_exercises_workout_fk",
+          "tableFrom": "assigned_program_exercises",
+          "tableTo": "program_workouts",
+          "columnsFrom": [
+            "workout_id",
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "assigned_program_exercises_photo_limit": {
+          "name": "assigned_program_exercises_photo_limit",
+          "value": "cardinality(\"assigned_program_exercises\".\"media_urls\") <= 10"
+        },
+        "assigned_program_exercises_retired_together": {
+          "name": "assigned_program_exercises_retired_together",
+          "value": "(\"assigned_program_exercises\".\"retired_at\" IS NULL) = (\"assigned_program_exercises\".\"retired_by\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.assigned_programs": {
+      "name": "assigned_programs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assigned_by": {
+          "name": "assigned_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "based_on_template_id": {
+          "name": "based_on_template_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "based_on_program_id": {
+          "name": "based_on_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "start_date": {
+          "name": "start_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "end_date": {
+          "name": "end_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "program_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "is_archived": {
+          "name": "is_archived",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "allow_swaps": {
+          "name": "allow_swaps",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "late_make_up_days": {
+          "name": "late_make_up_days",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "assigned_programs_patient_id_idx": {
+          "name": "assigned_programs_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "assigned_programs_patient_id_users_id_fk": {
+          "name": "assigned_programs_patient_id_users_id_fk",
+          "tableFrom": "assigned_programs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "assigned_programs_assigned_by_users_id_fk": {
+          "name": "assigned_programs_assigned_by_users_id_fk",
+          "tableFrom": "assigned_programs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "assigned_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "assigned_programs_based_on_template_id_program_templates_id_fk": {
+          "name": "assigned_programs_based_on_template_id_program_templates_id_fk",
+          "tableFrom": "assigned_programs",
+          "tableTo": "program_templates",
+          "columnsFrom": [
+            "based_on_template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "assigned_programs_based_on_program_id_assigned_programs_id_fk": {
+          "name": "assigned_programs_based_on_program_id_assigned_programs_id_fk",
+          "tableFrom": "assigned_programs",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "based_on_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "assigned_programs_ends_after_start": {
+          "name": "assigned_programs_ends_after_start",
+          "value": "\"assigned_programs\".\"end_date\" IS NULL OR \"assigned_programs\".\"end_date\" >= \"assigned_programs\".\"start_date\""
+        },
+        "assigned_programs_not_based_on_itself": {
+          "name": "assigned_programs_not_based_on_itself",
+          "value": "\"assigned_programs\".\"based_on_program_id\" IS NULL OR \"assigned_programs\".\"based_on_program_id\" <> \"assigned_programs\".\"id\""
+        },
+        "assigned_programs_title_not_blank": {
+          "name": "assigned_programs_title_not_blank",
+          "value": "length(btrim(\"assigned_programs\".\"title\")) > 0"
+        },
+        "assigned_programs_late_make_up_days_range": {
+          "name": "assigned_programs_late_make_up_days_range",
+          "value": "\"assigned_programs\".\"late_make_up_days\" IS NULL OR \"assigned_programs\".\"late_make_up_days\" BETWEEN 1 AND 28"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.program_templates": {
+      "name": "program_templates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "practitioner_id": {
+          "name": "practitioner_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_archived": {
+          "name": "is_archived",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "program_templates_practitioner_id_users_id_fk": {
+          "name": "program_templates_practitioner_id_users_id_fk",
+          "tableFrom": "program_templates",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practitioner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "program_templates_title_not_blank": {
+          "name": "program_templates_title_not_blank",
+          "value": "length(btrim(\"program_templates\".\"title\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.program_workouts": {
+      "name": "program_workouts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "program_workouts_assigned_program_id_idx": {
+          "name": "program_workouts_assigned_program_id_idx",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "program_workouts_assigned_program_id_assigned_programs_id_fk": {
+          "name": "program_workouts_assigned_program_id_assigned_programs_id_fk",
+          "tableFrom": "program_workouts",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "program_workouts_id_assigned_program_id_unique": {
+          "name": "program_workouts_id_assigned_program_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "assigned_program_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "program_workouts_name_not_blank": {
+          "name": "program_workouts_name_not_blank",
+          "value": "\"program_workouts\".\"name\" IS NULL OR length(btrim(\"program_workouts\".\"name\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.template_exercises": {
+      "name": "template_exercises",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workout_id": {
+          "name": "workout_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exercise_id": {
+          "name": "exercise_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sets": {
+          "name": "sets",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reps": {
+          "name": "reps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_in_seconds": {
+          "name": "duration_in_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight": {
+          "name": "weight",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight_unit": {
+          "name": "weight_unit",
+          "type": "weight_unit",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "template_exercises_template_id_idx": {
+          "name": "template_exercises_template_id_idx",
+          "columns": [
+            {
+              "expression": "template_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "template_exercises_template_id_program_templates_id_fk": {
+          "name": "template_exercises_template_id_program_templates_id_fk",
+          "tableFrom": "template_exercises",
+          "tableTo": "program_templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "template_exercises_exercise_id_exercises_id_fk": {
+          "name": "template_exercises_exercise_id_exercises_id_fk",
+          "tableFrom": "template_exercises",
+          "tableTo": "exercises",
+          "columnsFrom": [
+            "exercise_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "template_exercises_workout_fk": {
+          "name": "template_exercises_workout_fk",
+          "tableFrom": "template_exercises",
+          "tableTo": "template_workouts",
+          "columnsFrom": [
+            "workout_id",
+            "template_id"
+          ],
+          "columnsTo": [
+            "id",
+            "template_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.template_workouts": {
+      "name": "template_workouts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "template_workouts_template_id_idx": {
+          "name": "template_workouts_template_id_idx",
+          "columns": [
+            {
+              "expression": "template_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "template_workouts_template_id_program_templates_id_fk": {
+          "name": "template_workouts_template_id_program_templates_id_fk",
+          "tableFrom": "template_workouts",
+          "tableTo": "program_templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "template_workouts_id_template_id_unique": {
+          "name": "template_workouts_id_template_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "template_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "template_workouts_name_not_blank": {
+          "name": "template_workouts_name_not_blank",
+          "value": "\"template_workouts\".\"name\" IS NULL OR length(btrim(\"template_workouts\".\"name\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.program_schedule_days": {
+      "name": "program_schedule_days",
+      "schema": "",
+      "columns": {
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schedule_type": {
+          "name": "schedule_type",
+          "type": "schedule_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'weekdays'"
+        },
+        "weekday": {
+          "name": "weekday",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workout_id": {
+          "name": "workout_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "program_schedule_days_workout_id_idx": {
+          "name": "program_schedule_days_workout_id_idx",
+          "columns": [
+            {
+              "expression": "workout_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "program_schedule_days_version_fk": {
+          "name": "program_schedule_days_version_fk",
+          "tableFrom": "program_schedule_days",
+          "tableTo": "program_schedules",
+          "columnsFrom": [
+            "schedule_id",
+            "assigned_program_id",
+            "schedule_type"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id",
+            "type"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "program_schedule_days_workout_fk": {
+          "name": "program_schedule_days_workout_fk",
+          "tableFrom": "program_schedule_days",
+          "tableTo": "program_workouts",
+          "columnsFrom": [
+            "workout_id",
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "program_schedule_days_pk": {
+          "name": "program_schedule_days_pk",
+          "columns": [
+            "schedule_id",
+            "weekday"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "program_schedule_days_weekday_range": {
+          "name": "program_schedule_days_weekday_range",
+          "value": "\"program_schedule_days\".\"weekday\" BETWEEN 1 AND 7"
+        },
+        "program_schedule_days_only_weekdays": {
+          "name": "program_schedule_days_only_weekdays",
+          "value": "\"program_schedule_days\".\"schedule_type\" = 'weekdays'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.program_schedule_rotation": {
+      "name": "program_schedule_rotation",
+      "schema": "",
+      "columns": {
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schedule_type": {
+          "name": "schedule_type",
+          "type": "schedule_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'times_per_week'"
+        },
+        "position": {
+          "name": "position",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workout_id": {
+          "name": "workout_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "program_schedule_rotation_workout_id_idx": {
+          "name": "program_schedule_rotation_workout_id_idx",
+          "columns": [
+            {
+              "expression": "workout_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "program_schedule_rotation_version_fk": {
+          "name": "program_schedule_rotation_version_fk",
+          "tableFrom": "program_schedule_rotation",
+          "tableTo": "program_schedules",
+          "columnsFrom": [
+            "schedule_id",
+            "assigned_program_id",
+            "schedule_type"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id",
+            "type"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "program_schedule_rotation_workout_fk": {
+          "name": "program_schedule_rotation_workout_fk",
+          "tableFrom": "program_schedule_rotation",
+          "tableTo": "program_workouts",
+          "columnsFrom": [
+            "workout_id",
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "program_schedule_rotation_pk": {
+          "name": "program_schedule_rotation_pk",
+          "columns": [
+            "schedule_id",
+            "position"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "program_schedule_rotation_position_range": {
+          "name": "program_schedule_rotation_position_range",
+          "value": "\"program_schedule_rotation\".\"position\" >= 0"
+        },
+        "program_schedule_rotation_only_times_per_week": {
+          "name": "program_schedule_rotation_only_times_per_week",
+          "value": "\"program_schedule_rotation\".\"schedule_type\" = 'times_per_week'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.program_schedules": {
+      "name": "program_schedules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "schedule_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "times_per_week": {
+          "name": "times_per_week",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "effective_from": {
+          "name": "effective_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "program_schedules_assigned_program_id_assigned_programs_id_fk": {
+          "name": "program_schedules_assigned_program_id_assigned_programs_id_fk",
+          "tableFrom": "program_schedules",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "program_schedules_created_by_users_id_fk": {
+          "name": "program_schedules_created_by_users_id_fk",
+          "tableFrom": "program_schedules",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "program_schedules_program_effective_from_unique": {
+          "name": "program_schedules_program_effective_from_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "assigned_program_id",
+            "effective_from"
+          ]
+        },
+        "program_schedules_id_program_type_unique": {
+          "name": "program_schedules_id_program_type_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "assigned_program_id",
+            "type"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "program_schedules_fields_match_type": {
+          "name": "program_schedules_fields_match_type",
+          "value": "(\"program_schedules\".\"type\" = 'times_per_week') = (\"program_schedules\".\"times_per_week\" IS NOT NULL)"
+        },
+        "program_schedules_times_per_week_range": {
+          "name": "program_schedules_times_per_week_range",
+          "value": "\"program_schedules\".\"times_per_week\" IS NULL OR \"program_schedules\".\"times_per_week\" BETWEEN 1 AND 7"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.session_exercises": {
+      "name": "session_exercises",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assigned_program_exercise_id": {
+          "name": "assigned_program_exercise_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sets": {
+          "name": "sets",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reps": {
+          "name": "reps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_in_seconds": {
+          "name": "duration_in_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight": {
+          "name": "weight",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weight_unit": {
+          "name": "weight_unit",
+          "type": "weight_unit",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_muscles": {
+          "name": "primary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secondary_muscles": {
+          "name": "secondary_muscles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "equipment": {
+          "name": "equipment",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instructions": {
+          "name": "instructions",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed": {
+          "name": "completed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "duration_actual_in_seconds": {
+          "name": "duration_actual_in_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "difficulty_rating": {
+          "name": "difficulty_rating",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "feedback": {
+          "name": "feedback",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "session_exercises_session_id_idx": {
+          "name": "session_exercises_session_id_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_exercises_program_exercise_id_idx": {
+          "name": "session_exercises_program_exercise_id_idx",
+          "columns": [
+            {
+              "expression": "assigned_program_exercise_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "session_exercises_session_id_sessions_id_fk": {
+          "name": "session_exercises_session_id_sessions_id_fk",
+          "tableFrom": "session_exercises",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_exercises_program_exercise_fk": {
+          "name": "session_exercises_program_exercise_fk",
+          "tableFrom": "session_exercises",
+          "tableTo": "assigned_program_exercises",
+          "columnsFrom": [
+            "assigned_program_exercise_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "difficulty_rating_range": {
+          "name": "difficulty_rating_range",
+          "value": "\"session_exercises\".\"difficulty_rating\" IS NULL OR \"session_exercises\".\"difficulty_rating\" BETWEEN 1 AND 10"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sessions": {
+      "name": "sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workout_id": {
+          "name": "workout_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scheduled_date": {
+          "name": "scheduled_date",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counts_for": {
+          "name": "counts_for",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "total_duration_in_seconds": {
+          "name": "total_duration_in_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "session_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_feedback": {
+          "name": "session_feedback",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "end_reason": {
+          "name": "end_reason",
+          "type": "session_end_reason",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "end_note": {
+          "name": "end_note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pain_before": {
+          "name": "pain_before",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pain_after": {
+          "name": "pain_after",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mobility_after": {
+          "name": "mobility_after",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "sessions_patient_id_idx": {
+          "name": "sessions_patient_id_idx",
+          "columns": [
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_assigned_program_id_local_date_idx": {
+          "name": "sessions_assigned_program_id_local_date_idx",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "local_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_one_open_per_program": {
+          "name": "sessions_one_open_per_program",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"sessions\".\"status\" = 'in_progress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_one_skip_per_day": {
+          "name": "sessions_one_skip_per_day",
+          "columns": [
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "local_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"sessions\".\"status\" = 'skipped'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sessions_assigned_program_id_assigned_programs_id_fk": {
+          "name": "sessions_assigned_program_id_assigned_programs_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "sessions_patient_id_users_id_fk": {
+          "name": "sessions_patient_id_users_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "patient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "sessions_workout_fk": {
+          "name": "sessions_workout_fk",
+          "tableFrom": "sessions",
+          "tableTo": "program_workouts",
+          "columnsFrom": [
+            "workout_id",
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id",
+            "assigned_program_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "sessions_counts_for_other_day": {
+          "name": "sessions_counts_for_other_day",
+          "value": "\"sessions\".\"counts_for\" IS NULL OR \"sessions\".\"counts_for\" <> \"sessions\".\"local_date\""
+        },
+        "sessions_status_moments": {
+          "name": "sessions_status_moments",
+          "value": "CASE \"sessions\".\"status\"\n        WHEN 'in_progress' THEN \"sessions\".\"started_at\" IS NOT NULL AND \"sessions\".\"completed_at\" IS NULL AND \"sessions\".\"ended_at\" IS NULL\n        WHEN 'completed' THEN \"sessions\".\"started_at\" IS NOT NULL AND \"sessions\".\"completed_at\" IS NOT NULL AND \"sessions\".\"ended_at\" IS NULL\n        WHEN 'incomplete' THEN \"sessions\".\"started_at\" IS NOT NULL AND \"sessions\".\"completed_at\" IS NULL AND \"sessions\".\"ended_at\" IS NOT NULL\n        WHEN 'skipped' THEN \"sessions\".\"started_at\" IS NULL AND \"sessions\".\"completed_at\" IS NULL AND \"sessions\".\"ended_at\" IS NOT NULL\n      END"
+        },
+        "sessions_end_reason_matches_status": {
+          "name": "sessions_end_reason_matches_status",
+          "value": "(\"sessions\".\"end_reason\" IS NOT NULL) = (\"sessions\".\"status\" IN ('incomplete', 'skipped'))\n        AND (\"sessions\".\"status\" <> 'skipped' OR \"sessions\".\"end_reason\" IN ('pain', 'illness', 'no_time', 'other'))"
+        },
+        "sessions_end_note_needs_reason": {
+          "name": "sessions_end_note_needs_reason",
+          "value": "\"sessions\".\"end_note\" IS NULL OR \"sessions\".\"end_reason\" IS NOT NULL"
+        },
+        "sessions_check_out_when_ended": {
+          "name": "sessions_check_out_when_ended",
+          "value": "(\"sessions\".\"pain_after\" IS NULL AND \"sessions\".\"mobility_after\" IS NULL)\n        OR \"sessions\".\"status\" IN ('completed', 'incomplete')"
+        },
+        "sessions_skip_records_no_work": {
+          "name": "sessions_skip_records_no_work",
+          "value": "\"sessions\".\"status\" <> 'skipped' OR (\n        \"sessions\".\"total_duration_in_seconds\" IS NULL\n        AND \"sessions\".\"session_feedback\" IS NULL\n        AND (\"sessions\".\"pain_before\" IS NULL OR \"sessions\".\"end_reason\" = 'pain')\n      )"
+        },
+        "sessions_pain_before_range": {
+          "name": "sessions_pain_before_range",
+          "value": "\"sessions\".\"pain_before\" IS NULL OR \"sessions\".\"pain_before\" BETWEEN 0 AND 10"
+        },
+        "sessions_pain_after_range": {
+          "name": "sessions_pain_after_range",
+          "value": "\"sessions\".\"pain_after\" IS NULL OR \"sessions\".\"pain_after\" BETWEEN 0 AND 10"
+        },
+        "sessions_mobility_after_range": {
+          "name": "sessions_mobility_after_range",
+          "value": "\"sessions\".\"mobility_after\" IS NULL OR \"sessions\".\"mobility_after\" BETWEEN 0 AND 10"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.audit_logs": {
+      "name": "audit_logs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "performed_by": {
+          "name": "performed_by",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_user_id": {
+          "name": "target_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "entity_type": {
+          "name": "entity_type",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "audit_logs_performed_by_idx": {
+          "name": "audit_logs_performed_by_idx",
+          "columns": [
+            {
+              "expression": "performed_by",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_logs_entity_type_idx": {
+          "name": "audit_logs_entity_type_idx",
+          "columns": [
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_logs_target_user_id_created_at_idx": {
+          "name": "audit_logs_target_user_id_created_at_idx",
+          "columns": [
+            {
+              "expression": "target_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "audit_logs_performed_by_users_id_fk": {
+          "name": "audit_logs_performed_by_users_id_fk",
+          "tableFrom": "audit_logs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "performed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "audit_logs_target_user_id_users_id_fk": {
+          "name": "audit_logs_target_user_id_users_id_fk",
+          "tableFrom": "audit_logs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "target_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.session_reviews": {
+      "name": "session_reviews",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practitioner_id": {
+          "name": "practitioner_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reviewed_at": {
+          "name": "reviewed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "session_reviews_one_per_practitioner": {
+          "name": "session_reviews_one_per_practitioner",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "practitioner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "session_reviews_session_id_sessions_id_fk": {
+          "name": "session_reviews_session_id_sessions_id_fk",
+          "tableFrom": "session_reviews",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "session_reviews_practitioner_id_users_id_fk": {
+          "name": "session_reviews_practitioner_id_users_id_fk",
+          "tableFrom": "session_reviews",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practitioner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.program_alert_reviews": {
+      "name": "program_alert_reviews",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "assigned_program_id": {
+          "name": "assigned_program_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practitioner_id": {
+          "name": "practitioner_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "missed_since": {
+          "name": "missed_since",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inactive_since": {
+          "name": "inactive_since",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewed_at": {
+          "name": "reviewed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "program_alert_reviews_latest_idx": {
+          "name": "program_alert_reviews_latest_idx",
+          "columns": [
+            {
+              "expression": "practitioner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "assigned_program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reviewed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "program_alert_reviews_practitioner_id_users_id_fk": {
+          "name": "program_alert_reviews_practitioner_id_users_id_fk",
+          "tableFrom": "program_alert_reviews",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practitioner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "program_alert_reviews_program_fk": {
+          "name": "program_alert_reviews_program_fk",
+          "tableFrom": "program_alert_reviews",
+          "tableTo": "assigned_programs",
+          "columnsFrom": [
+            "assigned_program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "program_alert_reviews_some_fact": {
+          "name": "program_alert_reviews_some_fact",
+          "value": "\"program_alert_reviews\".\"missed_since\" IS NOT NULL OR \"program_alert_reviews\".\"inactive_since\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.weight_unit": {
+      "name": "weight_unit",
+      "schema": "public",
+      "values": [
+        "kg",
+        "lbs"
+      ]
+    },
+    "public.role": {
+      "name": "role",
+      "schema": "public",
+      "values": [
+        "admin",
+        "practitioner",
+        "patient"
+      ]
+    },
+    "public.email_change_cancel_reason": {
+      "name": "email_change_cancel_reason",
+      "schema": "public",
+      "values": [
+        "replaced",
+        "cancelled_in_app",
+        "cancelled_by_email_link",
+        "password_reset",
+        "password_changed"
+      ]
+    },
+    "public.medical_file_entry_type": {
+      "name": "medical_file_entry_type",
+      "schema": "public",
+      "values": [
+        "initial_assessment",
+        "progress_note",
+        "discharge_summary"
+      ]
+    },
+    "public.exercise_source": {
+      "name": "exercise_source",
+      "schema": "public",
+      "values": [
+        "api",
+        "custom"
+      ]
+    },
+    "public.program_status": {
+      "name": "program_status",
+      "schema": "public",
+      "values": [
+        "active",
+        "completed",
+        "cancelled"
+      ]
+    },
+    "public.schedule_type": {
+      "name": "schedule_type",
+      "schema": "public",
+      "values": [
+        "weekdays",
+        "times_per_week",
+        "paused"
+      ]
+    },
+    "public.session_end_reason": {
+      "name": "session_end_reason",
+      "schema": "public",
+      "values": [
+        "pain",
+        "illness",
+        "no_time",
+        "other",
+        "not_finished_in_time",
+        "program_closed"
+      ]
+    },
+    "public.session_status": {
+      "name": "session_status",
+      "schema": "public",
+      "values": [
+        "in_progress",
+        "completed",
+        "incomplete",
+        "skipped"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

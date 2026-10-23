@@ -21,7 +21,7 @@ import { IsEmail, MaxLength, ValidateIf } from 'class-validator'
 import { NormalizeEmail } from '../../common/email-address'
 import { IsCurrentPassword } from '../../common/current-password'
 import { isPresent } from '../../common/validators/is-present'
-import { IsMfaCode } from '../../mfa/totp'
+import { IsSecondFactorCode } from '../../mfa/second-factor'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -42,9 +42,9 @@ export class RequestEmailChangeDto {
   @IsCurrentPassword()
   currentPassword!: string
 
-  // Only for an account with two-factor sign-in on; when sent, a code
-  // (`null` refused — see ChangePasswordDto).
+  // Only for an account with two-factor sign-in on; when sent, a code from
+  // the app or a recovery code (`null` refused — see ChangePasswordDto).
   @ValidateIf(isPresent)
-  @IsMfaCode()
+  @IsSecondFactorCode()
   mfaCode?: string
 }

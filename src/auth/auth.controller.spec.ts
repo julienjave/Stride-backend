@@ -4,6 +4,7 @@ import {
 } from '@nestjs/throttler/dist/throttler.constants'
 import { AuthController } from './auth.controller'
 import { MfaController } from '../mfa/mfa.controller'
+import { MfaAdminController } from '../mfa/mfa-admin.controller'
 
 // Pins the fix: mfa/enable and mfa/disable used to fall back to the global
 // 60/min-per-IP throttle while mfa/verify had its own tighter @Throttle(5,
@@ -60,5 +61,15 @@ describe('AuthController MFA route throttling', () => {
     expect(readThrottle(MfaController, 'setup')).toEqual(verifyThrottle)
     expect(readThrottle(MfaController, 'enable')).toEqual(verifyThrottle)
     expect(readThrottle(MfaController, 'disable')).toEqual(verifyThrottle)
+  })
+
+  // Pass 2's two writes check a password and a second factor too: new
+  // recovery codes, and an admin's reset (the ADMIN's password).
+  it('applies the same throttle to new recovery codes and the admin reset', () => {
+    const verifyThrottle = readThrottle(AuthController, 'verifyMfaLogin')
+    expect(readThrottle(MfaController, 'regenerateRecoveryCodes')).toEqual(
+      verifyThrottle,
+    )
+    expect(readThrottle(MfaAdminController, 'reset')).toEqual(verifyThrottle)
   })
 })

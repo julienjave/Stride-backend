@@ -62,6 +62,7 @@ export const MFA_CODE_ALREADY_USED_MESSAGE =
   'This code has already been used — wait for your app to show a new one'
 // The shape of a code, checked before anything is computed: 6 digits.
 export const MFA_CODE_FORMAT_MESSAGE = 'The authentication code is 6 digits'
+export const TOTP_CODE_INPUT = /^\d{6}$/
 
 // One instance for the whole app. Stateless — the secret, the code and the
 // clock are passed on every call — so sharing it is safe.
@@ -86,13 +87,16 @@ export type MfaCodeCheck =
 
 // --- VALIDATION --------------------------------------------------------------------------------------------
 
-// The DTO rule for a code field: a string of exactly 6 digits. Replaces
-// `Length(6, 6)`, which let "abcdef" through to otplib. Composed with
-// applyDecorators, like IsTitle, so every DTO with a code says it once.
-export function IsMfaCode(): PropertyDecorator {
+// The DTO rule for a field that takes ONLY a code from the authenticator
+// app: a string of exactly 6 digits. Replaces `Length(6, 6)`, which let
+// "abcdef" through to otplib. Composed with applyDecorators, like IsTitle.
+// Only confirming set-up (enable) uses it — the proof that the app holds the
+// new secret; every other code field also takes a recovery code
+// (IsSecondFactorCode, second-factor.ts).
+export function IsTotpCode(): PropertyDecorator {
   return applyDecorators(
     IsString(),
-    Matches(/^\d{6}$/, { message: MFA_CODE_FORMAT_MESSAGE }),
+    Matches(TOTP_CODE_INPUT, { message: MFA_CODE_FORMAT_MESSAGE }),
   )
 }
 

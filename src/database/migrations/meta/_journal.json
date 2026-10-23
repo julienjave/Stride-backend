@@ -400,6 +400,20 @@
       "when": 1792751067050,
       "tag": "0056_mfa_replay_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792758161432,
+      "tag": "0057_mfa_recovery_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1792758181153,
+      "tag": "0058_mfa_recovery_codes_rls",
+      "breakpoints": true
     }
   ]
 }

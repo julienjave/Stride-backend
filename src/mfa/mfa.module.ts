@@ -21,19 +21,22 @@ import { Module } from '@nestjs/common'
 import { EmailModule } from '../email/email.module'
 import { MessagingEventsModule } from '../messaging/messaging-events.module'
 import { MfaController } from './mfa.controller'
+import { MfaAdminController } from './mfa-admin.controller'
 import { MfaService } from './mfa.service'
+import { StepUpService } from './step-up.service'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 // Two-factor sign-in (MFA enrolment, Phase 6). The database and the audit log
 // are global; the rest is imported: email (the notices), messaging events
-// (closing the sockets of the sessions "enable" ends). MfaService is
-// EXPORTED: AuthController's sign-in step (mfa/verify) asks it whether a code
-// is good.
+// (closing the sockets of the sessions "enable" and a reset end). EXPORTED:
+// MfaService — AuthController's sign-in step (mfa/verify) asks it whether a
+// code is good — and StepUpService, the step-up the email and password
+// changes ask.
 @Module({
   imports: [EmailModule, MessagingEventsModule],
-  controllers: [MfaController],
-  providers: [MfaService],
-  exports: [MfaService],
+  controllers: [MfaController, MfaAdminController],
+  providers: [MfaService, StepUpService],
+  exports: [MfaService, StepUpService],
 })
 export class MfaModule {}

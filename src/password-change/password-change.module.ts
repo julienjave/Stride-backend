@@ -20,6 +20,7 @@
 import { Module } from '@nestjs/common'
 import { EmailModule } from '../email/email.module'
 import { MessagingEventsModule } from '../messaging/messaging-events.module'
+import { MfaModule } from '../mfa/mfa.module'
 import { PasswordChangeController } from './password-change.controller'
 import { PasswordChangeService } from './password-change.service'
 
@@ -27,9 +28,10 @@ import { PasswordChangeService } from './password-change.service'
 
 // Changing one's own password (decisions §13). The database and the audit log
 // are global; the rest is imported: email (the notice), messaging events
-// (closing the sockets of the sessions a change ends).
+// (closing the sockets of the sessions a change ends), two-factor (the
+// step-up's second factor, StepUpService).
 @Module({
-  imports: [EmailModule, MessagingEventsModule],
+  imports: [EmailModule, MessagingEventsModule, MfaModule],
   controllers: [PasswordChangeController],
   providers: [PasswordChangeService],
 })

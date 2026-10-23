@@ -260,6 +260,93 @@ describe('EmailService', () => {
     })
   })
 
+  describe('sendRecoveryCodeUsedNotice', () => {
+    it('tells the account how many codes are left, with the forgot-password page', async () => {
+      await service.sendRecoveryCodeUsedNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+        remaining: 7,
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe(
+        'A recovery code was used on your Stride account',
+      )
+      for (const body of [email.text, email.html]) {
+        expect(body).toContain('You have 7 recovery codes left.')
+      }
+      const link = 'https://app.stride.test/forgot-password'
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+    })
+
+    // The count in words: one, and none (with what to do about it).
+    it.each([
+      [1, 'You have 1 recovery code left.'],
+      [
+        0,
+        'You have no recovery codes left: create new ones from your profile, under Sign-in and security.',
+      ],
+    ])('says %p left as %p', async (remaining, words) => {
+      await service.sendRecoveryCodeUsedNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+        remaining,
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.text).toContain(words)
+      expect(email.html).toContain(words)
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendRecoveryCodeUsedNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+        remaining: 3,
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+    })
+  })
+
+  describe('sendMfaResetNotice', () => {
+    it('tells the account an admin turned it off, that it was signed out, and who to ask', async () => {
+      await service.sendMfaResetNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe(
+        'Two-factor sign-in was turned off for your Stride account',
+      )
+      for (const body of [email.text, email.html]) {
+        expect(body).toContain('An administrator of your clinic turned off')
+        expect(body).toContain('signed out everywhere')
+        expect(body).toContain(
+          "If you didn't ask for this, contact your clinic",
+        )
+      }
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendMfaResetNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

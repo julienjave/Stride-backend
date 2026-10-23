@@ -27,11 +27,8 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
-import {
-  confirmStepUp,
-  STEP_UP_COLUMNS,
-  WRONG_PASSWORD_MESSAGE,
-} from '../common/current-password'
+import { WRONG_PASSWORD_MESSAGE } from '../common/current-password'
+import { StepUpService, STEP_UP_COLUMNS } from '../mfa/step-up.service'
 import { endOtherSessions } from '../common/other-sessions'
 import type { UserRole } from '../users/dto/create-user.dto'
 
@@ -50,7 +47,8 @@ type SignedInUser = { id: number; activeRole: UserRole }
 export interface PasswordChange {
   currentPassword: string
   newPassword: string
-  // Only for an account with two-factor sign-in on (the step-up asks it).
+  // Only for an account with two-factor sign-in on (the step-up asks it): a
+  // code from the app or a recovery code.
   mfaCode?: string
 }
 
@@ -76,6 +74,7 @@ export class PasswordChangeService {
     private readonly auditService: AuditService,
     private readonly emailService: EmailService,
     private readonly messagingEvents: MessagingEvents,
+    private readonly stepUp: StepUpService,
   ) {}
 
   // `keptSessionId`: the session making the request — the one that stays
@@ -107,8 +106,6 @@ export class PasswordChangeService {
       // the lock.)
       const [account] = await tx
         .select({
-          email: users.email,
-          firstName: users.firstName,
           resetTokenHash: users.passwordResetTokenHash,
           ...STEP_UP_COLUMNS,
         })
@@ -121,7 +118,7 @@ export class PasswordChangeService {
       // email change; the same for a wrong two-factor code). `!account`
       // keeps TypeScript on the safe side — the same refusal.
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      await confirmStepUp(tx, currentUser.id, account, {
+      const stepUp = await this.stepUp.confirm(tx, currentUser.id, account, {
         currentPassword,
         mfaCode,
       })
@@ -192,8 +189,12 @@ export class PasswordChangeService {
         email: account.email,
         firstName: account.firstName,
         endedSessionIds,
+        stepUp,
       }
     })
+
+    // A recovery code's notice, if one was used (StepUpService).
+    outcome.stepUp.afterCommit()
 
     // After the commit. A socket was authenticated once, at its handshake:
     // without this, a signed-out device would keep receiving messages (as on

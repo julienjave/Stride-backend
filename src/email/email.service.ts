@@ -73,10 +73,19 @@ export interface PasswordChangedNoticeEmail {
 }
 
 // Two-factor sign-in turned on or off (MFA enrolment, Phase 6): a notice to
-// the account's own inbox, like the password change's.
+// the account's own inbox, like the password change's. Also the admin
+// reset's notice.
 export interface MfaNoticeEmail {
   to: string
   firstName: string
+}
+
+// A recovery code was used (pass 2): how many are left, so the person knows
+// when to ask for new ones.
+export interface RecoveryCodeUsedNoticeEmail {
+  to: string
+  firstName: string
+  remaining: number
 }
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -328,6 +337,59 @@ export class EmailService {
         '',
         "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
         forgotUrl,
+      ].join('\n'),
+    })
+  }
+
+  // A recovery code was used — to sign in, or to confirm a change. The codes
+  // are a second factor on paper: if someone else found them, this is how
+  // the owner hears of it. "None left" says what to do about it.
+  async sendRecoveryCodeUsedNotice(
+    email: RecoveryCodeUsedNoticeEmail,
+  ): Promise<void> {
+    const forgotUrl = `${frontendUrl()}/forgot-password`
+    const left =
+      email.remaining === 0
+        ? 'You have no recovery codes left: create new ones from your profile, under Sign-in and security.'
+        : email.remaining === 1
+          ? 'You have 1 recovery code left.'
+          : `You have ${email.remaining} recovery codes left.`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'A recovery code was used on your Stride account',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>One of your two-factor recovery codes was just used on your Stride account. ${escapeHtml(left)}</p>
+             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then contact your clinic.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        `One of your two-factor recovery codes was just used on your Stride account. ${left}`,
+        '',
+        "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then contact your clinic:",
+        forgotUrl,
+      ].join('\n'),
+    })
+  }
+
+  // An admin turned two-factor sign-in OFF for this account (the person
+  // lost both the phone and the codes, or the clinic suspects someone else
+  // put their own phone on it). Every session was ended: signing in again
+  // asks the password only — and the profile can set MFA up again.
+  async sendMfaResetNotice(email: MfaNoticeEmail): Promise<void> {
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Two-factor sign-in was turned off for your Stride account',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>An administrator of your clinic turned off two-factor sign-in for your Stride account, and your account was signed out everywhere. Signing in now asks for your password only; you can set two-factor sign-in up again from your profile.</p>
+             <p>If you didn't ask for this, contact your clinic straight away.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'An administrator of your clinic turned off two-factor sign-in for your Stride account, and your account was signed out everywhere. Signing in now asks for your password only; you can set two-factor sign-in up again from your profile.',
+        '',
+        "If you didn't ask for this, contact your clinic straight away.",
       ].join('\n'),
     })
   }

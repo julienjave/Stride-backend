@@ -1075,7 +1075,8 @@ describe('Account audit trail (e2e)', () => {
       const enabled = await who
         .post('/auth/mfa/enable')
         .send({ code: await freshCode(secret) })
-      expect(enabled.status).toBe(204)
+      // 200 with the recovery codes (MFA enrolment, pass 2).
+      expect(enabled.status).toBe(200)
       await who.post('/auth/logout')
 
       const second = agent()

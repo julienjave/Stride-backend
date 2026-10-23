@@ -26,7 +26,7 @@ import { encryptMfaSecret } from '../auth/mfa-secret-crypto'
 import {
   checkMfaCode,
   INVALID_MFA_CODE_MESSAGE,
-  IsMfaCode,
+  IsTotpCode,
   MFA_CODE_ALREADY_USED_MESSAGE,
   MFA_CODE_FORMAT_MESSAGE,
   mfaCodeRefusalMessage,
@@ -192,9 +192,9 @@ describe('mfaKeyUri', () => {
   })
 })
 
-describe('IsMfaCode', () => {
+describe('IsTotpCode', () => {
   class Body {
-    @IsMfaCode()
+    @IsTotpCode()
     code!: unknown
   }
   const errorsFor = async (code: unknown) =>

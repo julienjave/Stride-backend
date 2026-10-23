@@ -18,7 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { IsCurrentPassword } from '../../common/current-password'
-import { IsMfaCode } from '../totp'
+import { IsSecondFactorCode } from '../second-factor'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -27,12 +27,13 @@ import { IsMfaCode } from '../totp'
 // password AND a current code. The code alone (as before) let anyone holding
 // the phone and a session turn it off; the password alone would let anyone
 // with a phished password and a session do it. The step-up rule
-// (common/current-password.ts) — here the code is always required, since the
-// account has MFA on.
+// (StepUpService) — here the code is always required, since the account has
+// MFA on. A recovery code counts (the person's choice): someone who lost the
+// phone has nothing else to turn it off with.
 export class DisableMfaDto {
   @IsCurrentPassword()
   currentPassword!: string
 
-  @IsMfaCode()
+  @IsSecondFactorCode()
   code!: string
 }

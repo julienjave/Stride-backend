@@ -81,14 +81,18 @@ describe('audit vocabulary', () => {
         'MFA_LOGIN_FAILURE',
         'LOGOUT',
         'ROLE_SWITCHED',
+        'MFA_RECOVERY_CODE_USED',
       ])
     })
 
     it('puts every other action among the changes', () => {
       const changes = actionsOfKind('change')
-      // 99 actions (the 3 email-change ones and PASSWORD_CHANGED since
-      // 2026-10-22), 9 views, 6 sign-ins.
-      expect(changes).toHaveLength(99 - 9 - 6)
+      // 102 actions (the 3 email-change ones and PASSWORD_CHANGED since
+      // 2026-10-22, the 3 two-factor recovery ones since 2026-10-23), 9
+      // views, 7 sign-ins.
+      expect(changes).toHaveLength(102 - 9 - 7)
+      expect(changes).toContain('MFA_RECOVERY_CODES_REGENERATED')
+      expect(changes).toContain('MFA_RESET_BY_ADMIN')
       expect(changes).toContain('EMAIL_CHANGE_CONFIRMED')
       expect(changes).toContain('PASSWORD_CHANGED')
       expect(changes).toContain('CONVERSATION_READ')

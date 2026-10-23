@@ -39,12 +39,12 @@ import { EmailService } from '../email/email.service'
 import { UsersService } from '../users/users.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
+import { WRONG_PASSWORD_MESSAGE } from '../common/current-password'
 import {
-  confirmStepUp,
+  StepUpService,
   STEP_UP_COLUMNS,
   type StepUpProof,
-  WRONG_PASSWORD_MESSAGE,
-} from '../common/current-password'
+} from '../mfa/step-up.service'
 import type { UserRole } from '../users/dto/create-user.dto'
 import { maskEmail } from './mask-email'
 
@@ -123,6 +123,7 @@ export class EmailChangeService {
     private readonly emailService: EmailService,
     private readonly usersService: UsersService,
     private readonly messagingEvents: MessagingEvents,
+    private readonly stepUp: StepUpService,
   ) {}
 
   // === READ ===================================================================
@@ -175,7 +176,7 @@ export class EmailChangeService {
     const confirmToken = randomBytes(32).toString('hex')
     const cancelToken = randomBytes(32).toString('hex')
 
-    const { pending, taken, user } = await withRlsContext(
+    const { pending, taken, user, stepUp } = await withRlsContext(
       this.db,
       currentUser,
       async (tx) => {
@@ -184,24 +185,25 @@ export class EmailChangeService {
         // sees — and replaces — the first's request instead of both finding
         // "nothing open" and the second failing on the one-open index.
         const [user] = await tx
-          .select({
-            email: users.email,
-            firstName: users.firstName,
-            ...STEP_UP_COLUMNS,
-          })
+          .select(STEP_UP_COLUMNS)
           .from(users)
           .where(eq(users.id, currentUser.id))
           .for('update')
         // The step-up rule shared with changing the password
-        // (common/current-password.ts), checked UNDER the lock: a two-factor
-        // code is recorded as used, and two requests with the same code must
-        // not both find it unused. (It used to be read before the
+        // (StepUpService), checked UNDER the lock: a two-factor code is
+        // recorded as used, and two requests with the same code must not
+        // both find it unused. (It used to be read before the
         // transaction — fine for a password alone, which nothing records.)
         // `!user` keeps TypeScript on the safe side — the same refusal as a
         // wrong password. A refusal rolls the transaction back: nothing
         // stored, nothing audited.
         if (!user) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-        await confirmStepUp(tx, currentUser.id, user, proof)
+        const stepUp = await this.stepUp.confirm(
+          tx,
+          currentUser.id,
+          user,
+          proof,
+        )
         if (newEmail === user.email) {
           throw new BadRequestException(SAME_EMAIL_MESSAGE)
         }
@@ -261,9 +263,13 @@ export class EmailChangeService {
           },
           taken: owner.length > 0,
           user: { email: user.email, firstName: user.firstName },
+          stepUp,
         }
       },
     )
+
+    // A recovery code's notice, if one was used (StepUpService).
+    stepUp.afterCommit()
 
     // After the commit — never a link to a request that was rolled back.
     if (taken) {

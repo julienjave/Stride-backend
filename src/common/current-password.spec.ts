@@ -17,22 +17,10 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException } from '@nestjs/common'
 import { plainToInstance } from 'class-transformer'
 import { validate } from 'class-validator'
 import * as bcrypt from 'bcrypt'
-import { OTP } from 'otplib'
-import type { DrizzleDb } from '../database/drizzle.provider'
-import { encryptMfaSecret } from '../auth/mfa-secret-crypto'
-import { INVALID_MFA_CODE_MESSAGE, newMfaSecret } from '../mfa/totp'
-import {
-  confirmStepUp,
-  IsCurrentPassword,
-  isCurrentPassword,
-  MFA_CODE_REQUIRED_MESSAGE,
-  type StepUpAccount,
-  WRONG_PASSWORD_MESSAGE,
-} from './current-password'
+import { IsCurrentPassword, isCurrentPassword } from './current-password'
 
 // --- TESTS -------------------------------------------------------------------------------------------------
 
@@ -57,131 +45,6 @@ describe('isCurrentPassword', () => {
   it('refuses for an account without a password, without throwing', async () => {
     await expect(isCurrentPassword(null, '')).resolves.toBe(false)
     await expect(isCurrentPassword(null, 'password123')).resolves.toBe(false)
-  })
-})
-
-describe('confirmStepUp', () => {
-  // Real values throughout: a bcrypt hash, an encrypted secret (with a test
-  // key), and a code otplib computes for a PINNED clock (2031).
-  const NOW_MS = Date.parse('2031-03-04T10:00:10Z')
-  const STEP = Math.floor(NOW_MS / 1000 / 30)
-  const otp = new OTP({ strategy: 'totp' })
-  const savedKey = process.env.MFA_ENCRYPTION_KEY
-  let hash: string
-  let secret: string
-  let goodCode: string
-  let mfaOn: StepUpAccount
-  let mfaOff: StepUpAccount
-
-  beforeAll(async () => {
-    process.env.MFA_ENCRYPTION_KEY = 'cd'.repeat(32)
-    hash = await bcrypt.hash('password123', 4)
-    secret = newMfaSecret()
-    goodCode = await otp.generate({ secret, epoch: STEP * 30 })
-    mfaOn = {
-      passwordHash: hash,
-      mfaEnabled: true,
-      mfaSecret: encryptMfaSecret(secret),
-      mfaLastUsedStep: null,
-    }
-    mfaOff = {
-      passwordHash: hash,
-      mfaEnabled: false,
-      mfaSecret: null,
-      mfaLastUsedStep: null,
-    }
-  })
-  afterAll(() => {
-    process.env.MFA_ENCRYPTION_KEY = savedKey
-  })
-  beforeEach(() => {
-    jest.spyOn(Date, 'now').mockReturnValue(NOW_MS)
-  })
-  afterEach(() => {
-    jest.restoreAllMocks()
-  })
-
-  // A stand-in for the transaction: the only write a step-up makes is the
-  // code's step (mfa/totp.ts's recordMfaStep).
-  function fakeTx() {
-    const set = jest.fn()
-    set.mockReturnValue({ where: jest.fn().mockResolvedValue(undefined) })
-    const update = jest.fn().mockReturnValue({ set })
-    return { tx: { update } as unknown as DrizzleDb, update, set }
-  }
-
-  it('passes on the password alone for an account without two-factor, and ignores a code', async () => {
-    const { tx, update } = fakeTx()
-    await expect(
-      confirmStepUp(tx, 7, mfaOff, { currentPassword: 'password123' }),
-    ).resolves.toBeUndefined()
-    // Even a wrong code: the account has no second factor to check.
-    await expect(
-      confirmStepUp(tx, 7, mfaOff, {
-        currentPassword: 'password123',
-        mfaCode: '000000',
-      }),
-    ).resolves.toBeUndefined()
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  // The password comes FIRST: a request with a good code but the wrong
-  // password is refused for the password, and the code is NOT spent.
-  it('refuses a wrong password before looking at the code, and spends nothing', async () => {
-    const { tx, update } = fakeTx()
-    for (const account of [mfaOff, mfaOn]) {
-      await expect(
-        confirmStepUp(tx, 7, account, {
-          currentPassword: 'wrong',
-          mfaCode: goodCode,
-        }),
-      ).rejects.toThrow(new BadRequestException(WRONG_PASSWORD_MESSAGE))
-    }
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  it('asks for the code when two-factor is on and none was sent', async () => {
-    const { tx } = fakeTx()
-    await expect(
-      confirmStepUp(tx, 7, mfaOn, { currentPassword: 'password123' }),
-    ).rejects.toThrow(new BadRequestException(MFA_CODE_REQUIRED_MESSAGE))
-  })
-
-  it('passes with the password and a good code, and records the code as used', async () => {
-    const { tx, set } = fakeTx()
-    await expect(
-      confirmStepUp(tx, 7, mfaOn, {
-        currentPassword: 'password123',
-        mfaCode: goodCode,
-      }),
-    ).resolves.toBeUndefined()
-    expect(set.mock.calls).toStrictEqual([[{ mfaLastUsedStep: STEP }]])
-  })
-
-  it('refuses a wrong code, and records nothing', async () => {
-    const { tx, update } = fakeTx()
-    await expect(
-      confirmStepUp(tx, 7, mfaOn, {
-        currentPassword: 'password123',
-        mfaCode: '000000',
-      }),
-    ).rejects.toThrow(new BadRequestException(INVALID_MFA_CODE_MESSAGE))
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  // Fail closed: ON with no secret can't be stored (the CHECK), but if it
-  // were, the code check must refuse — not be skipped.
-  it('refuses when two-factor is on but there is no secret to check against', async () => {
-    const { tx, update } = fakeTx()
-    await expect(
-      confirmStepUp(
-        tx,
-        7,
-        { ...mfaOn, mfaSecret: null },
-        { currentPassword: 'password123', mfaCode: goodCode },
-      ),
-    ).rejects.toThrow(new BadRequestException(INVALID_MFA_CODE_MESSAGE))
-    expect(update).not.toHaveBeenCalled()
   })
 })
 
