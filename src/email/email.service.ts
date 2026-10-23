@@ -72,6 +72,13 @@ export interface PasswordChangedNoticeEmail {
   firstName: string
 }
 
+// Two-factor sign-in turned on or off (MFA enrolment, Phase 6): a notice to
+// the account's own inbox, like the password change's.
+export interface MfaNoticeEmail {
+  to: string
+  firstName: string
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 // Decides WHAT each email says — subject, HTML and plain-text bodies, the
@@ -271,6 +278,53 @@ export class EmailService {
         `Hello ${email.firstName},`,
         '',
         'The password of your Stride account was just changed, and your account was signed out on your other devices.',
+        '',
+        "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
+        forgotUrl,
+      ].join('\n'),
+    })
+  }
+
+  // Two-factor sign-in was turned ON. Who would do that without the owner?
+  // Someone with a stolen session AND the password (the step-up asks it):
+  // with their own phone as the second factor, the owner can no longer sign
+  // in. So the advice is the clinic — an admin can turn it off for them —
+  // not a reset link: a new password doesn't remove someone else's second
+  // factor.
+  async sendMfaEnabledNotice(email: MfaNoticeEmail): Promise<void> {
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Two-factor sign-in is on for your Stride account',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Two-factor sign-in was just turned on for your Stride account: signing in now asks for a code from your authenticator app. Your account was signed out on your other devices.</p>
+             <p>If this was you, there is nothing else to do. If it wasn't, contact your clinic straight away.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'Two-factor sign-in was just turned on for your Stride account: signing in now asks for a code from your authenticator app. Your account was signed out on your other devices.',
+        '',
+        "If this was you, there is nothing else to do. If it wasn't, contact your clinic straight away.",
+      ].join('\n'),
+    })
+  }
+
+  // Two-factor sign-in was turned OFF — which needs the password AND a code,
+  // so someone who isn't the owner had both: change the password first (the
+  // reset page, as for the password notice), then tell the clinic.
+  async sendMfaDisabledNotice(email: MfaNoticeEmail): Promise<void> {
+    const forgotUrl = `${frontendUrl()}/forgot-password`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Two-factor sign-in is off for your Stride account',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Two-factor sign-in was just turned off for your Stride account: signing in now asks for your password only.</p>
+             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then tell your clinic.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'Two-factor sign-in was just turned off for your Stride account: signing in now asks for your password only.',
         '',
         "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
         forgotUrl,

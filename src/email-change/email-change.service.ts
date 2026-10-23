@@ -40,7 +40,9 @@ import { UsersService } from '../users/users.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
 import {
-  isCurrentPassword,
+  confirmStepUp,
+  STEP_UP_COLUMNS,
+  type StepUpProof,
   WRONG_PASSWORD_MESSAGE,
 } from '../common/current-password'
 import type { UserRole } from '../users/dto/create-user.dto'
@@ -154,8 +156,8 @@ export class EmailChangeService {
   // === REQUEST ================================================================
 
   // Asks to move the signed-in account to `newEmail` (already normalised by
-  // the DTO). The current password first: a session alone mustn't move the
-  // sign-in.
+  // the DTO). The step-up first (the current password, and a two-factor code
+  // if the account has it on): a session alone mustn't move the sign-in.
   //
   // "Reveal nothing" (the person's choice): the answer is the same whether
   // the address is free or already an account's — the request is stored
@@ -166,30 +168,14 @@ export class EmailChangeService {
   async request(
     currentUser: SignedInUser,
     newEmail: string,
-    currentPassword: string,
+    proof: StepUpProof,
   ): Promise<PendingEmailChange> {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, currentUser.id),
-    })
-    // The step-up rule shared with changing the password
-    // (common/current-password.ts). `!user` keeps TypeScript on the safe
-    // side — the same refusal as a wrong password.
-    if (
-      !user ||
-      !(await isCurrentPassword(user.passwordHash, currentPassword))
-    ) {
-      throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-    }
-    if (newEmail === user.email) {
-      throw new BadRequestException(SAME_EMAIL_MESSAGE)
-    }
-
     // Two tokens, 256 random bits each (as for reset and invitations): the
     // raw ones are emailed and forgotten, only their hashes are stored.
     const confirmToken = randomBytes(32).toString('hex')
     const cancelToken = randomBytes(32).toString('hex')
 
-    const { pending, taken } = await withRlsContext(
+    const { pending, taken, user } = await withRlsContext(
       this.db,
       currentUser,
       async (tx) => {
@@ -197,11 +183,28 @@ export class EmailChangeService {
         // same person (two tabs) run one after the other, so the second one
         // sees — and replaces — the first's request instead of both finding
         // "nothing open" and the second failing on the one-open index.
-        await tx
-          .select({ id: users.id })
+        const [user] = await tx
+          .select({
+            email: users.email,
+            firstName: users.firstName,
+            ...STEP_UP_COLUMNS,
+          })
           .from(users)
           .where(eq(users.id, currentUser.id))
           .for('update')
+        // The step-up rule shared with changing the password
+        // (common/current-password.ts), checked UNDER the lock: a two-factor
+        // code is recorded as used, and two requests with the same code must
+        // not both find it unused. (It used to be read before the
+        // transaction — fine for a password alone, which nothing records.)
+        // `!user` keeps TypeScript on the safe side — the same refusal as a
+        // wrong password. A refusal rolls the transaction back: nothing
+        // stored, nothing audited.
+        if (!user) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
+        await confirmStepUp(tx, currentUser.id, user, proof)
+        if (newEmail === user.email) {
+          throw new BadRequestException(SAME_EMAIL_MESSAGE)
+        }
 
         // One open request per account: an earlier one closes (its links
         // die). cancelled_at's value is the trigger's (now()); the column
@@ -257,6 +260,7 @@ export class EmailChangeService {
             expiresAt: row.expiresAt,
           },
           taken: owner.length > 0,
+          user: { email: user.email, firstName: user.firstName },
         }
       },
     )

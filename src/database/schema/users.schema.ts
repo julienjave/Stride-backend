@@ -85,18 +85,23 @@ export const users = pgTable(
     passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at', {
       withTimezone: true,
     }),
-    // Nullable — only present once MFA setup has been initiated. isEnabled
-    // gates whether login actually requires it; a generated-but-unconfirmed
-    // secret sitting here is harmless, since it has no effect until enabled.
-    // Worth being explicit about a real, deliberate scope limitation: this is
-    // stored in plain text, not encrypted at rest — unlike passwordHash
-    // (one-way, useless even with full database read access), a TOTP secret
-    // must remain genuinely readable to verify codes, so anyone with raw
-    // database access could compute valid codes for any account with MFA
-    // enabled. Production would need application-level encryption of this
-    // column with a key held separately from the database itself (e.g. a KMS).
+    // Nullable — only present once MFA setup has been started.
+    // mfaEnabled gates whether sign-in asks for a code; a set-up secret not
+    // yet confirmed has no effect until enable confirms a code from it.
+    // ENCRYPTED at rest (AES-256-GCM, auth/mfa-secret-crypto.ts, with
+    // MFA_ENCRYPTION_KEY — a key kept outside the database): unlike
+    // passwordHash, which is one-way, a TOTP secret must stay readable to
+    // check codes, so a copy of the database alone must not be enough to
+    // compute anyone's codes. (In production the key would live in a key
+    // management service.)
     mfaSecret: varchar('mfa_secret', { length: 255 }),
     mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+    // The time step (floor(unix seconds / 30)) of the last two-factor code
+    // this account ACCEPTED — a code is good only if its step is later
+    // (no code works twice: RFC 6238 §5.2; mfa/totp.ts). Null = no code used
+    // since MFA was last set up. An integer is enough: today's step is about
+    // 59 million, and the column overflows in the year 4011.
+    mfaLastUsedStep: integer('mfa_last_used_step'),
     // The unit this person thinks in. It's used in two places: it's the unit
     // pre-selected when they type a new weight (a practitioner building a
     // program), and the unit every weight is DISPLAYED in for them
@@ -125,6 +130,15 @@ export const users = pgTable(
     emailNormalized: check(
       'users_email_normalized',
       sql`${table.email} = btrim(lower(${table.email} COLLATE "C"))`,
+    ),
+    // MFA can't be ON without a secret to check codes against. The app never
+    // writes that (disable clears both at once), but a sign-in that found
+    // mfa_enabled with no secret would have nothing to verify: this makes the
+    // state impossible rather than handled. (mfa/totp.ts and the step-up still
+    // refuse it — fail closed — since TypeScript can't see a CHECK.)
+    mfaEnabledHasSecret: check(
+      'users_mfa_enabled_has_secret',
+      sql`NOT ${table.mfaEnabled} OR ${table.mfaSecret} IS NOT NULL`,
     ),
   }),
 )

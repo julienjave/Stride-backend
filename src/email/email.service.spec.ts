@@ -188,6 +188,78 @@ describe('EmailService', () => {
     })
   })
 
+  describe('sendMfaEnabledNotice', () => {
+    it('tells the account, from EMAIL_FROM: other devices signed out, and the clinic to contact', async () => {
+      await service.sendMfaEnabledNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe(
+        'Two-factor sign-in is on for your Stride account',
+      )
+      for (const body of [email.text, email.html]) {
+        expect(body).toContain(
+          'Your account was signed out on your other devices.',
+        )
+        expect(body).toContain('contact your clinic straight away')
+      }
+      // No reset link: a new password wouldn't remove someone else's second
+      // factor (the comment on the method).
+      expect(email.html).not.toContain('href=')
+      expect(email.text).not.toContain('forgot-password')
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendMfaEnabledNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+      expect(email.text).toContain('Hello <b>Pat</b>,')
+    })
+  })
+
+  describe('sendMfaDisabledNotice', () => {
+    it('tells the account, from EMAIL_FROM, with the forgot-password page in both bodies', async () => {
+      await service.sendMfaDisabledNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe(
+        'Two-factor sign-in is off for your Stride account',
+      )
+      expect(email.text).toContain('signing in now asks for your password only')
+      const link = 'https://app.stride.test/forgot-password'
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendMfaDisabledNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+      expect(email.text).toContain('Hello <b>Pat</b>,')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

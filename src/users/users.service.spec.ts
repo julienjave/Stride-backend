@@ -2131,6 +2131,7 @@ describe('UsersService.toPublic', () => {
       lastName: 'Ient',
       passwordHash: 'bcrypt-hash',
       mfaSecret: 'iv:authTag:ciphertext',
+      mfaLastUsedStep: 59_000_000,
       passwordResetTokenHash: 'reset-hash',
       passwordResetTokenExpiresAt: new Date(),
       avatarPath: 'avatars/5/123.png',

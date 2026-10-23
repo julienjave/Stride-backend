@@ -64,6 +64,19 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     return otp.generate({ secret })
   }
 
+  // No code works twice (mfa/totp.ts): the account remembers the window of
+  // the last code it accepted. Two uses within one window — enabling, then
+  // signing in seconds later — would get the same code, refused the second
+  // time. Clearing what the account remembers stands in for waiting up to
+  // 30 seconds for the next window; test/mfa.e2e-spec.ts proves the refusal
+  // itself.
+  async function forgetUsedCode(userId: number): Promise<void> {
+    await sessionPool.query(
+      'UPDATE users SET mfa_last_used_step = NULL WHERE id = $1',
+      [userId],
+    )
+  }
+
   // register-clinic only ever succeeds ONCE per (truncated) database — the
   // founding admin is bootstrapped a single time here and reused across
   // every test below, rather than each test trying (and failing) to create
@@ -227,7 +240,9 @@ describe('Auth — MFA and password recovery (e2e)', () => {
       .send({ email: mfaEmail, password: 'password123' })
     expect(firstLogin.status).toBe(201)
 
-    const setupRes = await mfa.post('/auth/mfa/setup')
+    const setupRes = await mfa
+      .post('/auth/mfa/setup')
+      .send({ currentPassword: 'password123' })
     expect(setupRes.status).toBe(201)
     const { secret } = setupRes.body
     expect(typeof secret).toBe('string')
@@ -268,6 +283,7 @@ describe('Auth — MFA and password recovery (e2e)', () => {
       .send({ code: '000000' })
     expect(wrongCodeRes.status).toBe(401)
 
+    await forgetUsedCode(mfaAccountId)
     const verifyCode = await freshCode(secret)
     const verifyRes = await mfa
       .post('/auth/mfa/verify')

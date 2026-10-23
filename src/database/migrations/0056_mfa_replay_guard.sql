@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "mfa_last_used_step" integer;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_mfa_enabled_has_secret" CHECK (NOT "users"."mfa_enabled" OR "users"."mfa_secret" IS NOT NULL);

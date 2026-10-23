@@ -78,11 +78,10 @@ export class EmailChangeController {
     @CurrentUser() user: CurrentUser,
     @Body() dto: RequestEmailChangeDto,
   ): Promise<{ pending: PendingEmailChange }> {
-    const pending = await this.emailChangeService.request(
-      user,
-      dto.newEmail,
-      dto.currentPassword,
-    )
+    const pending = await this.emailChangeService.request(user, dto.newEmail, {
+      currentPassword: dto.currentPassword,
+      mfaCode: dto.mfaCode,
+    })
     return { pending }
   }
 

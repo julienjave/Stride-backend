@@ -960,6 +960,15 @@ describe('Account audit trail (e2e)', () => {
       }
       return otp.generate({ secret })
     }
+    // No code works twice (mfa/totp.ts): clearing the account's last used
+    // window stands in for waiting for the next one (auth-recovery's
+    // forgetUsedCode; test/mfa.e2e-spec.ts proves the refusal).
+    async function forgetUsedCode(userId: number): Promise<void> {
+      await sessionPool.query(
+        'UPDATE users SET mfa_last_used_step = NULL WHERE id = $1',
+        [userId],
+      )
+    }
 
     // A fresh, activated patient (password 'password123'), and an agent.
     async function readyPatient() {
@@ -1050,13 +1059,17 @@ describe('Account audit trail (e2e)', () => {
       expect((await who.get('/auth/me')).status).toBe(401)
     })
 
+    // 20 s, not Jest's default 5: freshCode may wait up to 5 s for a fresh
+    // window (as in auth-recovery.e2e-spec.ts).
     it('records MFA set up, enabled, a wrong code at sign-in, and disabled', async () => {
       const patient = await readyPatient()
       const who = agent()
       await who
         .post('/auth/login')
         .send({ email: patient.email, password: 'password123' })
-      const setup = await who.post('/auth/mfa/setup')
+      const setup = await who
+        .post('/auth/mfa/setup')
+        .send({ currentPassword: 'password123' })
       expect(setup.status).toBe(201)
       const secret = setup.body.secret as string
       const enabled = await who
@@ -1073,13 +1086,15 @@ describe('Account audit trail (e2e)', () => {
         .post('/auth/mfa/verify')
         .send({ code: '000000' })
       expect(wrong.status).toBe(401)
+      await forgetUsedCode(patient.id)
       const right = await second
         .post('/auth/mfa/verify')
         .send({ code: await freshCode(secret) })
       expect(right.status).toBe(201)
+      await forgetUsedCode(patient.id)
       const disabled = await second
         .post('/auth/mfa/disable')
-        .send({ code: await freshCode(secret) })
+        .send({ currentPassword: 'password123', code: await freshCode(secret) })
       expect(disabled.status).toBe(204)
 
       const actions = (await trail(patient.id)).map((entry) => entry.action)
@@ -1106,7 +1121,7 @@ describe('Account audit trail (e2e)', () => {
         })
       }
       expect(await genericEntries()).toEqual([])
-    })
+    }, 20_000)
 
     it('records a role switch with its from and to — and nothing for "switching" to the active role', async () => {
       const email = uniqueEmail('two-roles')

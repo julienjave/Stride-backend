@@ -27,8 +27,6 @@ import {
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import * as bcrypt from 'bcrypt'
 import { randomBytes, createHash } from 'crypto'
-import { OTP } from 'otplib'
-import * as QRCode from 'qrcode'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   clinics,
@@ -45,7 +43,6 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { rethrowDuplicateEmail } from '../common/email-address'
 import { errorMessage } from '../common/error-message'
-import { encryptMfaSecret, decryptMfaSecret } from './mfa-secret-crypto'
 import { withRlsContext } from '../database/rls-context'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -72,11 +69,6 @@ export const INVALID_RESET_LINK_MESSAGE =
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name)
-
-  // otplib's current API is class-based, not a singleton — one shared
-  // instance is created here, since it holds no per-request state and
-  // there's no reason to construct a new one on every call.
-  private readonly otp = new OTP({ strategy: 'totp' })
 
   constructor(
     private readonly usersService: UsersService,
@@ -567,165 +559,6 @@ export class AuthService {
     // Returned apart, already checked: TypeScript can't carry the narrowing
     // ("not null") across the return, and the caller needs it non-null.
     return { user, expiresAt: user.passwordResetTokenExpiresAt }
-  }
-
-  // === MFA (TOTP) ===========================================================
-
-  async setupMfa(
-    userId: number,
-    currentUser: { id: number; activeRole: UserRole },
-  ) {
-    const user = await this.usersService.findOne(userId)
-
-    // A new random secret every time setup() is called — overwrites any
-    // previous, unconfirmed one. Harmless while mfaEnabled stays false;
-    // login is entirely unaffected until enableMfa() below actually
-    // confirms a code generated from this specific secret.
-    const secret = this.otp.generateSecret()
-    const otpauthUrl = this.otp.generateURI({
-      issuer: 'Stride',
-      label: user.email,
-      secret,
-    })
-    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl)
-
-    // The PLAINTEXT secret is what goes into the QR code/otpauth URL (the
-    // authenticator app needs the real value) — only the STORED copy is
-    // encrypted. The two are deliberately different at this point: the
-    // returned value here is shown to the user once, right now; what lands
-    // in the database is never in plaintext at rest.
-    // MFA_SETUP_STARTED (added by the audit review, decided with the person
-    // 2026-10-21): a new secret is stored — not yet enabled. In the same
-    // transaction; never the secret, encrypted or not, in the entry.
-    await withRlsContext(this.db, currentUser, async (tx) => {
-      await tx
-        .update(users)
-        .set({ mfaSecret: encryptMfaSecret(secret) })
-        .where(eq(users.id, userId))
-      await this.auditService.logInTransaction(tx, {
-        performedBy: currentUser.id,
-        action: 'MFA_SETUP_STARTED',
-        targetUserId: userId,
-        entityType: 'users',
-        entityId: userId,
-      })
-    })
-
-    // The raw secret is included so an authenticator app that can't scan a
-    // QR code (or a user who prefers typing it) has a manual-entry option —
-    // standard practice for TOTP enrollment flows.
-    return { secret, otpauthUrl, qrCodeDataUrl }
-  }
-
-  async enableMfa(
-    userId: number,
-    code: string,
-    currentUser: { id: number; activeRole: UserRole },
-  ): Promise<void> {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, userId),
-    })
-    if (!user?.mfaSecret) {
-      throw new BadRequestException(
-        'Call MFA setup before attempting to enable it',
-      )
-    }
-
-    // verify() is async now, and returns a { valid, ... } result object —
-    // not a plain boolean the way the previous otplib API did. Decrypted
-    // here, right before use — never held decrypted any longer than needed.
-    const result = await this.otp.verify({
-      secret: decryptMfaSecret(user.mfaSecret),
-      token: code,
-    })
-    if (!result.valid) {
-      throw new BadRequestException('Invalid authentication code')
-    }
-
-    await withRlsContext(this.db, currentUser, async (tx) => {
-      await tx
-        .update(users)
-        .set({ mfaEnabled: true })
-        .where(eq(users.id, userId))
-      await this.auditService.logInTransaction(tx, {
-        performedBy: userId,
-        action: 'MFA_ENABLED',
-        targetUserId: userId,
-        entityType: 'users',
-        entityId: userId,
-      })
-    })
-  }
-
-  async disableMfa(
-    userId: number,
-    code: string,
-    currentUser: { id: number; activeRole: UserRole },
-  ): Promise<void> {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, userId),
-    })
-    if (!user?.mfaEnabled || !user.mfaSecret) {
-      throw new BadRequestException(
-        'MFA is not currently enabled on this account',
-      )
-    }
-
-    // Requiring a valid CURRENT code to disable — not just an active
-    // session — so someone who merely stole a session cookie can't turn
-    // off a security measure they never actually authenticated past.
-    const result = await this.otp.verify({
-      secret: decryptMfaSecret(user.mfaSecret),
-      token: code,
-    })
-    if (!result.valid) {
-      throw new BadRequestException('Invalid authentication code')
-    }
-
-    await withRlsContext(this.db, currentUser, async (tx) => {
-      await tx
-        .update(users)
-        .set({ mfaEnabled: false, mfaSecret: null })
-        .where(eq(users.id, userId))
-      await this.auditService.logInTransaction(tx, {
-        performedBy: userId,
-        action: 'MFA_DISABLED',
-        targetUserId: userId,
-        entityType: 'users',
-        entityId: userId,
-      })
-    })
-  }
-
-  // Called by AuthController after a password-only login where the account
-  // has MFA enabled — checks a submitted code against the stored secret,
-  // without touching the session at all. The controller decides what to do
-  // with the result (establish a real session, or reject).
-  async verifyMfaCode(userId: number, code: string): Promise<boolean> {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, userId),
-    })
-    if (!user?.mfaSecret) {
-      return false
-    }
-    const result = await this.otp.verify({
-      secret: decryptMfaSecret(user.mfaSecret),
-      token: code,
-    })
-    // A wrong code at sign-in: the password was right, so repeated wrong
-    // codes against one account are the brute-force signal worth keeping
-    // (added by the audit review, decided with the person 2026-10-21).
-    // Awaited, like the other sign-in events.
-    if (!result.valid) {
-      await this.auditService.log({
-        performedBy: userId,
-        action: 'MFA_LOGIN_FAILURE',
-        targetUserId: userId,
-        entityType: 'users',
-        entityId: userId,
-      })
-    }
-    return result.valid
   }
 
   // === HELPER FUNCTIONS =========================================================

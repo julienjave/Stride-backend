@@ -28,9 +28,11 @@ import { EmailService } from '../email/email.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
 import {
-  isCurrentPassword,
+  confirmStepUp,
+  STEP_UP_COLUMNS,
   WRONG_PASSWORD_MESSAGE,
 } from '../common/current-password'
+import { endOtherSessions } from '../common/other-sessions'
 import type { UserRole } from '../users/dto/create-user.dto'
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
@@ -48,6 +50,8 @@ type SignedInUser = { id: number; activeRole: UserRole }
 export interface PasswordChange {
   currentPassword: string
   newPassword: string
+  // Only for an account with two-factor sign-in on (the step-up asks it).
+  mfaCode?: string
 }
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
@@ -58,7 +62,8 @@ export interface PasswordChange {
 // wrong current password refused, not audited (like the email change).
 //
 //   check the two values ──► hash the new one ──► ONE transaction:
-//     lock the account · check the current password · store the new hash ·
+//     lock the account · the step-up (the current password, and a
+//     two-factor code if the account has it on) · store the new hash ·
 //     clear an unused reset link · cancel a pending email change ·
 //     end the other sessions · ONE audit entry
 //   ──► after the commit: close those sessions' sockets, email a notice.
@@ -77,7 +82,7 @@ export class PasswordChangeService {
   // signed in. Every other session of the account ends.
   async change(
     currentUser: SignedInUser,
-    { currentPassword, newPassword }: PasswordChange,
+    { currentPassword, newPassword, mfaCode }: PasswordChange,
     keptSessionId: string,
   ): Promise<void> {
     if (newPassword === currentPassword) {
@@ -91,8 +96,8 @@ export class PasswordChangeService {
     const newPasswordHash = await bcrypt.hash(newPassword, 10)
 
     const outcome = await withRlsContext(this.db, currentUser, async (tx) => {
-      // The account's row, LOCKED until the commit, and the current
-      // password checked against what the lock returns. Checking first and
+      // The account's row, LOCKED until the commit, and the step-up checked
+      // against what the lock returns. Checking first and
       // writing later — two steps with a gap between them — would let two
       // changes made at once (two tabs; an attacker racing the owner) both
       // pass against the SAME old password, the later one silently
@@ -104,8 +109,8 @@ export class PasswordChangeService {
         .select({
           email: users.email,
           firstName: users.firstName,
-          passwordHash: users.passwordHash,
           resetTokenHash: users.passwordResetTokenHash,
+          ...STEP_UP_COLUMNS,
         })
         .from(users)
         .where(eq(users.id, currentUser.id))
@@ -113,13 +118,13 @@ export class PasswordChangeService {
       // Throwing inside the transaction rolls it back: nothing is stored,
       // nothing is audited (decided with the person: a wrong current
       // password is refused and throttled, not recorded — as for the
-      // email change).
-      if (
-        !account ||
-        !(await isCurrentPassword(account.passwordHash, currentPassword))
-      ) {
-        throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      }
+      // email change; the same for a wrong two-factor code). `!account`
+      // keeps TypeScript on the safe side — the same refusal.
+      if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
+      await confirmStepUp(tx, currentUser.id, account, {
+        currentPassword,
+        mfaCode,
+      })
 
       // The new password — and an unused reset link dies with the old
       // one: it was asked for under the old password, and a link lying in
@@ -154,16 +159,14 @@ export class PasswordChangeService {
 
       // Signed out everywhere else, always (the person's choice): if
       // someone else was signed in with the old password, they are out
-      // now. This browser stays. Raw SQL — the session table belongs to
-      // connect-pg-simple, outside Drizzle's schema (see AuthService.
-      // destroyAllSessionsForUser for the JSON path). In the transaction:
-      // if anything fails, the password AND the sessions stay as they
-      // were. RETURNING the ids, to close their sockets after the commit.
-      const ended = await tx.execute<{ sid: string }>(
-        sql`DELETE FROM session
-               WHERE (sess::jsonb)->'passport'->'user'->>'id' = ${String(currentUser.id)}
-                 AND sid <> ${keptSessionId}
-           RETURNING sid`,
+      // now. This browser stays. In the transaction (common/
+      // other-sessions.ts): if anything fails, the password AND the
+      // sessions stay as they were; the ids, to close their sockets after
+      // the commit.
+      const endedSessionIds = await endOtherSessions(
+        tx,
+        currentUser.id,
+        keptSessionId,
       )
 
       // ONE entry, in the transaction (the convention). Never the password
@@ -175,7 +178,7 @@ export class PasswordChangeService {
         entityType: 'users',
         entityId: currentUser.id,
         details: {
-          signedOutSessions: ended.rows.length,
+          signedOutSessions: endedSessionIds.length,
           ...(cancelled.length > 0
             ? { cancelledEmailChangeRequestId: cancelled[0].id }
             : {}),
@@ -188,7 +191,7 @@ export class PasswordChangeService {
       return {
         email: account.email,
         firstName: account.firstName,
-        endedSessionIds: ended.rows.map((row) => row.sid),
+        endedSessionIds,
       }
     })
 

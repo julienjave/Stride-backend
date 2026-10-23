@@ -17,14 +17,18 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator'
+import { IsEmail, MaxLength, ValidateIf } from 'class-validator'
 import { NormalizeEmail } from '../../common/email-address'
+import { IsCurrentPassword } from '../../common/current-password'
+import { isPresent } from '../../common/validators/is-present'
+import { IsMfaCode } from '../../mfa/totp'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
 // POST /auth/email-change — the address to move the account to, and the
 // current password: a session alone isn't enough to move the sign-in (a
-// browser left signed in, a stolen cookie). Both in the BODY.
+// browser left signed in, a stolen cookie) — and, for an account with
+// two-factor sign-in on, a current code. All in the BODY.
 export class RequestEmailChangeDto {
   // Normalised like every email a request brings in (emails are
   // case-insensitive — common/email-address.ts), so "same as now" and
@@ -34,10 +38,13 @@ export class RequestEmailChangeDto {
   @MaxLength(255)
   newEmail!: string
 
-  // The same limits as signing in (LoginDto). MinLength(1): an empty string
-  // is refused here, not compared with a hash.
-  @IsString()
-  @MinLength(1)
-  @MaxLength(128)
+  // The step-up (common/current-password.ts): the same limits as signing in.
+  @IsCurrentPassword()
   currentPassword!: string
+
+  // Only for an account with two-factor sign-in on; when sent, a code
+  // (`null` refused — see ChangePasswordDto).
+  @ValidateIf(isPresent)
+  @IsMfaCode()
+  mfaCode?: string
 }

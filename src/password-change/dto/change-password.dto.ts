@@ -17,7 +17,10 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsString, MaxLength, MinLength } from 'class-validator'
+import { IsString, MaxLength, MinLength, ValidateIf } from 'class-validator'
+import { IsCurrentPassword } from '../../common/current-password'
+import { isPresent } from '../../common/validators/is-present'
+import { IsMfaCode } from '../../mfa/totp'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -26,11 +29,9 @@ import { IsString, MaxLength, MinLength } from 'class-validator'
 // logs).
 export class ChangePasswordDto {
   // The step-up (common/current-password.ts): the same limits as signing in
-  // (LoginDto) and as the email change. MinLength(1): an empty string is
-  // refused here, not compared with a hash.
-  @IsString()
-  @MinLength(1)
-  @MaxLength(128)
+  // (LoginDto) and as the email change — one decorator for the four DTOs
+  // that ask it.
+  @IsCurrentPassword()
   currentPassword!: string
 
   // The one rule for choosing a password — the same as accepting an
@@ -42,4 +43,12 @@ export class ChangePasswordDto {
   @MinLength(8)
   @MaxLength(128)
   newPassword!: string
+
+  // The step-up's second half, for an account with two-factor sign-in on
+  // (the service asks for it then). Optional here — the DTO can't know the
+  // account — but when SENT it must be a code: `ValidateIf(isPresent)`, not
+  // `IsOptional()`, so `null` is refused rather than passed on as "no code".
+  @ValidateIf(isPresent)
+  @IsMfaCode()
+  mfaCode?: string
 }

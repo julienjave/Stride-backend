@@ -1043,9 +1043,10 @@ export class UsersService {
   //
   // 1. Strip every server-internal field: passwordHash (obviously),
   //    mfaSecret (still an encrypted secret that should never reach a
-  //    client), and passwordResetTokenHash/passwordResetTokenExpiresAt
-  //    (they reveal whether a password reset is pending, and when it
-  //    expires).
+  //    client), mfaLastUsedStep (when the account last used a two-factor
+  //    code — a sign-in time, useful to no screen) and
+  //    passwordResetTokenHash/passwordResetTokenExpiresAt (they reveal
+  //    whether a password reset is pending, and when it expires).
   // 2. Swap avatarPath (the internal RustFS object key) for avatarUrl, a
   //    presigned URL a browser can load directly — the same conversion
   //    ClinicsService.withLogoUrl() does for logoPath. The key itself is
@@ -1071,6 +1072,7 @@ export class UsersService {
     const {
       passwordHash,
       mfaSecret,
+      mfaLastUsedStep,
       passwordResetTokenHash,
       passwordResetTokenExpiresAt,
       avatarPath,

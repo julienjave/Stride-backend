@@ -48,6 +48,7 @@ import { CheckResetTokenDto } from './dto/check-reset-token.dto'
 import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
 import { MessagingEvents } from '../messaging/messaging-events'
+import { MfaService } from '../mfa/mfa.service'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -59,6 +60,7 @@ export class AuthController {
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
     private readonly messagingEvents: MessagingEvents,
+    private readonly mfaService: MfaService,
   ) {}
 
   // === ROUTES ===========================================================
@@ -145,12 +147,12 @@ export class AuthController {
       )
     }
 
-    const isValid = await this.authService.verifyMfaCode(
-      pending.userId,
-      dto.code,
-    )
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid authentication code')
+    // A refused code answers 401 with its words: wrong, or already used
+    // (mfa/totp.ts — no code works twice). The pending state stays, so the
+    // person can type the next code without the password again.
+    const outcome = await this.mfaService.verifySignIn(pending, dto.code)
+    if (!outcome.ok) {
+      throw new UnauthorizedException(outcome.message)
     }
 
     delete req.session.mfaPending
@@ -165,39 +167,8 @@ export class AuthController {
     })
   }
 
-  // --- MFA enrollment (requires an already-authenticated session) ---
-
-  @UseGuards(SessionAuthGuard)
-  @AuditedByService()
-  @Post('mfa/setup')
-  setupMfa(@CurrentUser() user: CurrentUser) {
-    return this.authService.setupMfa(user.id, user)
-  }
-
-  // Same 5/60s throttle as mfa/verify, for consistency with this app's own
-  // rationale for requiring a fresh code on sensitive MFA actions — enabling
-  // or disabling MFA is exactly that. (A concrete brute-force scenario was
-  // not found: otplib here uses the default epochTolerance of 0, so only the
-  // single exact 30s window is ever valid, and there's no account-lockout
-  // layer behind this — but tightening this is cheap and has no meaningful
-  // downside for a legitimate user entering a fresh code.)
-  @UseGuards(SessionAuthGuard)
-  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
-  @AuditedByService()
-  @Post('mfa/enable')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async enableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
-    await this.authService.enableMfa(user.id, dto.code, user)
-  }
-
-  @UseGuards(SessionAuthGuard)
-  @Throttle({ default: { limit: 5, ttl: seconds(60) } })
-  @AuditedByService()
-  @Post('mfa/disable')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async disableMfa(@CurrentUser() user: CurrentUser, @Body() dto: MfaCodeDto) {
-    await this.authService.disableMfa(user.id, dto.code, user)
-  }
+  // Setting up, turning on and turning off two-factor sign-in: MfaController
+  // (src/mfa/), at the same /auth/mfa/… addresses.
 
   // == Switch Roles ==
 

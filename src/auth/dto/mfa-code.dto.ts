@@ -17,12 +17,14 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { IsString, Length } from 'class-validator'
+import { IsMfaCode } from '../../mfa/totp'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
+// A two-factor code alone: the second step of signing in (POST
+// /auth/mfa/verify) and confirming set-up (POST /auth/mfa/enable). 6 digits
+// (mfa/totp.ts — it used to be any 6 characters).
 export class MfaCodeDto {
-  @IsString()
-  @Length(6, 6)
+  @IsMfaCode()
   code!: string
 }
