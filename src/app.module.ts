@@ -28,6 +28,7 @@ import { CareTeamModule } from './care-team/care-team.module'
 import { InvitationsModule } from './invitations/invitations.module'
 import { AuthModule } from './auth/auth.module'
 import { EmailChangeModule } from './email-change/email-change.module'
+import { PasswordChangeModule } from './password-change/password-change.module'
 import { ExercisesModule } from './exercises/exercises.module'
 import { ClinicsModule } from './clinics/clinics.module'
 import { ProgramsModule } from './programs/programs.module'
@@ -84,6 +85,7 @@ import { throttlerOptions } from './config/rate-limits'
     InvitationsModule,
     AuthModule,
     EmailChangeModule,
+    PasswordChangeModule,
     ExercisesModule,
     ClinicsModule,
     ProgramsModule,

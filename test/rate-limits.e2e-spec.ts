@@ -94,6 +94,33 @@ describe('Rate limits (e2e)', () => {
     expect(answers[60]).toBe(429)
   })
 
+  // The two forms that check the CURRENT password of a signed-in account
+  // (changing the email, changing the password) keep the sign-in limit: from
+  // a stolen session, they must not become a way to guess the password. The
+  // throttler is a global guard, so it runs before the session guard — even
+  // without a session, the 6th request is counted and refused. Each route
+  // its own count.
+  it('refuses the 6th request in a minute to each current-password route', async () => {
+    app = await buildApp('on')
+    const server = () => request(app.getHttpServer())
+
+    const changePassword = () =>
+      server()
+        .post('/auth/password')
+        .send({ currentPassword: 'x', newPassword: 'a-new-password' })
+    expect(await statuses(changePassword, 6)).toEqual([
+      401, 401, 401, 401, 401, 429,
+    ])
+
+    const changeEmail = () =>
+      server()
+        .post('/auth/email-change')
+        .send({ newEmail: 'new@example.com', currentPassword: 'x' })
+    expect(await statuses(changeEmail, 6)).toEqual([
+      401, 401, 401, 401, 401, 429,
+    ])
+  })
+
   // And the switch the other suites rely on: off means never counted — the
   // login limit (an @Throttle override) included.
   it('counts nothing when the limits are off', async () => {

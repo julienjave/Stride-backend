@@ -41,9 +41,18 @@ import { users } from './users.schema'
 //   link of the "someone asked to change your email" notice;
 // - password_reset: a password reset cancels a pending change — the person
 //   who resets may be recovering from someone who knew the password.
+// - password_changed: so does changing the password from the profile
+//   (decisions §13), for the same reason — its own value, so the record says
+//   which of the two happened.
 export const emailChangeCancelReasonEnum = pgEnum(
   'email_change_cancel_reason',
-  ['replaced', 'cancelled_in_app', 'cancelled_by_email_link', 'password_reset'],
+  [
+    'replaced',
+    'cancelled_in_app',
+    'cancelled_by_email_link',
+    'password_reset',
+    'password_changed',
+  ],
 )
 
 // A person changing their own sign-in email ("Change email", Phase 6 —

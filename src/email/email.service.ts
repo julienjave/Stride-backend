@@ -64,6 +64,14 @@ export interface EmailChangeRequestedNoticeEmail extends EmailChangeNoticeEmail 
   rawCancelToken: string
 }
 
+// The notice after a password change from the profile (decisions §13),
+// gathered by PasswordChangeService.
+export interface PasswordChangedNoticeEmail {
+  // The account's sign-in address — the inbox a reset link would go to.
+  to: string
+  firstName: string
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 // Decides WHAT each email says — subject, HTML and plain-text bodies, the
@@ -237,6 +245,35 @@ export class EmailService {
         `Your Stride account now signs in with ${email.maskedNewEmail}, and was signed out on your other devices. This address will no longer receive emails about it.`,
         '',
         "If this wasn't you, contact your clinic straight away.",
+      ].join('\n'),
+    })
+  }
+
+  // To the account after its password was changed from the profile: if it
+  // wasn't the owner, someone knew the old password and is now the only one
+  // who knows the new one — and has signed the owner's other devices out. This
+  // inbox is still the account's, so "Forgot your password?" is the way back
+  // (it also cancels anything that person may have started — a pending email
+  // change). No link with a token: the forgot-password PAGE, where the owner
+  // asks for one.
+  async sendPasswordChangedNotice(
+    email: PasswordChangedNoticeEmail,
+  ): Promise<void> {
+    const forgotUrl = `${frontendUrl()}/forgot-password`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Your Stride password was changed',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>The password of your Stride account was just changed, and your account was signed out on your other devices.</p>
+             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then tell your clinic.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'The password of your Stride account was just changed, and your account was signed out on your other devices.',
+        '',
+        "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
+        forgotUrl,
       ].join('\n'),
     })
   }

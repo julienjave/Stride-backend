@@ -60,6 +60,10 @@ export const AUDIT_ACTIONS = {
   MFA_DISABLED: 'change',
   PASSWORD_RESET_REQUESTED: 'change',
   PASSWORD_RESET_COMPLETED: 'change',
+  // Changing one's own password from the profile (decisions §13): the
+  // current password checked, the other sessions ended, a pending email
+  // change and an unused reset link cancelled — never the password itself.
+  PASSWORD_CHANGED: 'change',
   // Changing one's own sign-in email (decisions §12): asked (the address
   // asked for), confirmed from the new inbox (from → to), cancelled (why).
   EMAIL_CHANGE_REQUESTED: 'change',

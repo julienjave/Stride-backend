@@ -25,7 +25,6 @@ import {
   Logger,
 } from '@nestjs/common'
 import { and, eq, isNull, sql } from 'drizzle-orm'
-import * as bcrypt from 'bcrypt'
 import { createHash, randomBytes } from 'crypto'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { emailChangeRequests, users } from '../database/schema'
@@ -40,6 +39,10 @@ import { EmailService } from '../email/email.service'
 import { UsersService } from '../users/users.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
+import {
+  isCurrentPassword,
+  WRONG_PASSWORD_MESSAGE,
+} from '../common/current-password'
 import type { UserRole } from '../users/dto/create-user.dto'
 import { maskEmail } from './mask-email'
 
@@ -58,7 +61,6 @@ export const EMAIL_CHANGE_VALID_HOURS = 24
 // even less.
 export const INVALID_EMAIL_CHANGE_LINK_MESSAGE =
   'This link is invalid or has expired'
-export const WRONG_PASSWORD_MESSAGE = 'Your current password is not correct'
 export const SAME_EMAIL_MESSAGE = 'This is already your email address'
 // The one case the confirmation can't complete although the link is good:
 // someone took the address between the request and the click. Saying so
@@ -169,12 +171,12 @@ export class EmailChangeService {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, currentUser.id),
     })
-    // A signed-in account always has a password (an account without one
-    // can't sign in); `!user?.passwordHash` keeps TypeScript and a
-    // corrupted row on the safe side — the same refusal as a wrong password.
+    // The step-up rule shared with changing the password
+    // (common/current-password.ts). `!user` keeps TypeScript on the safe
+    // side — the same refusal as a wrong password.
     if (
-      !user?.passwordHash ||
-      !(await bcrypt.compare(currentPassword, user.passwordHash))
+      !user ||
+      !(await isCurrentPassword(user.passwordHash, currentPassword))
     ) {
       throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
     }

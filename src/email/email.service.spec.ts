@@ -151,6 +151,43 @@ describe('EmailService', () => {
     })
   })
 
+  // "Change password" (decisions §13): one notice, to the account's own
+  // address — with the forgot-password PAGE (no token: the owner asks for a
+  // link there) and the name escaped.
+  describe('sendPasswordChangedNotice', () => {
+    it('tells the account, from EMAIL_FROM, with the forgot-password page in both bodies', async () => {
+      await service.sendPasswordChangedNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe('Your Stride password was changed')
+      expect(email.text).toContain(
+        'your account was signed out on your other devices',
+      )
+      const link = 'https://app.stride.test/forgot-password'
+      expect(email.html).toContain(`href="${link}"`)
+      expect(email.text).toContain(link)
+      expect(email.text).not.toContain('token')
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendPasswordChangedNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+      expect(email.text).toContain('Hello <b>Pat</b>,')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

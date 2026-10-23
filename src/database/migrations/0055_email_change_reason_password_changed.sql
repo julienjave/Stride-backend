@@ -1,0 +1,1 @@
+ALTER TYPE "public"."email_change_cancel_reason" ADD VALUE 'password_changed';

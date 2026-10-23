@@ -22,8 +22,8 @@ import {
   ALREADY_CONFIRMED_MESSAGE,
   INVALID_EMAIL_CHANGE_LINK_MESSAGE,
   SAME_EMAIL_MESSAGE,
-  WRONG_PASSWORD_MESSAGE,
 } from '../src/email-change/email-change.service'
+import { WRONG_PASSWORD_MESSAGE } from '../src/common/current-password'
 
 // Changing one's own sign-in email ("Change email", Phase 6 pass 2 —
 // decisions §12). What the person chose, and what these tests hold the code

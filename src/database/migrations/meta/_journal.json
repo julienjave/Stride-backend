@@ -386,6 +386,13 @@
       "when": 1792680620158,
       "tag": "0054_email_change_requests_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792743137680,
+      "tag": "0055_email_change_reason_password_changed",
+      "breakpoints": true
     }
   ]
 }
