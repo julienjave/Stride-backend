@@ -35,6 +35,10 @@ import {
   MEDICAL_FILE_SECTION_MAX_LENGTH,
 } from '../../src/database/schema/medical-files.schema'
 import { SOAP_SECTIONS } from '../../src/medical-files/medical-file-rules'
+import {
+  normaliseRecoveryCode,
+  RECOVERY_CODE_COUNT,
+} from '../../src/mfa/recovery-codes'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -43,7 +47,9 @@ import {
   CLINICS,
   CONVERSATIONS,
   CUSTOM_EXERCISES,
+  DEMO_MFA_SECRET,
   DEMO_PASSWORD,
+  DEMO_RECOVERY_CODES,
   MEDICAL_FILES,
   TEMPLATES,
   type AccountKey,
@@ -680,6 +686,32 @@ describe('the seeded medical files', () => {
   })
 })
 
+// The two-factor demo (decisions §14): the seed turns it on the real way,
+// then puts these in place — they must be what the app itself would accept.
+describe('the two-factor demo', () => {
+  it('is on for exactly one account, which can log in', () => {
+    const withMfa = patients.filter((p) => p.twoFactor)
+    expect(withMfa.map((p) => p.key)).toEqual(['casey'])
+    expect(withMfa[0].invitation).toBe('accepted')
+    expect(withMfa[0].deactivated).toBeUndefined()
+  })
+
+  // Base32 as authenticator apps read it; 32 symbols = 160 bits, like the
+  // keys the app draws (otplib's default).
+  it('has a base32 key of 32 symbols', () => {
+    expect(DEMO_MFA_SECRET).toMatch(/^[A-Z2-7]{32}$/)
+  })
+
+  it('has as many recovery codes as the app makes, each one the app accepts as written', () => {
+    expect(DEMO_RECOVERY_CODES).toHaveLength(RECOVERY_CODE_COUNT)
+    expect(new Set(DEMO_RECOVERY_CODES).size).toBe(RECOVERY_CODE_COUNT)
+    for (const code of DEMO_RECOVERY_CODES) {
+      // Already in the stored form: what the hash is made from.
+      expect(normaliseRecoveryCode(code)).toBe(code)
+    }
+  })
+})
+
 describe('docs/dev-test-accounts.md', () => {
   const doc = readFileSync(
     join(__dirname, '..', '..', 'docs', 'dev-test-accounts.md'),
@@ -696,6 +728,13 @@ describe('docs/dev-test-accounts.md', () => {
 
   it('gives the demo password', () => {
     expect(doc).toContain(`\`${DEMO_PASSWORD}\``)
+  })
+
+  it('gives the two-factor demo key and every recovery code', () => {
+    expect(doc).toContain(`\`${DEMO_MFA_SECRET}\``)
+    for (const code of DEMO_RECOVERY_CODES) {
+      expect(doc).toContain(`\`${code}\``)
+    }
   })
 
   // The other direction: no account in the doc that the seed doesn't make.

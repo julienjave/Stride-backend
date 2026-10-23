@@ -38,6 +38,7 @@ export type AccountKey =
   | 'pat'
   | 'jo'
   | 'robin'
+  | 'casey'
   | 'newPatient'
   | 'stuckPatient'
   | 'latePatient'
@@ -108,6 +109,9 @@ export interface PatientAccount extends AccountBase {
   invitation: InvitationOutcome
   // Deactivated by the admin after everything else (a former patient).
   deactivated?: boolean
+  // Two-factor sign-in turned on, with the published demo key and recovery
+  // codes below (decisions §14) — so a reviewer can try the sign-in step.
+  twoFactor?: boolean
 }
 
 export type SeedAccount = FounderAccount | PractitionerAccount | PatientAccount
@@ -117,6 +121,28 @@ export type SeedAccount = FounderAccount | PractitionerAccount | PatientAccount
 // One password for every account that has one. Published on purpose: this
 // is demo data for reviewers, never real accounts.
 export const DEMO_PASSWORD = 'password123'
+
+// The two-factor account's authenticator key and recovery codes — published
+// for the same reason (docs/dev-test-accounts.md): a reviewer adds the key
+// to an authenticator app by hand, or signs in with a code from the list.
+// The app itself never makes a key or a code like these (it draws them at
+// random); the seed puts them in place after turning two-factor on the real
+// way. Base32 (A–Z, 2–7), 32 symbols = 160 bits, the size the app draws.
+export const DEMO_MFA_SECRET = 'STRIDEDEMOTWOFACTORSTRIDEDEMOTWO'
+// The app's shape (src/mfa/recovery-codes.ts): 10 codes, 5 + 5 symbols of
+// its alphabet (no 0 / o, 1 / l / i). Easy to type, on purpose.
+export const DEMO_RECOVERY_CODES = [
+  'strde-22222',
+  'strde-33333',
+  'strde-44444',
+  'strde-55555',
+  'strde-66666',
+  'strde-77777',
+  'strde-88888',
+  'strde-99999',
+  'strde-aaaaa',
+  'strde-bbbbb',
+]
 
 export const CLINICS: SeedClinic[] = [
   {
@@ -246,6 +272,20 @@ export const ACCOUNTS: SeedAccount[] = [
     clinics: ['riverside', 'harbour'],
     invitation: 'accepted',
     shows: 'In both clinics, with a care team in each: Sam and Blake.',
+  },
+  {
+    kind: 'patient',
+    key: 'casey',
+    email: 'casey@stride.test',
+    firstName: 'Casey',
+    lastName: 'Moreau',
+    dateOfBirth: '1984-11-02',
+    createdBy: 'alex',
+    clinics: ['riverside'],
+    invitation: 'accepted',
+    twoFactor: true,
+    shows:
+      'Two-factor sign-in on: logging in asks for a code (the demo key, or a recovery code).',
   },
   {
     kind: 'patient',

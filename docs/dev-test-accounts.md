@@ -53,6 +53,27 @@ Every account that has a password uses: **`password123`**
 | `pat@stride.test` | patient | Riverside | Alex's patient, with an assigned program (the patient's own screens come in Phase 4). |
 | `jo@stride.test` | patient | Riverside | A care team of two: Alex and Sam. |
 | `robin@stride.test` | patient | both | In both clinics, with a care team in each: Sam and Blake. |
+| `casey@stride.test` | patient | Riverside | Two-factor sign-in on: logging in asks for a code — see **Two-factor sign-in** below. |
+
+## Two-factor sign-in
+
+`casey@stride.test` has two-factor sign-in on. After the password, the sign-in
+asks for a code — two ways to get one:
+
+- **An authenticator app** (Google Authenticator, Microsoft Authenticator,
+  1Password…): add an account **by hand** (not by scanning) with the key
+  **`STRIDEDEMOTWOFACTORSTRIDEDEMOTWO`** — time-based, 6 digits, every 30 seconds (the apps' default).
+  The app then shows Casey's current code.
+- **A recovery code**: each works **once** (until the next `npm run seed:dev --
+  --reset`): `strde-22222`, `strde-33333`, `strde-44444`, `strde-55555`, `strde-66666`, `strde-77777`, `strde-88888`, `strde-99999`, `strde-aaaaa`, `strde-bbbbb`.
+
+Then try, as Casey: **Profile → Two-factor sign-in → Manage** (the codes left,
+new codes, turning it off), or a password change, which asks a code too. As the
+admin: **Admin → Users → Casey Moreau**, section **Two-factor sign-in** — the
+reset, for someone who lost their phone and their codes.
+
+Any other account can set it up from its own profile: **Profile → Two-factor
+sign-in → Set up**.
 
 ## Accounts that show invitation states
 

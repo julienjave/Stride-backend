@@ -38,6 +38,8 @@
 import 'dotenv/config'
 import { ValidationPipe, type Type } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
+import { readFileSync } from 'node:fs'
+import { OTP } from 'otplib'
 import { Pool } from 'pg'
 import { AppModule } from '../src/app.module'
 import { getDatabaseUrl } from '../src/config/database-url'
@@ -63,6 +65,9 @@ import { RenameWorkoutDto } from '../src/programs/dto/rename-workout.dto'
 import { AssignedProgramsService } from '../src/assigned-programs/assigned-programs.service'
 import { SessionReviewsService } from '../src/sessions/session-reviews.service'
 import { MessagingService } from '../src/messaging/messaging.service'
+import { MfaService } from '../src/mfa/mfa.service'
+import { hashRecoveryCode } from '../src/mfa/recovery-codes'
+import { encryptMfaSecret } from '../src/auth/mfa-secret-crypto'
 import { CreateConversationDto } from '../src/messaging/dto/create-conversation.dto'
 import { addDays, utcToday } from '../src/common/calendar-date'
 import {
@@ -79,7 +84,9 @@ import {
   CLINICS,
   CONVERSATIONS,
   CUSTOM_EXERCISES,
+  DEMO_MFA_SECRET,
   DEMO_PASSWORD,
+  DEMO_RECOVERY_CODES,
   MEDICAL_FILES,
   TEMPLATES,
   type AccountKey,
@@ -119,6 +126,19 @@ function invitationMode(account: SeedAccount): SeedEmailMode {
   if (account.invitation === 'pending') return 'deliver'
   if (account.invitation === 'email-failed') return 'fail'
   return 'capture'
+}
+
+// The code an authenticator app would show for `secret` right now — with
+// at least 3 seconds of its 30-second window left, so it is still good when
+// the server checks it (otherwise the seed waits for the next window).
+async function currentMfaCode(secret: string): Promise<string> {
+  const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30)
+  if (secondsLeft < 3) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, secondsLeft * 1000 + 100),
+    )
+  }
+  return new OTP({ strategy: 'totp' }).generate({ secret })
 }
 
 // --- SEED --------------------------------------------------------------------------------------------------
@@ -195,6 +215,7 @@ async function run(): Promise<void> {
     const assignedPrograms = app.get(AssignedProgramsService)
     const sessionReviews = app.get(SessionReviewsService)
     const messaging = app.get(MessagingService)
+    const mfa = app.get(MfaService)
 
     const clinicIds = new Map<ClinicKey, number>()
     const accountIds = new Map<AccountKey, number>()
@@ -791,14 +812,61 @@ async function run(): Promise<void> {
       medicalFileIds.set(entry.key, rows[0].id)
     }
 
-    // --- 8. Deactivations, last (a deactivated account can't be acted on) ---
+    // --- 8. Two-factor sign-in (decisions §14) ---
+    // Turned on the real way, as the person would — set-up with the
+    // password, then a code from the app for the key it answered — so the
+    // account's audit trail and every rule of turning on are the app's own.
+    // Then, the one thing the app can't do on demand: the random key and
+    // codes are swapped for the PUBLISHED ones (dataset.ts), so a reviewer
+    // can add the key to an app or use a listed code. Through the owner
+    // connection (the guard trigger of 0058 exempts only the table's
+    // owner): the key encrypted like the app stores it, the codes as their
+    // keyed hashes, and the last-used step cleared — it belonged to the key
+    // just replaced.
+    //
+    // Turning on ends the account's other sessions — a query on the
+    // `session` table, which connect-pg-simple creates when the SERVER
+    // starts (main.ts: createTableIfMissing). A seed run on a database the
+    // server has never started on has none yet, so it's made here the same
+    // way: the library's own table.sql, owned like the server's (the owner
+    // connection, as main.ts's session pool).
+    const sessionTable = await owner.query<{ name: string | null }>(
+      `SELECT to_regclass('session')::text AS name`,
+    )
+    if (sessionTable.rows[0].name === null) {
+      await owner.query(
+        readFileSync(require.resolve('connect-pg-simple/table.sql'), 'utf8'),
+      )
+    }
+    for (const account of ACCOUNTS) {
+      if (account.kind !== 'patient' || !account.twoFactor) continue
+      const person = await as(account.key, UserRole.PATIENT)
+      const { secret } = await mfa.setup(person, DEMO_PASSWORD)
+      // No browser session to keep: the seed signed nobody in.
+      await mfa.enable(person, await currentMfaCode(secret), 'seed')
+      await owner.query(
+        `UPDATE users SET mfa_secret = $2, mfa_last_used_step = NULL WHERE id = $1`,
+        [person.id, encryptMfaSecret(DEMO_MFA_SECRET)],
+      )
+      await owner.query('DELETE FROM mfa_recovery_codes WHERE user_id = $1', [
+        person.id,
+      ])
+      for (const code of DEMO_RECOVERY_CODES) {
+        await owner.query(
+          'INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)',
+          [person.id, hashRecoveryCode(code)],
+        )
+      }
+    }
+
+    // --- 9. Deactivations, last (a deactivated account can't be acted on) ---
     for (const account of ACCOUNTS) {
       if (account.kind === 'patient' && account.deactivated) {
         await users.softDelete(idOf(account.key), admin)
       }
     }
 
-    // --- 9. What was made ---
+    // --- 10. What was made ---
     console.log(
       `\nDone. Every account with a password uses: ${DEMO_PASSWORD}\n`,
     )
@@ -808,15 +876,21 @@ async function run(): Promise<void> {
           ? 'password set'
           : account.kind === 'patient' && account.deactivated
             ? 'deactivated'
-            : account.invitation === 'accepted'
-              ? 'password set'
-              : `invitation ${account.invitation}`
+            : account.kind === 'patient' && account.twoFactor
+              ? 'password set, two-factor on'
+              : account.invitation === 'accepted'
+                ? 'password set'
+                : `invitation ${account.invitation}`
       console.log(
         `  ${account.email.padEnd(28)} ${state.padEnd(28)} ${account.shows}`,
       )
     }
     console.log(
       '\nInvitation emails sent for real: open Mailpit at http://localhost:8025.',
+    )
+    console.log(
+      `Two-factor demo key (add it to an authenticator app by hand): ${DEMO_MFA_SECRET}` +
+        `\nIts recovery codes: ${DEMO_RECOVERY_CODES.join(', ')}`,
     )
     if (missingLibrary.length > 0) {
       console.log(
