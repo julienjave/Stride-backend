@@ -55,6 +55,7 @@ import { DrizzleQueryError } from 'drizzle-orm'
 import {
   PG_UNIQUE_VIOLATION,
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+  USER_ROLES_USER_ROLE_UNIQUE,
   USERS_EMAIL_UNIQUE,
 } from '../database/pg-errors'
 import { DUPLICATE_EMAIL_MESSAGE } from '../common/email-address'
@@ -699,12 +700,13 @@ describe('UsersService.grantRole', () => {
     usersService = moduleRef.get(UsersService)
   })
 
-  it('refuses to grant a role the user already holds', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue({
-      id: 5,
-      userId: 1,
-      role: UserRole.PRACTITIONER,
-    })
+  // A role the account already has: user_roles' UNIQUE refuses the INSERT
+  // (no read beforehand — two grants at once could both pass a read), and
+  // that refusal becomes the 409 (privacy and security pass 2).
+  it('refuses to grant a role the user already holds — the constraint decides', async () => {
+    db.transaction.mockRejectedValue(
+      uniqueViolationError(USER_ROLES_USER_ROLE_UNIQUE),
+    )
 
     await expect(
       usersService.grantRole(
@@ -712,11 +714,52 @@ describe('UsersService.grantRole', () => {
         { role: UserRole.PRACTITIONER, licenseNumber: 'PT-2' },
         { id: 9, activeRole: UserRole.ADMIN },
       ),
-    ).rejects.toThrow(ConflictException)
+    ).rejects.toThrow(
+      new ConflictException('User already has the "practitioner" role'),
+    )
+    // Nothing read first: the insert is the check.
+    expect(db.query.userRoles.findFirst).not.toHaveBeenCalled()
+  })
+
+  // Narrow translation: another constraint keeps its own answer (the
+  // license's 409), any other failure its own identity.
+  it('keeps other failures as they are', async () => {
+    db.transaction.mockRejectedValue(duplicateLicenseError())
+    await expect(
+      usersService.grantRole(
+        1,
+        { role: UserRole.PRACTITIONER, licenseNumber: 'PT-TAKEN' },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toThrow(
+      new ConflictException(
+        'This license number is already registered to another practitioner',
+      ),
+    )
+
+    const otherError = new Error('connection terminated')
+    db.transaction.mockRejectedValue(otherError)
+    await expect(
+      usersService.grantRole(
+        1,
+        { role: UserRole.ADMIN },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toBe(otherError)
+
+    // A duplicate on ANOTHER unique constraint isn't "already has the role".
+    const otherDuplicate = uniqueViolationError('admin_profiles_pkey')
+    db.transaction.mockRejectedValue(otherDuplicate)
+    await expect(
+      usersService.grantRole(
+        1,
+        { role: UserRole.ADMIN },
+        { id: 9, activeRole: UserRole.ADMIN },
+      ),
+    ).rejects.toBe(otherDuplicate)
   })
 
   it('grants a new role and creates its profile when none exists yet', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue(undefined)
     const insert = jest
       .fn()
       .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
@@ -771,7 +814,6 @@ describe('UsersService.grantRole', () => {
   })
 
   it('grants a new role without duplicating an already-existing profile', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue(undefined)
     const insert = jest
       .fn()
       .mockReturnValue({ values: jest.fn().mockResolvedValue(undefined) })
@@ -813,7 +855,6 @@ describe('UsersService.grantRole', () => {
   })
 
   it('turns a duplicate licenseNumber on the new practitioner profile into a 409', async () => {
-    db.query.userRoles.findFirst.mockResolvedValue(undefined)
     db.transaction.mockRejectedValue(duplicateLicenseError())
 
     await expect(
@@ -1066,7 +1107,7 @@ describe('UsersService.findOne', () => {
   // SessionSerializer.deserializeUser() calls to build req.user on every
   // authenticated request, so anything it fails to strip here reaches
   // GET /auth/me, POST /auth/mfa/verify, and POST /auth/switch-role.
-  it('strips passwordHash, mfaSecret, and password-reset token fields from the returned user', async () => {
+  it('strips passwordHash, the two-factor and step-up internals, and password-reset token fields from the returned user', async () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       email: 'user@example.com',
@@ -1075,6 +1116,8 @@ describe('UsersService.findOne', () => {
       passwordHash: 'bcrypt-hash',
       mfaSecret: 'iv:authTag:ciphertext',
       mfaEnabled: true,
+      mfaLastUsedStep: 59000000,
+      stepUpFailures: 3,
       passwordResetTokenHash: 'reset-hash',
       passwordResetTokenExpiresAt: new Date(),
     })
@@ -1083,6 +1126,10 @@ describe('UsersService.findOne', () => {
 
     expect(result).not.toHaveProperty('passwordHash')
     expect(result).not.toHaveProperty('mfaSecret')
+    expect(result).not.toHaveProperty('mfaLastUsedStep')
+    // How many step-ups in a row failed (decisions §16) — a security
+    // counter, no screen's business.
+    expect(result).not.toHaveProperty('stepUpFailures')
     expect(result).not.toHaveProperty('passwordResetTokenHash')
     expect(result).not.toHaveProperty('passwordResetTokenExpiresAt')
     expect(result.email).toBe('user@example.com')

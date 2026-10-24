@@ -166,10 +166,13 @@ export class EmailChangeService {
   // inbox receives differs (a link, or "this address already has an
   // account"), and only whoever reads that inbox sees it. Whether it was
   // taken is not even in the audit entry.
+  // `sessionId`: the session asking — signed out should this be its 5th
+  // failed step-up in a row (decisions §16).
   async request(
     currentUser: SignedInUser,
     newEmail: string,
     proof: StepUpProof,
+    sessionId: string,
   ): Promise<PendingEmailChange> {
     // Two tokens, 256 random bits each (as for reset and invitations): the
     // raw ones are emailed and forgotten, only their hashes are stored.
@@ -196,7 +199,8 @@ export class EmailChangeService {
         // transaction — fine for a password alone, which nothing records.)
         // `!user` keeps TypeScript on the safe side — the same refusal as a
         // wrong password. A refusal rolls the transaction back: nothing
-        // stored, nothing audited.
+        // stored; a wrong password or code is then recorded on its own
+        // (`.catch` below — decisions §16).
         if (!user) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
         const stepUp = await this.stepUp.confirm(
           tx,
@@ -266,6 +270,10 @@ export class EmailChangeService {
           stepUp,
         }
       },
+    ).catch(
+      // A failed step-up: recorded and counted once the transaction above
+      // has rolled back; the 5th in a row signs this session out.
+      this.stepUp.failureRecorder(currentUser, sessionId, 'email_change'),
     )
 
     // A recovery code's notice, if one was used (StepUpService).

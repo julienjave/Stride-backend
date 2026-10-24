@@ -66,3 +66,23 @@ export async function endAllSessions(
   )
   return ended.rows.map((row) => row.sid)
 }
+
+// ONE session — the one making the request — for the step-up's sign-out
+// after 5 failures in a row (decisions §16, mfa/step-up.service.ts): only
+// the session that failed ends; the account's other devices stay signed in
+// (if they belong to the owner, nothing they did was wrong). In the caller's
+// transaction, with the counter's reset and the audit entry; the id is the
+// caller's own, to close its sockets after the commit.
+//
+// Deleting the store's row IS signing out: every request reads its session
+// from this table (connect-pg-simple), so the next one carrying the cookie
+// finds nothing and is answered 401. express-session won't write the row
+// back at the end of THIS request: with `resave: false` it saves only a
+// session the request MODIFIED, and a step-up modifies none (an unmodified
+// one is only "touched" — an UPDATE of its expiry, which finds no row).
+export async function endSession(
+  tx: DrizzleDb,
+  sessionId: string,
+): Promise<void> {
+  await tx.execute(sql`DELETE FROM session WHERE sid = ${sessionId}`)
+}

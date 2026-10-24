@@ -154,9 +154,9 @@ made, through the app's own code); the seed announces it just before.
   - No program is paused; to try a pause, add a schedule version of type
     `paused` from today (and another one later to resume).
   - Admins read **no program and no session** (`admin@stride.test` gets a
-  403; the database hides them too). The audit log still shows who did
-  what, to whom and when — without a program's or a session's clinical
-  details ("Clinical details aren't shown to admins").
+    403; the database hides them too). The audit log still shows who did
+    what, to whom and when — without a program's or a session's clinical
+    details ("Clinical details aren't shown to admins").
 - **The practitioners' "For review" list** (the home page, under the
   shortcuts; `GET /alerts`): **Alex** — Jo's two missed weeks, and Pat's last
   session (a hard exercise, a note); **Sam** — Jo's two missed weeks (Robin's

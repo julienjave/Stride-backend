@@ -25,10 +25,12 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { Throttle, seconds } from '@nestjs/throttler'
+import { type Request } from 'express'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -44,7 +46,9 @@ import { ResetMfaDto } from './dto/reset-mfa.dto'
 // pass 2 — the person's choice: the last resort after recovery codes).
 // Under /users/:id, beside the other things an admin does to an account; in
 // the MFA module, beside the rest of two-factor. Admins only (the active
-// role); the sign-in limit, since it checks the admin's password.
+// role); the sign-in limit, since it checks the admin's password. The
+// admin's session id: the ADMIN's step-up, so their session is the one
+// signed out after 5 failures in a row (decisions §16).
 @ApiTags('Users')
 @UseGuards(SessionAuthGuard)
 @Controller('users')
@@ -61,10 +65,16 @@ export class MfaAdminController {
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() admin: CurrentUser,
     @Body() dto: ResetMfaDto,
+    @Req() req: Request,
   ): Promise<void> {
-    await this.mfaService.resetForUser(admin, id, {
-      currentPassword: dto.currentPassword,
-      mfaCode: dto.mfaCode,
-    })
+    await this.mfaService.resetForUser(
+      admin,
+      id,
+      {
+        currentPassword: dto.currentPassword,
+        mfaCode: dto.mfaCode,
+      },
+      req.sessionID,
+    )
   }
 }

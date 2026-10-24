@@ -35,6 +35,26 @@ import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
 import { CareTeamService } from '../care-team/care-team.service'
 import { changedFields } from '../common/changed-fields'
+import {
+  isUniqueViolation,
+  USER_CLINICS_USER_CLINIC_UNIQUE,
+} from '../database/pg-errors'
+
+// --- FUNCTIONS ---------------------------------------------------------------------------------------------
+
+// Adding a member a clinic already has: user_clinics' UNIQUE (user_id,
+// clinic_id) refuses the INSERT, and this turns that refusal into the 409,
+// for addMember's .catch(). addMember used to read first and insert after —
+// two requests at once could both read "not a member" and the second hit
+// the constraint as a 500. The constraint decides atomically, so its verdict
+// is the answer, with no read. Always throws: the 409, otherwise the error
+// it was given.
+function rethrowDuplicateMembership(error: unknown): never {
+  if (isUniqueViolation(error, USER_CLINICS_USER_CLINIC_UNIQUE)) {
+    throw new ConflictException('This user already belongs to this clinic')
+  }
+  throw error
+}
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -128,19 +148,12 @@ export class ClinicsService {
       throw new NotFoundException(`User ${userId} not found`)
     }
 
-    const existing = await this.db.query.userClinics.findFirst({
-      where: and(
-        eq(userClinics.clinicId, clinicId),
-        eq(userClinics.userId, userId),
-      ),
-    })
-    if (existing) {
-      throw new ConflictException('This user already belongs to this clinic')
-    }
-
     // Joining a clinic is what gives a practitioner directory access to its
     // patients (and lets them join care teams there): the person concerned
-    // is the target.
+    // is the target. Already a member: user_clinics' UNIQUE (user_id,
+    // clinic_id) refuses the INSERT, and the .catch() turns that into the 409
+    // (rethrowDuplicateMembership) — no read beforehand, which two requests
+    // at once could both pass (decisions §16).
     return withRlsContext(this.db, currentUser, async (tx) => {
       const [membership] = await tx
         .insert(userClinics)
@@ -155,7 +168,7 @@ export class ClinicsService {
         details: { clinicId },
       })
       return membership
-    })
+    }).catch(rethrowDuplicateMembership)
   }
 
   // Fetches just enough of a clinic's raw row to know its current

@@ -44,6 +44,7 @@ import { withRlsContext } from '../database/rls-context'
 import {
   isUniqueViolation,
   PRACTITIONER_LICENSE_NUMBER_UNIQUE,
+  USER_ROLES_USER_ROLE_UNIQUE,
 } from '../database/pg-errors'
 import { AuditService } from '../audit/audit.service'
 import { changedFields } from '../common/changed-fields'
@@ -82,6 +83,23 @@ async function translateDuplicateLicense<T>(write: () => Promise<T>) {
       throw new ConflictException(
         'This license number is already registered to another practitioner',
       )
+    }
+    throw error
+  }
+}
+
+// Granting a role the account already has: the UNIQUE (user_id, role) on
+// user_roles refuses the INSERT, and this turns that refusal into the 409 —
+// for the promise's .catch(), so grantRole's long callback stays where it is.
+// grantRole used to read user_roles first and insert after: two grants of the
+// same role at once both read "not yet", and the second hit the constraint
+// as a 500 (deferred-improvements.md). The constraint alone decides
+// atomically, so its verdict is the answer, with no read. Always throws: the
+// 409, otherwise the error it was given.
+function rethrowDuplicateRole(role: UserRole): (error: unknown) => never {
+  return (error: unknown) => {
+    if (isUniqueViolation(error, USER_ROLES_USER_ROLE_UNIQUE)) {
+      throw new ConflictException(`User already has the "${role}" role`)
     }
     throw error
   }
@@ -353,14 +371,9 @@ export class UsersService {
   ) {
     await this.findOne(userId)
 
-    const existingRole = await this.db.query.userRoles.findFirst({
-      where: and(eq(userRoles.userId, userId), eq(userRoles.role, dto.role)),
-    })
-    if (existingRole) {
-      throw new ConflictException(`User already has the "${dto.role}" role`)
-    }
-
-    // Wrapped: granting the practitioner role inserts a licenseNumber.
+    // Wrapped: granting the practitioner role inserts a licenseNumber; and a
+    // role the account already has is refused by user_roles' UNIQUE — the
+    // .catch() at the end (rethrowDuplicateRole), not a read beforehand.
     return translateDuplicateLicense(() =>
       withRlsContext(this.db, currentUser, async (tx) => {
         await tx.insert(userRoles).values({ userId, role: dto.role })
@@ -426,7 +439,7 @@ export class UsersService {
 
         return this.getRolesForUser(userId, tx)
       }),
-    )
+    ).catch(rethrowDuplicateRole(dto.role))
   }
 
   // Uploads a new avatar, points the user's row at it, then deletes the
@@ -1044,7 +1057,9 @@ export class UsersService {
   // 1. Strip every server-internal field: passwordHash (obviously),
   //    mfaSecret (still an encrypted secret that should never reach a
   //    client), mfaLastUsedStep (when the account last used a two-factor
-  //    code — a sign-in time, useful to no screen) and
+  //    code — a sign-in time, useful to no screen), stepUpFailures (how
+  //    many step-ups in a row failed — a security counter, not a screen's
+  //    business) and
   //    passwordResetTokenHash/passwordResetTokenExpiresAt (they reveal
   //    whether a password reset is pending, and when it expires).
   // 2. Swap avatarPath (the internal RustFS object key) for avatarUrl, a
@@ -1073,6 +1088,7 @@ export class UsersService {
       passwordHash,
       mfaSecret,
       mfaLastUsedStep,
+      stepUpFailures,
       passwordResetTokenHash,
       passwordResetTokenExpiresAt,
       avatarPath,

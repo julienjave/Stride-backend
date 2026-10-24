@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "step_up_failures" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_step_up_failures_not_negative" CHECK ("users"."step_up_failures" >= 0);

@@ -35,10 +35,7 @@ import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
-import {
-  isCurrentPassword,
-  WRONG_PASSWORD_MESSAGE,
-} from '../common/current-password'
+import { WRONG_PASSWORD_MESSAGE } from '../common/current-password'
 import { endAllSessions, endOtherSessions } from '../common/other-sessions'
 import { encryptMfaSecret } from '../auth/mfa-secret-crypto'
 import type { UserRole } from '../users/dto/create-user.dto'
@@ -128,9 +125,13 @@ export class MfaService {
   // false until enable confirms a code from it). Asks for the password (the
   // step-up); refused while MFA is on. A set-up started earlier and never
   // confirmed is simply replaced — its QR code stops working.
+  // `sessionId`: the session asking — signed out should this be its 5th
+  // failed step-up in a row (decisions §16; the same for every method below
+  // that asks a step-up).
   async setup(
     currentUser: SignedInUser,
     currentPassword: string,
+    sessionId: string,
   ): Promise<MfaSetup> {
     const secret = newMfaSecret()
 
@@ -139,13 +140,14 @@ export class MfaService {
       // The password only — not the whole step-up: MFA is off here (on is
       // refused just below), so there is no second factor to ask. Password
       // FIRST: without it, the request learns nothing, not even whether MFA
-      // is on.
-      if (
-        !account ||
-        !(await isCurrentPassword(account.passwordHash, currentPassword))
-      ) {
-        throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      }
+      // is on. A wrong one is counted like any failed step-up.
+      if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
+      await this.stepUp.confirmPassword(
+        tx,
+        currentUser.id,
+        account,
+        currentPassword,
+      )
       if (account.mfaEnabled) {
         throw new ConflictException(MFA_ALREADY_ON_MESSAGE)
       }
@@ -172,7 +174,7 @@ export class MfaService {
           : {}),
       })
       return account.email
-    })
+    }).catch(this.stepUp.failureRecorder(currentUser, sessionId, 'mfa_setup'))
 
     // After the commit — the QR code is drawn from data that is now stored.
     // The label is the sign-in email, what the app shows next to the codes.
@@ -282,6 +284,7 @@ export class MfaService {
   async regenerateRecoveryCodes(
     currentUser: SignedInUser,
     proof: StepUpProof,
+    sessionId: string,
   ): Promise<RecoveryCodes> {
     const recoveryCodes = newRecoveryCodes()
 
@@ -316,7 +319,9 @@ export class MfaService {
         },
       })
       return receipt
-    })
+    }).catch(
+      this.stepUp.failureRecorder(currentUser, sessionId, 'recovery_codes'),
+    )
 
     stepUp.afterCommit()
     return { recoveryCodes }
@@ -331,6 +336,7 @@ export class MfaService {
     currentUser: SignedInUser,
     currentPassword: string,
     code: string,
+    sessionId: string,
   ): Promise<void> {
     const outcome = await withRlsContext(this.db, currentUser, async (tx) => {
       const account = await lockAccount(tx, currentUser.id)
@@ -352,7 +358,7 @@ export class MfaService {
         entityId: currentUser.id,
       })
       return { email: account.email, firstName: account.firstName, stepUp }
-    })
+    }).catch(this.stepUp.failureRecorder(currentUser, sessionId, 'mfa_disable'))
 
     outcome.stepUp.afterCommit()
     this.notify('disabled notice', outcome.email, () =>
@@ -370,10 +376,12 @@ export class MfaService {
   // phone (the person's choices: the ADMIN's own step-up; never one's own
   // account). Every session of that account ends (whoever is in it should
   // sign in again); the account is told by email.
+  // `sessionId`: the ADMIN's session — it was their step-up.
   async resetForUser(
     admin: SignedInUser,
     targetId: number,
     proof: StepUpProof,
+    sessionId: string,
   ): Promise<void> {
     if (targetId === admin.id) {
       throw new ForbiddenException(MFA_RESET_OWN_MESSAGE)
@@ -420,10 +428,10 @@ export class MfaService {
         endedSessionIds,
         stepUp,
       }
-    })
+    }).catch(this.stepUp.failureRecorder(admin, sessionId, 'mfa_reset'))
 
-    for (const sessionId of outcome.endedSessionIds) {
-      this.messagingEvents.disconnectSession(sessionId)
+    for (const ended of outcome.endedSessionIds) {
+      this.messagingEvents.disconnectSession(ended)
     }
     outcome.stepUp.afterCommit()
     this.notify('reset notice', outcome.email, () =>

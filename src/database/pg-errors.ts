@@ -178,6 +178,14 @@ export const MEDICAL_FILES_ONE_AMENDMENT_PER_ENTRY =
 // that should stay a loud 500.
 export const USERS_EMAIL_UNIQUE = 'users_email_unique'
 export const USERS_EMAIL_NORMALIZED = 'users_email_normalized'
+// One row per role per account, one per account per clinic (drizzle's names,
+// migration 0000). Granting a role and adding a clinic member used to READ
+// first ("already has it?") and insert after: two requests at once both read
+// "no" and the second hit the constraint as a 500. Now the constraint is the
+// only judge (privacy and security pass 2, decisions §16): UsersService.
+// grantRole and ClinicsService.addMember turn its 23505 into their 409.
+export const USER_ROLES_USER_ROLE_UNIQUE = 'user_roles_user_role_unique'
+export const USER_CLINICS_USER_CLINIC_UNIQUE = 'user_clinics_user_clinic_unique'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

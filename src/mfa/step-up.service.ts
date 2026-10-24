@@ -17,12 +17,23 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
-import { BadRequestException, Injectable, Logger } from '@nestjs/common'
-import type { DrizzleDb } from '../database/drizzle.provider'
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common'
+import { eq, sql } from 'drizzle-orm'
+import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
+import { withRlsContext } from '../database/rls-context'
 import { users } from '../database/schema'
 import { AuditService } from '../audit/audit.service'
 import { EmailService } from '../email/email.service'
+import { MessagingEvents } from '../messaging/messaging-events'
 import { errorMessage } from '../common/error-message'
+import { endSession } from '../common/other-sessions'
+import type { UserRole } from '../users/dto/create-user.dto'
 import {
   isCurrentPassword,
   WRONG_PASSWORD_MESSAGE,
@@ -31,6 +42,7 @@ import { INVALID_MFA_CODE_MESSAGE } from './totp'
 import {
   secondFactorRefusalMessage,
   trySecondFactor,
+  type SecondFactorRefusal,
   type SecondFactorUse,
 } from './second-factor'
 
@@ -52,6 +64,17 @@ import {
 // audit entry in the transaction, and a notice email after the commit. The
 // caller gets a receipt and calls `afterCommit()` once its transaction is
 // committed — never before: no email about a use that was rolled back.
+//
+// FAILED step-ups (privacy and security pass 2, decided with the person
+// 2026-10-23 — decisions §16): a wrong password or a wrong / used second
+// factor is AUDITED (STEP_UP_FAILED), and counted per account; 5 in a row
+// sign out the session that failed them. Why: the throttle (5 a minute per
+// route and address) slows guessing, but a stolen session could keep
+// guessing the password for hours, from several addresses, unseen. The
+// refusal itself is thrown inside the caller's transaction, which then rolls
+// back — taking any write made there with it — so the failure is recorded
+// AFTERWARDS, in a transaction of its own (failureRecorder below), like a
+// failed sign-in.
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
 
@@ -60,6 +83,16 @@ import {
 // gets (an older screen, a direct API call).
 export const MFA_CODE_REQUIRED_MESSAGE =
   'Enter the 6-digit code from your authenticator app'
+
+// How many failed step-ups in a row end the session (the person's choice).
+export const STEP_UP_FAILURE_LIMIT = 5
+
+// The answer to the 5th failure: a 401 — the session that sent it no longer
+// exists. The frontend's handler for a 401 takes the person to sign-in, and
+// reads these words to say why (a sign-out that explains nothing would look
+// like a bug).
+export const STEP_UP_SIGNED_OUT_MESSAGE =
+  'Too many wrong attempts: you have been signed out. Sign in again to continue.'
 
 // The account's columns a step-up reads. Selected by the caller (with
 // whatever else it needs) from the account's row LOCKED FOR UPDATE: the
@@ -72,6 +105,7 @@ export const STEP_UP_COLUMNS = {
   mfaEnabled: users.mfaEnabled,
   mfaSecret: users.mfaSecret,
   mfaLastUsedStep: users.mfaLastUsedStep,
+  stepUpFailures: users.stepUpFailures,
 }
 
 // --- TYPES -------------------------------------------------------------------------------------------------
@@ -83,6 +117,7 @@ export interface StepUpAccount {
   mfaEnabled: boolean
   mfaSecret: string | null
   mfaLastUsedStep: number | null
+  stepUpFailures: number
 }
 
 // What the request brought: the password always; the code when it sent one.
@@ -99,6 +134,41 @@ export interface StepUpReceipt {
 
 const NOTHING_AFTER_COMMIT: StepUpReceipt = { afterCommit: () => undefined }
 
+// Which change asked for the step-up — in the failure's audit entry, so the
+// trail says what someone was trying to do.
+export type StepUpPurpose =
+  | 'email_change'
+  | 'password_change'
+  | 'mfa_setup'
+  | 'mfa_disable'
+  | 'recovery_codes'
+  | 'mfa_reset'
+
+// Why a step-up failed: the password, or one of the second factor's own
+// refusals (wrong, already used, a recovery code that isn't one).
+export type StepUpFailureReason = 'wrong_password' | SecondFactorRefusal
+
+// The account a step-up is asked of, as row security needs it: its id and
+// the role the session is acting in (the failure is written AS it).
+type StepUpActor = { id: number; activeRole: UserRole }
+
+// --- EXCEPTION ---------------------------------------------------------------------------------------------
+
+// A step-up's refusal: the same 400, with the same words as before — and
+// WHY, for failureRecorder to count and record. A class of its own so the
+// recorder can tell a failed proof from every other refusal a change can
+// end with (the same password again, an address already yours, MFA already
+// off…), which aren't guesses and aren't counted. Nor is a missing code
+// (MFA_CODE_REQUIRED_MESSAGE): nothing was guessed.
+export class StepUpRefusedException extends BadRequestException {
+  constructor(
+    message: string,
+    readonly reason: StepUpFailureReason,
+  ) {
+    super(message)
+  }
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 @Injectable()
@@ -106,8 +176,10 @@ export class StepUpService {
   private readonly logger = new Logger(StepUpService.name)
 
   constructor(
+    @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly auditService: AuditService,
     private readonly emailService: EmailService,
+    private readonly messagingEvents: MessagingEvents,
   ) {}
 
   // The whole step-up, inside the caller's transaction, on the locked row:
@@ -116,9 +188,12 @@ export class StepUpService {
   //   2. for an account with two-factor on, a second factor: missing → its
   //      own 400; wrong or already used → its words; a good one is SPENT in
   //      this transaction (an app code's step recorded, a recovery code
-  //      marked used — then its entry written, its notice in the receipt).
+  //      marked used — then its entry written, its notice in the receipt);
+  //   3. passed: the account's failures in a row go back to 0 (in this
+  //      transaction — they stay counted if the change then fails anyway).
   // Throws a 400 on any refusal — the transaction then rolls back, nothing
-  // is changed.
+  // is changed. A wrong proof throws StepUpRefusedException (counted by the
+  // caller's failureRecorder).
   async confirm(
     tx: DrizzleDb,
     userId: number,
@@ -128,9 +203,12 @@ export class StepUpService {
     if (
       !(await isCurrentPassword(account.passwordHash, proof.currentPassword))
     ) {
-      throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
+      throw new StepUpRefusedException(WRONG_PASSWORD_MESSAGE, 'wrong_password')
     }
-    if (!account.mfaEnabled) return NOTHING_AFTER_COMMIT
+    if (!account.mfaEnabled) {
+      await this.passed(tx, userId, account)
+      return NOTHING_AFTER_COMMIT
+    }
     if (proof.mfaCode === undefined) {
       throw new BadRequestException(MFA_CODE_REQUIRED_MESSAGE)
     }
@@ -150,9 +228,149 @@ export class StepUpService {
       proof.mfaCode,
     )
     if (!check.ok) {
-      throw new BadRequestException(secondFactorRefusalMessage(check.reason))
+      throw new StepUpRefusedException(
+        secondFactorRefusalMessage(check.reason),
+        check.reason,
+      )
     }
+    await this.passed(tx, userId, account)
     return this.afterSecondFactor(tx, userId, account, check)
+  }
+
+  // The password half alone — for starting two-factor set-up, which asks the
+  // password only (MFA is off there: no second factor to ask). The same
+  // refusal, counted the same way, and the same reset when it passes.
+  async confirmPassword(
+    tx: DrizzleDb,
+    userId: number,
+    account: Pick<StepUpAccount, 'passwordHash' | 'stepUpFailures'>,
+    currentPassword: string,
+  ): Promise<void> {
+    if (!(await isCurrentPassword(account.passwordHash, currentPassword))) {
+      throw new StepUpRefusedException(WRONG_PASSWORD_MESSAGE, 'wrong_password')
+    }
+    await this.passed(tx, userId, account)
+  }
+
+  // For a caller's `withRlsContext(…).catch(…)`: a function that records a
+  // FAILED step-up, then lets the refusal through. Any other error passes
+  // untouched (an `instanceof` check — only a proof that was wrong counts).
+  //   `actor`: the account whose step-up it was (for an admin's reset of
+  //   someone's MFA, the ADMIN); `sessionId`: the session that sent it, the
+  //   one signed out at the limit; `purpose`: which change it was for.
+  // Returns `Promise<never>`: it always throws, so `promise.catch(recorder)`
+  // keeps the promise's own type — the caller reads its result unchanged.
+  //
+  // Why `.catch` rather than a wrapper taking a callback: the refusal is
+  // thrown INSIDE the caller's transaction; recording it there would be
+  // rolled back with everything else. The catch runs once that transaction
+  // is over — rolled back, its row lock released — so the failure gets its
+  // own transaction and can lock the same row without waiting on itself.
+  failureRecorder(
+    actor: StepUpActor,
+    sessionId: string,
+    purpose: StepUpPurpose,
+  ): (error: unknown) => Promise<never> {
+    return async (error: unknown) => {
+      if (error instanceof StepUpRefusedException) {
+        const signedOut = await this.recordFailure(
+          actor,
+          sessionId,
+          purpose,
+          error.reason,
+        )
+        if (signedOut) {
+          throw new UnauthorizedException(STEP_UP_SIGNED_OUT_MESSAGE)
+        }
+      }
+      throw error
+    }
+  }
+
+  // A step-up passed: the failures in a row are over. Written only when
+  // there were some — most step-ups pass the first time, and an UPDATE for
+  // nothing would still be a write (and a row version) per change.
+  private async passed(
+    tx: DrizzleDb,
+    userId: number,
+    account: Pick<StepUpAccount, 'stepUpFailures'>,
+  ): Promise<void> {
+    if (account.stepUpFailures === 0) return
+    await tx
+      .update(users)
+      .set({ stepUpFailures: 0 })
+      .where(eq(users.id, userId))
+  }
+
+  // One failure: counted, audited, and — at the limit — the session that
+  // failed signed out. ONE transaction, AS the account (row security: an
+  // account may update its own row; an admin any): the count goes up by one
+  // in a single UPDATE (`step_up_failures + 1`, computed by the database
+  // under the row's lock — two failures at once both count, where "read,
+  // add one, write" could lose one), then ONE entry, awaited — the refusal
+  // isn't answered before its trace exists. At the limit, in the same
+  // transaction: the count back to 0 (a fresh start after signing in again)
+  // and the session's row deleted.
+  // Answers whether the session was signed out. After the commit, then: its
+  // sockets closed (they were authenticated at their handshake and would
+  // keep receiving messages), and a notice to the account's inbox.
+  private async recordFailure(
+    actor: StepUpActor,
+    sessionId: string,
+    purpose: StepUpPurpose,
+    reason: StepUpFailureReason,
+  ): Promise<boolean> {
+    const outcome = await withRlsContext(this.db, actor, async (tx) => {
+      const [account] = await tx
+        .update(users)
+        .set({ stepUpFailures: sql`${users.stepUpFailures} + 1` })
+        .where(eq(users.id, actor.id))
+        .returning({
+          failures: users.stepUpFailures,
+          email: users.email,
+          firstName: users.firstName,
+        })
+      // The account is gone (deleted between the two transactions): nothing
+      // to count — the refusal still goes out.
+      if (!account) return null
+      const signedOut = account.failures >= STEP_UP_FAILURE_LIMIT
+      if (signedOut) {
+        await tx
+          .update(users)
+          .set({ stepUpFailures: 0 })
+          .where(eq(users.id, actor.id))
+        await endSession(tx, sessionId)
+      }
+      await this.auditService.logInTransaction(tx, {
+        performedBy: actor.id,
+        action: 'STEP_UP_FAILED',
+        targetUserId: actor.id,
+        entityType: 'users',
+        entityId: actor.id,
+        details: {
+          purpose,
+          reason,
+          consecutiveFailures: account.failures,
+          ...(signedOut ? { signedOut: true } : {}),
+        },
+      })
+      return { signedOut, email: account.email, firstName: account.firstName }
+    })
+
+    if (!outcome?.signedOut) return false
+    this.messagingEvents.disconnectSession(sessionId)
+    // Fire-and-forget: the sign-out IS done whatever the mail server does.
+    this.emailService
+      .sendStepUpSignOutNotice({
+        to: outcome.email,
+        firstName: outcome.firstName,
+      })
+      .catch((error: unknown) =>
+        this.logger.error(
+          `Failed to send the step-up sign-out notice to ${outcome.email}: ${errorMessage(error)}`,
+        ),
+      )
+    return true
   }
 
   // What a SPENT second factor leaves behind — shared with signing in, which

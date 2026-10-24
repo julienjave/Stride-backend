@@ -57,7 +57,8 @@ export interface PasswordChange {
 // Changing one's own password from the profile ("Change password", Phase 6 —
 // decisions §13). The person's choices: every OTHER session signed out,
 // always; a pending email change cancelled (reason `password_changed`); a
-// wrong current password refused, not audited (like the email change).
+// wrong current password refused — and, since the privacy and security pass
+// (decisions §16), recorded and counted (StepUpService.failureRecorder).
 //
 //   check the two values ──► hash the new one ──► ONE transaction:
 //     lock the account · the step-up (the current password, and a
@@ -78,7 +79,8 @@ export class PasswordChangeService {
   ) {}
 
   // `keptSessionId`: the session making the request — the one that stays
-  // signed in. Every other session of the account ends.
+  // signed in. Every other session of the account ends. (And the one signed
+  // out, should this be its 5th failed step-up in a row.)
   async change(
     currentUser: SignedInUser,
     { currentPassword, newPassword, mfaCode }: PasswordChange,
@@ -112,11 +114,10 @@ export class PasswordChangeService {
         .from(users)
         .where(eq(users.id, currentUser.id))
         .for('update')
-      // Throwing inside the transaction rolls it back: nothing is stored,
-      // nothing is audited (decided with the person: a wrong current
-      // password is refused and throttled, not recorded — as for the
-      // email change; the same for a wrong two-factor code). `!account`
-      // keeps TypeScript on the safe side — the same refusal.
+      // Throwing inside the transaction rolls it back: nothing is stored.
+      // A wrong password or code is recorded AFTER that, on its own
+      // (`.catch` below — decisions §16). `!account` keeps TypeScript on
+      // the safe side — the same refusal (not counted: nothing was guessed).
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
       const stepUp = await this.stepUp.confirm(tx, currentUser.id, account, {
         currentPassword,
@@ -191,7 +192,15 @@ export class PasswordChangeService {
         endedSessionIds,
         stepUp,
       }
-    })
+    }).catch(
+      // A failed step-up: recorded and counted once the transaction above
+      // has rolled back; the 5th in a row signs this session out.
+      this.stepUp.failureRecorder(
+        currentUser,
+        keptSessionId,
+        'password_change',
+      ),
+    )
 
     // A recovery code's notice, if one was used (StepUpService).
     outcome.stepUp.afterCommit()

@@ -63,6 +63,12 @@ export const AUDIT_ACTIONS = {
   // under "sign-ins" with the wrong codes); new codes replacing the old;
   // an admin turning someone's two-factor sign-in off.
   MFA_RECOVERY_CODE_USED: 'sign_in',
+  // A step-up refused (decisions §16, privacy and security pass 2): a wrong
+  // current password, or a wrong / used second factor, where a change asks
+  // them again — with which change, why, the failures in a row, and whether
+  // that ended the session (the 5th). A security event like a wrong code at
+  // sign-in, so under "sign-ins".
+  STEP_UP_FAILED: 'sign_in',
   MFA_RECOVERY_CODES_REGENERATED: 'change',
   MFA_RESET_BY_ADMIN: 'change',
   PASSWORD_RESET_REQUESTED: 'change',

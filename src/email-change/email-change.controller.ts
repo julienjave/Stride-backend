@@ -69,7 +69,8 @@ export class EmailChangeController {
   }
 
   // 201 with the new pending request — the same answer whether the address
-  // is free or taken (decisions §12, "reveal nothing").
+  // is free or taken (decisions §12, "reveal nothing"). This browser's
+  // session id: the one signed out after 5 failed step-ups in a row.
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
@@ -77,11 +78,17 @@ export class EmailChangeController {
   async request(
     @CurrentUser() user: CurrentUser,
     @Body() dto: RequestEmailChangeDto,
+    @Req() req: Request,
   ): Promise<{ pending: PendingEmailChange }> {
-    const pending = await this.emailChangeService.request(user, dto.newEmail, {
-      currentPassword: dto.currentPassword,
-      mfaCode: dto.mfaCode,
-    })
+    const pending = await this.emailChangeService.request(
+      user,
+      dto.newEmail,
+      {
+        currentPassword: dto.currentPassword,
+        mfaCode: dto.mfaCode,
+      },
+      req.sessionID,
+    )
     return { pending }
   }
 

@@ -841,8 +841,9 @@ async function run(): Promise<void> {
     for (const account of ACCOUNTS) {
       if (account.kind !== 'patient' || !account.twoFactor) continue
       const person = await as(account.key, UserRole.PATIENT)
-      const { secret } = await mfa.setup(person, DEMO_PASSWORD)
-      // No browser session to keep: the seed signed nobody in.
+      const { secret } = await mfa.setup(person, DEMO_PASSWORD, 'seed')
+      // No browser session to keep (nor to sign out, for set-up): the seed
+      // signed nobody in.
       await mfa.enable(person, await currentMfaCode(secret), 'seed')
       await owner.query(
         `UPDATE users SET mfa_secret = $2, mfa_last_used_step = NULL WHERE id = $1`,

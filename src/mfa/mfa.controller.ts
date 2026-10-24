@@ -50,7 +50,9 @@ import { RegenerateRecoveryCodesDto } from './dto/regenerate-recovery-codes.dto'
 //
 // Every route: a signed-in session, every role (it's about the account), and
 // each WRITE the sign-in limit — 5 a minute: each checks a password or a
-// code, so none may become a way to guess one from a stolen session.
+// code, so none may become a way to guess one from a stolen session. The
+// session id goes to every step-up: the session signed out after 5 failed
+// step-ups in a row (decisions §16).
 @ApiTags('auth')
 @Controller('auth/mfa')
 export class MfaController {
@@ -64,8 +66,9 @@ export class MfaController {
   setup(
     @CurrentUser() user: CurrentUser,
     @Body() dto: SetupMfaDto,
+    @Req() req: Request,
   ): Promise<MfaSetup> {
-    return this.mfaService.setup(user, dto.currentPassword)
+    return this.mfaService.setup(user, dto.currentPassword, req.sessionID)
   }
 
   // 200 with the 10 recovery codes — shown once (only their hashes are
@@ -92,8 +95,14 @@ export class MfaController {
   async disable(
     @CurrentUser() user: CurrentUser,
     @Body() dto: DisableMfaDto,
+    @Req() req: Request,
   ): Promise<void> {
-    await this.mfaService.disable(user, dto.currentPassword, dto.code)
+    await this.mfaService.disable(
+      user,
+      dto.currentPassword,
+      dto.code,
+      req.sessionID,
+    )
   }
 
   // How many recovery codes are left — a read of one's own count (no codes,
@@ -114,10 +123,15 @@ export class MfaController {
   regenerateRecoveryCodes(
     @CurrentUser() user: CurrentUser,
     @Body() dto: RegenerateRecoveryCodesDto,
+    @Req() req: Request,
   ): Promise<RecoveryCodes> {
-    return this.mfaService.regenerateRecoveryCodes(user, {
-      currentPassword: dto.currentPassword,
-      mfaCode: dto.code,
-    })
+    return this.mfaService.regenerateRecoveryCodes(
+      user,
+      {
+        currentPassword: dto.currentPassword,
+        mfaCode: dto.code,
+      },
+      req.sessionID,
+    )
   }
 }

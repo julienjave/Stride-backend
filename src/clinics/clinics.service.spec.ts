@@ -1,5 +1,10 @@
 import { Test } from '@nestjs/testing'
 import { ConflictException, NotFoundException } from '@nestjs/common'
+import { DrizzleQueryError } from 'drizzle-orm'
+import {
+  PG_UNIQUE_VIOLATION,
+  USER_CLINICS_USER_CLINIC_UNIQUE,
+} from '../database/pg-errors'
 import { ClinicsService } from './clinics.service'
 import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
@@ -131,21 +136,62 @@ describe('ClinicsService.addMember', () => {
     )
   })
 
-  it('throws ConflictException when the user already belongs to the clinic', async () => {
+  // Already a member: user_clinics' UNIQUE refuses the INSERT (no read
+  // beforehand — two requests at once could both pass one), and that refusal
+  // becomes the 409 (privacy and security pass 2).
+  it('throws ConflictException when the user already belongs to the clinic — the constraint decides', async () => {
     db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic' })
     db.query.users.findFirst.mockResolvedValue({
       id: 10,
       email: 'member@example.com',
     })
-    db.query.userClinics.findFirst.mockResolvedValue({
-      id: 5,
-      clinicId: 1,
-      userId: 10,
+    db.insert.mockReturnValue({
+      values: () => ({
+        returning: () =>
+          Promise.reject(
+            new DrizzleQueryError(
+              'insert into ...',
+              [],
+              Object.assign(new Error('duplicate key value'), {
+                code: PG_UNIQUE_VIOLATION,
+                constraint: USER_CLINICS_USER_CLINIC_UNIQUE,
+              }),
+            ),
+          ),
+      }),
     })
 
     await expect(clinicsService.addMember(1, 10, adminUser)).rejects.toThrow(
-      ConflictException,
+      new ConflictException('This user already belongs to this clinic'),
     )
+    expect(db.query.userClinics.findFirst).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
+
+  // Narrow translation: any other failure keeps its own identity — a
+  // duplicate on ANOTHER unique constraint too.
+  it('rethrows any other failure of the insert unchanged', async () => {
+    db.query.clinics.findFirst.mockResolvedValue({ id: 1, name: 'Acme Clinic' })
+    db.query.users.findFirst.mockResolvedValue({ id: 10 })
+    const otherDuplicate = new DrizzleQueryError(
+      'insert into ...',
+      [],
+      Object.assign(new Error('duplicate key value'), {
+        code: PG_UNIQUE_VIOLATION,
+        constraint: 'user_clinics_pkey',
+      }),
+    )
+    for (const otherError of [
+      new Error('connection terminated'),
+      otherDuplicate,
+    ]) {
+      db.insert.mockReturnValue({
+        values: () => ({ returning: () => Promise.reject(otherError) }),
+      })
+      await expect(clinicsService.addMember(1, 10, adminUser)).rejects.toBe(
+        otherError,
+      )
+    }
   })
 
   it('creates the membership when the clinic and user exist and are not already linked', async () => {
@@ -154,7 +200,6 @@ describe('ClinicsService.addMember', () => {
       id: 10,
       email: 'member@example.com',
     })
-    db.query.userClinics.findFirst.mockResolvedValue(undefined)
     db.insert.mockReturnValue({
       values: jest.fn().mockReturnValue({
         returning: jest
@@ -190,7 +235,6 @@ describe('ClinicsService.addMember', () => {
       id: 10,
       email: 'member@example.com',
     })
-    db.query.userClinics.findFirst.mockResolvedValue(undefined)
     db.insert.mockReturnValue({
       values: jest.fn().mockReturnValue({
         returning: jest

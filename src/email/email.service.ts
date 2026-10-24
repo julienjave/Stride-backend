@@ -393,6 +393,34 @@ export class EmailService {
       ].join('\n'),
     })
   }
+
+  // A session of this account was signed out after 5 failed step-ups in a
+  // row (decisions §16, privacy and security pass 2): someone signed in as
+  // this account kept getting the current password — or the two-factor code
+  // — wrong while trying to change something (the email, the password,
+  // two-factor sign-in). The owner mistyping is the likely case, and nothing
+  // was changed; but a stolen session guessing the password looks exactly
+  // like this, and the owner is the one who can tell. A password reset ends
+  // EVERY session, the thief's included (AuthService.resetPassword).
+  async sendStepUpSignOutNotice(email: MfaNoticeEmail): Promise<void> {
+    const forgotUrl = `${frontendUrl()}/forgot-password`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Your Stride account was signed out on one device',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Someone signed in to your Stride account entered a wrong password or code 5 times in a row while confirming a change, so that device was signed out. Nothing was changed.</p>
+             <p>If this was you, sign in again. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away — it signs your account out everywhere — then tell your clinic.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'Someone signed in to your Stride account entered a wrong password or code 5 times in a row while confirming a change, so that device was signed out. Nothing was changed.',
+        '',
+        "If this was you, sign in again. If it wasn't, reset your password straight away — it signs your account out everywhere — then tell your clinic:",
+        forgotUrl,
+      ].join('\n'),
+    })
+  }
 }
 
 // --- HELPERS -----------------------------------------------------------------------------------------------

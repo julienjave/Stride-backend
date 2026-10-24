@@ -102,6 +102,15 @@ export const users = pgTable(
     // since MFA was last set up. An integer is enough: today's step is about
     // 59 million, and the column overflows in the year 4011.
     mfaLastUsedStep: integer('mfa_last_used_step'),
+    // How many step-ups in a row this account has FAILED (a wrong password,
+    // or a wrong / used two-factor code, where a change asks them again —
+    // mfa/step-up.service.ts; decisions §16). Back to 0 on a step-up that
+    // passes; at 5 the session that failed is signed out and it starts over.
+    // On the account rather than the session: one atomic UPDATE counts
+    // failures from several tabs at once, where a counter kept in the
+    // session's JSON could lose increments between parallel requests.
+    // Server-internal: UsersService.toPublic() strips it.
+    stepUpFailures: integer('step_up_failures').notNull().default(0),
     // The unit this person thinks in. It's used in two places: it's the unit
     // pre-selected when they type a new weight (a practitioner building a
     // program), and the unit every weight is DISPLAYED in for them
@@ -139,6 +148,12 @@ export const users = pgTable(
     mfaEnabledHasSecret: check(
       'users_mfa_enabled_has_secret',
       sql`NOT ${table.mfaEnabled} OR ${table.mfaSecret} IS NOT NULL`,
+    ),
+    // A count can't be negative — a slip in the code that resets it (a
+    // decrement instead of a reset) fails loudly instead of storing nonsense.
+    stepUpFailuresNotNegative: check(
+      'users_step_up_failures_not_negative',
+      sql`${table.stepUpFailures} >= 0`,
     ),
   }),
 )
