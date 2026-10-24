@@ -188,7 +188,10 @@ function sharedClinic(a: SQL | number, b: SQL | number): SQL {
 
 // The full rule for CLINICAL access, applied to the care_team_members row
 // being read: an active period AND a clinic both people still share.
-function clinicalAccess(): SQL {
+// Exported for the admin home's metrics (AdminMetricsService, 2026-10-24):
+// "which patients have nobody treating them?" must use exactly this rule,
+// not a third copy of it.
+export function clinicalAccess(): SQL {
   return sql`(${activePeriod()} AND ${sharedClinic(
     sql`${careTeamMembers.practitionerId}`,
     sql`${careTeamMembers.patientId}`,
