@@ -45,15 +45,35 @@ Every account that has a password uses: **`password123`**
 
 | Email | Role(s) | Clinic(s) | What it shows |
 | --- | --- | --- | --- |
-| `admin@stride.test` | admin | both | The founding admin: clinics, users, and each user's invitation status (Admin → Users → a user). |
+| `admin@stride.test` | admin | both | The founding admin: clinics, users, and each user's invitation status (Admin → Users → a user). The home shows the **metrics**, who **needs attention** and the **recent activity** — see **The admin home** below. |
 | `morgan@stride.test` | practitioner + admin | Riverside | The role switcher in the account menu. Logging in asks which role to use. |
 | `alex@stride.test` | practitioner | Riverside | A practitioner with patients: two custom exercises in the library, two templates, and a program assigned to Pat (Programs page: *Templates* and *Assigned* tabs). |
-| `sam@stride.test` | practitioner | Riverside | Same clinic as Alex, but on the care team of Jo, Robin and Frank only — the directory-vs-clinical split: **Add patient** finds Pat in the clinic directory, but Pat's page says Sam isn't on the care team. (Frank is `former.patient@`, deactivated.) |
+| `sam@stride.test` | practitioner | Riverside | Same clinic as Alex, but on the care team of Jo, Robin and Frank only — the directory-vs-clinical split: **Add patient** finds Pat in the clinic directory, but Pat's page says Sam isn't on the care team. (Frank is `former.patient@`, deactivated.) Sam also LEFT Dana's care team. |
 | `blake@stride.test` | practitioner | Harbour | Another clinic: shares just Robin with Riverside. |
 | `pat@stride.test` | patient | Riverside | Alex's patient, with an assigned program (the patient's own screens come in Phase 4). |
 | `jo@stride.test` | patient | Riverside | A care team of two: Alex and Sam. |
 | `robin@stride.test` | patient | both | In both clinics, with a care team in each: Sam and Blake. |
 | `casey@stride.test` | patient | Riverside | Two-factor sign-in on: logging in asks for a code — see **Two-factor sign-in** below. |
+| `dana@stride.test` | patient | Riverside | Created by Sam, who then **left her care team**: nobody treats her. On the admin home's **Needs attention**; her **Team** page shows Sam as a past member. |
+| `taylor@stride.test` | practitioner | none | Created at Harbour, then **removed from it** by the admin: in no clinic, so on nobody's directory. On the admin home's **Needs attention**. |
+
+## The admin home
+
+Log in as `admin@stride.test`. Under the shortcuts:
+
+- **Metrics** — active accounts by role (an account with two roles counts in
+  each), clinics, and invitations still waiting; deactivated ones are counted
+  apart.
+- **Needs attention** — two groups, each name a link to the user page where
+  the fix is:
+  - **Patients without a care team:** Dana (Sam left). Fix it on her user
+    page: **Care team → Add someone**.
+  - **Practitioners without a clinic:** Taylor (removed from Harbour). Fix it
+    on their user page: **Clinics → Add**.
+  The group's title and "and N more" lead to the users list filtered the same
+  way (**Show:** at the top of Admin → Users).
+- **Recent activity** — the newest changes from the audit log, with **See all
+  changes**.
 
 ## Two-factor sign-in
 

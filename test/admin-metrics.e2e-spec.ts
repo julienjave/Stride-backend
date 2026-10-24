@@ -15,6 +15,7 @@ import { activateAccount, TEST_PASSWORD } from './support/accounts'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { metricsQuery } from '../src/admin-metrics/admin-metrics.service'
+import { ATTENTION_ADMINS_ONLY_MESSAGE } from '../src/users/users.controller'
 
 // GET /admin/metrics — the admin home's numbers (Phase 6, decisions §17).
 //
@@ -343,6 +344,84 @@ describe('Admin metrics (e2e)', () => {
       await client.query('ROLLBACK')
       client.release()
     }
+  })
+
+  // GET /users?attention=… (decisions §17, the follow-up): the same rule as
+  // the home's numbers, as a full list in the home's order.
+  describe('the users list filtered by attention', () => {
+    const idsOf = (res: request.Response) =>
+      (res.body as { id: number }[]).map((user) => user.id)
+
+    it('lists every patient without a care team, by last name, then first name', async () => {
+      const res = await admin.get('/users?attention=patients-without-care-team')
+
+      expect(res.status).toBe(200)
+      expect(idsOf(res)).toEqual([
+        ids.gus, // Adams
+        ids.fay, // Baker
+        ids.joe, // Kent
+        ids.kim, // Lee
+        ids.hal, // Moreau, Hal
+        ids.ivy, // Moreau, Ivy
+        ids.ola, // Young
+        ids.ned, // Zimmer
+      ])
+      // The users list's own shape (roles included), never a password hash.
+      const first = (res.body as Record<string, unknown>[])[0]
+      expect(first.roles).toEqual(['patient'])
+      expect(first).not.toHaveProperty('passwordHash')
+    })
+
+    it('lists every practitioner without an active clinic', async () => {
+      const res = await admin.get(
+        '/users?attention=practitioners-without-clinic',
+      )
+
+      expect(res.status).toBe(200)
+      expect(idsOf(res)).toEqual([ids.rory, ids.quinn])
+    })
+
+    // The point of sharing the rule: the home's count and first names are
+    // the list's length and its start, for both groups.
+    it('agrees with the home: as many accounts as its total, starting with its names', async () => {
+      const metrics = await admin.get('/admin/metrics')
+      const groups = [
+        [
+          'patients-without-care-team',
+          metrics.body.needsAttention.patientsWithoutCareTeam,
+        ],
+        [
+          'practitioners-without-clinic',
+          metrics.body.needsAttention.practitionersWithoutClinic,
+        ],
+      ] as const
+      for (const [kind, group] of groups) {
+        const list = await admin.get(`/users?attention=${kind}`)
+        const listed = idsOf(list)
+        expect(listed).toHaveLength((group as { total: number }).total)
+        expect(listed.slice(0, 5)).toEqual(
+          (group as { first: { id: number }[] }).first.map((a) => a.id),
+        )
+      }
+    })
+
+    it('refuses a value it does not know, naming the ones it does', async () => {
+      const res = await admin.get('/users?attention=everyone')
+
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        'attention must be one of: patients-without-care-team, practitioners-without-clinic',
+      ])
+    })
+
+    it('refuses a practitioner: their list means "my patients"', async () => {
+      const res = await practitioner.get(
+        '/users?attention=patients-without-care-team',
+      )
+
+      expect(res.status).toBe(403)
+      expect(res.body.message).toEqual([ATTENTION_ADMINS_ONLY_MESSAGE])
+    })
   })
 
   it("refuses a practitioner with the roles guard's message", async () => {

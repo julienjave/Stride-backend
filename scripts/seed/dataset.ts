@@ -43,6 +43,8 @@ export type AccountKey =
   | 'stuckPatient'
   | 'latePatient'
   | 'formerPatient'
+  | 'taylor'
+  | 'dana'
 
 // Where the account's invitation ends up — each a state the user page
 // shows differently (decisions §3, "Invitations").
@@ -95,6 +97,11 @@ export interface PractitionerAccount extends AccountBase {
   invitation: 'accepted'
   // Roles granted on top of practitioner (the multi-role account).
   alsoAdmin?: { position: string }
+  // Removed from every clinic by the admin once created (decisions §17): an
+  // active practitioner in NO clinic — one of the admin home's "needs
+  // attention" groups. Must create nobody and be on nobody's care team
+  // (a removal ends the links left without a shared clinic).
+  removedFromClinics?: boolean
 }
 
 export interface PatientAccount extends AccountBase {
@@ -106,6 +113,11 @@ export interface PatientAccount extends AccountBase {
   // Practitioners who join the care team afterwards ("Join care team").
   // Each must share a clinic with the patient.
   alsoOnCareTeam?: AccountKey[]
+  // Practitioners who LEAVE the care team afterwards ("End", as
+  // themselves — decisions §17): their link ends, and stays in the care
+  // team's history. Leaving them all makes a patient nobody treats: the
+  // admin home's other "needs attention" group.
+  leftCareTeam?: AccountKey[]
   invitation: InvitationOutcome
   // Deactivated by the admin after everything else (a former patient).
   deactivated?: boolean
@@ -235,6 +247,21 @@ export const ACCOUNTS: SeedAccount[] = [
     shows: 'Harbour only: shares just Robin with Riverside.',
   },
   {
+    kind: 'practitioner',
+    key: 'taylor',
+    email: 'taylor@stride.test',
+    firstName: 'Taylor',
+    lastName: 'Kim',
+    licenseNumber: 'PT-SEED-005',
+    specialties: ['Hand therapy'],
+    bio: 'Hand and wrist rehabilitation, after fractures, surgery or long hours at a keyboard.',
+    clinics: ['harbour'],
+    removedFromClinics: true,
+    invitation: 'accepted',
+    shows:
+      'Removed from Harbour by the admin, so in no clinic: on the admin home\'s "Needs attention".',
+  },
+  {
     kind: 'patient',
     key: 'pat',
     email: 'pat@stride.test',
@@ -338,6 +365,20 @@ export const ACCOUNTS: SeedAccount[] = [
     deactivated: true,
     shows:
       'A deactivated account: it can no longer log in; an admin can reactivate it.',
+  },
+  {
+    kind: 'patient',
+    key: 'dana',
+    email: 'dana@stride.test',
+    firstName: 'Dana',
+    lastName: 'Ortiz',
+    dateOfBirth: '1979-07-19',
+    createdBy: 'sam',
+    leftCareTeam: ['sam'],
+    clinics: ['riverside'],
+    invitation: 'accepted',
+    shows:
+      'Sam left Dana\'s care team, so nobody treats her: on the admin home\'s "Needs attention" (her Team page shows Sam as a past member).',
   },
 ]
 

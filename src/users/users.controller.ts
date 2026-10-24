@@ -36,6 +36,10 @@ import {
 import { ApiTags } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { UsersService } from './users.service'
+import {
+  ATTENTION_KINDS,
+  isAttentionKind,
+} from '../admin-metrics/attention-rules'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
@@ -46,6 +50,12 @@ import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
+
+// --- CONSTANTS ---------------------------------------------------------------------------------------------
+
+// Exported for the e2e test's exact message.
+export const ATTENTION_ADMINS_ONLY_MESSAGE =
+  'Only admins can filter users by what needs attention'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -121,7 +131,23 @@ export class UsersController {
   findAll(
     @CurrentUser() currentUser: CurrentUser,
     @Query('includeInactive') includeInactive?: string,
+    @Query('attention') attention?: string,
   ) {
+    // ?attention=… — the admin home's "needs attention" groups as a list
+    // (decisions §17). Admins only: a practitioner's GET /users means "my
+    // patients", and the filter would change what that list is. Checked
+    // before anything else, so a wrong value is never silently ignored.
+    if (attention !== undefined) {
+      if (currentUser.activeRole !== UserRole.ADMIN) {
+        throw new ForbiddenException(ATTENTION_ADMINS_ONLY_MESSAGE)
+      }
+      if (!isAttentionKind(attention)) {
+        throw new BadRequestException(
+          `attention must be one of: ${ATTENTION_KINDS.join(', ')}`,
+        )
+      }
+      return this.usersService.findNeedingAttention(attention, currentUser)
+    }
     if (currentUser.activeRole === UserRole.ADMIN) {
       // Raw string comparison, deliberately — NOT class-transformer's
       // @Type(() => Boolean), which has a real gotcha here: Boolean(

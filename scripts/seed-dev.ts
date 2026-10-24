@@ -860,14 +860,43 @@ async function run(): Promise<void> {
       }
     }
 
-    // --- 9. Deactivations, last (a deactivated account can't be acted on) ---
+    // --- 9. Leavings (decisions §17): what the admin home flags ---
+    // After the content, which never involves these accounts. Each through
+    // the app's own service, as the person would do it, so the audit log
+    // and the care team's history say it too.
+    for (const account of ACCOUNTS) {
+      if (account.kind === 'patient') {
+        // "End" on one's own care-team link (the patient page's "Leave care
+        // team"): the link gets an end date and stays in the history.
+        for (const leaver of account.leftCareTeam ?? []) {
+          const practitioner = await as(leaver, UserRole.PRACTITIONER)
+          await careTeam.endMembership(
+            idOf(account.key),
+            practitioner.id,
+            practitioner,
+          )
+        }
+      }
+      if (account.kind === 'practitioner' && account.removedFromClinics) {
+        // The admin's "Remove" on the clinic's member list.
+        for (const key of account.clinics) {
+          await clinicsService.removeMember(
+            clinicId(key),
+            idOf(account.key),
+            admin,
+          )
+        }
+      }
+    }
+
+    // --- 10. Deactivations, last (a deactivated account can't be acted on) ---
     for (const account of ACCOUNTS) {
       if (account.kind === 'patient' && account.deactivated) {
         await users.softDelete(idOf(account.key), admin)
       }
     }
 
-    // --- 10. What was made ---
+    // --- 11. What was made ---
     console.log(
       `\nDone. Every account with a password uses: ${DEMO_PASSWORD}\n`,
     )

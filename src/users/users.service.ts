@@ -24,7 +24,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common'
-import { eq, and, inArray, sql } from 'drizzle-orm'
+import { eq, and, asc, inArray, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
@@ -53,6 +53,10 @@ import type { InvitationStatus } from '../invitations/invitation-status'
 import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
 import { translateDuplicateEmail } from '../common/email-address'
 import { CareTeamService } from '../care-team/care-team.service'
+import {
+  needsAttention,
+  type AttentionKind,
+} from '../admin-metrics/attention-rules'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -527,6 +531,47 @@ export class UsersService {
     // Promise.all: toPublic() is async (see its comment), so mapping over
     // the rows gives an array of Promises; Promise.all waits for all of
     // them at once rather than one after another.
+    return this.attachProfilesToMany(
+      await Promise.all(rows.map((u) => this.toPublic(u))),
+    )
+  }
+
+  // The users list filtered to one "needs attention" group (decisions §17,
+  // GET /users?attention=…; admins — checked by the controller). The SAME
+  // condition the admin home counts with (attention-rules.ts), so the home's
+  // number and this list always agree; and the same order as the home's
+  // first five (last name, first name, then id — two people can share a
+  // name, and the id keeps the order the same on every load), so the list
+  // continues where the home's names stop.
+  //
+  // Under the admin's row-security context, unlike findAll(): the rule reads
+  // care_team_members, which shows no row to a query without one — every
+  // patient would then look unattended. (users itself is readable by
+  // anyone, which is why findAll() needs no context.) The condition already
+  // means "active" accounts, so there is no includeInactive here.
+  async findNeedingAttention(
+    attention: AttentionKind,
+    currentUser: { id: number; activeRole: UserRole },
+  ) {
+    //
+    // The core builder (select().from()), not db.query.users.findMany as in
+    // findAll(): the relational builder renders EVERY column in its `where`
+    // against its own table's alias — care_team_members.practitioner_id came
+    // out as "users"."practitioner_id" (found by the e2e test, a 500). The
+    // core builder writes the SQL as given. Same rows either way: every
+    // column of users.
+    const rows = await withRlsContext(this.db, currentUser, (tx) =>
+      tx
+        .select()
+        .from(users)
+        .where(
+          needsAttention(attention, {
+            id: sql`${users.id}`,
+            isActive: sql`${users.isActive}`,
+          }),
+        )
+        .orderBy(asc(users.lastName), asc(users.firstName), asc(users.id)),
+    )
     return this.attachProfilesToMany(
       await Promise.all(rows.map((u) => this.toPublic(u))),
     )

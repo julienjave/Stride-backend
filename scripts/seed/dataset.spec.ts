@@ -66,6 +66,15 @@ const patients = ACCOUNTS.filter(
   (a): a is PatientAccount => a.kind === 'patient',
 )
 const positionOf = (key: AccountKey) => ACCOUNTS.findIndex((a) => a.key === key)
+// Who is on a patient's care team once the seed is done: the creator and
+// those who joined, minus those who left (step 9 of the seed).
+const currentCareTeam = (patient: PatientAccount) =>
+  [patient.createdBy, ...(patient.alsoOnCareTeam ?? [])].filter(
+    (key) => !(patient.leftCareTeam ?? []).includes(key),
+  )
+const practitioners = ACCOUNTS.filter(
+  (a): a is PractitionerAccount => a.kind === 'practitioner',
+)
 
 describe('the seed dataset', () => {
   it('has unique keys and emails, all on the undeliverable .test domain', () => {
@@ -121,6 +130,51 @@ describe('the seed dataset', () => {
     }
   })
 
+  // CareTeamService.endMembership: a practitioner ends only their OWN link,
+  // and only a link that exists.
+  it('only lets a practitioner leave a care team they are on', () => {
+    for (const patient of patients) {
+      for (const leaver of patient.leftCareTeam ?? []) {
+        expect(byKey.get(leaver)?.kind).toBe('practitioner')
+        expect([
+          patient.createdBy,
+          ...(patient.alsoOnCareTeam ?? []),
+        ]).toContain(leaver)
+      }
+    }
+  })
+
+  // Removing a practitioner from their clinics would END their care-team
+  // links (no shared clinic left) and leave the patients they created
+  // without them — not what the dataset says. So such a practitioner
+  // creates and treats nobody.
+  it('removes from their clinics only a practitioner who treats nobody', () => {
+    for (const practitioner of practitioners.filter(
+      (p) => p.removedFromClinics,
+    )) {
+      for (const patient of patients) {
+        expect(patient.createdBy).not.toBe(practitioner.key)
+        expect(patient.alsoOnCareTeam ?? []).not.toContain(practitioner.key)
+      }
+    }
+  })
+
+  // The admin home's "Needs attention" (decisions §17) shows something in
+  // the demo: a patient nobody treats who can log in (her Team page shows
+  // the past member), and a practitioner in no clinic who can log in.
+  it('gives the admin home\'s two "needs attention" groups an account each', () => {
+    const untreated = patients.filter(
+      (p) =>
+        currentCareTeam(p).length === 0 &&
+        p.invitation === 'accepted' &&
+        !p.deactivated,
+    )
+    expect(untreated.map((p) => p.key)).toEqual(['dana'])
+    expect(
+      practitioners.filter((p) => p.removedFromClinics).map((p) => p.key),
+    ).toEqual(['taylor'])
+  })
+
   it('shows each invitation state at least once', () => {
     const outcomes = new Set(patients.map((p) => p.invitation))
     expect([...outcomes].sort()).toEqual([
@@ -137,11 +191,13 @@ describe('the seed dataset', () => {
   // patient: Alex (Pat's and Jo's team) and Sam (Jo's, Robin's) have one;
   // Blake (Robin's team) doesn't. Morgan, on nobody's team, has one too.
   it('gives bios to most practitioners, but not to all', () => {
-    const practitioners = ACCOUNTS.filter(
-      (a): a is PractitionerAccount => a.kind === 'practitioner',
-    )
     const withBio = practitioners.filter((p) => p.bio !== undefined)
-    expect(withBio.map((p) => p.key)).toEqual(['morgan', 'alex', 'sam'])
+    expect(withBio.map((p) => p.key)).toEqual([
+      'morgan',
+      'alex',
+      'sam',
+      'taylor',
+    ])
     // ...and the no-bio case is on the team of a patient who can log in
     // (created them, or joined them), so it shows without any set-up.
     const visibleToAPatient = (key: AccountKey) =>
@@ -219,8 +275,7 @@ describe('the seed dataset', () => {
       expect(titles).toContain(assignment.template)
       const patient = patients.find((p) => p.key === assignment.patient)
       expect(patient).toBeDefined()
-      const careTeam = [patient?.createdBy, ...(patient?.alsoOnCareTeam ?? [])]
-      expect(careTeam).toContain(assignment.by)
+      expect(patient && currentCareTeam(patient)).toContain(assignment.by)
     }
   })
 
@@ -559,8 +614,7 @@ describe('the seed dataset', () => {
 describe('the seeded conversations', () => {
   const careTeamOf = (key: AccountKey) => {
     const patient = byKey.get(key)
-    if (patient?.kind !== 'patient') return []
-    return [patient.createdBy, ...(patient.alsoOnCareTeam ?? [])]
+    return patient?.kind === 'patient' ? currentCareTeam(patient) : []
   }
   // A moment as minutes before the seed's day ends — bigger = older.
   const age = (m: { daysAgo: number; at: string }) => {
@@ -623,8 +677,7 @@ describe('the seeded conversations', () => {
 describe('the seeded medical files', () => {
   const careTeamOf = (key: AccountKey) => {
     const patient = byKey.get(key)
-    if (patient?.kind !== 'patient') return []
-    return [patient.createdBy, ...(patient.alsoOnCareTeam ?? [])]
+    return patient?.kind === 'patient' ? currentCareTeam(patient) : []
   }
   // A moment as minutes before the seed's day ends — bigger = older.
   const age = (e: { daysAgo: number; at: string }) => {

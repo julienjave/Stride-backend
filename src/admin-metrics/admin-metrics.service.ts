@@ -21,15 +21,8 @@ import { Inject, Injectable } from '@nestjs/common'
 import { sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { withRlsContext } from '../database/rls-context'
-import {
-  users,
-  userRoles,
-  userClinics,
-  clinics,
-  careTeamMembers,
-  invitations,
-} from '../database/schema'
-import { clinicalAccess } from '../care-team/care-team.service'
+import { users, userRoles, clinics, invitations } from '../database/schema'
+import { needsAttention, type UserRow } from './attention-rules'
 import { UserRole } from '../users/dto/create-user.dto'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
@@ -176,46 +169,23 @@ export class AdminMetricsService {
 //
 // Exported for one e2e test: an invitation expiring at the very instant of
 // the query, which only a single transaction (one now()) can build.
+// The statement's users row, aliased `u`, as the attention rules want it.
+const ROW_U: UserRow = { id: sql`u.id`, isActive: sql`u.is_active` }
+
 export function metricsQuery() {
   return sql`
     WITH
-      -- Active patients that nobody active is treating right now.
-      -- clinicalAccess() reads the columns of care_team_members by their
-      -- full names ("care_team_members"."patient_id"…), so that table is
-      -- NOT aliased inside the NOT EXISTS.
+      -- The two "needs attention" groups — their rules live in
+      -- attention-rules.ts, shared with the users list's filter.
       patients_without_care_team AS (
         SELECT u.id, u.first_name, u.last_name
         FROM ${users} u
-        WHERE u.is_active
-          AND EXISTS (
-            SELECT 1 FROM ${userRoles} r
-            WHERE r.user_id = u.id AND r.role = ${UserRole.PATIENT}
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM ${careTeamMembers}
-            JOIN ${users} p ON p.id = ${careTeamMembers.practitionerId}
-            WHERE ${careTeamMembers.patientId} = u.id
-              AND p.is_active
-              AND ${clinicalAccess()}
-          )
+        WHERE ${needsAttention('patients-without-care-team', ROW_U)}
       ),
-      -- Active practitioners in no active clinic (none at all, or only
-      -- deactivated ones — a deactivated clinic keeps its members).
       practitioners_without_clinic AS (
         SELECT u.id, u.first_name, u.last_name
         FROM ${users} u
-        WHERE u.is_active
-          AND EXISTS (
-            SELECT 1 FROM ${userRoles} r
-            WHERE r.user_id = u.id AND r.role = ${UserRole.PRACTITIONER}
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM ${userClinics} m
-            JOIN ${clinics} c ON c.id = m.clinic_id
-            WHERE m.user_id = u.id AND c.is_active
-          )
+        WHERE ${needsAttention('practitioners-without-clinic', ROW_U)}
       )
     SELECT
       roles.admins,
