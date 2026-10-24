@@ -555,7 +555,7 @@ export class SessionsService {
 
   // --- GET ROUTES ---
 
-  // One session with its checklist. For the care team and admins, also its
+  // One session with its checklist. For the care team, also its
   // REVIEWS (the To-do, 2026-10-19): who on the team has looked at it, and
   // when — oldest first. The patient's answer has no `reviews` key at all
   // (not an empty list, which would read as "nobody looked"): reviews are
@@ -859,7 +859,7 @@ export class SessionsService {
     // invisible to this session" — assertCanView/assertIsOwner never run on
     // a session this query didn't return, so an out-of-scope row reads as
     // 404, not 403. See assertCanView/assertIsOwner below for the one
-    // deliberate exception (a managing practitioner/admin IS visible via
+    // deliberate exception (a managing practitioner IS visible via
     // RLS, so the 403 on write there is a real app-layer decision, not RLS
     // filtering).
     if (!session) {
@@ -887,8 +887,9 @@ export class SessionsService {
     return row
   }
 
+  // No admin branch (2026-10-23, decisions §16): the controller answers an
+  // admin 403 before this runs, and the policies hide every session anyway.
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) return
     if (
       currentUser.activeRole === UserRole.PATIENT &&
       patientId === currentUser.id
@@ -906,8 +907,8 @@ export class SessionsService {
     )
   }
 
-  // No practitioner/admin branch at all — sessions are patient-only to
-  // modify, full stop. Practitioners and admins get read access via
+  // No practitioner branch at all — sessions are patient-only to
+  // modify, full stop. Practitioners get read access via
   // assertCanView, never write access via this check.
   private assertIsOwner(session: SessionRow, currentUser: CurrentUser) {
     if (

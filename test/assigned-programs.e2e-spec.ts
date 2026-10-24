@@ -371,7 +371,7 @@ describe('AssignedPrograms (e2e)', () => {
     expect(res.status).toBe(400)
   })
 
-  it('enforces assertCanView: admin, self-patient, and managing practitioner may view; nobody else', async () => {
+  it('enforces assertCanView: self-patient and managing practitioner may view; nobody else — an admin neither', async () => {
     const createRes = await practitionerA.post('/assigned-programs').send({
       patientId: patientAId,
       title: 'View Boundary Program',
@@ -381,8 +381,12 @@ describe('AssignedPrograms (e2e)', () => {
     })
     const programId = createRes.body.id
 
+    // Since 2026-10-23 (decisions §16): the guard's 403, by its own message.
     const asAdmin = await admin.get(`/assigned-programs/${programId}`)
-    expect(asAdmin.status).toBe(200)
+    expect(asAdmin.status).toBe(403)
+    expect(asAdmin.body.message).toEqual([
+      'You do not have permission to access this resource',
+    ])
 
     const asSelf = await patientA.get(`/assigned-programs/${programId}`)
     expect(asSelf.status).toBe(200)
@@ -404,7 +408,7 @@ describe('AssignedPrograms (e2e)', () => {
     expect(asNonManagingPractitioner.status).toBe(404)
   })
 
-  it('enforces assertCanManage: the owning PATIENT may never manage their own program', async () => {
+  it('enforces assertCanManage: the owning PATIENT may never manage their own program — nor an admin', async () => {
     const createRes = await practitionerA.post('/assigned-programs').send({
       patientId: patientAId,
       title: 'Manage Boundary Program',
@@ -419,10 +423,17 @@ describe('AssignedPrograms (e2e)', () => {
       .send({ title: 'Patient Should Not Be Able To Do This' })
     expect(patientAttemptsManage.status).toBe(403)
 
+    // Since 2026-10-23 (decisions §16): an admin changes no patient's
+    // program — the guard's 403, and the title as it was.
     const adminManages = await admin
       .patch(`/assigned-programs/${programId}`)
       .send({ title: 'Admin Edit' })
-    expect(adminManages.status).toBe(200)
+    expect(adminManages.status).toBe(403)
+    expect(adminManages.body.message).toEqual([
+      'You do not have permission to access this resource',
+    ])
+    const stored = await practitionerA.get(`/assigned-programs/${programId}`)
+    expect(stored.body.title).toBe('Manage Boundary Program')
   })
 
   it('validates reorder as an exact permutation, and rejects a non-managing practitioner', async () => {
@@ -534,7 +545,7 @@ describe('AssignedPrograms (e2e)', () => {
     )
   })
 
-  it('scopes GET /assigned-programs by role: patient sees own, practitioner sees managed, admin sees all', async () => {
+  it('scopes GET /assigned-programs by role: patient sees own, practitioner sees managed, admin none (403)', async () => {
     await practitionerA.post('/assigned-programs').send({
       patientId: patientAId,
       title: 'Scope Check Program',
@@ -554,9 +565,12 @@ describe('AssignedPrograms (e2e)', () => {
     expect(asNonManagingPractitioner.status).toBe(200)
     expect(asNonManagingPractitioner.body).toEqual([])
 
+    // Since 2026-10-23 (decisions §16): not "all" — the guard's 403.
     const asAdmin = await admin.get('/assigned-programs')
-    expect(asAdmin.status).toBe(200)
-    expect(asAdmin.body.length).toBeGreaterThan(0)
+    expect(asAdmin.status).toBe(403)
+    expect(asAdmin.body.message).toEqual([
+      'You do not have permission to access this resource',
+    ])
   })
 
   // --- ?patientId= (the practitioner's patient page, 2026-10-08) ---
@@ -612,11 +626,16 @@ describe('AssignedPrograms (e2e)', () => {
     }
   })
 
-  it('allows ?patientId= to the care team, the patient and an admin — and refuses anyone else with a 403, not an empty list', async () => {
+  it('allows ?patientId= to the care team and the patient — and refuses anyone else with a 403, not an empty list', async () => {
     const url = `/assigned-programs?patientId=${patientAId}`
     expect((await practitionerA.get(url)).status).toBe(200)
     expect((await patientA.get(url)).status).toBe(200)
-    expect((await admin.get(url)).status).toBe(200)
+    // An admin: the guard's 403 (decisions §16), before the service's own.
+    const asAdmin = await admin.get(url)
+    expect(asAdmin.status).toBe(403)
+    expect(asAdmin.body.message).toEqual([
+      'You do not have permission to access this resource',
+    ])
 
     for (const outsider of [practitionerB, patientB]) {
       const res = await outsider.get(url)

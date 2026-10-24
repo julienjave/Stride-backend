@@ -414,6 +414,13 @@
       "when": 1792758181153,
       "tag": "0058_mfa_recovery_codes_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792827326391,
+      "tag": "0059_admins_out_of_programs",
+      "breakpoints": true
     }
   ]
 }

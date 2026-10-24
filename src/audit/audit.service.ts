@@ -39,6 +39,7 @@ import {
   AUDIT_ACTIONS,
   actionsOfKind,
   areaOf,
+  detailsShownToAdmins,
   kindOf,
   type AuditAction,
   type AuditEntityType,
@@ -79,7 +80,11 @@ export interface AuditLogView {
   entityType: string
   area: string
   entityId: number | null
+  // null when withheld: the entry is about clinical data (CLINICAL_AREAS).
   details: unknown
+  // True when `details` is withheld rather than absent — the viewer says so
+  // ("not shown to admins") instead of showing an entry that seems empty.
+  detailsWithheld: boolean
   createdAt: Date
   performer: AuditPerson
   target: AuditPerson | null
@@ -260,7 +265,11 @@ export class AuditService {
       entityType: entry.entityType,
       area: areaOf(entry.entityType),
       entityId: entry.entityId,
-      details: entry.details,
+      // Clinical areas' details stay in the database, never in this answer
+      // (decisions §16) — who, what, when and about whom stay visible.
+      ...(detailsShownToAdmins(entry.entityType)
+        ? { details: entry.details, detailsWithheld: false }
+        : { details: null, detailsWithheld: true }),
       createdAt: entry.createdAt,
       performer,
       // A LEFT JOIN that found nothing gives null in every column; Drizzle

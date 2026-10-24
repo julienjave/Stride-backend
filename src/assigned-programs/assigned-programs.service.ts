@@ -778,12 +778,13 @@ export class AssignedProgramsService {
 
   // Role-scoped, not a single "list everything": patient sees their own,
   // practitioner sees programs for patients they manage (their care team,
-  // through UsersService's definition), admin sees all.
+  // through UsersService's definition). Admins see none (2026-10-23,
+  // decisions §16 — the controller answers them 403 before this runs).
   //
   // `patientId` (GET /assigned-programs?patientId=, added 2026-10-08 for the
   // practitioner's patient page) narrows the list to ONE patient — every
   // program of theirs, whoever assigned it. It is checked with the same
-  // rule as viewing a single program (assertCanView): an admin, the patient
+  // rule as viewing a single program (assertCanView): the patient
   // themselves, or a practitioner on their care team. Anyone else gets the
   // same 403 as for one of that patient's programs — never an empty list,
   // which would quietly say "this patient has no programs" to someone who
@@ -839,13 +840,6 @@ export class AssignedProgramsService {
         }),
       )
     }
-    if (currentUser.activeRole === UserRole.ADMIN) {
-      return withRlsContext(this.db, currentUser, (tx) =>
-        tx.query.assignedPrograms.findMany({
-          where: eq(assignedPrograms.isArchived, false),
-        }),
-      )
-    }
     if (currentUser.activeRole === UserRole.PATIENT) {
       return withRlsContext(this.db, currentUser, (tx) =>
         tx.query.assignedPrograms.findMany({
@@ -854,6 +848,14 @@ export class AssignedProgramsService {
             eq(assignedPrograms.isArchived, false),
           ),
         }),
+      )
+    }
+    // Only a practitioner gets past here. Anyone else — an admin, were the
+    // controller ever to let one through (decisions §16) — is refused, rather
+    // than treated as a practitioner with no patients.
+    if (currentUser.activeRole !== UserRole.PRACTITIONER) {
+      throw new ForbiddenException(
+        'You do not have permission to view assigned programs',
       )
     }
     const managedPatients = await this.usersService.findPatientsForPractitioner(
@@ -985,8 +987,8 @@ export class AssignedProgramsService {
   // This method only gathers the data and checks who may see it; every rule
   // lives in schedule-summary.ts (pure, tested with plain values).
   //
-  // Same people as viewing the program (assertCanView): the care team, the
-  // patient, an admin. The reads run in their RLS context — sessions and
+  // Same people as viewing the program (assertCanView): the care team and
+  // the patient. The reads run in their RLS context — sessions and
   // schedule versions have policies of their own, which agree.
   //
   // `through` (optional): cover at least up to that day — see
@@ -1026,8 +1028,8 @@ export class AssignedProgramsService {
   // checklist: a list is read often and shows a line per session;
   // `GET /sessions/:id` gives one session with its exercises.
   //
-  // Same people as viewing the program (assertCanView): the patient, the
-  // care team, an admin — anyone else refused (a 404: row security hides
+  // Same people as viewing the program (assertCanView): the patient and the
+  // care team — anyone else refused (a 404: row security hides
   // the program from them), never an empty list (which would tell an
   // outsider "no sessions"). Read under RLS, whose sessions
   // policy agrees. The index on (assigned_program_id, local_date) serves the
@@ -1719,7 +1721,8 @@ export class AssignedProgramsService {
   // inside its transaction — after the program's own UPDATE). One UPDATE …
   // RETURNING; then each closed session's entry, with what was done in it
   // (its checklist, read in ONE query for all of them). Allowed for the care
-  // team and admins by migration 0039 — this change and no other.
+  // team by migration 0039 (admins taken out by 0059) — this change and no
+  // other.
   private async closeOpenSessions(
     tx: DrizzleDb,
     currentUser: CurrentUser,
@@ -1871,7 +1874,7 @@ export class AssignedProgramsService {
   // already removed (409).
   //
   // Sessions are counted under the caller's row-level security: the care
-  // team and admins — the only people past assertCanManage — see every
+  // team — the only people past assertCanManage — see every
   // session of the patient, so the count is complete. DISTINCT sessions: a
   // checklist has one row per exercise today, but "how many sessions used
   // it" shouldn't depend on that.
@@ -1912,7 +1915,7 @@ export class AssignedProgramsService {
   // ready (or the other way round).
   //
   // The same people and refusals as every change to a program exercise:
-  // the care team or an admin (assertCanManage), an OPEN program (409), an
+  // the care team (assertCanManage), an OPEN program (409), an
   // exercise of THIS program (404), not retired (409). Migrations 0031 and
   // 0033 refuse the same in the database: every route here ends in an
   // UPDATE of the row, which their triggers guard. Each change writes ONE
@@ -2674,8 +2677,8 @@ export class AssignedProgramsService {
   // program has no such row (or row-level security hides it). The lock makes
   // the edits and the removal of one exercise happen one at a time, each
   // starting from the row as the previous one left it. Under row-level
-  // security, FOR UPDATE also asks the UPDATE policy: the care team or an
-  // admin, the people allowed to change the program's exercises. A read that
+  // security, FOR UPDATE also asks the UPDATE policy: the care team, the
+  // people allowed to change the program's exercises. A read that
   // changes nothing (the removal preview) passes `lock = false`.
   private async lockProgramExercise(
     tx: DrizzleDb,
@@ -2770,8 +2773,8 @@ export class AssignedProgramsService {
 
   // SELECT … FOR UPDATE on the program's row, so the workout changes of one
   // program happen one at a time — see ProgramsService.lockTemplate for the
-  // race it prevents. Row-level security asks the UPDATE policy too: an
-  // admin or the care team, the people allowed to change the program.
+  // race it prevents. Row-level security asks the UPDATE policy too: the
+  // care team, the people allowed to change the program.
   private async lockProgram(tx: DrizzleDb, assignedProgramId: number) {
     await tx
       .select({ id: assignedPrograms.id })
@@ -2821,8 +2824,10 @@ export class AssignedProgramsService {
 
   // Viewing allows a third case beyond manage: the patient viewing their
   // own program.
+  // No admin branch (2026-10-23, decisions §16): an admin reaches no route
+  // that calls this — the controller's @Roles answers 403 — and if one ever
+  // did, they would fall through to the refusal below.
   private async assertCanView(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) return
     if (
       currentUser.activeRole === UserRole.PATIENT &&
       patientId === currentUser.id
@@ -2843,7 +2848,6 @@ export class AssignedProgramsService {
   // Managing (create/update/archive/exercise CRUD) never allows the patient
   // themselves — a patient can see their program, not edit its prescription.
   private async assertCanManage(patientId: number, currentUser: CurrentUser) {
-    if (currentUser.activeRole === UserRole.ADMIN) return
     if (currentUser.activeRole === UserRole.PRACTITIONER) {
       const managed = await this.usersService.isPatientManagedBy(
         patientId,

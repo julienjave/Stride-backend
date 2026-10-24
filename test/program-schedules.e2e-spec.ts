@@ -831,16 +831,22 @@ describe('Program schedules (e2e)', () => {
   // --- 3. Who may change a schedule --------------------------------------------
 
   describe('who may change a schedule', () => {
-    it('lets an admin add a version, recorded as set by the admin', async () => {
+    // Since 2026-10-23 (decisions §16): an admin changes no patient's
+    // program — the guard's 403 (its own message), and nothing added.
+    it('refuses an admin (403), adding nothing', async () => {
       const program = await createProgram()
+      const before = await practitionerA.get(`/assigned-programs/${program.id}`)
       const res = await admin
         .post(`/assigned-programs/${program.id}/schedules`)
         .send({ ...THREE_A_WEEK, effectiveFrom: today })
-      expect(res.status).toBe(201)
-      const added = (res.body.schedules as ScheduleVersion[]).find(
-        (v) => v.effectiveFrom === today,
+      expect(res.status).toBe(403)
+      expect(res.body.message).toEqual([
+        'You do not have permission to access this resource',
+      ])
+      const after = await practitionerA.get(`/assigned-programs/${program.id}`)
+      expect(after.body.schedules as ScheduleVersion[]).toEqual(
+        before.body.schedules as ScheduleVersion[],
       )
-      expect(added?.createdBy).toBe(adminId)
     })
 
     // The role guard answers before anything is looked up.
@@ -1282,13 +1288,14 @@ describe('Program schedules (e2e)', () => {
       )
     })
 
-    it('lets the patient and an admin see it; not a colleague off the care team', async () => {
+    it('lets the patient see it; not an admin (403) nor a colleague off the care team', async () => {
       const program = await createProgram({
         startsIn: -3,
         schedule: THREE_A_WEEK,
       })
       expect((await summaryOf(patient, program.id)).status).toBe(200)
-      expect((await summaryOf(admin, program.id)).status).toBe(200)
+      // The guard's 403 since 2026-10-23 (decisions §16).
+      expect((await summaryOf(admin, program.id)).status).toBe(403)
       // RLS hides the program from them: 404, existence not confirmed.
       expect((await summaryOf(practitionerC, program.id)).status).toBe(404)
     })
@@ -1762,13 +1769,15 @@ describe('Program schedules (e2e)', () => {
       WHERE assigned_program_id = ${program.id} AND effective_from = ${day}
       RETURNING id`
 
-    it('lets the care team, the patient and an admin read the versions; not a colleague off the team', async () => {
+    // An admin sees none since 0059 (decisions §16): the versions read through
+    // the program's own SELECT policy, which no longer has an admin branch.
+    it('lets the care team and the patient read the versions; not an admin nor a colleague off the team', async () => {
       const read = sql`SELECT id FROM program_schedules WHERE assigned_program_id = ${program.id}`
       expect((await run(asA(), read)).rows).toHaveLength(1)
       expect((await run(asPatient(), read)).rows).toHaveLength(1)
       expect(
         (await run({ userId: adminId, role: 'admin' }, read)).rows,
-      ).toHaveLength(1)
+      ).toHaveLength(0)
       expect((await run(asC(), read)).rows).toHaveLength(0)
     })
 
@@ -1926,7 +1935,7 @@ describe('Program schedules (e2e)', () => {
         [0],
       ],
     ])(
-      'lets those who see the version see its %s; not a colleague off the team',
+      'lets those who see the version see its %s; not an admin nor a colleague off the team',
       async (_label, table, column, p, values) => {
         const read = sql`
           SELECT ${sql.identifier(column)} AS value FROM ${sql.identifier(table)}
@@ -1936,7 +1945,7 @@ describe('Program schedules (e2e)', () => {
         expect((await run(asPatient(), read)).rows).toEqual(expected)
         expect(
           (await run({ userId: adminId, role: 'admin' }, read)).rows,
-        ).toEqual(expected)
+        ).toEqual([])
         expect((await run(asC(), read)).rows).toEqual([])
       },
     )
@@ -1978,19 +1987,20 @@ describe('Program schedules (e2e)', () => {
           ]
         },
       ],
-      // Admin or care team: an account holding both the admin role and
-      // the patient's own (contrived, but each clause needs a case where
-      // only it refuses) creates a version as admin, then adds to it as
-      // the patient — who can SEE the version, created it, in this
-      // transaction, but is neither an admin nor on a care team now.
+      // The care team: before 0059 a contrived case isolated this clause (an
+      // account acting as ADMIN created the version, then added to it as the
+      // patient). Since 0059 (decisions §16) an admin can't create a
+      // version at all — only a care-team practitioner can — so no real
+      // actor reaches the children's care-team clause without also passing
+      // it; it now repeats the parent's (defence in depth). What remains to
+      // prove: acting as admin, the version itself is refused.
       [
-        "by the version's creator, now acting as the program's patient",
+        'to a version an admin tries to create',
         (kind) => {
           const { type, program: p, add } = kinds[kind]
           return [
-            actAs({ userId: patientId, role: 'admin' }),
-            newVersion(p(), type, patientId),
-            actAs(asPatient()),
+            actAs({ userId: adminId, role: 'admin' }),
+            newVersion(p(), type, adminId),
             add(p(), newest(p())),
           ]
         },
@@ -2007,23 +2017,6 @@ describe('Program schedules (e2e)', () => {
         error: { code: '42501' },
       })
     })
-
-    // The control for the last case: the same steps, still acting as
-    // admin, succeed — so the refusal above comes from the role switch,
-    // not from the setup (the version's own INSERT, say).
-    it.each(Object.keys(kinds) as Kind[])(
-      'lets that account add a %s while still acting as admin',
-      async (kind) => {
-        const { type, program: p, add } = kinds[kind]
-        const result = await run(
-          asA(),
-          actAs({ userId: patientId, role: 'admin' }),
-          newVersion(p(), type, patientId),
-          add(p(), newest(p())),
-        )
-        expect(result).toEqual({ rows: [{ added: kind === 'day' ? 2 : 1 }] })
-      },
-    )
 
     // No UPDATE or DELETE policy: nothing reachable, for anyone — zero
     // rows, no error. (A replaced version's children go by cascade, which

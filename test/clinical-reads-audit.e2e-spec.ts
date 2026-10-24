@@ -31,7 +31,6 @@ describe('Clinical reads audit trail (e2e)', () => {
   let practitioner: ReturnType<typeof agent>
   let outsider: ReturnType<typeof agent> // same clinic, on no care team
   let patientX: ReturnType<typeof agent>
-  let adminId: number
   let practitionerId: number
   let xId: number
   let yId: number
@@ -132,7 +131,6 @@ describe('Clinical reads audit trail (e2e)', () => {
     })
     expect(bootstrap.status).toBe(201)
     const clinicId = bootstrap.body.clinicId as number
-    adminId = (await admin.get('/auth/me')).body.id as number
 
     const login = async (who: ReturnType<typeof agent>, email: string) => {
       await activateAccount(sessionPool, email)
@@ -286,24 +284,17 @@ describe('Clinical reads audit trail (e2e)', () => {
     ])
   })
 
-  it("records an admin's reads too", async () => {
+  // Until 2026-10-23 an admin's reads were recorded here. Since then
+  // (decisions §16) an admin reads no program and no session: refused by the
+  // guard, so there is no read to record.
+  it('refuses an admin — no read, so nothing recorded', async () => {
     const from = await mark()
     const responses = [
       await admin.get(`/assigned-programs?patientId=${yId}`),
       await admin.get(`/sessions/${xSessionId}`),
     ]
-    expect(responses.map((res) => res.status)).toEqual([200, 200])
-
-    expect(
-      (await since(from)).map((e) => [
-        e.action,
-        e.performed_by,
-        e.target_user_id,
-      ]),
-    ).toEqual([
-      ['PROGRAMS_VIEWED', adminId, yId],
-      ['SESSION_VIEWED', adminId, xId],
-    ])
+    expect(responses.map((res) => res.status)).toEqual([403, 403])
+    expect(await since(from)).toEqual([])
   })
 
   // === SESSIONS =============================================================

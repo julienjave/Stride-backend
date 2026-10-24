@@ -1500,16 +1500,22 @@ describe('Workouts (e2e)', () => {
       const remove = (id: number) =>
         sql`DELETE FROM program_workouts WHERE id = ${id} RETURNING id`
 
-      it('lets the care team, the patient and an admin read them; not a colleague off the team', async () => {
+      // An admin sees none since 0059 (decisions §16): the workouts read
+      // through the program's own SELECT policy.
+      it('lets the care team and the patient read them; not an admin nor a colleague off the team', async () => {
         expect((await run(asA(), read())).rows).toHaveLength(1)
         expect((await run(asPatient(), read())).rows).toHaveLength(1)
-        expect((await run(asAdmin(), read())).rows).toHaveLength(1)
+        expect((await run(asAdmin(), read())).rows).toHaveLength(0)
         expect((await run(asB(), read())).rows).toHaveLength(0)
       })
 
-      it('lets the care team add one; not the patient, nor a colleague off the team', async () => {
+      it('lets the care team add one; not the patient, an admin, nor a colleague off the team', async () => {
         expect(await run(asA(), insert())).toEqual({ rows: [] })
         expect(await run(asPatient(), insert())).toEqual({
+          error: { code: '42501' },
+        })
+        // The INSERT policy's own admin branch, gone since 0059.
+        expect(await run(asAdmin(), insert())).toEqual({
           error: { code: '42501' },
         })
         expect(await run(asB(), insert())).toEqual({

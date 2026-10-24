@@ -676,7 +676,7 @@ describe('Alerts and session reviews (e2e)', () => {
       expect(await alertsOf(practitionerB)).toEqual([])
     })
 
-    it('hides reviews from anyone off the care team, and from the patient, at the row level', async () => {
+    it('hides reviews from anyone off the care team, from the patient and from an admin, at the row level', async () => {
       const patientId = await newPatient('Rowlevel')
       const program = await newProgram(patientId, 3)
       const id = await plantSession(program, 1, { painAfter: 9 })
@@ -688,8 +688,10 @@ describe('Alerts and session reviews (e2e)', () => {
         rowCount: 1,
         rows: [{ practitioner_id: practitionerAId }],
       })
-      expect(await asActor(adminId, 'admin', select)).toMatchObject({
-        rowCount: 1,
+      // An admin sees none since 0059 (decisions §16).
+      expect(await asActor(adminId, 'admin', select)).toEqual({
+        rowCount: 0,
+        rows: [],
       })
       expect(await asActor(practitionerBId, 'practitioner', select)).toEqual({
         rowCount: 0,
@@ -934,8 +936,12 @@ describe('Alerts and session reviews (e2e)', () => {
       const own = await patient.get(`/sessions/${id}`)
       expect(own.status).toBe(200)
       expect(own.body).not.toHaveProperty('reviews')
-      const asAdmin = await admin.get(`/sessions/${id}`)
-      expect(bodyOf<{ reviews: ReviewBody[] }>(asAdmin).reviews).toHaveLength(1)
+      // The care team does see it — the review exists (an admin reads no
+      // session at all since 2026-10-23: its 403 is in the sessions suite).
+      const asCareTeam = await practitionerA.get(`/sessions/${id}`)
+      expect(
+        bodyOf<{ reviews: ReviewBody[] }>(asCareTeam).reviews,
+      ).toHaveLength(1)
     })
   })
   // --- POST /alerts/programs/:programId/review (2026-10-19) ------------------
@@ -1208,8 +1214,9 @@ describe('Alerts and session reviews (e2e)', () => {
       expect(
         await asActor(practitionerCId, 'practitioner', select),
       ).toMatchObject({ rowCount: 1 })
+      // An admin sees none since 0059 (decisions §16).
       expect(await asActor(adminId, 'admin', select)).toMatchObject({
-        rowCount: 1,
+        rowCount: 0,
       })
       expect(
         await asActor(practitionerBId, 'practitioner', select),

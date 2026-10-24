@@ -15,7 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { actionsOfKind, areaOf, kindOf } from './audit-vocabulary'
+import {
+  actionsOfKind,
+  areaOf,
+  detailsShownToAdmins,
+  kindOf,
+} from './audit-vocabulary'
 
 // The list itself is checked by the compiler (AuditEntry's types); these
 // check the lookups the viewer and the filter rely on.
@@ -53,6 +58,48 @@ describe('audit vocabulary', () => {
     it('shows an entity type it does not know as stored', () => {
       expect(areaOf('mystery_table')).toBe('mystery_table')
       expect(areaOf('constructor')).toBe('constructor')
+    })
+  })
+
+  // What an admin may read in an entry's details (decisions §16): the full
+  // classification written out, so an area moved by mistake shows here — and
+  // the clinical areas, every one, withheld.
+  describe('detailsShownToAdmins', () => {
+    it('shows the details of accounts, clinics, care teams and the library', () => {
+      for (const type of [
+        'users',
+        'email_change_requests',
+        'invitations',
+        'care_team_members',
+        'clinics',
+        'user_clinics',
+        'exercises',
+        'program_templates',
+      ]) {
+        expect([type, detailsShownToAdmins(type)]).toEqual([type, true])
+      }
+    })
+
+    it('withholds the details of every clinical area', () => {
+      for (const type of [
+        'assigned-programs',
+        'sessions',
+        'session_reviews',
+        'program_alert_reviews',
+        'alerts',
+        'conversations',
+        'messages',
+        'medical_files',
+      ]) {
+        expect([type, detailsShownToAdmins(type)]).toEqual([type, false])
+      }
+    })
+
+    it("withholds an entity type it doesn't know — what it holds can't be judged", () => {
+      expect(detailsShownToAdmins('mystery_table')).toBe(false)
+      // Inherited names aren't areas (Object.hasOwn, not `in`).
+      expect(detailsShownToAdmins('constructor')).toBe(false)
+      expect(detailsShownToAdmins('toString')).toBe(false)
     })
   })
 

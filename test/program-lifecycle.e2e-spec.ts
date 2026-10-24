@@ -795,15 +795,25 @@ describe('Program lifecycle (e2e)', () => {
       expect(res.body.message).toEqual(['property status should not exist'])
     })
 
-    it('lets an admin close a program; not the patient (403) nor a colleague off the team (404)', async () => {
+    // An admin closed programs until 2026-10-23; since then (decisions §16)
+    // the guard's 403 — tried while the program is open, so a door left open
+    // would show as a 200.
+    it('lets the care team close a program; not the patient (403), an admin (403) nor a colleague off the team (404)', async () => {
       const program = await createProgram({ startsIn: -3 })
       await startSession(program.id, { workoutId: program.workouts[0].id })
 
       expect((await close(patient, program.id, 'cancel')).status).toBe(403)
+      const byAdmin = await close(admin, program.id, 'complete')
+      expect(byAdmin.status).toBe(403)
+      expect(byAdmin.body.message).toEqual([
+        'You do not have permission to access this resource',
+      ])
       expect((await close(practitionerC, program.id, 'cancel')).status).toBe(
         404,
       )
-      expect((await close(admin, program.id, 'complete')).status).toBe(200)
+      expect((await close(practitionerA, program.id, 'complete')).status).toBe(
+        200,
+      )
     })
 
     it("refuses a today that isn't a date, or can't be today", async () => {
@@ -917,11 +927,13 @@ describe('Program lifecycle (e2e)', () => {
       ])
     })
 
-    // The same people as closing: an admin yes; the patient no (403); a
-    // colleague off the team can't even see it (404).
+    // The same people as closing: the care team yes; the patient no (403);
+    // an admin no (the guard's 403, since 2026-10-23); a colleague off the
+    // team can't even see it (404).
     it('answers those who may close it, only', async () => {
       const program = await createProgram({ startsIn: -3 })
-      expect((await preview(admin, program.id)).status).toBe(200)
+      expect((await preview(practitionerA, program.id)).status).toBe(200)
+      expect((await preview(admin, program.id)).status).toBe(403)
       expect((await preview(patient, program.id)).status).toBe(403)
       expect((await preview(practitionerC, program.id)).status).toBe(404)
     })

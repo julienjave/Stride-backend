@@ -145,6 +145,10 @@ export class SessionsController {
   // unordered — was removed on 2026-10-15: a program's sessions are read with
   // `GET /assigned-programs/:id/sessions`, ranged and ordered, checked like
   // the program.)
+  // Practitioners and patients only (2026-10-23, decisions §16): an admin
+  // reads no session — 403 here, and 0 rows under migration 0059's policies.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.PATIENT)
   @Get(':id')
   findOne(
     @Param('id', ParseIntPipe) id: number,

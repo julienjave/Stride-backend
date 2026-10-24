@@ -213,6 +213,36 @@ export const AUDIT_AREAS = {
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
 
+// Whether an area's entries hold CLINICAL content (decided with the person
+// 2026-10-23, decisions §16). Admins — the only readers of the audit log —
+// read no program, session, message or medical file; an entry's `details`
+// would hand them the same content (a session's pain scores and notes, a
+// prescription before → after). The entries stay COMPLETE in the database —
+// the only record of a prescription's earlier values — but GET /audit-logs
+// answers them without their details (see detailsShownToAdmins).
+//
+// `satisfies Record<AuditEntityType, boolean>`: every area must be
+// classified — a new area left out, or a stray key, fails to compile, so no
+// area is ever shown by default.
+export const CLINICAL_AREAS = {
+  users: false,
+  email_change_requests: false,
+  invitations: false,
+  care_team_members: false,
+  clinics: false,
+  user_clinics: false,
+  exercises: false,
+  program_templates: false,
+  'assigned-programs': true,
+  sessions: true,
+  session_reviews: true,
+  program_alert_reviews: true,
+  alerts: true,
+  conversations: true,
+  messages: true,
+  medical_files: true,
+} as const satisfies Record<AuditEntityType, boolean>
+
 // --- LOOKUPS --------------------------------------------------------------------------------------------
 
 // Object.hasOwn, not `action in AUDIT_ACTIONS`: `in` also finds what an
@@ -237,6 +267,17 @@ export function areaOf(entityType: string): string {
   return Object.hasOwn(AUDIT_AREAS, entityType)
     ? AUDIT_AREAS[entityType as AuditEntityType]
     : entityType
+}
+
+// Whether an entry's details may be shown to an admin: only for an area
+// KNOWN not to be clinical. A stored entity type the vocabulary doesn't know
+// (a row older than it) is withheld — the safe side: what it holds can't be
+// judged.
+export function detailsShownToAdmins(entityType: string): boolean {
+  return (
+    Object.hasOwn(CLINICAL_AREAS, entityType) &&
+    !CLINICAL_AREAS[entityType as AuditEntityType]
+  )
 }
 
 // Every action of one kind — what the SQL filter matches against.

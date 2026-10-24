@@ -532,14 +532,21 @@ describe('Sessions (e2e)', () => {
       }
     })
 
-    it('lets a managing practitioner and an admin VIEW a session, but never WRITE to it', async () => {
+    // Since 2026-10-23 (decisions §16) an admin can't even VIEW a session:
+    // the guard's 403 — its own message, so this test can tell the guard
+    // from the service's check behind it.
+    it('lets a managing practitioner VIEW a session but never WRITE to it — and an admin do neither', async () => {
       const program = await newProgram()
       const started = bodyOf<SessionBody>(await start(program.id))
 
       expect((await practitionerA.get(`/sessions/${started.id}`)).status).toBe(
         200,
       )
-      expect((await admin.get(`/sessions/${started.id}`)).status).toBe(200)
+      const adminRead = await admin.get(`/sessions/${started.id}`)
+      expect(adminRead.status).toBe(403)
+      expect(bodyOf<ErrorBody>(adminRead).message).toEqual([
+        'You do not have permission to access this resource',
+      ])
 
       const rowId = started.exercises[0].id
       for (const staff of [practitionerA, admin]) {
@@ -1954,11 +1961,19 @@ describe('Sessions (e2e)', () => {
       expect(notADate.status).toBe(400)
     })
 
-    // The people who may view the program: the patient, the care team, an
-    // admin. Anyone else: not found (row security hides the program) — never
-    // an empty list.
-    it('answers the patient, the care team and an admin — and nobody else', async () => {
-      for (const reader of [patientA, practitionerA, admin]) {
+    // The people who may view the program: the patient and the care team.
+    // An admin: the guard's 403 (since 2026-10-23, decisions §16). Anyone
+    // else: not found (row security hides the program) — never an empty
+    // list.
+    it('answers the patient and the care team — an admin 403, nobody else', async () => {
+      const adminRead = await admin.get(
+        `/assigned-programs/${program.id}/sessions`,
+      )
+      expect(adminRead.status).toBe(403)
+      expect(bodyOf<ErrorBody>(adminRead).message).toEqual([
+        'You do not have permission to access this resource',
+      ])
+      for (const reader of [patientA, practitionerA]) {
         const res = await reader.get(
           `/assigned-programs/${program.id}/sessions`,
         )
@@ -2550,7 +2565,13 @@ describe('Sessions (e2e)', () => {
       error: { code: '23514', constraint },
     })
 
-    it('lets the care team and an admin close an open session of a closed program', async () => {
+    // The admin tries FIRST, while the session is still open: were the
+    // policy to let them through, their UPDATE would close it (rowCount 1).
+    // Since 0059 the session is invisible to them — 0 rows, no error.
+    it('lets the care team close an open session of a closed program — not an admin', async () => {
+      expect(
+        await asActor(adminId, 'admin', close(closedProgramSession)),
+      ).toEqual({ rowCount: 0 })
       expect(
         await asActor(
           practitionerAId,
@@ -2558,11 +2579,42 @@ describe('Sessions (e2e)', () => {
           close(closedProgramSession),
         ),
       ).toEqual({ rowCount: 1 })
-      expect(
-        await asActor(adminId, 'admin', close(closedProgramSession)),
-      ).toEqual({
-        rowCount: 1,
+    })
+
+    // The policies' admin branches, gone since 0059 (decisions §16): acting
+    // as admin, no session and no program is visible, and no program can be
+    // changed — 0 rows, no error. The care team on the same statements is
+    // the control: 1 row each, so the 0s are the policies' doing.
+    it('hides every session and program from an admin, at the row level', async () => {
+      const { rows } = await sessionPool.query<{ id: number }>(
+        'SELECT assigned_program_id AS id FROM sessions WHERE id = $1',
+        [openProgramSession],
+      )
+      const programId = rows[0].id
+      const statements = [
+        sql`SELECT id FROM sessions WHERE id = ${openProgramSession}`,
+        sql`SELECT id FROM assigned_programs WHERE id = ${programId}`,
+        sql`UPDATE assigned_programs SET title = title WHERE id = ${programId}`,
+      ]
+      for (const statement of statements) {
+        expect(await asActor(adminId, 'admin', statement)).toEqual({
+          rowCount: 0,
+        })
+        expect(
+          await asActor(practitionerAId, 'practitioner', statement),
+        ).toEqual({ rowCount: 1 })
+      }
+      // Nor create one (the INSERT policy, no RETURNING — returning the row
+      // would ask the SELECT policy, which refuses first and hides this one).
+      const insert = (assignedBy: number) =>
+        sql`INSERT INTO assigned_programs (patient_id, assigned_by, title, start_date)
+            VALUES (${patientAId}, ${assignedBy}, 'Planted', ${today})`
+      expect(await asActor(adminId, 'admin', insert(adminId))).toEqual({
+        error: { code: '42501' },
       })
+      expect(
+        await asActor(practitionerAId, 'practitioner', insert(practitionerAId)),
+      ).toEqual({ rowCount: 1 })
     })
 
     // Archived (what cancelling before any session does) counts as closed

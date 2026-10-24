@@ -68,7 +68,15 @@ import { RemoveImageDto } from '../exercises/dto/remove-image.dto'
 
 // --- CONTROLLER ---------------------------------------------------------------------------------------------
 
-@UseGuards(SessionAuthGuard)
+// Practitioners and patients only (Phase 6, privacy and security pass 1 —
+// decided with the person 2026-10-23, decisions §16): admins get 403 on every
+// route, as for messaging and medical files — an admin runs clinics and
+// accounts, and a patient's program is clinical data. Migration 0059 hides
+// every program and session row from them too. Writes narrow the list to
+// practitioners with their own @Roles (the guard reads the handler's first —
+// getAllAndOverride).
+@UseGuards(SessionAuthGuard, RolesGuard)
+@Roles(UserRole.PRACTITIONER, UserRole.PATIENT)
 @ApiTags('Assigned Programs')
 @Controller('assigned-programs')
 export class AssignedProgramsController {
@@ -86,7 +94,6 @@ export class AssignedProgramsController {
   // this practitioner actually manage this patient) happens on top.
   // @AuditedByService: the service writes the audit entry (the whole
   // prescription as assigned), in the same transaction as the program.
-  @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post()
@@ -103,8 +110,7 @@ export class AssignedProgramsController {
   // sets went from 3 to 4. Step 3b-0 brought them to it: tagged
   // @AuditedByService(), each writes ONE complete entry (before → after) in
   // its own transaction, and each answers with the full program.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post(':id/exercises')
   addExercise(
@@ -120,8 +126,7 @@ export class AssignedProgramsController {
   // checks the care team on top, and which days are allowed.
   // A POST, not a PATCH of the program: it ADDS a version to a history
   // (the earlier versions stay), rather than editing a field in place.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post(':id/schedules')
   addScheduleVersion(
@@ -139,8 +144,7 @@ export class AssignedProgramsController {
   // closed: 409). 200, not POST's default 201: nothing new is created, the
   // answer is the program as it now is. Audited by the service, in the
   // change's own transaction.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @HttpCode(HttpStatus.OK)
   @Post(':id/cancel')
@@ -152,8 +156,7 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.close(id, user, 'cancel', dto.today)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @HttpCode(HttpStatus.OK)
   @Post(':id/complete')
@@ -167,9 +170,9 @@ export class AssignedProgramsController {
 
   // --- GET ROUTES ---
 
-  // Role-scoped inside the service — patient sees their own, practitioner
-  // sees their managed patients', admin sees all. No @Roles() restriction
-  // here since every role is allowed, just to a different slice of data.
+  // Role-scoped inside the service — a patient sees their own, a
+  // practitioner their care-team patients'. The controller's @Roles lets both
+  // in (admins: 403), each to a different slice of data.
   // ?patientId= narrows it to one patient (the patient page) — see the
   // service for who may ask.
   @Get()
@@ -184,8 +187,8 @@ export class AssignedProgramsController {
   }
 
   // Due / done / made up / missed for the whole program (the schedule
-  // module). Every role may ask; the service checks it's someone who may
-  // see this program.
+  // module). Patients and practitioners may ask; the service checks it's
+  // someone who may see this program.
   // What cancelling / completing would do today — for the confirmation
   // dialog. A read: no tag (the tags are for writes); the service records
   // who saw it (PROGRAM_CLOSING_PREVIEWED — the audit review, step 2).
@@ -201,9 +204,8 @@ export class AssignedProgramsController {
 
   // What removing this exercise WOULD do — deleted, or kept (retired) for
   // the sessions that used it — for the confirmation dialog (decided
-  // 2026-10-13). A read like the closing preview: no tag, any role reaches
-  // the service, which refuses anyone who couldn't remove it. NOT recorded
-  // (step 2): it says how many sessions used one exercise — an editing aid
+  // 2026-10-13). A read like the closing preview: no tag; the service
+  // refuses anyone who couldn't remove it. NOT recorded (step 2): it says how many sessions used one exercise — an editing aid
   // showing no pain score, rating or note.
   @Get(':id/exercises/:exerciseRowId/removal')
   removalPreview(
@@ -215,8 +217,8 @@ export class AssignedProgramsController {
   }
 
   // The program's sessions, newest first, without their checklists (Phase 4
-  // step 1b). A read: no tag; any role reaches the service, which lets
-  // through the people who may view the program — and records which
+  // step 1b). A read: no tag; the service (practitioners and patients reach
+  // it) lets through the people who may view the program — and records which
   // sessions someone other than the patient saw (step 2).
   @Get(':id/sessions')
   listSessions(
@@ -251,8 +253,7 @@ export class AssignedProgramsController {
 
   // --- PATCH ROUTES ---
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id')
   update(
@@ -263,8 +264,7 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.update(id, user, dto)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id/exercises/:exerciseRowId')
   updateExercise(
@@ -281,8 +281,7 @@ export class AssignedProgramsController {
     )
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id/exercises')
   reorderExercises(
@@ -310,8 +309,7 @@ export class AssignedProgramsController {
   // Multipart, field "files", up to 5 per request — the library's route,
   // with the same image rules (imageUploadOptions: JPEG / PNG / WebP, 5 MB
   // each). 201: photos were created.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post(':id/exercises/:exerciseRowId/images')
   @UseInterceptors(FilesInterceptor('files', 5, imageUploadOptions))
@@ -334,8 +332,7 @@ export class AssignedProgramsController {
 
   // Copies the library exercise's current photos into this exercise's own.
   // No body. 201 like the upload: photos were created.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post(':id/exercises/:exerciseRowId/images/from-library')
   addExerciseLibraryImages(
@@ -350,8 +347,7 @@ export class AssignedProgramsController {
     )
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id/exercises/:exerciseRowId/images')
   reorderExerciseImages(
@@ -370,8 +366,7 @@ export class AssignedProgramsController {
 
   // A DELETE with a body, like the library's: an object key holds slashes,
   // awkward in a URL path.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Delete(':id/exercises/:exerciseRowId/images')
   removeExerciseImage(
@@ -396,8 +391,7 @@ export class AssignedProgramsController {
   // follow the audit convention: @AuditedByService() — the service writes
   // one complete entry in the change's own transaction.
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Post(':id/workouts')
   addWorkout(
@@ -408,8 +402,7 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.addWorkout(id, user, dto)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id/workouts')
   reorderWorkouts(
@@ -420,8 +413,7 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.reorderWorkouts(id, user, dto.order)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Patch(':id/workouts/:workoutId')
   renameWorkout(
@@ -433,8 +425,7 @@ export class AssignedProgramsController {
     return this.assignedProgramsService.renameWorkout(id, workoutId, user, dto)
   }
 
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Delete(':id/workouts/:workoutId')
   removeWorkout(
@@ -449,8 +440,7 @@ export class AssignedProgramsController {
 
   // Archiving = deleting, for the app. Refused (409) for a program with
   // sessions: cancel it instead. Audited by the service since step 2b-iii.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Delete(':id')
   archive(
@@ -463,8 +453,7 @@ export class AssignedProgramsController {
   // Deletes the exercise if no session used it, RETIRES it otherwise
   // (kept for those sessions' history, out of the program) — the database's
   // foreign key decides. Answers with the full program (200).
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @Roles(UserRole.PRACTITIONER)
   @AuditedByService()
   @Delete(':id/exercises/:exerciseRowId')
   removeExercise(

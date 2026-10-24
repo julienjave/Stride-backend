@@ -565,10 +565,14 @@ describe('SessionsService.assertCanView (via findOne)', () => {
     service = moduleRef.get(SessionsService)
   })
 
-  it('allows an admin to view any session', async () => {
+  // Since 2026-10-23 (decisions §16): no admin branch — refused like anyone
+  // off the care team (the controller's 403 and the policies come first).
+  it('refuses an admin', async () => {
     await expect(
       service.findOne(500, { id: 1, activeRole: UserRole.ADMIN }),
-    ).resolves.toBeDefined()
+    ).rejects.toThrow(
+      new ForbiddenException('You do not have permission to view this session'),
+    )
   })
 
   it('allows the owning patient to view their own session', async () => {
@@ -618,13 +622,12 @@ describe('SessionsService.assertCanView (via findOne)', () => {
     expect(audit.logReads).not.toHaveBeenCalled()
   })
 
-  // The To-do (2026-10-19): the care team and admins read who reviewed the
-  // session, in the API's shape; the PATIENT's answer has no `reviews` key
+  // The To-do (2026-10-19): the care team reads who reviewed the session, in
+  // the API's shape (admins read no session since 2026-10-23); the PATIENT's answer has no `reviews` key
   // at all — toStrictEqual, because an absent key and `reviews: []` differ
   // (the second would say "nobody looked").
   it.each([
     ['a managing practitioner', { id: 7, activeRole: UserRole.PRACTITIONER }],
-    ['an admin', { id: 1, activeRole: UserRole.ADMIN }],
   ])("gives %s the session's reviews", async (_who, user) => {
     usersService.isPatientManagedBy.mockResolvedValue(true)
     await expect(service.findOne(500, user)).resolves.toStrictEqual({
@@ -938,7 +941,7 @@ describe('SessionsService.create — the start', () => {
 })
 
 // Every write is the session's own patient's (assertIsOwner): anyone else —
-// a practitioner or an admin who can SEE the session, another patient — is
+// a practitioner who can SEE the session, an admin, another patient — is
 // refused before any change is attempted (no lock, no UPDATE).
 describe('SessionsService writes — the owning patient only', () => {
   let service: SessionsService

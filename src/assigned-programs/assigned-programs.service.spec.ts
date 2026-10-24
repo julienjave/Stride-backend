@@ -710,7 +710,11 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
   beforeEach(async () => {
     usersService = {
       isPatientManagedBy: jest.fn(),
-      findPatientsForPractitioner: jest.fn(),
+      // The practitioner's care-team patients — the list is read for them
+      // (tests about other cases set their own).
+      findPatientsForPractitioner: jest
+        .fn()
+        .mockResolvedValue([{ id: 20 }, { id: 21 }]),
     }
     assignerRows = [{ id: 7, firstName: 'Alex', lastName: 'Moreau' }]
     assignerWhere = jest.fn(() => Promise.resolve(assignerRows))
@@ -742,9 +746,18 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
     service = moduleRef.get(AssignedProgramsService)
   })
 
-  it('returns every program for an admin', async () => {
-    await service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN })
-    expect(db.query.assignedPrograms.findMany).toHaveBeenCalled()
+  // Since 2026-10-23 (decisions §16) an admin reads no program: the
+  // controller answers 403, and the service refuses on its own too —
+  // reading nothing, rather than treating them as a practitioner.
+  it('refuses an admin, reading nothing', async () => {
+    await expect(
+      service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN }),
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'You do not have permission to view assigned programs',
+      ),
+    )
+    expect(db.query.assignedPrograms.findMany).not.toHaveBeenCalled()
     expect(usersService.findPatientsForPractitioner).not.toHaveBeenCalled()
   })
 
@@ -793,7 +806,10 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
       { id: 3, assignedBy: 7, patientId: 20 },
     ])
 
-    await service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN })
+    await service.findAllForCurrentUser({
+      id: 1,
+      activeRole: UserRole.PRACTITIONER,
+    })
 
     expect(auditService.logReads).toHaveBeenCalledWith([
       {
@@ -826,7 +842,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
 
     const result = await service.findAllForCurrentUser({
       id: 1,
-      activeRole: UserRole.ADMIN,
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(result).toEqual([
@@ -874,7 +890,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
 
     const result = await service.findAllForCurrentUser({
       id: 1,
-      activeRole: UserRole.ADMIN,
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(result.map((p) => [p.id, p.schedules.map((v) => v.id)])).toEqual([
@@ -890,7 +906,10 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
     db.query.assignedPrograms.findMany.mockResolvedValue([])
 
     await expect(
-      service.findAllForCurrentUser({ id: 1, activeRole: UserRole.ADMIN }),
+      service.findAllForCurrentUser({
+        id: 1,
+        activeRole: UserRole.PRACTITIONER,
+      }),
     ).resolves.toEqual([])
     expect(db.query.programSchedules.findMany).not.toHaveBeenCalled()
     expect(db.query.programWorkouts.findMany).not.toHaveBeenCalled()
@@ -915,7 +934,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
 
     const result = await service.findAllForCurrentUser({
       id: 1,
-      activeRole: UserRole.ADMIN,
+      activeRole: UserRole.PRACTITIONER,
     })
 
     expect(result.map((p) => [p.id, p.workouts.map((w) => w.id)])).toEqual([
@@ -1023,10 +1042,16 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
     service = moduleRef.get(AssignedProgramsService)
   })
 
-  it('allows an admin to view any program', async () => {
+  // Since 2026-10-23 (decisions §16): no admin branch — refused like anyone
+  // off the care team (the controller's 403 and the policies come first).
+  it('refuses an admin', async () => {
     await expect(
       service.findOne(900, { id: 1, activeRole: UserRole.ADMIN }),
-    ).resolves.toBeDefined()
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'You do not have permission to view this assigned program',
+      ),
+    )
   })
 
   it('allows the owning patient to view their own program', async () => {
@@ -1094,7 +1119,9 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
     execute: jest.Mock
     transaction: jest.Mock
   }
-  const admin = { id: 1, activeRole: UserRole.ADMIN }
+  // A practitioner on the patient's care team (isPatientManagedBy: true) —
+  // admins can't change a program since 2026-10-23 (decisions §16).
+  const practitioner = { id: 1, activeRole: UserRole.PRACTITIONER }
 
   // A program exercise row, with only what the read and the ordering use —
   // showing the library's photos, with no own ones, unless a test says so.
@@ -1149,7 +1176,10 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       providers: [
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
+        {
+          provide: UsersService,
+          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+        },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
       ],
@@ -1166,7 +1196,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       row(32, 6, 1),
       row(33, 7, 2),
     ])
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(
       program.exercises.map((exercise) => [exercise.id, exercise.images]),
     ).toStrictEqual([
@@ -1199,7 +1229,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       // "No photos", chosen: not the library's, and none of its own.
       row(33, 5, 2, null, { useLibraryImages: false, mediaUrls: [] }),
     ])
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(
       program.exercises.map(({ id, images, ownImages }) => ({
         id,
@@ -1242,7 +1272,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
     db.query.assignedProgramExercises.findMany.mockResolvedValue([
       row(31, 5, 0, null, { useLibraryImages: false, mediaUrls: [] }),
     ])
-    await service.findOne(900, admin)
+    await service.findOne(900, practitioner)
     expect(db.query.exercises.findMany).not.toHaveBeenCalled()
   })
 
@@ -1253,7 +1283,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       row(31, 5, 0),
       row(34, 7, 1, new Date('2031-01-05T10:00:00Z')),
     ])
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(
       program.retiredExercises.map((exercise) => exercise.images),
     ).toStrictEqual([[{ url: 'signed:exercises/7/x.jpg' }]])
@@ -1266,7 +1296,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
       row(31, 5, 0),
       row(35, 5, 1),
     ])
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(program.exercises.map((exercise) => exercise.images.length)).toEqual(
       [2, 2],
     )
@@ -1275,7 +1305,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
 
   // No exercise at all: no library query (Drizzle refuses `IN ()`).
   it("doesn't read the library for a program with no exercises", async () => {
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(program.exercises).toEqual([])
     expect(db.query.exercises.findMany).not.toHaveBeenCalled()
     expect(storageService.getPresignedUrl).not.toHaveBeenCalled()
@@ -1287,7 +1317,7 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
     db.query.assignedProgramExercises.findMany.mockResolvedValue([
       row(36, 99, 0),
     ])
-    const program = await service.findOne(900, admin)
+    const program = await service.findOne(900, practitioner)
     expect(program.exercises[0].images).toStrictEqual([])
   })
 })
@@ -1398,24 +1428,21 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
     ).rejects.toThrow(ForbiddenException)
   })
 
-  it('allows an admin to update any program', async () => {
+  // Since 2026-10-23 (decisions §16): no admin branch — an admin can't
+  // change a patient's program, here or anywhere (the controller's 403 and
+  // the policies say it first).
+  it('refuses an admin', async () => {
     await expect(
       service.update(
         900,
         { id: 1, activeRole: UserRole.ADMIN },
         { title: 'New Title' },
       ),
-    ).resolves.toEqual({
-      ...OPEN_STATE,
-      id: 900,
-      patientId: 20,
-      startDate: '2026-10-01',
-      endDate: '2026-12-31',
-      workouts: PROGRAM_WORKOUTS,
-      exercises: [],
-      retiredExercises: [],
-      schedules: [],
-    })
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'You do not have permission to manage this assigned program',
+      ),
+    )
   })
 })
 
@@ -3268,7 +3295,10 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
       providers: [
         AssignedProgramsService,
         { provide: DRIZZLE, useValue: db },
-        { provide: UsersService, useValue: { isPatientManagedBy: jest.fn() } },
+        {
+          provide: UsersService,
+          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+        },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
       ],
@@ -3277,7 +3307,9 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
     service = moduleRef.get(AssignedProgramsService)
   })
 
-  const admin = { id: 1, activeRole: UserRole.ADMIN }
+  // A practitioner on the patient's care team (isPatientManagedBy: true) —
+  // admins can't change a program since 2026-10-23 (decisions §16).
+  const practitioner = { id: 1, activeRole: UserRole.PRACTITIONER }
 
   // Each case sends only ONE of the two dates: the check must combine it
   // with the stored other one. Checking only what was sent would pass all
@@ -3290,7 +3322,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
       { startDate: addDays(today, 20), endDate: addDays(today, 19) },
     ],
   ])('refuses %s, without writing', async (_label, dto) => {
-    await expect(service.update(900, admin, dto)).rejects.toThrow(
+    await expect(service.update(900, practitioner, dto)).rejects.toThrow(
       new BadRequestException("The end date can't be before the start date"),
     )
     expect(writes).toEqual([])
@@ -3301,7 +3333,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
   // (keeping the stored end) would refuse this.
   it('accepts clearing the end date together with a later start', async () => {
     const later = addDays(end, 5)
-    await service.update(900, admin, { startDate: later, endDate: null })
+    await service.update(900, practitioner, { startDate: later, endDate: null })
 
     expect(setValues).toHaveBeenCalledWith({ startDate: later, endDate: null })
   })
@@ -3317,7 +3349,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
     })
 
     await expect(
-      service.update(900, admin, { startDate: addDays(today, 3) }),
+      service.update(900, practitioner, { startDate: addDays(today, 3) }),
     ).rejects.toThrow(
       new BadRequestException(
         `The start date can't change once the program has started (it started on ${started})`,
@@ -3340,7 +3372,10 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
       endDate: null,
     })
 
-    await service.update(900, admin, { startDate: started, title: 'Knee' })
+    await service.update(900, practitioner, {
+      startDate: started,
+      title: 'Knee',
+    })
 
     expect(writes.map(([kind]) => kind)).toEqual(['update', 'audit'])
   })
@@ -3363,7 +3398,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
 
     it('refuses moving it into the past, without writing', async () => {
       await expect(
-        service.update(900, admin, { endDate: addDays(today, -5) }),
+        service.update(900, practitioner, { endDate: addDays(today, -5) }),
       ).rejects.toThrow(
         new BadRequestException(
           "The end date can't be moved into the past: to end the program now, complete or cancel it",
@@ -3374,7 +3409,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
 
     // Shortening to a day still ahead is a change of plan, not of history.
     it('accepts shortening it to today', async () => {
-      await service.update(900, admin, { endDate: today })
+      await service.update(900, practitioner, { endDate: today })
 
       expect(setValues).toHaveBeenCalledWith({ endDate: today })
     })
@@ -3393,7 +3428,10 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
         endDate: passed,
       })
 
-      await service.update(900, admin, { endDate: passed, title: 'Knee' })
+      await service.update(900, practitioner, {
+        endDate: passed,
+        title: 'Knee',
+      })
 
       expect(writes.map(([kind]) => kind)).toEqual(['update', 'audit'])
     })
@@ -3405,7 +3443,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
   it('moves the schedule with the start date, and audits both', async () => {
     const newStart = addDays(today, 14)
 
-    await service.update(900, admin, { startDate: newStart })
+    await service.update(900, practitioner, { startDate: newStart })
 
     expect(writes.map(([kind]) => kind)).toEqual([
       'update',
@@ -3485,7 +3523,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
     ])
     const newStart = addDays(start, -2)
 
-    await service.update(900, admin, { startDate: newStart })
+    await service.update(900, practitioner, { startDate: newStart })
 
     const [, entry] = writes.find(([kind]) => kind === 'audit')!
     const { scheduleVersions } = (
@@ -3522,7 +3560,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
     db.query.programScheduleDays.findMany.mockResolvedValue([])
 
     await expect(
-      service.update(900, admin, { startDate: addDays(today, 14) }),
+      service.update(900, practitioner, { startDate: addDays(today, 14) }),
     ).rejects.toThrow(new Error(message))
     expect(writes.map(([kind]) => kind)).not.toContain('insert')
   })
@@ -3547,7 +3585,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
     ])
 
     await expect(
-      service.update(900, admin, { startDate: addDays(start, offset) }),
+      service.update(900, practitioner, { startDate: addDays(start, offset) }),
     ).rejects.toThrow(
       new BadRequestException(
         "A program can't start paused: the new start date falls in a planned pause",
@@ -3560,7 +3598,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
   // (Without the comparison, every field a form re-sends would be logged as
   // changed.)
   it('audits only the fields that really changed', async () => {
-    await service.update(900, admin, {
+    await service.update(900, practitioner, {
       title: 'Knee Rehab',
       endDate: null,
       allowSwaps: false,
@@ -3587,7 +3625,7 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
       return fn(db)
     })
 
-    await service.update(900, admin, { title: 'New' })
+    await service.update(900, practitioner, { title: 'New' })
 
     expect(auditService.logInTransaction).toHaveBeenCalledWith(
       txSeen,
@@ -3958,7 +3996,9 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   let setValues: jest.Mock
   let db: Record<string, unknown> & { transaction: jest.Mock }
 
-  const admin = { id: 1, activeRole: UserRole.ADMIN }
+  // A practitioner on the patient's care team (isPatientManagedBy: true) —
+  // admins can't change a program since 2026-10-23 (decisions §16).
+  const practitioner = { id: 1, activeRole: UserRole.PRACTITIONER }
   const today = utcToday()
 
   beforeEach(async () => {
@@ -4072,7 +4112,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
 
   describe('close', () => {
     it('archives a program cancelled before any session — and answers no program', async () => {
-      const result = await service.close(900, admin, 'cancel', today)
+      const result = await service.close(900, practitioner, 'cancel', today)
 
       expect(result).toEqual({ outcome: 'archived', program: null })
       expect(afterChecks()).toEqual([
@@ -4106,7 +4146,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     it('cancels — not archives — a program with only an unfinished session', async () => {
       sessionRows = [{ localDate: addDays(today, -3), status: 'in_progress' }]
 
-      const result = await service.close(900, admin, 'cancel', today)
+      const result = await service.close(900, practitioner, 'cancel', today)
 
       expect(result.outcome).toBe('cancelled')
       expect(setValues).toHaveBeenCalledWith({
@@ -4119,7 +4159,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     // Completing with no session at all is still completing (only CANCEL
     // archives).
     it('completes a program even with no session', async () => {
-      const result = await service.close(900, admin, 'complete', today)
+      const result = await service.close(900, practitioner, 'complete', today)
 
       expect(result.outcome).toBe('completed')
       expect(setValues).toHaveBeenCalledWith({
@@ -4140,7 +4180,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
       async (_label, day, status, offset) => {
         sessionRows = [{ localDate: day, status }]
 
-        await service.close(900, admin, 'complete', today)
+        await service.close(900, practitioner, 'complete', today)
 
         expect(setValues).toHaveBeenCalledWith({
           status: 'completed',
@@ -4152,7 +4192,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     it('audits the status and end date, before → after, with the day it was decided', async () => {
       sessionRows = [{ localDate: today, status: 'completed' }]
 
-      await service.close(900, admin, 'cancel', today)
+      await service.close(900, practitioner, 'cancel', today)
 
       // …then the full program is read for the answer.
       expect(afterChecks().slice(0, 6)).toEqual([
@@ -4201,7 +4241,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
         { id: 7002, sessionId: 71, name: 'Not this one', completed: false },
       ]
 
-      await service.close(900, admin, 'cancel', today)
+      await service.close(900, practitioner, 'cancel', today)
 
       expect(afterChecks().slice(0, 8)).toEqual([
         'lock',
@@ -4239,7 +4279,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     it('reads no checklist when no session was open', async () => {
       sessionRows = [{ localDate: addDays(today, -1), status: 'completed' }]
 
-      await service.close(900, admin, 'complete', today)
+      await service.close(900, practitioner, 'complete', today)
 
       expect(calls).not.toContain('read checklists')
       expect(calls).toContain('close open sessions')
@@ -4258,7 +4298,9 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
           Promise.resolve({ ...program, status: 'completed' }),
         )
 
-      await expect(service.close(900, admin, 'cancel', today)).rejects.toThrow(
+      await expect(
+        service.close(900, practitioner, 'cancel', today),
+      ).rejects.toThrow(
         new ConflictException(
           'This program is completed, so it can no longer change. To continue it, assign it again',
         ),
@@ -4269,7 +4311,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
 
     it("refuses a today that can't be today anywhere, before reading anything", async () => {
       await expect(
-        service.close(900, admin, 'complete', addDays(today, -2)),
+        service.close(900, practitioner, 'complete', addDays(today, -2)),
       ).rejects.toThrow(
         new BadRequestException("today must be today's date in your time zone"),
       )
@@ -4279,7 +4321,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
 
   describe('archive', () => {
     it('archives a program with no session, audited with what it was', async () => {
-      await service.archive(900, admin)
+      await service.archive(900, practitioner)
 
       expect(afterChecks()).toEqual([
         'lock',
@@ -4293,7 +4335,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     it('refuses a program with sessions: cancel it instead', async () => {
       sessionRows = [{ localDate: today, status: 'completed' }]
 
-      await expect(service.archive(900, admin)).rejects.toThrow(
+      await expect(service.archive(900, practitioner)).rejects.toThrow(
         new ConflictException(
           "This program has sessions, so it is part of the patient's record and can't be deleted: cancel it instead",
         ),
@@ -4305,11 +4347,11 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     // archived one can't be archived again.
     it('archives a completed program with no session, not an archived one', async () => {
       program = { ...program, status: 'completed' }
-      await service.archive(900, admin)
+      await service.archive(900, practitioner)
       expect(setValues).toHaveBeenCalledTimes(1)
 
       program = { ...program, isArchived: true }
-      await expect(service.archive(900, admin)).rejects.toThrow(
+      await expect(service.archive(900, practitioner)).rejects.toThrow(
         new ConflictException(
           'This program was deleted, so it can no longer change',
         ),
@@ -4323,32 +4365,36 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   describe('writes on a closed program', () => {
     const writes: [string, (s: AssignedProgramsService) => Promise<unknown>][] =
       [
-        ['update', (s) => s.update(900, admin, { title: 'New' })],
+        ['update', (s) => s.update(900, practitioner, { title: 'New' })],
         [
           'addExercise',
-          (s) => s.addExercise(900, admin, { exerciseId: 1, sortOrder: 0 }),
+          (s) =>
+            s.addExercise(900, practitioner, { exerciseId: 1, sortOrder: 0 }),
         ],
         [
           'updateExercise',
-          (s) => s.updateExercise(900, 31, admin, { sets: 3 }),
+          (s) => s.updateExercise(900, 31, practitioner, { sets: 3 }),
         ],
-        ['reorderExercises', (s) => s.reorderExercises(900, admin, [31])],
-        ['removeExercise', (s) => s.removeExercise(900, 31, admin)],
+        [
+          'reorderExercises',
+          (s) => s.reorderExercises(900, practitioner, [31]),
+        ],
+        ['removeExercise', (s) => s.removeExercise(900, 31, practitioner)],
         [
           'addScheduleVersion',
           (s) =>
-            s.addScheduleVersion(900, admin, {
+            s.addScheduleVersion(900, practitioner, {
               type: ScheduleType.PAUSED,
               effectiveFrom: today,
             }),
         ],
-        ['addWorkout', (s) => s.addWorkout(900, admin, {})],
+        ['addWorkout', (s) => s.addWorkout(900, practitioner, {})],
         [
           'renameWorkout',
-          (s) => s.renameWorkout(900, 950, admin, { name: 'A' }),
+          (s) => s.renameWorkout(900, 950, practitioner, { name: 'A' }),
         ],
-        ['reorderWorkouts', (s) => s.reorderWorkouts(900, admin, [950])],
-        ['removeWorkout', (s) => s.removeWorkout(900, 950, admin)],
+        ['reorderWorkouts', (s) => s.reorderWorkouts(900, practitioner, [950])],
+        ['removeWorkout', (s) => s.removeWorkout(900, 950, practitioner)],
       ]
 
     it.each(writes)('%s refuses a cancelled program', async (_name, write) => {

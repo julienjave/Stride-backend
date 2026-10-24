@@ -279,9 +279,10 @@ describe('Audit log viewer (e2e)', () => {
           entityType: 'assigned-programs',
           area: 'Programs',
           entityId: 7,
-          details: {
-            changes: { title: { from: 'Knee', to: 'Knee, phase 2' } },
-          },
+          // A program is clinical: its details stay stored, never answered
+          // (decisions §16 — the next test proves both halves).
+          details: null,
+          detailsWithheld: true,
           createdAt: '2031-03-10T10:00:00.000Z',
           performer: {
             id: practitionerId,
@@ -534,5 +535,86 @@ describe('Audit log viewer (e2e)', () => {
       'You do not have permission to access this resource',
     ])
     expect(anonymous.status).toBe(401)
+  })
+
+  // --- CLINICAL DETAILS (decisions §16, 2026-10-23) ---
+
+  // Admins read no clinical data; an entry's details would hand it to them
+  // (a session's pain scores, a prescription before → after). Withheld
+  // from the ANSWER for a clinical area — and for an area the vocabulary
+  // doesn't know — kept for the account areas; the stored rows untouched.
+  // Planted on their own day (2031-05-01) and removed after, so the other
+  // tests' counts don't move.
+  it('withholds the details of clinical and unknown areas, keeps them for accounts — and stores everything', async () => {
+    const at = '2031-05-01T08:00:00.000Z'
+    const stored: Record<string, unknown> = {
+      account: { changes: { firstName: { from: 'Xav', to: 'Xavier' } } },
+      session: { session: { painAfter: 7, endNote: 'Sharp pain' } },
+      unknown: { note: 'from before the vocabulary' },
+    }
+    const account = await plant({
+      performedBy: adminId,
+      action: 'USER_UPDATED',
+      targetUserId: xId,
+      entityType: 'users',
+      entityId: xId,
+      details: stored.account,
+      createdAt: at,
+    })
+    const session = await plant({
+      performedBy: xId,
+      action: 'SESSION_COMPLETED',
+      targetUserId: xId,
+      entityType: 'sessions',
+      entityId: 31,
+      details: stored.session,
+      createdAt: '2031-05-01T08:00:01.000Z',
+    })
+    const unknown = await plant({
+      performedBy: adminId,
+      action: 'CLINIC_UPDATED',
+      targetUserId: null,
+      entityType: 'another_mystery',
+      entityId: 1,
+      details: stored.unknown,
+      createdAt: '2031-05-01T08:00:02.000Z',
+    })
+    try {
+      const res = await admin
+        .get('/audit-logs')
+        .query({ from: '2031-05-01T00:00:00Z', before: '2031-05-02T00:00:00Z' })
+      expect(res.status).toBe(200)
+      expect(
+        (
+          res.body.data as {
+            id: number
+            details: unknown
+            detailsWithheld: boolean
+          }[]
+        ).map(({ id, details, detailsWithheld }) => ({
+          id,
+          details,
+          detailsWithheld,
+        })),
+      ).toStrictEqual([
+        { id: unknown, details: null, detailsWithheld: true },
+        { id: session, details: null, detailsWithheld: true },
+        { id: account, details: stored.account, detailsWithheld: false },
+      ])
+      // The database keeps every entry whole.
+      const { rows } = await sessionPool.query<{ details: unknown }>(
+        'SELECT details FROM audit_logs WHERE id = ANY($1) ORDER BY id',
+        [[account, session, unknown]],
+      )
+      expect(rows.map((row) => row.details)).toStrictEqual([
+        stored.account,
+        stored.session,
+        stored.unknown,
+      ])
+    } finally {
+      await sessionPool.query('DELETE FROM audit_logs WHERE id = ANY($1)', [
+        [account, session, unknown],
+      ])
+    }
   })
 })
