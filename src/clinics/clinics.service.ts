@@ -33,7 +33,10 @@ import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
-import { CareTeamService } from '../care-team/care-team.service'
+import {
+  CareTeamService,
+  ENDED_NO_SHARED_CLINIC_REASON,
+} from '../care-team/care-team.service'
 import { changedFields } from '../common/changed-fields'
 import {
   isUniqueViolation,
@@ -417,9 +420,9 @@ export class ClinicsService {
         userId,
         currentUser.id,
       )
-      // The ONE exception to "one entry per request" (decided with the
-      // person, 2026-10-21 — decisions §10): this act touches several
-      // records. The removal is one entry, about the member; each care-team
+      // The exception to "one entry per request" (decided with the person,
+      // 2026-10-21 — decisions §10; a practitioner's deactivation follows it
+      // too, UsersService.setActive): this act touches several records. The removal is one entry, about the member; each care-team
       // link it ended is one more, about ITS patient — so "everything that
       // happened to patient X" stays one query on target_user_id. All in
       // this transaction: the membership, the links and their trail commit
@@ -438,22 +441,13 @@ export class ClinicsService {
           },
         })
       }
-      for (const link of endedLinks) {
-        await this.auditService.logInTransaction(tx, {
-          performedBy: currentUser.id,
-          action: 'CARE_TEAM_ENDED',
-          targetUserId: link.patientId,
-          entityType: 'care_team_members',
-          entityId: link.id,
-          details: {
-            practitionerId: link.practitionerId,
-            startedAt: link.startedAt,
-            endsAt: link.endsAt,
-            reason: 'No longer share a clinic',
-            clinicId,
-          },
-        })
-      }
+      await this.careTeamService.recordEndedLinks(
+        tx,
+        endedLinks,
+        currentUser.id,
+        ENDED_NO_SHARED_CLINIC_REASON,
+        { clinicId },
+      )
     })
   }
 

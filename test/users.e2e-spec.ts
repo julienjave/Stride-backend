@@ -471,6 +471,8 @@ describe('Users (e2e)', () => {
         details: {
           changes: { isActive: { from: true, to: false } },
           signedOutSessions: before.length,
+          // A patient's links are never ended by a deactivation.
+          endedCareTeamLinkIds: [],
         },
       },
     ])

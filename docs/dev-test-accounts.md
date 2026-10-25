@@ -74,6 +74,14 @@ Log in as `admin@stride.test`. Under the shortcuts:
   way (**Show:** at the top of Admin → Users).
 - **Recent activity** — the newest changes from the audit log, with **See all
   changes**.
+- **Deactivating a practitioner ends their care-team links** — try it on
+  **Admin → Users → Alex Chen → Deactivate user** (the dialog says so). Alex's
+  six links end: each patient's care team shows Alex as a past member, and Pat,
+  Casey and the invited patients join **Patients without a care team** (Jo
+  still has Sam). Reactivating Alex brings none of them back. A deactivated
+  **patient** keeps their care team: log in as `sam@stride.test` and open
+  Frank (`former.patient@`) — the page says **Account deactivated** and still
+  shows his record. Run `npm run seed:dev -- --reset` afterwards.
 
 ## Two-factor sign-in
 

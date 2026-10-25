@@ -19,6 +19,19 @@ function careTeamStub() {
     findPatientIdsForPractitioner: jest.fn().mockResolvedValue([]),
     linkCreator: jest.fn().mockResolvedValue({ id: 900 }),
     endLinksWithoutSharedClinic: jest.fn().mockResolvedValue([]),
+    // The REAL method, writing through this file's audit stub: the
+    // removal's tests check the CARE_TEAM_ENDED entries a removal produces,
+    // not only that it asked for them. Built at call time, so it writes to
+    // the CURRENT test's fresh stub; the database and storage are never used
+    // by this method (`as never`: whatever is passed, it isn't read).
+    recordEndedLinks: (
+      ...args: Parameters<CareTeamService['recordEndedLinks']>
+    ) =>
+      new CareTeamService(
+        null as never,
+        null as never,
+        audit as never,
+      ).recordEndedLinks(...args),
   }
 }
 import { DRIZZLE } from '../database/drizzle.provider'

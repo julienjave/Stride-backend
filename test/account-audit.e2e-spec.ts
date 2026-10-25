@@ -542,6 +542,9 @@ describe('Account audit trail (e2e)', () => {
           details: {
             changes: { isActive: { from: true, to: false } },
             signedOutSessions: expect.any(Number),
+            // A patient: no care-team link ended (practitioner-deactivation
+            // .e2e-spec.ts covers a practitioner's).
+            endedCareTeamLinkIds: [],
           },
         },
         {

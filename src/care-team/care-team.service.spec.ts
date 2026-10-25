@@ -985,4 +985,104 @@ describe('CareTeamService', () => {
       expect(db.update).not.toHaveBeenCalled()
     })
   })
+
+  describe('endLinksOfDeactivatedPractitioner', () => {
+    it("ends the practitioner's current links on the given transaction, as the given person", async () => {
+      const ended = [{ id: 41, patientId: 6, practitionerId: 4 }]
+      const where = jest.fn().mockReturnValue({
+        returning: jest.fn().mockResolvedValue(ended),
+      })
+      const set = jest.fn().mockReturnValue({ where })
+      const tx = { update: jest.fn().mockReturnValue({ set }) }
+
+      await expect(
+        service.endLinksOfDeactivatedPractitioner(
+          tx as unknown as DrizzleDb,
+          4,
+          admin.id,
+        ),
+      ).resolves.toEqual(ended)
+
+      const changes = (
+        set.mock.calls as [{ endsAt: SQL; endedBy: number }][]
+      )[0][0]
+      expect(changes.endedBy).toBe(admin.id)
+      expect(render(changes.endsAt).sql).toBe('now()')
+      // The condition: the links where this account is the PRACTITIONER
+      // (never the patient side — a deactivated patient keeps theirs), and
+      // only current ones (an ended link keeps its real end).
+      const { sql, params } = render((where.mock.calls as unknown[][])[0][0])
+      expect(sql).toContain('"care_team_members"."practitioner_id" = $1')
+      expect(sql).not.toContain('"care_team_members"."patient_id"')
+      expect(sql).toContain('"care_team_members"."started_at" <= now()')
+      expect(sql).toContain(
+        '"care_team_members"."ends_at" IS NULL OR "care_team_members"."ends_at" > now()',
+      )
+      expect(params).toEqual([4])
+      expect(db.update).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('recordEndedLinks', () => {
+    const started = new Date('2031-01-05T09:00:00Z')
+    const ended = new Date('2031-02-01T10:00:00Z')
+    const link = (id: number, patientId: number) => ({
+      id,
+      patientId,
+      practitionerId: 4,
+      startedAt: started,
+      endsAt: ended,
+    })
+
+    it('writes one CARE_TEAM_ENDED per link, about its patient, in the given transaction', async () => {
+      const tx = {} as DrizzleDb
+
+      await service.recordEndedLinks(
+        tx,
+        [link(41, 6), link(42, 9)],
+        admin.id,
+        'Some reason',
+      )
+
+      const entry = (id: number, patientId: number) => [
+        tx,
+        {
+          performedBy: admin.id,
+          action: 'CARE_TEAM_ENDED',
+          targetUserId: patientId,
+          entityType: 'care_team_members',
+          entityId: id,
+          // No context given: nothing but the period and the reason.
+          details: {
+            practitionerId: 4,
+            startedAt: started,
+            endsAt: ended,
+            reason: 'Some reason',
+          },
+        },
+      ]
+      expect(auditInTx.mock.calls).toStrictEqual([entry(41, 6), entry(42, 9)])
+      expect(auditLog).not.toHaveBeenCalled()
+    })
+
+    it("adds the change's context to each entry's details", async () => {
+      await service.recordEndedLinks({} as DrizzleDb, [link(41, 6)], 2, 'R', {
+        clinicId: 3,
+      })
+
+      expect(auditInTx.mock.calls[0][1].details).toStrictEqual({
+        practitionerId: 4,
+        startedAt: started,
+        endsAt: ended,
+        reason: 'R',
+        clinicId: 3,
+      })
+    })
+
+    it('writes nothing when no link ended', async () => {
+      await service.recordEndedLinks({} as DrizzleDb, [], admin.id, 'R')
+
+      expect(auditInTx).not.toHaveBeenCalled()
+    })
+  })
 })

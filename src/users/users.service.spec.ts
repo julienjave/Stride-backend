@@ -41,12 +41,18 @@ function auditStub() {
   }
 }
 
+// A care-team link's period, for the links a deactivation ends.
+const STARTED = new Date('2031-03-01T09:00:00Z')
+const ENDED = new Date('2031-04-02T10:00:00Z')
+
 function careTeamStub() {
   return {
     isOnCareTeam: jest.fn().mockResolvedValue(false),
     findPatientIdsForPractitioner: jest.fn().mockResolvedValue([]),
     linkCreator: jest.fn().mockResolvedValue({ id: 900 }),
     endLinksWithoutSharedClinic: jest.fn().mockResolvedValue([]),
+    endLinksOfDeactivatedPractitioner: jest.fn().mockResolvedValue([]),
+    recordEndedLinks: jest.fn().mockResolvedValue(undefined),
   }
 }
 import { DRIZZLE } from '../database/drizzle.provider'
@@ -1690,6 +1696,7 @@ describe('UsersService.reactivate', () => {
     transaction: jest.Mock
   }
   let audit: ReturnType<typeof auditStub>
+  let careTeam: ReturnType<typeof careTeamStub>
 
   beforeEach(async () => {
     db = {
@@ -1705,6 +1712,7 @@ describe('UsersService.reactivate', () => {
       transaction: jest.fn(),
     }
     audit = auditStub()
+    careTeam = careTeamStub()
 
     db.select.mockReturnValue({
       from: jest.fn().mockReturnValue({
@@ -1721,7 +1729,7 @@ describe('UsersService.reactivate', () => {
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: audit },
-        { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: CareTeamService, useValue: careTeam },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
@@ -1757,6 +1765,9 @@ describe('UsersService.reactivate', () => {
     })
 
     expect(set.mock.calls).toEqual([[{ isActive: true }]])
+    // Reactivating restores no care-team link (an admin adds the
+    // practitioner back where needed) — and ends none either.
+    expect(careTeam.endLinksOfDeactivatedPractitioner).not.toHaveBeenCalled()
     expect(result).toEqual({
       id: 5,
       email: 'returning-patient@example.com',
@@ -1821,23 +1832,34 @@ describe('UsersService.softDelete', () => {
   let db: {
     query: {
       users: { findFirst: jest.Mock }
+      practitionerProfiles: { findFirst: jest.Mock }
       patientProfiles: { findFirst: jest.Mock }
     }
     select: jest.Mock
     transaction: jest.Mock
   }
   let audit: ReturnType<typeof auditStub>
+  let careTeam: ReturnType<typeof careTeamStub>
+  // The roles of the account being deactivated, as findOne() (the 404
+  // pre-check) reads them — a test about a practitioner sets its own.
+  let targetRoles: UserRole[]
 
   beforeEach(async () => {
+    targetRoles = [UserRole.PATIENT]
     db = {
-      // findOne() (the 404 pre-check) attaches the patient profile.
+      // findOne() attaches the profiles of the account's roles.
       query: {
         users: { findFirst: jest.fn() },
+        practitionerProfiles: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
         patientProfiles: { findFirst: jest.fn().mockResolvedValue(undefined) },
       },
       select: jest.fn().mockReturnValue({
         from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue([{ role: UserRole.PATIENT }]),
+          where: jest.fn(() =>
+            Promise.resolve(targetRoles.map((role) => ({ role }))),
+          ),
           innerJoin: jest.fn().mockReturnValue({
             where: jest.fn().mockResolvedValue([]),
           }),
@@ -1846,13 +1868,14 @@ describe('UsersService.softDelete', () => {
       transaction: jest.fn(),
     }
     audit = auditStub()
+    careTeam = careTeamStub()
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: DRIZZLE, useValue: db },
         { provide: StorageService, useValue: storageStub() },
         { provide: AuditService, useValue: audit },
-        { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: CareTeamService, useValue: careTeam },
         { provide: InvitationsService, useValue: invitationsStub() },
       ],
     }).compile()
@@ -1889,8 +1912,129 @@ describe('UsersService.softDelete', () => {
       details: {
         changes: { isActive: { from: true, to: false } },
         signedOutSessions: 2,
+        // Asked of every deactivation (the UPDATE finds a patient's none —
+        // their links are kept), so the entry always says what it ended.
+        endedCareTeamLinkIds: [],
       },
     })
+    expect(careTeam.endLinksOfDeactivatedPractitioner.mock.calls).toEqual([
+      [tx, 6, 7],
+    ])
+  })
+
+  // The practitioner's links: ended in the SAME transaction, named in the
+  // account's entry, and one CARE_TEAM_ENDED each — written after the
+  // account's entry, with the deactivation's reason.
+  it("ends a practitioner's care-team links and records each one, in the same transaction", async () => {
+    targetRoles = [UserRole.PRACTITIONER]
+    db.query.users.findFirst.mockResolvedValue({ id: 4, isActive: true })
+    const { tx } = accountTx({
+      locked: { id: 4, isActive: true },
+      roles: [UserRole.PRACTITIONER],
+      after: { id: 4, isActive: false },
+      sessions: [],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+    const links = [
+      {
+        id: 41,
+        patientId: 6,
+        practitionerId: 4,
+        startedAt: STARTED,
+        endsAt: ENDED,
+      },
+      {
+        id: 42,
+        patientId: 9,
+        practitionerId: 4,
+        startedAt: STARTED,
+        endsAt: ENDED,
+      },
+    ]
+    careTeam.endLinksOfDeactivatedPractitioner.mockResolvedValue(links)
+    const order: string[] = []
+    audit.logInTransaction.mockImplementation(() => {
+      order.push('account entry')
+      return Promise.resolve()
+    })
+    careTeam.recordEndedLinks.mockImplementation(() => {
+      order.push('link entries')
+      return Promise.resolve()
+    })
+
+    await usersService.softDelete(4, { id: 1, activeRole: UserRole.ADMIN })
+
+    expect(careTeam.endLinksOfDeactivatedPractitioner.mock.calls).toEqual([
+      [tx, 4, 1],
+    ])
+    const [, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entry).toStrictEqual({
+      performedBy: 1,
+      action: 'USER_DEACTIVATED',
+      targetUserId: 4,
+      entityType: 'users',
+      entityId: 4,
+      details: {
+        changes: { isActive: { from: true, to: false } },
+        signedOutSessions: 0,
+        endedCareTeamLinkIds: [41, 42],
+      },
+    })
+    expect(careTeam.recordEndedLinks.mock.calls).toEqual([
+      [tx, links, 1, "The practitioner's account was deactivated"],
+    ])
+    expect(order).toEqual(['account entry', 'link entries'])
+  })
+
+  // Only an admin or the practitioner themselves may: the links' UPDATE
+  // policy would silently skip anyone else's UPDATE, leaving them open.
+  it.each([
+    [
+      'a managing practitioner (the account is also a patient)',
+      { id: 7, activeRole: UserRole.PRACTITIONER },
+      [UserRole.PATIENT, UserRole.PRACTITIONER],
+    ],
+    [
+      'the account itself, acting as a patient',
+      { id: 4, activeRole: UserRole.PATIENT },
+      [UserRole.PATIENT, UserRole.PRACTITIONER],
+    ],
+  ])(
+    "refuses a practitioner's deactivation by %s, before any write",
+    async (_who, actor, roles) => {
+      targetRoles = roles
+      db.query.users.findFirst.mockResolvedValue({ id: 4, isActive: true })
+
+      await expect(usersService.softDelete(4, actor)).rejects.toThrow(
+        new ForbiddenException(
+          "Only an admin, or the practitioner themselves, can deactivate a practitioner's account",
+        ),
+      )
+      expect(db.transaction).not.toHaveBeenCalled()
+    },
+  )
+
+  // The practitioner themselves, acting as one: the UPDATE policy lets them
+  // end their own links, so it goes through — as does an admin (above).
+  it('lets a practitioner deactivate their own account', async () => {
+    targetRoles = [UserRole.PRACTITIONER]
+    db.query.users.findFirst.mockResolvedValue({ id: 4, isActive: true })
+    const { tx } = accountTx({
+      locked: { id: 4, isActive: true },
+      roles: [UserRole.PRACTITIONER],
+      after: { id: 4, isActive: false },
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    const result = await usersService.softDelete(4, {
+      id: 4,
+      activeRole: UserRole.PRACTITIONER,
+    })
+
+    expect(result.user.isActive).toBe(false)
+    expect(careTeam.endLinksOfDeactivatedPractitioner.mock.calls).toEqual([
+      [tx, 4, 4],
+    ])
   })
 
   it('writes nothing for an account that is already deactivated', async () => {

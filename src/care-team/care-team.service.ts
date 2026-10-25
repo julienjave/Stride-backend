@@ -137,9 +137,11 @@ export interface DirectoryPatient {
   onMyCareTeam: boolean
 }
 
-// A link ended as a side effect (a clinic membership removed). Returned so
-// the caller can write one audit entry per link once its transaction has
-// committed.
+// A link ended as a side effect of another change — a clinic membership
+// removed, or a practitioner's account deactivated. Returned to the caller,
+// whose transaction it is, so the caller's own entry can name the links;
+// recordEndedLinks() then writes one entry per link in that same
+// transaction.
 export interface EndedLink {
   id: number
   patientId: number
@@ -158,6 +160,23 @@ export const CREATED_PATIENT_REASON = 'Created the patient'
 // The directory is a search, not an export: a practitioner types a name
 // and picks from the matches. A cap keeps a vague search ("a") cheap.
 export const DIRECTORY_RESULT_LIMIT = 50
+
+// The reasons a link ended as a side effect, written into each link's
+// CARE_TEAM_ENDED entry (recordEndedLinks) — so the patient's trail says WHY
+// someone stopped treating them, not only that they did.
+export const ENDED_NO_SHARED_CLINIC_REASON = 'No longer share a clinic'
+export const ENDED_PRACTITIONER_DEACTIVATED_REASON =
+  "The practitioner's account was deactivated"
+
+// What an UPDATE ending links answers (`.returning(…)`), one shape for every
+// such UPDATE — it IS the EndedLink type.
+const ENDED_LINK_COLUMNS = {
+  id: careTeamMembers.id,
+  patientId: careTeamMembers.patientId,
+  practitionerId: careTeamMembers.practitionerId,
+  startedAt: careTeamMembers.startedAt,
+  endsAt: careTeamMembers.endsAt,
+}
 
 // --- THE RULE, IN SQL --------------------------------------------------------------------------------------
 //
@@ -706,13 +725,76 @@ export class CareTeamService {
           )}`,
         ),
       )
-      .returning({
-        id: careTeamMembers.id,
-        patientId: careTeamMembers.patientId,
-        practitionerId: careTeamMembers.practitionerId,
-        startedAt: careTeamMembers.startedAt,
-        endsAt: careTeamMembers.endsAt,
+      .returning(ENDED_LINK_COLUMNS)
+  }
+
+  // UsersService.setActive(): a practitioner whose account is deactivated
+  // can't sign in, so they treat nobody — every CURRENT link of theirs is
+  // ENDED (not deleted), in the deactivation's own transaction (decided with
+  // the person, 2026-10-25). Their patients then show the truth: the
+  // practitioner as a past member, the conversation read-only, and — with
+  // nobody else on the team — "Patients without a care team" on the admin
+  // home, where an admin adds someone.
+  //
+  // Only the account's PRACTITIONER side. A deactivated patient keeps their
+  // links on purpose: deactivating blocks a sign-in, it doesn't end
+  // treatment (a discharge is the practitioner's act — "Leave care team"),
+  // and the care team must still be able to read the file, e.g. to answer
+  // a records request.
+  //
+  // activePeriod() — the same "current" as everywhere: a link with a planned
+  // end date (cover until Friday) ends now too. A link that hasn't started
+  // is left alone: the API never creates one (every link starts when it's
+  // created), and it couldn't be ended at now() anyway — the CHECK wants
+  // ends_at ≥ started_at.
+  //
+  // Row security: the UPDATE policy lets an admin end any link, and a
+  // practitioner only their own. softDelete() lets only those two deactivate
+  // a practitioner's account, so no link is ever silently filtered out here.
+  async endLinksOfDeactivatedPractitioner(
+    tx: DrizzleDb,
+    practitionerId: number,
+    performedBy: number,
+  ): Promise<EndedLink[]> {
+    return tx
+      .update(careTeamMembers)
+      .set({ endsAt: sql`now()`, endedBy: performedBy })
+      .where(
+        and(eq(careTeamMembers.practitionerId, practitionerId), activePeriod()),
+      )
+      .returning(ENDED_LINK_COLUMNS)
+  }
+
+  // One CARE_TEAM_ENDED entry per ended link, about ITS patient — so
+  // "everything that happened to patient X" stays one query on
+  // target_user_id. Written in the caller's transaction: the change, the
+  // links and their trail commit together or not at all. Shared by the
+  // clinic removal and the deactivation, so both describe an ended link the
+  // same way: the period it granted access, and why it ended (`context` adds
+  // what that change was about — the clinic, for a removal).
+  async recordEndedLinks(
+    tx: DrizzleDb,
+    links: EndedLink[],
+    performedBy: number,
+    reason: string,
+    context: Record<string, unknown> = {},
+  ): Promise<void> {
+    for (const link of links) {
+      await this.auditService.logInTransaction(tx, {
+        performedBy,
+        action: 'CARE_TEAM_ENDED',
+        targetUserId: link.patientId,
+        entityType: 'care_team_members',
+        entityId: link.id,
+        details: {
+          practitionerId: link.practitionerId,
+          startedAt: link.startedAt,
+          endsAt: link.endsAt,
+          reason,
+          ...context,
+        },
       })
+    }
   }
 
   // === HELPER FUNCTIONS ===================================================

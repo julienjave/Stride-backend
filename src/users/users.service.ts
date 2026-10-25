@@ -52,7 +52,10 @@ import { InvitationsService } from '../invitations/invitations.service'
 import type { InvitationStatus } from '../invitations/invitation-status'
 import { AVATAR_URL_EXPIRY_SECONDS } from '../common/config/avatar.config'
 import { translateDuplicateEmail } from '../common/email-address'
-import { CareTeamService } from '../care-team/care-team.service'
+import {
+  CareTeamService,
+  ENDED_PRACTITIONER_DEACTIVATED_REASON,
+} from '../care-team/care-team.service'
 import {
   needsAttention,
   type AttentionKind,
@@ -146,6 +149,10 @@ export interface CreatedUserInvitation {
 }
 
 // --- SERVICE ------------------------------------------------------------------------------------------------
+
+// softDelete(): who may deactivate an account holding the practitioner role.
+export const DEACTIVATE_PRACTITIONER_MESSAGE =
+  "Only an admin, or the practitioner themselves, can deactivate a practitioner's account"
 
 @Injectable()
 export class UsersService {
@@ -865,11 +872,30 @@ export class UsersService {
   //
   // Answers the account AND the ids of the sessions the deactivation ended:
   // the controller closes their messaging sockets (see setActive).
+  //
+  // WHO MAY DEACTIVATE A PRACTITIONER'S ACCOUNT: an admin, or the
+  // practitioner themselves acting as one (2026-10-25). The deactivation
+  // ends their care-team links (setActive), and the links' UPDATE policy
+  // lets exactly those two end them — anyone else's UPDATE would match no
+  // row and SILENTLY leave the links open, so they're refused here instead.
+  // The route lets two other people through: a managing practitioner (for a
+  // patient — but that patient may hold the practitioner role too), and the
+  // account itself acting as a patient (a practitioner + patient account).
   async softDelete(
     id: number,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    await this.findOne(id)
+    const { roles: targetRoles } = await this.findOne(id)
+    const mayEndPractitionerLinks =
+      currentUser.activeRole === UserRole.ADMIN ||
+      (currentUser.id === id &&
+        currentUser.activeRole === UserRole.PRACTITIONER)
+    if (
+      targetRoles.includes(UserRole.PRACTITIONER) &&
+      !mayEndPractitionerLinks
+    ) {
+      throw new ForbiddenException(DEACTIVATE_PRACTITIONER_MESSAGE)
+    }
     const { row, endedSessionIds } = await withRlsContext(
       this.db,
       currentUser,
@@ -1045,6 +1071,16 @@ export class UsersService {
   // account is never deactivated with its sessions left, nor the other way
   // round), their ids answered so the caller closes the sockets after the
   // commit, and the entry says how many (as an email change's does).
+  //
+  // DEACTIVATING A PRACTITIONER ENDS THEIR CARE-TEAM LINKS (2026-10-25,
+  // decided with the person): someone who can't sign in treats nobody, so
+  // the links say so — CareTeamService.endLinksOfDeactivatedPractitioner,
+  // in this same transaction. The account's entry names the links it ended
+  // (`endedCareTeamLinkIds`, [] for an account that had none — a patient's
+  // links are never ended here), and each link gets its own CARE_TEAM_ENDED
+  // entry about its patient, as a clinic removal does (decisions §10's
+  // exception). Reactivating restores none of them: an admin adds the
+  // practitioner back where they're needed.
   private async setActive(
     tx: DrizzleDb,
     id: number,
@@ -1066,6 +1102,13 @@ export class UsersService {
     // end sessions too changed nothing a test could see. The condition just
     // spares that query, and says what deactivation means.
     const endedSessionIds = isActive ? [] : await endSessions(tx, id)
+    const endedLinks = isActive
+      ? []
+      : await this.careTeamService.endLinksOfDeactivatedPractitioner(
+          tx,
+          id,
+          performedBy,
+        )
     await this.auditService.logInTransaction(tx, {
       performedBy,
       action: isActive ? 'USER_REACTIVATED' : 'USER_DEACTIVATED',
@@ -1074,9 +1117,20 @@ export class UsersService {
       entityId: id,
       details: {
         changes: { isActive: { from: before.isActive, to: isActive } },
-        ...(isActive ? {} : { signedOutSessions: endedSessionIds.length }),
+        ...(isActive
+          ? {}
+          : {
+              signedOutSessions: endedSessionIds.length,
+              endedCareTeamLinkIds: endedLinks.map((link) => link.id),
+            }),
       },
     })
+    await this.careTeamService.recordEndedLinks(
+      tx,
+      endedLinks,
+      performedBy,
+      ENDED_PRACTITIONER_DEACTIVATED_REASON,
+    )
     return { row, endedSessionIds }
   }
 

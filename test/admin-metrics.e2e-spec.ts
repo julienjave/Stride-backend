@@ -230,8 +230,18 @@ describe('Admin metrics (e2e)', () => {
       [ids.hal, ids.admin],
     )
 
-    // Deactivations through the API, as an admin would.
-    for (const key of ['dex', 'eve', 'zed']) {
+    // Dex is deactivated as the OWNER, not through the API: since
+    // 2026-10-25 an API deactivation ends a practitioner's links, so Fay
+    // would simply have none — and nothing would prove the statement's
+    // `p.is_active` any more. A direct UPDATE stands for an account
+    // deactivated before that change (its links never ended), which the
+    // metrics must still not count as care.
+    await sessionPool.query(
+      'UPDATE users SET is_active = false WHERE id = $1',
+      [ids.dex],
+    )
+    // The others through the API, as an admin would.
+    for (const key of ['eve', 'zed']) {
       const res = await admin.delete(`/users/${ids[key]}`)
       expect(res.status).toBe(200)
     }
