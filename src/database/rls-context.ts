@@ -18,6 +18,7 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { sql } from 'drizzle-orm'
+import type { PgTransactionConfig } from 'drizzle-orm/pg-core'
 import type { DrizzleDb } from './drizzle.provider'
 import type { UserRole } from '../users/dto/create-user.dto'
 
@@ -40,15 +41,22 @@ type CurrentUser = { id: number; activeRole: UserRole }
 // INSERT on users, the first-admin setup in AuthService.registerClinic(),
 // opens its own transaction rather than coming through here; users_insert's
 // "no session context" branch exists for it.)
+//
+// `config` (optional, since the records export — decisions §20): the
+// transaction's own settings, passed on to Postgres as they are. The export
+// reads a whole record in several statements and asks for
+// `{ isolationLevel: 'repeatable read' }` so they all see ONE moment; every
+// other caller leaves it out and keeps Postgres's default (read committed).
 export async function withRlsContext<T>(
   db: DrizzleDb,
   currentUser: CurrentUser,
   fn: (tx: DrizzleDb) => Promise<T>,
+  config?: PgTransactionConfig,
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await applyUserContext(tx, currentUser)
     return fn(tx)
-  })
+  }, config)
 }
 
 // The two settings withRlsContext() starts its transaction with, on their

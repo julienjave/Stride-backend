@@ -42,8 +42,8 @@ const practitioner = { id: 7, activeRole: UserRole.PRACTITIONER }
 const patient = { id: 20, activeRole: UserRole.PATIENT }
 const createdAt = new Date('2031-03-04T10:00:00.000Z')
 
-// A row as the select in loadEntries returns it (entry + author + the
-// amendment's id).
+// A row as the select in loadMedicalFileEntries returns it (entry +
+// author + the amendment's id).
 function selected(
   id: number,
   overrides: Record<string, unknown> = {},

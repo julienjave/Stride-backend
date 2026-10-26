@@ -41,6 +41,7 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter'
 import { MedicalFilesModule } from './medical-files/medical-files.module'
 import { HealthModule } from './health/health.module'
 import { AdminMetricsModule } from './admin-metrics/admin-metrics.module'
+import { RecordsExportModule } from './records-export/records-export.module'
 import { throttlerOptions } from './config/rate-limits'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -98,6 +99,7 @@ import { throttlerOptions } from './config/rate-limits'
     MedicalFilesModule,
     HealthModule,
     AdminMetricsModule,
+    RecordsExportModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the

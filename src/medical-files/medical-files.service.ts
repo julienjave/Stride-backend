@@ -177,7 +177,10 @@ export class MedicalFilesService {
         },
       })
 
-      const [entry] = await this.loadEntries(tx, eq(medicalFiles.id, row.id))
+      const [entry] = await loadMedicalFileEntries(
+        tx,
+        eq(medicalFiles.id, row.id),
+      )
       return entry
     })
   }
@@ -200,7 +203,7 @@ export class MedicalFilesService {
     const targetPatientId = await this.resolveListTarget(currentUser, patientId)
 
     return withRlsContext(this.db, currentUser, async (tx) => {
-      const entries = await this.loadEntries(
+      const entries = await loadMedicalFileEntries(
         tx,
         eq(medicalFiles.patientId, targetPatientId),
       )
@@ -227,7 +230,7 @@ export class MedicalFilesService {
     currentUser: CurrentUser,
   ): Promise<MedicalFileEntry> {
     return withRlsContext(this.db, currentUser, async (tx) => {
-      const [entry] = await this.loadEntries(tx, eq(medicalFiles.id, id))
+      const [entry] = await loadMedicalFileEntries(tx, eq(medicalFiles.id, id))
       if (!entry) {
         throw new NotFoundException(entryNotFoundMessage(id))
       }
@@ -266,56 +269,60 @@ export class MedicalFilesService {
     }
     return patientId
   }
+}
 
-  // The entries matching `where`, in the API's shape, newest first (the id
-  // breaks a tie between two entries of the same instant). One query
-  // whatever the count:
-  //   - JOIN users for the author's name (three columns, see the type);
-  //   - LEFT JOIN the table on ITSELF for "is this entry amended, and by
-  //     which one?". `alias()` gives the second copy its own name
-  //     (`amendment`) — without it, the two copies of medical_files in one
-  //     query couldn't be told apart. LEFT: most entries have no amendment
-  //     (the columns come back NULL). The unique index guarantees at most
-  //     one match, so no row is ever doubled.
-  // Under the caller's row security, both copies are filtered: an amendment
-  // is always of the same patient (the foreign key), so whoever sees an
-  // entry sees its amendment.
-  private async loadEntries(
-    tx: DrizzleDb,
-    where: SQL,
-  ): Promise<MedicalFileEntry[]> {
-    const amendment = alias(medicalFiles, 'amendment')
-    const rows = await tx
-      .select({
-        entry: medicalFiles,
-        author: {
-          id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
-        },
-        amendedById: amendment.id,
-      })
-      .from(medicalFiles)
-      .innerJoin(users, eq(users.id, medicalFiles.createdBy))
-      .leftJoin(amendment, eq(amendment.amendsId, medicalFiles.id))
-      .where(where)
-      .orderBy(desc(medicalFiles.createdAt), desc(medicalFiles.id))
+// --- LOADING -----------------------------------------------------------------------------------------------
 
-    return rows.map(({ entry, author, amendedById }) => ({
-      id: entry.id,
-      patientId: entry.patientId,
-      entryType: entry.entryType,
-      subjective: entry.subjective,
-      objective: entry.objective,
-      assessment: entry.assessment,
-      plan: entry.plan,
-      createdAt: entry.createdAt,
-      author,
-      amendsId: entry.amendsId,
-      amendmentReason: entry.amendmentReason,
-      amendedById,
-    }))
-  }
+// The entries matching `where`, in the API's shape, newest first (the id
+// breaks a tie between two entries of the same instant). A function rather
+// than a method since the records export (decisions §20): the export reads
+// the file with this same query, so the PDF and My records can't disagree
+// on what an entry is. One query whatever the count:
+//   - JOIN users for the author's name (three columns, see the type);
+//   - LEFT JOIN the table on ITSELF for "is this entry amended, and by
+//     which one?". `alias()` gives the second copy its own name
+//     (`amendment`) — without it, the two copies of medical_files in one
+//     query couldn't be told apart. LEFT: most entries have no amendment
+//     (the columns come back NULL). The unique index guarantees at most
+//     one match, so no row is ever doubled.
+// Under the caller's row security, both copies are filtered: an amendment
+// is always of the same patient (the foreign key), so whoever sees an
+// entry sees its amendment.
+export async function loadMedicalFileEntries(
+  tx: DrizzleDb,
+  where: SQL,
+): Promise<MedicalFileEntry[]> {
+  const amendment = alias(medicalFiles, 'amendment')
+  const rows = await tx
+    .select({
+      entry: medicalFiles,
+      author: {
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      },
+      amendedById: amendment.id,
+    })
+    .from(medicalFiles)
+    .innerJoin(users, eq(users.id, medicalFiles.createdBy))
+    .leftJoin(amendment, eq(amendment.amendsId, medicalFiles.id))
+    .where(where)
+    .orderBy(desc(medicalFiles.createdAt), desc(medicalFiles.id))
+
+  return rows.map(({ entry, author, amendedById }) => ({
+    id: entry.id,
+    patientId: entry.patientId,
+    entryType: entry.entryType,
+    subjective: entry.subjective,
+    objective: entry.objective,
+    assessment: entry.assessment,
+    plan: entry.plan,
+    createdAt: entry.createdAt,
+    author,
+    amendsId: entry.amendsId,
+    amendmentReason: entry.amendmentReason,
+    amendedById,
+  }))
 }
 
 // --- ERROR TRANSLATION -------------------------------------------------------------------------------------

@@ -188,6 +188,12 @@ export const AUDIT_ACTIONS = {
   MEDICAL_FILE_ENTRY_AMENDED: 'change',
   MEDICAL_FILE_VIEWED: 'view',
   MEDICAL_FILE_ENTRY_VIEWED: 'view',
+
+  // The records export (decisions §20): a copy of the patient's record —
+  // medical file, programs, sessions — handed to the patient as a PDF. A
+  // READ of clinical data (every row in it was read to write it), so a
+  // view, with the ids of what went in — never the content.
+  RECORDS_EXPORTED: 'view',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -215,6 +221,10 @@ export const AUDIT_AREAS = {
   conversations: 'Messages',
   messages: 'Messages',
   medical_files: 'Medical files',
+  // No table of that name: an export is a document made on request, never
+  // stored. The entry is about the patient (target_user_id), with no
+  // entity id.
+  records_exports: 'Records exports',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -247,6 +257,9 @@ export const CLINICAL_AREAS = {
   conversations: true,
   messages: true,
   medical_files: true,
+  // The ids of every note, program and session handed out: which records a
+  // patient HAS is clinical information too.
+  records_exports: true,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------

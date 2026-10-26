@@ -51,11 +51,13 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express-session": "^1.19.0",
+    "fontkit": "^2.0.4",
     "nestjs-pino": "^4.6.1",
     "nodemailer": "^10.0.16",
     "otplib": "^13.4.1",
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",
+    "pdfkit": "^0.20.2",
     "pg": "^8.22.0",
     "pino-http": "^11.0.0",
     "qrcode": "^1.5.4",
@@ -73,10 +75,12 @@
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.19.0",
+    "@types/fontkit": "^2.0.9",
     "@types/jest": "^30.0.0",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.0",
     "@types/passport-local": "^1.0.38",
+    "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.20.0",
     "@types/qrcode": "^1.5.6",
     "@types/supertest": "^7.0.0",
@@ -106,7 +110,10 @@
       "ts"
     ],
     "rootDir": "src",
-    "roots": ["<rootDir>", "<rootDir>/../scripts"],
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../scripts"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
@@ -119,5 +126,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "allowScripts": {
+    "bcrypt@6.0.0": true
   }
 }

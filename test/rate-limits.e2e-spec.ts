@@ -121,6 +121,19 @@ describe('Rate limits (e2e)', () => {
     ])
   })
 
+  // The records export (decisions §20) reads a whole record and draws a PDF
+  // on each request — far heavier than an ordinary read — so it keeps 5 a
+  // minute too. Counted before the session guard, like the routes above.
+  it('refuses the 6th records export in a minute', async () => {
+    app = await buildApp('on')
+    const exportRecords = () =>
+      request(app.getHttpServer()).get('/records-export')
+
+    expect(await statuses(exportRecords, 6)).toEqual([
+      401, 401, 401, 401, 401, 429,
+    ])
+  })
+
   // And the switch the other suites rely on: off means never counted — the
   // login limit (an @Throttle override) included.
   it('counts nothing when the limits are off', async () => {

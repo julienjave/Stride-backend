@@ -53,6 +53,7 @@ describe('audit vocabulary', () => {
       expect(areaOf('alerts')).toBe('For review')
       expect(areaOf('session_reviews')).toBe('For review')
       expect(areaOf('program_alert_reviews')).toBe('For review')
+      expect(areaOf('records_exports')).toBe('Records exports')
     })
 
     it('shows an entity type it does not know as stored', () => {
@@ -90,6 +91,7 @@ describe('audit vocabulary', () => {
         'conversations',
         'messages',
         'medical_files',
+        'records_exports',
       ]) {
         expect([type, detailsShownToAdmins(type)]).toEqual([type, false])
       }
@@ -117,6 +119,7 @@ describe('audit vocabulary', () => {
         'ALERTS_VIEWED',
         'MEDICAL_FILE_VIEWED',
         'MEDICAL_FILE_ENTRY_VIEWED',
+        'RECORDS_EXPORTED',
       ])
     })
 
@@ -135,10 +138,11 @@ describe('audit vocabulary', () => {
 
     it('puts every other action among the changes', () => {
       const changes = actionsOfKind('change')
-      // 103 actions (the 3 email-change ones and PASSWORD_CHANGED since
+      // 104 actions (the 3 email-change ones and PASSWORD_CHANGED since
       // 2026-10-22, the 3 two-factor recovery ones since 2026-10-23,
-      // STEP_UP_FAILED since 2026-10-24), 9 views, 8 sign-ins.
-      expect(changes).toHaveLength(103 - 9 - 8)
+      // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED since 2026-10-26),
+      // 10 views, 8 sign-ins.
+      expect(changes).toHaveLength(104 - 10 - 8)
       expect(changes).toContain('MFA_RECOVERY_CODES_REGENERATED')
       expect(changes).toContain('MFA_RESET_BY_ADMIN')
       expect(changes).toContain('EMAIL_CHANGE_CONFIRMED')
