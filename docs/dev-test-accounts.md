@@ -64,12 +64,16 @@ Log in as `admin@stride.test`. Under the shortcuts:
 - **Metrics** — active accounts by role (an account with two roles counts in
   each), clinics, and invitations still waiting; deactivated ones are counted
   apart.
-- **Needs attention** — two groups, each name a link to the user page where
+- **Needs attention** — three groups, each name a link to the user page where
   the fix is:
   - **Patients without a care team:** Dana (Sam left). Fix it on her user
     page: **Care team → Add someone**.
   - **Practitioners without a clinic:** Taylor (removed from Harbour). Fix it
     on their user page: **Clinics → Add**.
+  - **Invitations to send again:** Lena Late (her invitation expired) and Stu
+    Waiting (its email couldn't be sent) — they can't join on their own. Fix it
+    on their user page: **Invitation → Send a new invitation** / **Send
+    again**. (A revoked invitation isn't listed: someone decided it.)
   The group's title and "and N more" lead to the users list filtered the same
   way (**Show:** at the top of Admin → Users).
 - **Recent activity** — the newest changes from the audit log, with **See all

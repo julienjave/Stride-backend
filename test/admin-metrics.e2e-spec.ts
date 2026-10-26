@@ -229,6 +229,21 @@ describe('Admin metrics (e2e)', () => {
       'UPDATE invitations SET revoked_at = now(), revoked_by = $2 WHERE user_id = $1',
       [ids.hal, ids.admin],
     )
+    // "Invitations to send again" (2026-10-25): an open invitation, expired
+    // (Ola) or never emailed. Each account below fails exactly ONE of the
+    // rule's other conditions with an unsent email — so dropping that
+    // condition lists it: Hal's is revoked, Zed's account deactivated, Pia's
+    // invitation accepted (and long expired too). Ned's went out: waiting.
+    await sessionPool.query(
+      'UPDATE invitations SET email_sent_at = NULL WHERE user_id = ANY($1)',
+      [[ids.hal, ids.zed, ids.pia]],
+    )
+    await sessionPool.query(
+      `UPDATE invitations SET created_at = now() - interval '8 days',
+                              expires_at = now() - interval '1 day'
+        WHERE user_id = $1`,
+      [ids.pia],
+    )
 
     // Dex is deactivated as the OWNER, not through the API: since
     // 2026-10-25 an API deactivation ends a practitioner's links, so Fay
@@ -295,8 +310,41 @@ describe('Admin metrics (e2e)', () => {
             { id: ids.quinn, firstName: 'Quinn', lastName: 'Ford' },
           ],
         },
+        // Ola (expired); not Ned (sent, still waiting), Hal (revoked), Zed
+        // (deactivated) or Pia (accepted).
+        invitationsToSendAgain: {
+          total: 1,
+          first: [{ id: ids.ola, firstName: 'Ola', lastName: 'Young' }],
+        },
       },
     })
+  })
+
+  // An invitation whose email couldn't be sent is still valid — counted as
+  // waiting — but the person never got the link: listed too.
+  it('lists a pending invitation whose email was never sent, and still counts it as waiting', async () => {
+    await sessionPool.query(
+      'UPDATE invitations SET email_sent_at = NULL WHERE user_id = $1',
+      [ids.ned],
+    )
+    try {
+      const res = await admin.get('/admin/metrics')
+
+      expect(res.status).toBe(200)
+      expect(res.body.pendingInvitations).toBe(1)
+      expect(res.body.needsAttention.invitationsToSendAgain).toStrictEqual({
+        total: 2,
+        first: [
+          { id: ids.ola, firstName: 'Ola', lastName: 'Young' },
+          { id: ids.ned, firstName: 'Ned', lastName: 'Zimmer' },
+        ],
+      })
+    } finally {
+      await sessionPool.query(
+        'UPDATE invitations SET email_sent_at = now() WHERE user_id = $1',
+        [ids.ned],
+      )
+    }
   })
 
   it('answers empty lists as [], not null', async () => {
@@ -344,12 +392,15 @@ describe('Admin metrics (e2e)', () => {
         [String(ids.admin)],
       )
       const query = new PgDialect().sqlToQuery(metricsQuery())
-      const { rows } = await client.query<{ pending_invitations: number }>(
-        query.sql,
-        query.params,
-      )
+      const { rows } = await client.query<{
+        pending_invitations: number
+        invitations_to_send_again_total: number
+      }>(query.sql, query.params)
 
       expect(rows[0].pending_invitations).toBe(0)
+      // ...and so one to send again, with Ola's: the two rules are each
+      // other's complement at that instant.
+      expect(rows[0].invitations_to_send_again_total).toBe(2)
     } finally {
       await client.query('ROLLBACK')
       client.release()
@@ -391,8 +442,15 @@ describe('Admin metrics (e2e)', () => {
       expect(idsOf(res)).toEqual([ids.rory, ids.quinn])
     })
 
+    it('lists every account with an invitation to send again', async () => {
+      const res = await admin.get('/users?attention=invitations-to-send-again')
+
+      expect(res.status).toBe(200)
+      expect(idsOf(res)).toEqual([ids.ola])
+    })
+
     // The point of sharing the rule: the home's count and first names are
-    // the list's length and its start, for both groups.
+    // the list's length and its start, for every group.
     it('agrees with the home: as many accounts as its total, starting with its names', async () => {
       const metrics = await admin.get('/admin/metrics')
       const groups = [
@@ -403,6 +461,10 @@ describe('Admin metrics (e2e)', () => {
         [
           'practitioners-without-clinic',
           metrics.body.needsAttention.practitionersWithoutClinic,
+        ],
+        [
+          'invitations-to-send-again',
+          metrics.body.needsAttention.invitationsToSendAgain,
         ],
       ] as const
       for (const [kind, group] of groups) {
@@ -420,7 +482,7 @@ describe('Admin metrics (e2e)', () => {
 
       expect(res.status).toBe(400)
       expect(res.body.message).toEqual([
-        'attention must be one of: patients-without-care-team, practitioners-without-clinic',
+        'attention must be one of: patients-without-care-team, practitioners-without-clinic, invitations-to-send-again',
       ])
     })
 

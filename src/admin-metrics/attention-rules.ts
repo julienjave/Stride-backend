@@ -24,6 +24,7 @@ import {
   userClinics,
   clinics,
   careTeamMembers,
+  invitations,
 } from '../database/schema'
 import { clinicalAccess } from '../care-team/care-team.service'
 import { UserRole } from '../users/dto/create-user.dto'
@@ -42,11 +43,12 @@ import { UserRole } from '../users/dto/create-user.dto'
 export const ATTENTION_KINDS = [
   'patients-without-care-team',
   'practitioners-without-clinic',
+  'invitations-to-send-again',
 ] as const
 export type AttentionKind = (typeof ATTENTION_KINDS)[number]
 
 // A type guard: `value is AttentionKind` tells TypeScript that, after a
-// `true`, the string is one of the two names — so the controller can pass a
+// `true`, the string is one of the names — so the controller can pass a
 // raw query parameter on without a cast. `includes` is called on the list
 // typed as `readonly string[]`: TypeScript's `includes` on a tuple of
 // literals only accepts those literals, which is the very thing being tested.
@@ -67,9 +69,14 @@ export interface UserRow {
 // context: care_team_members is FORCE ROW LEVEL SECURITY and shows nothing
 // to a query without one (every patient would then look unattended).
 export function needsAttention(kind: AttentionKind, user: UserRow): SQL {
-  return kind === 'patients-without-care-team'
-    ? patientWithoutCareTeam(user)
-    : practitionerWithoutClinic(user)
+  switch (kind) {
+    case 'patients-without-care-team':
+      return patientWithoutCareTeam(user)
+    case 'practitioners-without-clinic':
+      return practitionerWithoutClinic(user)
+    case 'invitations-to-send-again':
+      return invitationToSendAgain(user)
+  }
 }
 
 // An ACTIVE patient whom nobody active is treating right now: no care-team
@@ -103,6 +110,34 @@ function practitionerWithoutClinic(user: UserRow): SQL {
       FROM ${userClinics} m
       JOIN ${clinics} c ON c.id = m.clinic_id
       WHERE m.user_id = ${user.id} AND c.is_active
+    ))`
+}
+
+// An ACTIVE account, any role, that can't join on its own and that nobody
+// decided should stay out (2026-10-25, decisions §19): its OPEN invitation
+// (neither accepted nor revoked — at most one per account, a partial unique
+// index; a resend revokes the old one) has EXPIRED, or its email was never
+// recorded as sent (the user page's amber "couldn't be sent"). The fix, on
+// the user page: "Send a new invitation" / "Send again".
+//
+// Left out on purpose: a REVOKED invitation with nothing newer — someone
+// chose that (perhaps the account is about to be deactivated), so it isn't
+// flagged; and a pending invitation whose email went out — it is still
+// waiting (the home's "invitations waiting" counts it).
+//
+// `expires_at <= now()`: invitationStatus()'s "expired" (the metrics'
+// "waiting" count is its complement, `> now()`). `email_sent_at IS NULL`
+// is also true for the moment between an invitation's commit and its
+// email's — milliseconds, and the next load of the page has it right.
+function invitationToSendAgain(user: UserRow): SQL {
+  return sql`(${user.isActive}
+    AND EXISTS (
+      SELECT 1
+      FROM ${invitations} inv
+      WHERE inv.user_id = ${user.id}
+        AND inv.accepted_at IS NULL
+        AND inv.revoked_at IS NULL
+        AND (inv.expires_at <= now() OR inv.email_sent_at IS NULL)
     ))`
 }
 

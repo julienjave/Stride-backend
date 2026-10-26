@@ -161,8 +161,10 @@ describe('the seed dataset', () => {
 
   // The admin home's "Needs attention" (decisions §17) shows something in
   // the demo: a patient nobody treats who can log in (her Team page shows
-  // the past member), and a practitioner in no clinic who can log in.
-  it('gives the admin home\'s two "needs attention" groups an account each', () => {
+  // the past member), a practitioner in no clinic who can log in, and —
+  // since 2026-10-25 (§19) — invitations to send again: one expired, one
+  // whose email couldn't be sent, both on active accounts.
+  it('gives each of the admin home\'s "needs attention" groups an account', () => {
     const untreated = patients.filter(
       (p) =>
         currentCareTeam(p).length === 0 &&
@@ -173,6 +175,15 @@ describe('the seed dataset', () => {
     expect(
       practitioners.filter((p) => p.removedFromClinics).map((p) => p.key),
     ).toEqual(['taylor'])
+    expect(
+      patients
+        .filter(
+          (p) =>
+            (p.invitation === 'expired' || p.invitation === 'email-failed') &&
+            !p.deactivated,
+        )
+        .map((p) => p.invitation),
+    ).toEqual(['email-failed', 'expired'])
   })
 
   it('shows each invitation state at least once', () => {

@@ -65,6 +65,10 @@ export interface AdminMetrics {
     patientsWithoutCareTeam: AttentionList
     // Active practitioners who belong to no ACTIVE clinic.
     practitionersWithoutClinic: AttentionList
+    // Active accounts whose open invitation expired or whose email couldn't
+    // be sent (2026-10-25, decisions §19). An unsent PENDING one is also in
+    // pendingInvitations: still valid, but the person never got the link.
+    invitationsToSendAgain: AttentionList
   }
 }
 
@@ -94,6 +98,8 @@ type MetricsRow = {
   patients_without_care_team_first: AccountRef[]
   practitioners_without_clinic_total: number
   practitioners_without_clinic_first: AccountRef[]
+  invitations_to_send_again_total: number
+  invitations_to_send_again_first: AccountRef[]
 }
 
 @Injectable()
@@ -148,6 +154,10 @@ export class AdminMetricsService {
           total: row.practitioners_without_clinic_total,
           first: row.practitioners_without_clinic_first,
         },
+        invitationsToSendAgain: {
+          total: row.invitations_to_send_again_total,
+          first: row.invitations_to_send_again_first,
+        },
       },
     }
   }
@@ -156,7 +166,7 @@ export class AdminMetricsService {
 // --- THE STATEMENT -----------------------------------------------------------------------------------------
 
 // Raw SQL rather than Drizzle's builder: the statement is a set of
-// independent one-row subqueries joined side by side, plus two named
+// independent one-row subqueries joined side by side, plus three named
 // subqueries (a WITH clause) each used twice — once to count, once to list.
 // That shape is the SQL itself; built from Drizzle calls it would be harder
 // to read than to write. Tables are still interpolated as ${table} (so a
@@ -175,7 +185,7 @@ const ROW_U: UserRow = { id: sql`u.id`, isActive: sql`u.is_active` }
 export function metricsQuery() {
   return sql`
     WITH
-      -- The two "needs attention" groups — their rules live in
+      -- The three "needs attention" groups — their rules live in
       -- attention-rules.ts, shared with the users list's filter.
       patients_without_care_team AS (
         SELECT u.id, u.first_name, u.last_name
@@ -186,6 +196,11 @@ export function metricsQuery() {
         SELECT u.id, u.first_name, u.last_name
         FROM ${users} u
         WHERE ${needsAttention('practitioners-without-clinic', ROW_U)}
+      ),
+      invitations_to_send_again AS (
+        SELECT u.id, u.first_name, u.last_name
+        FROM ${users} u
+        WHERE ${needsAttention('invitations-to-send-again', ROW_U)}
       )
     SELECT
       roles.admins,
@@ -202,7 +217,11 @@ export function metricsQuery() {
       (SELECT count(*)::int FROM practitioners_without_clinic)
         AS practitioners_without_clinic_total,
       ${firstByName(sql`practitioners_without_clinic`)}
-        AS practitioners_without_clinic_first
+        AS practitioners_without_clinic_first,
+      (SELECT count(*)::int FROM invitations_to_send_again)
+        AS invitations_to_send_again_total,
+      ${firstByName(sql`invitations_to_send_again`)}
+        AS invitations_to_send_again_first
     FROM
       -- FILTER: one pass over the role rows, three counts. Each aggregate
       -- only counts the rows its WHERE accepts.
