@@ -2578,3 +2578,46 @@ describe('UsersService.removeAvatar', () => {
     expect(result).toEqual({ id: 5, avatarUrl: null, roles: [], clinics: [] })
   })
 })
+
+// "Can this account sign in?" (decisions §22) — false for a deactivated
+// account AND for an id with no account: a missing row must never read as
+// active.
+describe('UsersService.isAccountActive', () => {
+  let usersService: UsersService
+  let rows: { isActive: boolean }[]
+  let where: jest.Mock
+
+  beforeEach(async () => {
+    rows = []
+    where = jest.fn(() => ({ limit: jest.fn(() => Promise.resolve(rows)) }))
+    const db = {
+      select: jest.fn(() => ({ from: jest.fn(() => ({ where })) })),
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: db },
+        { provide: StorageService, useValue: storageStub() },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
+        { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
+      ],
+    }).compile()
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it('is true for an active account, false for a deactivated one', async () => {
+    rows = [{ isActive: true }]
+    expect(await usersService.isAccountActive(20)).toBe(true)
+    rows = [{ isActive: false }]
+    expect(await usersService.isAccountActive(20)).toBe(false)
+    expect(where).toHaveBeenCalledTimes(2)
+  })
+
+  it('is false for an id with no account', async () => {
+    expect(await usersService.isAccountActive(999)).toBe(false)
+  })
+})

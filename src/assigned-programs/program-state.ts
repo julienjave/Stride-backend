@@ -67,6 +67,18 @@ export function assertProgramOpen(program: ProgramState) {
 //   - never BEFORE its start (a program started today and cancelled today
 //     ends on its start — the database requires end >= start, and a
 //     one-day program is legitimate).
+// A deactivated patient's programs are frozen (decided 2026-10-27, decisions
+// §22): nobody assigns them a new one, and an open one can't change — the
+// patient can't sign in to follow it, so a change would only be a
+// prescription nobody receives. CLOSING stays possible (cancel, complete, and
+// deleting a program with no session — the same as cancelling one): it ends
+// something, and an open program shouldn't stay open forever because the
+// account went away. A 409, like a closed program: nothing is wrong with
+// WHO asks (that's the 403 before it) — the patient's state is in the way,
+// and reactivating the account clears it.
+export const DEACTIVATED_PATIENT_PROGRAM_MESSAGE =
+  "This patient's account is deactivated. Reactivate it to assign or change a program (completing or cancelling one is still possible)"
+
 export function closingEndDate(program: {
   startDate: string
   endDate: string | null

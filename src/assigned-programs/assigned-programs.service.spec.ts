@@ -45,6 +45,7 @@ import { UsersService } from '../users/users.service'
 import { DRIZZLE } from '../database/drizzle.provider'
 import { UserRole } from '../users/dto/create-user.dto'
 import { ScheduleType } from './dto/schedule-input.dto'
+import { DEACTIVATED_PATIENT_PROGRAM_MESSAGE } from './program-state'
 
 // Every program has at least one workout, and the full program (what most
 // writes answer with) includes them. Most tests here use a one-workout
@@ -75,6 +76,7 @@ describe('AssignedProgramsService.create', () => {
   let service: AssignedProgramsService
   let usersService: {
     isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
     findPatientsForPractitioner: jest.Mock
   }
   let db: {
@@ -98,6 +100,7 @@ describe('AssignedProgramsService.create', () => {
   beforeEach(async () => {
     usersService = {
       isPatientManagedBy: jest.fn(),
+      isAccountActive: jest.fn().mockResolvedValue(true),
       findPatientsForPractitioner: jest.fn(),
     }
     db = {
@@ -173,6 +176,35 @@ describe('AssignedProgramsService.create', () => {
       ),
     ).rejects.toThrow(ForbiddenException)
 
+    expect(db.transaction).not.toHaveBeenCalled()
+    // The 403 first: a stranger learns nothing about the account.
+    expect(usersService.isAccountActive).not.toHaveBeenCalled()
+  })
+
+  // Decisions §22: no new program for a deactivated patient — "Assign
+  // again" included (it is a create too). Refused before anything is read
+  // or written.
+  it("refuses a deactivated patient's new program with the 409", async () => {
+    usersService.isPatientManagedBy.mockResolvedValue(true)
+    usersService.isAccountActive.mockResolvedValue(false)
+
+    await expect(
+      service.create(
+        { id: 7, activeRole: UserRole.PRACTITIONER },
+        {
+          patientId: 20,
+          title: 'Rehab Plan',
+          startDate: '2026-01-01',
+          schedule: MWF,
+          basedOnTemplateId: 55,
+        },
+      ),
+    ).rejects.toThrow(
+      new ConflictException(DEACTIVATED_PATIENT_PROGRAM_MESSAGE),
+    )
+
+    expect(usersService.isAccountActive).toHaveBeenCalledWith(20)
+    expect(db.query.programTemplates.findFirst).not.toHaveBeenCalled()
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
@@ -688,6 +720,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
   let service: AssignedProgramsService
   let usersService: {
     isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
     findPatientsForPractitioner: jest.Mock
   }
   // The assigners' names come from ONE select().from().where() chain;
@@ -710,6 +743,7 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
   beforeEach(async () => {
     usersService = {
       isPatientManagedBy: jest.fn(),
+      isAccountActive: jest.fn().mockResolvedValue(true),
       // The practitioner's care-team patients — the list is read for them
       // (tests about other cases set their own).
       findPatientsForPractitioner: jest
@@ -994,7 +1028,10 @@ describe('AssignedProgramsService.findAllForCurrentUser', () => {
 
 describe('AssignedProgramsService.assertCanView (via findOne)', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock }
@@ -1009,7 +1046,10 @@ describe('AssignedProgramsService.assertCanView (via findOne)', () => {
   }
 
   beforeEach(async () => {
-    usersService = { isPatientManagedBy: jest.fn() }
+    usersService = {
+      isPatientManagedBy: jest.fn(),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     db = {
       query: {
         assignedPrograms: {
@@ -1178,7 +1218,10 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: UsersService,
-          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+          useValue: {
+            isPatientManagedBy: jest.fn().mockResolvedValue(true),
+            isAccountActive: jest.fn().mockResolvedValue(true),
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
@@ -1324,7 +1367,10 @@ describe("AssignedProgramsService.findOne — the library's photos", () => {
 
 describe('AssignedProgramsService.assertCanManage (via update)', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock }
@@ -1342,7 +1388,10 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
   let setValues: jest.Mock
 
   beforeEach(async () => {
-    usersService = { isPatientManagedBy: jest.fn() }
+    usersService = {
+      isPatientManagedBy: jest.fn(),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     setValues = jest.fn().mockReturnValue({
       where: jest.fn().mockResolvedValue(undefined),
     })
@@ -1466,7 +1515,10 @@ describe('AssignedProgramsService.assertCanManage (via update)', () => {
 // service's own decisions.
 describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   let writes: [string, unknown][]
   let lockedRow: Record<string, unknown> | undefined
   let positions: { sortOrder: number }[]
@@ -1555,7 +1607,10 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
     forCalls = []
     depth = 0
     depthOf = {}
-    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) }
+    usersService = {
+      isPatientManagedBy: jest.fn().mockResolvedValue(true),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     auditService.logInTransaction.mockImplementation(
       (_tx: unknown, entry: unknown) => {
         writes.push(['audit', entry])
@@ -2536,7 +2591,10 @@ describe('AssignedProgramsService — the exercise routes (step 3b-0)', () => {
 
 describe('AssignedProgramsService.reorderExercises', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   let db: {
     query: {
       assignedPrograms: { findFirst: jest.Mock }
@@ -2554,7 +2612,10 @@ describe('AssignedProgramsService.reorderExercises', () => {
   let txUpdate: jest.Mock
 
   beforeEach(async () => {
-    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) }
+    usersService = {
+      isPatientManagedBy: jest.fn().mockResolvedValue(true),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     txUpdate = jest.fn().mockReturnValue({
       set: jest.fn().mockReturnValue({
         where: jest.fn().mockResolvedValue(undefined),
@@ -2767,7 +2828,10 @@ describe('assertScheduleDayAllowed', () => {
 
 describe('AssignedProgramsService.addScheduleVersion', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   // Every write, in the order it happened: [kind, details, transaction #].
   let writes: [string, unknown, number][]
   // Which db.transaction() call is running (each withRlsContext opens one).
@@ -2796,7 +2860,10 @@ describe('AssignedProgramsService.addScheduleVersion', () => {
   const programStart = addDays(today, -30)
 
   beforeEach(async () => {
-    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) }
+    usersService = {
+      isPatientManagedBy: jest.fn().mockResolvedValue(true),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     writes = []
     currentTransaction = 0
     insertReturning = jest.fn()
@@ -3297,7 +3364,10 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
         { provide: DRIZZLE, useValue: db },
         {
           provide: UsersService,
-          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+          useValue: {
+            isPatientManagedBy: jest.fn().mockResolvedValue(true),
+            isAccountActive: jest.fn().mockResolvedValue(true),
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
@@ -3636,7 +3706,10 @@ describe('AssignedProgramsService.update — dates, start-date moves, audit', ()
 
 describe('AssignedProgramsService.summary', () => {
   let service: AssignedProgramsService
-  let usersService: { isPatientManagedBy: jest.Mock }
+  let usersService: {
+    isPatientManagedBy: jest.Mock
+    isAccountActive: jest.Mock
+  }
   let sessionsWhere: jest.Mock
   let db: {
     query: {
@@ -3656,7 +3729,10 @@ describe('AssignedProgramsService.summary', () => {
   const start = addDays(today, -3)
 
   beforeEach(async () => {
-    usersService = { isPatientManagedBy: jest.fn().mockResolvedValue(true) }
+    usersService = {
+      isPatientManagedBy: jest.fn().mockResolvedValue(true),
+      isAccountActive: jest.fn().mockResolvedValue(true),
+    }
     // One completed session, of workout 1 — the one the rotation asks for.
     sessionsWhere = jest.fn().mockResolvedValue([
       {
@@ -3929,7 +4005,10 @@ describe('AssignedProgramsService.removeWorkout — losing the race', () => {
         { provide: DRIZZLE, useValue: db },
         {
           provide: UsersService,
-          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+          useValue: {
+            isPatientManagedBy: jest.fn().mockResolvedValue(true),
+            isAccountActive: jest.fn().mockResolvedValue(true),
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
@@ -4000,9 +4079,12 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   // admins can't change a program since 2026-10-23 (decisions §16).
   const practitioner = { id: 1, activeRole: UserRole.PRACTITIONER }
   const today = utcToday()
+  // The patient's account: active, unless a test deactivates it.
+  let isAccountActive: jest.Mock
 
   beforeEach(async () => {
     calls = []
+    isAccountActive = jest.fn().mockResolvedValue(true)
     program = {
       id: 900,
       patientId: 20,
@@ -4096,7 +4178,10 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
         { provide: DRIZZLE, useValue: db },
         {
           provide: UsersService,
-          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+          useValue: {
+            isPatientManagedBy: jest.fn().mockResolvedValue(true),
+            isAccountActive,
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },
@@ -4360,49 +4445,107 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     })
   })
 
+  // Every CHANGE to an open program (closing it aside).
+  const writes: [string, (s: AssignedProgramsService) => Promise<unknown>][] = [
+    ['update', (s) => s.update(900, practitioner, { title: 'New' })],
+    [
+      'addExercise',
+      (s) => s.addExercise(900, practitioner, { exerciseId: 1, sortOrder: 0 }),
+    ],
+    [
+      'updateExercise',
+      (s) => s.updateExercise(900, 31, practitioner, { sets: 3 }),
+    ],
+    ['reorderExercises', (s) => s.reorderExercises(900, practitioner, [31])],
+    ['removeExercise', (s) => s.removeExercise(900, 31, practitioner)],
+    [
+      'addScheduleVersion',
+      (s) =>
+        s.addScheduleVersion(900, practitioner, {
+          type: ScheduleType.PAUSED,
+          effectiveFrom: today,
+        }),
+    ],
+    ['addWorkout', (s) => s.addWorkout(900, practitioner, {})],
+    [
+      'renameWorkout',
+      (s) => s.renameWorkout(900, 950, practitioner, { name: 'A' }),
+    ],
+    ['reorderWorkouts', (s) => s.reorderWorkouts(900, practitioner, [950])],
+    ['removeWorkout', (s) => s.removeWorkout(900, 950, practitioner)],
+  ]
+
   // Every write on a program refuses a closed one, before its transaction
   // (the program read + the access check run first: 404 / 403 win).
   describe('writes on a closed program', () => {
-    const writes: [string, (s: AssignedProgramsService) => Promise<unknown>][] =
-      [
-        ['update', (s) => s.update(900, practitioner, { title: 'New' })],
-        [
-          'addExercise',
-          (s) =>
-            s.addExercise(900, practitioner, { exerciseId: 1, sortOrder: 0 }),
-        ],
-        [
-          'updateExercise',
-          (s) => s.updateExercise(900, 31, practitioner, { sets: 3 }),
-        ],
-        [
-          'reorderExercises',
-          (s) => s.reorderExercises(900, practitioner, [31]),
-        ],
-        ['removeExercise', (s) => s.removeExercise(900, 31, practitioner)],
-        [
-          'addScheduleVersion',
-          (s) =>
-            s.addScheduleVersion(900, practitioner, {
-              type: ScheduleType.PAUSED,
-              effectiveFrom: today,
-            }),
-        ],
-        ['addWorkout', (s) => s.addWorkout(900, practitioner, {})],
-        [
-          'renameWorkout',
-          (s) => s.renameWorkout(900, 950, practitioner, { name: 'A' }),
-        ],
-        ['reorderWorkouts', (s) => s.reorderWorkouts(900, practitioner, [950])],
-        ['removeWorkout', (s) => s.removeWorkout(900, 950, practitioner)],
-      ]
-
     it.each(writes)('%s refuses a cancelled program', async (_name, write) => {
       program = { ...program, status: 'cancelled' }
 
       await expect(write(service)).rejects.toThrow(ConflictException)
       expect(db.transaction).toHaveBeenCalledTimes(1) // the program read only
       expect(setValues).not.toHaveBeenCalled()
+    })
+  })
+
+  // Decisions §22: a deactivated patient's open program can't change —
+  // every change refused with the 409 before anything is written. Closing
+  // it stays possible.
+  describe("a deactivated patient's program", () => {
+    beforeEach(() => isAccountActive.mockResolvedValue(false))
+
+    // The routes that only look like reads are previews of a change (the
+    // removal's) — refused like the change itself; the photo routes check
+    // before storing any file.
+    const changes: typeof writes = [
+      ...writes,
+      ['removalPreview', (s) => s.removalPreview(900, 31, practitioner)],
+      ['addImages', (s) => s.addImages(900, 31, practitioner, [])],
+      ['addLibraryImages', (s) => s.addLibraryImages(900, 31, practitioner)],
+      ['reorderImages', (s) => s.reorderImages(900, 31, practitioner, [])],
+      ['removeImage', (s) => s.removeImage(900, 31, practitioner, 'k')],
+    ]
+
+    it.each(changes)('%s is refused with the 409', async (_name, write) => {
+      await expect(write(service)).rejects.toThrow(
+        new ConflictException(DEACTIVATED_PATIENT_PROGRAM_MESSAGE),
+      )
+      expect(isAccountActive).toHaveBeenCalledWith(20)
+      expect(db.transaction).toHaveBeenCalledTimes(1) // the program read only
+      expect(setValues).not.toHaveBeenCalled()
+      expect(storageService.upload).not.toHaveBeenCalled()
+    })
+
+    // A closed program of a deactivated patient: "it's closed" is the true
+    // answer — reactivating wouldn't make it changeable.
+    it('answers "closed" for a closed program, without asking the account', async () => {
+      program = { ...program, status: 'completed' }
+
+      await expect(
+        service.update(900, practitioner, { title: 'New' }),
+      ).rejects.toThrow(
+        new ConflictException(
+          'This program is completed, so it can no longer change. To continue it, assign it again',
+        ),
+      )
+      expect(isAccountActive).not.toHaveBeenCalled()
+    })
+
+    it('can still be completed', async () => {
+      const result = await service.close(900, practitioner, 'complete', today)
+      expect(result.outcome).toBe('completed')
+    })
+
+    it('can still be cancelled — and so deleted, with no session', async () => {
+      const result = await service.close(900, practitioner, 'cancel', today)
+      expect(result.outcome).toBe('archived')
+    })
+
+    it('can still be deleted, and its closing previewed', async () => {
+      await service.closingPreview(900, practitioner, today)
+      await service.archive(900, practitioner)
+      expect(setValues).toHaveBeenCalledWith({ isArchived: true })
+      // Closing never asks: the account doesn't matter to it.
+      expect(isAccountActive).not.toHaveBeenCalled()
     })
   })
 })
@@ -4457,7 +4600,10 @@ describe('AssignedProgramsService.create — assigning again (step 2b-iii)', () 
         { provide: DRIZZLE, useValue: db },
         {
           provide: UsersService,
-          useValue: { isPatientManagedBy: jest.fn().mockResolvedValue(true) },
+          useValue: {
+            isPatientManagedBy: jest.fn().mockResolvedValue(true),
+            isAccountActive: jest.fn().mockResolvedValue(true),
+          },
         },
         { provide: AuditService, useValue: auditService },
         { provide: StorageService, useValue: storageService },

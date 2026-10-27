@@ -37,6 +37,7 @@ import { UserRole } from '../users/dto/create-user.dto'
 import { CreateConversationDto } from './dto/create-conversation.dto'
 import { MessagingEvents } from './messaging-events'
 import {
+  DEACTIVATED_PATIENT_MESSAGING_MESSAGE,
   MESSAGE_ALREADY_READ_MESSAGE,
   DELETE_WINDOW_PASSED_MESSAGE,
   MESSAGE_PAGE_SIZE,
@@ -49,6 +50,7 @@ import {
   deleteRefusal,
   isListed,
   participantSide,
+  readOnlyReason,
   takePage,
   toPublicMessage,
   type ConversationSummary,
@@ -112,6 +114,33 @@ export class MessagingService {
 
   // === ROUTES =============================================================
 
+  // Which refusal a write between these two gets, once the DATABASE has
+  // refused it (a message, or starting a conversation): the care-team link
+  // first — ended means `noTeamMessage` (403), whatever the account —
+  // then the patient's account — deactivated means 409. Asked through
+  // UsersService's own connection, not the caller's transaction: after a
+  // refused statement, Postgres refuses every further statement of that
+  // transaction until it ends.
+  //
+  // A third case is possible in theory — both checks pass now, but the
+  // policy refused a moment ago (a link restarted or an account reactivated
+  // in between): the conversation's normal words are the truest answer
+  // left, so it falls back on `noTeamMessage`.
+  private async writeRefusal(
+    practitionerId: number,
+    patientId: number,
+    noTeamMessage: string,
+  ) {
+    const onCareTeam = await this.usersService.isPatientManagedBy(
+      patientId,
+      practitionerId,
+    )
+    if (onCareTeam && !(await this.usersService.isAccountActive(patientId))) {
+      return new ConflictException(DEACTIVATED_PATIENT_MESSAGING_MESSAGE)
+    }
+    return new ForbiddenException(noTeamMessage)
+  }
+
   // --- POST /conversations ---
 
   // "Start or get": the conversation between me and `dto.userId` — created
@@ -119,10 +148,21 @@ export class MessagingService {
   // the conversation's summary, so a "Message" button can simply open
   // whatever comes back.
   //
-  // Starting one needs a CURRENT care-team link between the two (the service
-  // asks the care team; conversations_insert asks the database). An
-  // existing conversation whose link has ended is NOT reopened here — it is
-  // reachable from the list, read-only.
+  // Starting one needs what writing does (rls_can_message, 0063): a CURRENT
+  // care-team link between the two AND the patient's account active
+  // (decisions §22). The DATABASE decides, at the moment of writing
+  // (conversations_insert) — the same reasoning as sendMessage below, and
+  // since 2026-10-27 the same shape: no check before the INSERT (the care
+  // team's, here until then, became one a mutation could remove unnoticed
+  // once the refusal below was caught), and writeRefusal choosing the
+  // words: 403 START_NOT_ON_CARE_TEAM_MESSAGE, or 409 for a deactivated
+  // patient. Only after the care-team answer, so a stranger learns nothing
+  // about the account.
+  //
+  // An existing conversation is NOT reopened here when writing is refused:
+  // Postgres checks the policy BEFORE ON CONFLICT looks for the pair (a
+  // refusal reveals nothing about which rows exist). It is reachable from
+  // the list, read-only.
   async createConversation(
     currentUser: CurrentUser,
     dto: CreateConversationDto,
@@ -131,27 +171,33 @@ export class MessagingService {
     const practitionerId = side === 'practitioner' ? currentUser.id : dto.userId
     const patientId = side === 'patient' ? currentUser.id : dto.userId
 
-    const onCareTeam = await this.usersService.isPatientManagedBy(
-      patientId,
-      practitionerId,
-    )
-    if (!onCareTeam) {
-      throw new ForbiddenException(START_NOT_ON_CARE_TEAM_MESSAGE)
-    }
-
     return withRlsContext(this.db, currentUser, async (tx) => {
       // ON CONFLICT DO NOTHING on the pair's UNIQUE constraint: two
       // "Message" taps at once (two tabs, a double click) can't create two
       // conversations, and neither gets an error — the second insert inserts
       // nothing, atomically. (Before, a "look, then insert" let both look,
       // both find nothing, and the second insert fail with a 500.)
-      const [created] = await tx
-        .insert(conversations)
-        .values({ practitionerId, patientId })
-        .onConflictDoNothing({
-          target: [conversations.practitionerId, conversations.patientId],
-        })
-        .returning({ id: conversations.id })
+      //
+      // conversations_insert refuses with 42501 (isRowSecurityViolation).
+      let created: { id: number } | undefined
+      try {
+        ;[created] = await tx
+          .insert(conversations)
+          .values({ practitionerId, patientId })
+          .onConflictDoNothing({
+            target: [conversations.practitionerId, conversations.patientId],
+          })
+          .returning({ id: conversations.id })
+      } catch (error) {
+        if (isRowSecurityViolation(error)) {
+          throw await this.writeRefusal(
+            practitionerId,
+            patientId,
+            START_NOT_ON_CARE_TEAM_MESSAGE,
+          )
+        }
+        throw error
+      }
 
       let id: number
       if (created) {
@@ -185,10 +231,12 @@ export class MessagingService {
 
   // Sends a message, and pushes it to both participants' open connections.
   // Only while the two are on a care team together: a conversation whose
-  // link has ended answers 403 READ_ONLY_CONVERSATION_MESSAGE.
+  // link has ended answers 403 READ_ONLY_CONVERSATION_MESSAGE. And only while
+  // the patient's account is active (decisions §22): a deactivated patient's
+  // conversation answers 409 DEACTIVATED_PATIENT_MESSAGING_MESSAGE.
   //
   // WHO decides that: the database, at the moment of writing
-  // (messages_insert, migration 0048) — and nothing before it. A check here
+  // (messages_insert, migrations 0048 and 0063) — and nothing before it. A check here
   // first ("if (!canSend) refuse") would read the care team, then write a
   // moment later: a link ended in between would slip through the check and
   // be caught by the policy anyway. Two layers giving the same answer can't
@@ -226,10 +274,16 @@ export class MessagingService {
         } catch (error) {
           // The policy's refusal. Everything else it checks is settled
           // already — the sender is the caller (set just above), and
-          // requireSide proved they're a participant — so the one reason
-          // left is the care-team link: none between the two right now.
+          // requireSide proved they're a participant — so the reason left
+          // is rls_can_message: no care-team link between the two right
+          // now, or the patient's account deactivated. Which one, the
+          // service asks afterwards, only to choose the words.
           if (isRowSecurityViolation(error)) {
-            throw new ForbiddenException(READ_ONLY_CONVERSATION_MESSAGE)
+            throw await this.writeRefusal(
+              conversation.practitionerId,
+              conversation.patientId,
+              READ_ONLY_CONVERSATION_MESSAGE,
+            )
           }
           throw error
         }
@@ -659,6 +713,7 @@ export class MessagingService {
       .select({
         ...conversationColumns,
         canSend: canSendColumn,
+        onCareTeam: onCareTeamColumn,
         other: {
           id: users.id,
           firstName: users.firstName,
@@ -728,6 +783,7 @@ export class MessagingService {
           unreadCount: unreadByConversation.get(row.id) ?? 0,
           archivedAt: row[archiveColumn(side)],
           canSend: row.canSend,
+          readOnlyReason: readOnlyReason(row),
           createdAt: row.createdAt,
         }
       }),
@@ -747,11 +803,16 @@ const conversationColumns = {
 }
 
 // "May these two write to each other now?" — computed BY THE DATABASE, with
-// the very function messages_insert uses (rls_care_team_member, 0019): the
-// list's canSend and the write's permission can't disagree, because they
-// are one definition. It runs under the caller's row security, which lets
-// each participant read the care-team link between them.
-const canSendColumn = sql<boolean>`rls_care_team_member(${conversations.practitionerId}, ${conversations.patientId})`
+// the very function messages_insert uses (rls_can_message, 0063: a care-team
+// link AND the patient's account active): the list's canSend and the
+// write's permission can't disagree, because they are one definition. It
+// runs under the caller's row security, which lets each participant read
+// the care-team link between them.
+const canSendColumn = sql<boolean>`rls_can_message(${conversations.practitionerId}, ${conversations.patientId})`
+
+// Half of that answer, to say WHY a conversation is read-only
+// (readOnlyReason): are the two on a care team together? (0019)
+const onCareTeamColumn = sql<boolean>`rls_care_team_member(${conversations.practitionerId}, ${conversations.patientId})`
 
 // node-postgres returns a timestamptz column as a Date — but a computed
 // expression like now() comes back through drizzle's sql`` as whatever the

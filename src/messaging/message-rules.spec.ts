@@ -25,6 +25,7 @@ import {
   isListed,
   otherParticipantId,
   participantSide,
+  readOnlyReason,
   takePage,
   toPublicMessage,
   type ConversationSummary,
@@ -190,6 +191,26 @@ describe('takePage', () => {
   })
 })
 
+describe('readOnlyReason', () => {
+  it('is null while the two can write', () => {
+    expect(readOnlyReason({ canSend: true, onCareTeam: true })).toBeNull()
+  })
+
+  it('names the deactivated account when the care team is still there', () => {
+    expect(readOnlyReason({ canSend: false, onCareTeam: true })).toBe(
+      'patient_deactivated',
+    )
+  })
+
+  // Both true at once (an ended link AND a deactivated account): the link
+  // is the answer — reactivating wouldn't make the conversation writable.
+  it('names the ended care team otherwise, whatever the account', () => {
+    expect(readOnlyReason({ canSend: false, onCareTeam: false })).toBe(
+      'care_team_ended',
+    )
+  })
+})
+
 function summary(
   id: number,
   createdAt: string,
@@ -214,6 +235,7 @@ function summary(
     unreadCount: 0,
     archivedAt: null,
     canSend: true,
+    readOnlyReason: null,
     createdAt: at(createdAt),
   }
 }

@@ -87,7 +87,12 @@ import { perPatient } from '../audit/clinical-reads'
 import type { AuditAction } from '../audit/audit-vocabulary'
 import { StorageService } from '../storage/storage.service'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
-import { assertProgramOpen, planClosing } from './program-state'
+import {
+  assertProgramOpen,
+  DEACTIVATED_PATIENT_PROGRAM_MESSAGE,
+  planClosing,
+  type ProgramState,
+} from './program-state'
 import {
   assertOwnPhoto,
   assertPhotoRoom,
@@ -428,6 +433,9 @@ export class AssignedProgramsService {
         'You can only assign programs to patients you manage',
       )
     }
+    // After the 403, never before: someone outside the care team must not
+    // learn whether the account is active (decisions §22).
+    await this.assertPatientAccountActive(dto.patientId)
 
     assertDatesInOrder(dto.startDate, dto.endDate)
 
@@ -604,7 +612,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
 
     // exercises' SELECT policy is unconditional (USING (true)), so this
     // needs no RLS context — reading it on the normal connection is
@@ -698,7 +706,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     assertScheduleDayAllowed(dto.effectiveFrom, program)
     // A pause is something that happens DURING a program (decided
     // 2026-10-11): on the start date it would replace the first version and
@@ -1082,7 +1090,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     // Moving the start date: only while the program hasn't started (see
     // start-date-move.ts) — and then its schedule moves with it, below.
     const newStartDate =
@@ -1198,7 +1206,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
 
     await withRlsContext(this.db, currentUser, async (tx) => {
       // The row as it is NOW, locked until this transaction ends: the audit
@@ -1264,7 +1272,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
 
     // Read, permutation-check, and write all happen inside ONE transaction
     // (tx.query instead of this.db.query) — same fix as
@@ -1365,7 +1373,7 @@ export class AssignedProgramsService {
   async addWorkout(id: number, currentUser: CurrentUser, dto: AddWorkoutDto) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     await withRlsContext(this.db, currentUser, async (tx) => {
       await this.lockProgram(tx, id)
       const workouts = await this.findWorkouts(tx, id)
@@ -1399,7 +1407,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     await withRlsContext(this.db, currentUser, async (tx) => {
       const workouts = await this.findWorkouts(tx, id)
       resolveWorkoutId(workoutId, workouts, 'program')
@@ -1429,7 +1437,7 @@ export class AssignedProgramsService {
   ) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     await withRlsContext(this.db, currentUser, async (tx) => {
       const workouts = orderWorkouts(await this.findWorkouts(tx, id))
       const currentOrder = workouts.map((w) => w.id)
@@ -1466,7 +1474,7 @@ export class AssignedProgramsService {
   async removeWorkout(id: number, workoutId: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
         await this.lockProgram(tx, id)
@@ -1781,7 +1789,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
 
     // The own photos' keys of a DELETED exercise (none otherwise) — their
     // files are deleted once the transaction has committed, below.
@@ -1888,7 +1896,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     return withRlsContext(this.db, currentUser, async (tx) => {
       const row = await this.lockProgramExercise(
         tx,
@@ -2089,7 +2097,7 @@ export class AssignedProgramsService {
       currentUser,
     )
     await this.assertCanManage(program.patientId, currentUser)
-    assertProgramOpen(program)
+    await this.assertProgramChangeable(program)
     return program
   }
 
@@ -2820,6 +2828,30 @@ export class AssignedProgramsService {
       throw new NotFoundException(`Assigned program ${id} not found`)
     }
     return program
+  }
+
+  // Every CHANGE to an open program (not closing it — close, archive and
+  // the closing preview call assertProgramOpen alone): the program is open
+  // (409), then its patient's account is active (409, decisions §22). In
+  // that order: for a closed program of a deactivated patient, "it's
+  // closed" is the true answer — reactivating wouldn't make it changeable.
+  // Always after assertCanManage, so the 409s say nothing to a stranger.
+  private async assertProgramChangeable(
+    program: ProgramState & { patientId: number },
+  ) {
+    assertProgramOpen(program)
+    await this.assertPatientAccountActive(program.patientId)
+  }
+
+  // Read when asked, not cached: an admin may deactivate or reactivate the
+  // account at any moment. Not a database rule (unlike messaging's): a
+  // change already past this check when the account is deactivated still
+  // lands — harmless (a program change, not a message the patient is
+  // notified of), and the next change is refused.
+  private async assertPatientAccountActive(patientId: number) {
+    if (!(await this.usersService.isAccountActive(patientId))) {
+      throw new ConflictException(DEACTIVATED_PATIENT_PROGRAM_MESSAGE)
+    }
   }
 
   // Viewing allows a third case beyond manage: the patient viewing their

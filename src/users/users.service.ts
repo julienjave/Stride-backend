@@ -625,7 +625,17 @@ export class UsersService {
   //
   // WHICH patients is CareTeamService's decision (the care-team rule lives
   // there, once); this method only turns those ids into full user objects.
-  async findPatientsForPractitioner(practitionerId: number) {
+  //
+  // includeInactive (2026-10-27, decisions §22): a deactivated patient keeps
+  // their care team (§18), but this list left them out — so their team
+  // could reach them only by address. GET /users?includeInactive=true (My
+  // patients' "Show deactivated patients") adds them, each with its
+  // `isActive: false`. Off by default: the other callers (the programs and
+  // sessions lists) keep listing only active patients, unchanged.
+  async findPatientsForPractitioner(
+    practitionerId: number,
+    includeInactive = false,
+  ) {
     const patientIds =
       await this.careTeamService.findPatientIdsForPractitioner(practitionerId)
     if (patientIds.length === 0) {
@@ -639,7 +649,7 @@ export class UsersService {
       .where(
         and(
           eq(userRoles.role, UserRole.PATIENT),
-          eq(users.isActive, true),
+          includeInactive ? undefined : eq(users.isActive, true),
           inArray(users.id, patientIds),
         ),
       )
@@ -669,6 +679,21 @@ export class UsersService {
     practitionerId: number,
   ): Promise<boolean> {
     return this.careTeamService.isOnCareTeam(practitionerId, patientId)
+  }
+
+  // "Can this account sign in?" — false for a deactivated account, and for
+  // an id that holds no account. The question behind a deactivated
+  // patient's frozen programs and read-only conversations (decisions §22).
+  // It answers about the ACCOUNT only: whether the caller may act on this
+  // patient at all is isPatientManagedBy's question, asked first by every
+  // caller.
+  async isAccountActive(userId: number): Promise<boolean> {
+    const [row] = await this.db
+      .select({ isActive: users.isActive })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+    return row?.isActive === true
   }
 
   async findOne(id: number) {

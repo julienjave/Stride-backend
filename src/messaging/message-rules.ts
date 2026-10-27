@@ -54,6 +54,13 @@ export const START_NOT_ON_CARE_TEAM_MESSAGE =
 // the same sentence reaches the patient and the practitioner.
 export const READ_ONLY_CONVERSATION_MESSAGE =
   "You're no longer on a care team together, so this conversation is read-only"
+// Writing to a deactivated patient — sending, or starting a conversation —
+// while still on their care team (decided 2026-10-27, decisions §22). A 409,
+// not the 403 above: the writer still has the right (they ARE on the team);
+// the patient's state is in the way, and reactivating the account clears it.
+// Only a practitioner can ever read it: a deactivated patient can't sign in.
+export const DEACTIVATED_PATIENT_MESSAGING_MESSAGE =
+  "This patient's account is deactivated, so the conversation is read-only until the account is reactivated"
 export const NOT_PARTICIPANT_MESSAGE =
   'You are not a participant in this conversation'
 export const NOT_YOUR_MESSAGE_MESSAGE = 'You can only delete your own messages'
@@ -137,9 +144,31 @@ export interface ConversationSummary {
   // participant's is theirs alone.
   archivedAt: Date | null
   // Whether I can write here now: the two of us are on a care team
-  // together. false = a read-only history (decided 2026-10-20).
+  // together, and the patient's account is active. false = a read-only
+  // history (decided 2026-10-20; the account since 2026-10-27).
   canSend: boolean
+  // WHY it's read-only, for the screen's words — null when canSend is true.
+  readOnlyReason: ReadOnlyReason | null
   createdAt: Date
+}
+
+// 'care_team_ended': the two are no longer on a care team together.
+// 'patient_deactivated': they are, but the patient's account is
+// deactivated (decisions §22) — reactivating it would make it writable.
+export type ReadOnlyReason = 'care_team_ended' | 'patient_deactivated'
+
+// From the database's two answers about the pair (MessagingService asks
+// both in the list's query, with the very functions the write policies use):
+// may they write (rls_can_message), and are they on a care team together
+// (rls_care_team_member). The care team is checked first: when the link has
+// ended, that's the answer even if the account is deactivated too —
+// reactivating wouldn't make the conversation writable.
+export function readOnlyReason(pair: {
+  canSend: boolean
+  onCareTeam: boolean
+}): ReadOnlyReason | null {
+  if (pair.canSend) return null
+  return pair.onCareTeam ? 'patient_deactivated' : 'care_team_ended'
 }
 
 // --- WHO IS WHO --------------------------------------------------------------------------------------------

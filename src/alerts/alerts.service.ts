@@ -321,13 +321,15 @@ export class AlertsService {
                 desc(programAlertReviews.id),
               )
 
-      // 9. The patients' names and photos.
+      // 9. The patients' names and photos, and whether their account is
+      //    active (attendance below).
       const people = await tx
         .select({
           id: users.id,
           firstName: users.firstName,
           lastName: users.lastName,
           avatarPath: users.avatarPath,
+          isActive: users.isActive,
         })
         .from(users)
         .where(inArray(users.id, patientIds))
@@ -348,7 +350,9 @@ export class AlertsService {
     // --- In memory: group, then ask the pure rules ---------------------------
 
     const patients = new Map<number, AlertPatient>()
+    const deactivated = new Set<number>()
     for (const person of read.people) {
+      if (!person.isActive) deactivated.add(person.id)
       patients.set(person.id, {
         id: person.id,
         firstName: person.firstName,
@@ -374,9 +378,17 @@ export class AlertsService {
     // closed program would raise nothing anyway — its end date is past, so
     // it isn't running — but its schedule wasn't even read: the guard says
     // so plainly instead of leaning on that.)
+    //
+    // Nor for a DEACTIVATED patient (decided 2026-10-27, decisions §22): they
+    // can't sign in, so every planned day would read as missed — an alert
+    // about an absence nobody can act on. Their programs stay open until
+    // someone closes them; their recent SESSIONS (below) are still listed —
+    // a session finished before the deactivation can still need a look, and
+    // it leaves the list like any other: reviewed, or 14 days old.
     const attendance: AttendanceAlert[] = []
     for (const program of read.programs) {
       if (program.status !== 'active') continue
+      if (deactivated.has(program.patientId)) continue
       const facts = programAttendance(
         program,
         read.versions.filter((v) => v.assignedProgramId === program.id),

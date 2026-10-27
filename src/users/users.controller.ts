@@ -123,7 +123,8 @@ export class UsersController {
 
   // --- GET ROUTES ---
 
-  // Admin: every account. Practitioner: their own patients (clinic-scoped).
+  // Admin: every account. Practitioner: their own patients (their care
+  // teams). Both: active accounts only, unless ?includeInactive=true.
   // Patient: no blanket listing at all.
   @UseGuards(RolesGuard)
   @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
@@ -157,7 +158,13 @@ export class UsersController {
       // the one value that should enable it sidesteps that entirely.
       return this.usersService.findAll(includeInactive === 'true')
     }
-    return this.usersService.findPatientsForPractitioner(currentUser.id)
+    // A practitioner's ?includeInactive=true (decisions §22) adds their
+    // DEACTIVATED patients — still only patients whose care team they're
+    // on: the flag widens the account filter, never whose patients.
+    return this.usersService.findPatientsForPractitioner(
+      currentUser.id,
+      includeInactive === 'true',
+    )
   }
 
   @Get(':id')

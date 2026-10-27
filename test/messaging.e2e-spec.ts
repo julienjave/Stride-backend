@@ -408,6 +408,7 @@ describe('Messaging (e2e)', () => {
         unreadCount: 0,
         archivedAt: null,
         canSend: true,
+        readOnlyReason: null,
         createdAt: first.body.createdAt,
       })
 
