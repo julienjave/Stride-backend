@@ -87,8 +87,11 @@ Log in as `admin@stride.test`. Under the shortcuts:
   Frank (`former.patient@`) — the page says **Account deactivated**, still
   shows his record and his care team, and Sam can still leave it; nobody new
   can join until the account is reactivated (the admin sees the same on
-  **Admin → Users → Frank Former**, with **End**). Run `npm run seed:dev --
-  --reset` afterwards.
+  **Admin → Users → Frank Former**, with **End**). Sam finds Frank under
+  **Patients → Show 1 deactivated patient**; his page offers no **Message**
+  and no **Assign a program** — the notice says why — and any program of his
+  can only be completed or cancelled. Run `npm run seed:dev -- --reset`
+  afterwards.
 
 ## Two-factor sign-in
 
