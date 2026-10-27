@@ -234,3 +234,24 @@ made, through the app's own code); the seed announces it just before.
     `MEDICAL_FILE_VIEWED` (the list, with the entries shown) and
     `MEDICAL_FILE_ENTRY_VIEWED` (one entry) — including a patient reading
     their own.
+
+## Health record copies
+
+A patient's whole record — medical file, programs and sessions — as one PDF,
+made on request and never stored. Two ways to get one:
+
+- **The patient's own download:** log in as `pat@stride.test`, **Profile → My
+  records → Download my records**. The file is named after today's date; its
+  dates are written in your browser's time zone. Five copies a minute, then
+  the page says how long to wait.
+- **An emailed link, for a patient who can't sign in:** as `admin@stride.test`,
+  **Admin → Users → Frank Former** (`former.patient@stride.test`, deactivated —
+  list deactivated users with the filter at the top of the list), section
+  **Health record copy → Email a download link**. Open the email in Mailpit
+  and follow its link (signed in or not — it works either way). The page asks
+  Frank's date of birth (it's on his user page) before the download. A link
+  works **once**, for **72 hours**; **5 wrong dates** lock it; a new link
+  replaces the open one. The user page lists every link and what became of
+  it; the audit log shows *Emailed a health record download link*, *Entered a
+  wrong date of birth on a download link* and *Downloaded a copy of a health
+  record*.

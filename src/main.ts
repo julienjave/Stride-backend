@@ -31,7 +31,7 @@ import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
 import { getDatabaseUrl } from './config/database-url'
 import { validateEnv } from './config/validate-env'
-import { getAllowedOrigins } from './config/allowed-origins'
+import { corsOptions } from './config/cors-options'
 import { getPoolConfig } from './config/pool-config'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
 
@@ -94,10 +94,10 @@ async function bootstrap() {
 
   // === CORS ===================================================================
 
-  app.enableCors({
-    origin: getAllowedOrigins(),
-    credentials: true,
-  })
+  // The allowed frontends, the session cookie, and the response headers
+  // the frontend may read (the records export's file name, a 429's
+  // Retry-After) — config/cors-options.ts says why each.
+  app.enableCors(corsOptions())
 
   // === VALIDATION =============================================================
 
