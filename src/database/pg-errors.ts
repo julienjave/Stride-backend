@@ -48,6 +48,15 @@ export const PG_CHECK_VIOLATION = '23514'
 // message sent after its care-team link ended (migration 0048).
 export const PG_INSUFFICIENT_PRIVILEGE = '42501'
 
+// 40001 is "serialization_failure": a REPEATABLE READ (or SERIALIZABLE)
+// transaction tried to change a row that another transaction changed and
+// committed AFTER this one's snapshot was taken. Postgres can't let it
+// write on top of a version it never saw, so it refuses — and the cure the
+// Postgres manual gives is to run the whole transaction again, from a new
+// snapshot. The records export's emailed link meets it (two downloads with
+// the same link at once): RecordsExportLinksService retries.
+export const PG_SERIALIZATION_FAILURE = '40001'
+
 // Constraint names this app translates into a 409. Drizzle names a column's
 // .unique() constraint `<table>_<column>_unique` (see migration 0000).
 // Kept as named constants so the service and its tests can't disagree on
@@ -64,6 +73,12 @@ export const CARE_TEAM_NO_OVERLAP = 'care_team_members_no_overlap'
 // INSERT finds the winner's fresh open invitation. InvitationsService turns it
 // into a 409.
 export const INVITATIONS_ONE_OPEN = 'invitations_one_open_per_user'
+
+// The same rule for the records export's emailed links (migration 0061):
+// at most one open link per patient. Hit when two "send a link" requests
+// race; RecordsExportLinksService turns it into a 409.
+export const RECORDS_EXPORT_LINKS_ONE_OPEN =
+  'records_export_links_one_open_per_patient'
 
 // One schedule version per program per day (program-schedules.schema.ts,
 // migration 0024). Hit when two schedule changes for the same program and
@@ -267,4 +282,10 @@ export function isCheckViolation(error: unknown, constraint?: string): boolean {
 // reason left once the service's own checks have passed.
 export function isRowSecurityViolation(error: unknown): boolean {
   return isPgError(error, PG_INSUFFICIENT_PRIVILEGE)
+}
+
+// A serialization failure (40001): no constraint to narrow it — the whole
+// transaction is what failed, and what to do is to run it again.
+export function isSerializationFailure(error: unknown): boolean {
+  return isPgError(error, PG_SERIALIZATION_FAILURE)
 }

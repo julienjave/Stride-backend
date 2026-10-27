@@ -88,6 +88,20 @@ export interface RecoveryCodeUsedNoticeEmail {
   remaining: number
 }
 
+// The records export's emailed link (decisions §20, pass 2), gathered by
+// RecordsExportLinksService.
+export interface RecordsExportLinkEmail {
+  // The address on file — the only place a copy of the record may be sent.
+  to: string
+  firstName: string
+  rawToken: string
+  validForHours: number
+  dateOfBirthAttempts: number
+  // The account can sign in (active, with a password): the email also says
+  // where to download a copy in the app, any time, without asking.
+  canSignIn: boolean
+}
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 // Decides WHAT each email says — subject, HTML and plain-text bodies, the
@@ -418,6 +432,41 @@ export class EmailService {
         '',
         "If this was you, sign in again. If it wasn't, reset your password straight away — it signs your account out everywhere — then tell your clinic:",
         forgotUrl,
+      ].join('\n'),
+    })
+  }
+
+  // The link to a copy of the patient's record. The record itself is never
+  // in the email (an inbox is not a safe place for a health record, and a
+  // forwarded email takes everything with it): the link leads to a page
+  // that asks for the date of birth first. The subject names no one, like
+  // every subject here.
+  async sendRecordsExportLinkEmail(
+    email: RecordsExportLinkEmail,
+  ): Promise<void> {
+    const downloadUrl = `${frontendUrl()}/records-download?token=${email.rawToken}`
+    const validity = `${email.validForHours} hours`
+    const inApp =
+      'You can also download a copy at any time, without asking, from My records once you sign in to Stride.'
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Your health record from Stride',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Your clinic sent you a link to download a copy of your health record: your medical file, your exercise programs and your sessions.</p>
+             <p><a href="${escapeHtml(downloadUrl)}">Download your record</a>. You'll be asked for your date of birth. The link works once and expires in ${validity}; after ${email.dateOfBirthAttempts} wrong dates of birth it stops working.</p>
+             ${email.canSignIn ? `<p>${inApp}</p>` : ''}
+             <p>If you didn't ask for your record, tell your clinic.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'Your clinic sent you a link to download a copy of your health record: your medical file, your exercise programs and your sessions.',
+        '',
+        `Download your record: ${downloadUrl}`,
+        `You'll be asked for your date of birth. The link works once and expires in ${validity}; after ${email.dateOfBirthAttempts} wrong dates of birth it stops working.`,
+        ...(email.canSignIn ? ['', inApp] : []),
+        '',
+        "If you didn't ask for your record, tell your clinic.",
       ].join('\n'),
     })
   }

@@ -459,6 +459,77 @@ describe('EmailService', () => {
       )
     })
   })
+
+  // The records export's emailed link (decisions §20, pass 2). What it must
+  // hold: the link, the rules of the link (once, 72 hours, 5 tries) — and,
+  // only for an account that can sign in, where to download it unasked.
+  // What it must NOT: the record itself, or a name in the subject.
+  describe('sendRecordsExportLinkEmail', () => {
+    const link = {
+      to: 'pat@example.com',
+      firstName: 'Pat',
+      rawToken: 'tok456',
+      validForHours: 72,
+      dateOfBirthAttempts: 5,
+      canSignIn: false,
+    }
+    const IN_APP =
+      'You can also download a copy at any time, without asking, from My records once you sign in to Stride.'
+
+    it('sends the download link and its rules, in both bodies', async () => {
+      await service.sendRecordsExportLinkEmail(link)
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect([email.to, email.from, email.subject]).toEqual([
+        'pat@example.com',
+        'Stride <noreply@stride.test>',
+        'Your health record from Stride',
+      ])
+      const url = 'https://app.stride.test/records-download?token=tok456'
+      expect(email.html).toContain(`<a href="${url}">Download your record</a>`)
+      expect(email.text).toContain(`Download your record: ${url}`)
+      for (const body of [email.html, email.text]) {
+        expect(body).toContain('Hello Pat,')
+        expect(body).toContain(
+          "You'll be asked for your date of birth. The link works once and expires in 72 hours; after 5 wrong dates of birth it stops working.",
+        )
+        expect(body).toContain(
+          "If you didn't ask for your record, tell your clinic.",
+        )
+        expect(body).not.toContain('My records')
+      }
+    })
+
+    it('says where to download it unasked, to an account that can sign in', async () => {
+      await service.sendRecordsExportLinkEmail({ ...link, canSignIn: true })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain(`<p>${IN_APP}</p>`)
+      expect(email.text).toContain(
+        `wrong dates of birth it stops working.\n\n${IN_APP}\n\nIf you didn't ask`,
+      )
+    })
+
+    it('escapes the first name in the HTML body, and only there', async () => {
+      await service.sendRecordsExportLinkEmail({
+        ...link,
+        firstName: '<i>Pat</i>',
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;i&gt;Pat&lt;/i&gt;,')
+      expect(email.text).toContain('Hello <i>Pat</i>,')
+    })
+
+    it('rejects when the transport fails', async () => {
+      send.mockRejectedValue(new Error('delivery failed'))
+
+      await expect(service.sendRecordsExportLinkEmail(link)).rejects.toThrow(
+        'delivery failed',
+      )
+    })
+  })
 })
 
 describe('describeWhere', () => {

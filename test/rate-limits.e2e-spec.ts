@@ -134,6 +134,22 @@ describe('Rate limits (e2e)', () => {
     ])
   })
 
+  // The emailed link's download (pass 2) too: public, so counted per
+  // address — a script can't draw PDFs in a loop (the link's own limit, 5
+  // wrong dates of birth ever, is what stops guessing). Each of these is a
+  // 404 (no such link) until the 6th.
+  it('refuses the 6th download through a link in a minute', async () => {
+    app = await buildApp('on')
+    const downloadWithLink = () =>
+      request(app.getHttpServer())
+        .post('/records-export/download')
+        .send({ token: 'a'.repeat(64), dateOfBirth: '1988-04-12' })
+
+    expect(await statuses(downloadWithLink, 6)).toEqual([
+      404, 404, 404, 404, 404, 429,
+    ])
+  })
+
   // And the switch the other suites rely on: off means never counted — the
   // login limit (an @Throttle override) included.
   it('counts nothing when the limits are off', async () => {

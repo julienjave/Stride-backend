@@ -18,8 +18,12 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Module } from '@nestjs/common'
+import { EmailModule } from '../email/email.module'
 import { RecordsExportController } from './records-export.controller'
 import { RecordsExportService } from './records-export.service'
+import { RecordsExportLinksController } from './records-export-links.controller'
+import { RecordsExportLinksService } from './records-export-links.service'
+import { PublicRecordsExportController } from './public-records-export.controller'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
@@ -27,8 +31,14 @@ import { RecordsExportService } from './records-export.service'
 // global modules, like the medical files'; the medical file's query is a
 // plain function (loadMedicalFileEntries), so no module import is needed
 // for it.
+// EmailModule: the emailed link (pass 2).
 @Module({
-  controllers: [RecordsExportController],
-  providers: [RecordsExportService],
+  imports: [EmailModule],
+  controllers: [
+    RecordsExportController,
+    PublicRecordsExportController,
+    RecordsExportLinksController,
+  ],
+  providers: [RecordsExportService, RecordsExportLinksService],
 })
 export class RecordsExportModule {}

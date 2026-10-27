@@ -34,6 +34,12 @@ export interface RecordExport {
   fileName: string
 }
 
+// Which way a copy left — written into its RECORDS_EXPORTED entry:
+//   - app: the patient, signed in, from My records;
+//   - emailed_link: through the link an admin emailed (which one).
+export type ExportSource =
+  { via: 'app' } | { via: 'emailed_link'; linkId: number }
+
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
 // The records export (decisions §20): a patient's right of access (HIPAA 45
@@ -41,9 +47,11 @@ export interface RecordExport {
 // sessions, as one PDF.
 //
 // The rules it keeps:
-//   - ONLY THE PATIENT RECEIVES IT. Pass 1: the patient themselves (GET
-//     /records-export). Pass 2 adds an emailed link for one who can't sign
-//     in — the same method below, reached through the link.
+//   - ONLY THE PATIENT RECEIVES IT: the patient themselves (GET
+//     /records-export), or — for one who can't sign in — through a link an
+//     admin emails to the patient's own address, opened with their date of
+//     birth (RecordsExportLinksService). Both go through
+//     exportInTransaction below.
 //   - MADE ON REQUEST, NEVER STORED. No copy waits in storage: one would be
 //     another place holding clinical content, and out of date the next day.
 //   - ONE MOMENT. The reads run in a REPEATABLE READ transaction: every
@@ -76,33 +84,47 @@ export class RecordsExportService {
     return withRlsContext(
       this.db,
       { id: patientId, activeRole: UserRole.PATIENT },
-      async (tx) => {
-        const record = await loadRecord(tx, patientId)
-        const pdf = await renderRecordPdf(buildRecordDocument(record, timeZone))
-
-        // What went in, by id — never the content (an audit entry is not a
-        // second copy of the record). Enough to answer "what did this
-        // patient receive on that day?" even after the record has grown.
-        await this.auditService.logInTransaction(tx, {
-          performedBy: patientId,
-          action: 'RECORDS_EXPORTED',
-          targetUserId: patientId,
-          entityType: 'records_exports',
-          details: {
-            via: 'app',
-            timeZone,
-            medicalFileEntryIds: record.medicalFile.map((entry) => entry.id),
-            programIds: record.programs.map((program) => program.id),
-            sessionIds: record.programs.flatMap((program) =>
-              program.sessions.map((session) => session.id),
-            ),
-          },
-        })
-
-        return { pdf, fileName: exportFileName(record.madeAt, timeZone) }
-      },
+      (tx) => this.exportInTransaction(tx, patientId, timeZone, { via: 'app' }),
       { isolationLevel: 'repeatable read' },
     )
+  }
+
+  // The copy itself, inside the CALLER's transaction — shared by both ways
+  // in: the patient's own download (above) and the emailed link
+  // (RecordsExportLinksService), so the two can never hand out different
+  // documents. The caller owes it a transaction that:
+  //   - acts AS the patient (the patient's own policies decide what is read);
+  //   - runs at REPEATABLE READ (one moment — see the class comment).
+  // `source` says which way the copy left, for its audit entry.
+  async exportInTransaction(
+    tx: DrizzleDb,
+    patientId: number,
+    timeZone: string,
+    source: ExportSource,
+  ): Promise<RecordExport> {
+    const record = await loadRecord(tx, patientId)
+    const pdf = await renderRecordPdf(buildRecordDocument(record, timeZone))
+
+    // What went in, by id — never the content (an audit entry is not a
+    // second copy of the record). Enough to answer "what did this patient
+    // receive on that day?" even after the record has grown.
+    await this.auditService.logInTransaction(tx, {
+      performedBy: patientId,
+      action: 'RECORDS_EXPORTED',
+      targetUserId: patientId,
+      entityType: 'records_exports',
+      details: {
+        ...source,
+        timeZone,
+        medicalFileEntryIds: record.medicalFile.map((entry) => entry.id),
+        programIds: record.programs.map((program) => program.id),
+        sessionIds: record.programs.flatMap((program) =>
+          program.sessions.map((session) => session.id),
+        ),
+      },
+    })
+
+    return { pdf, fileName: exportFileName(record.madeAt, timeZone) }
   }
 }
 

@@ -81,8 +81,8 @@ describe('splitIntoRuns', () => {
   // "é" typed as e + a combining accent is two code points, one character:
   // Noto Sans has both, so it stays in the text.
   it('keeps a letter with a combining accent with its letter', () => {
-    expect(runs('Renée 😊')).toStrictEqual([
-      { font: 'body', text: 'Renée ' },
+    expect(runs('Rene\u0301e 😊')).toStrictEqual([
+      { font: 'body', text: 'Rene\u0301e ' },
       { font: 'emoji', text: '😊' },
     ])
   })

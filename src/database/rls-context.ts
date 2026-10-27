@@ -137,3 +137,27 @@ export async function withEmailChangeTokenContext<T>(
     return fn(tx)
   })
 }
+
+// The token holder's context for the records export's EMAILED LINK
+// (decisions §20, pass 2) — the same mechanism again: the HASH in a
+// transaction-local setting, read by the records_export_links policies
+// (migration 0062), so the transaction sees exactly the one link with that
+// hash. The download then also acts as the PATIENT (applyUserContext, once
+// the link has said whose it is and the date of birth matched) to read the
+// record through the patient's own policies.
+//
+// `config` as in withRlsContext: the download asks for repeatable read (one
+// moment for the whole copy); counting a wrong date of birth leaves it out.
+export async function withRecordsExportTokenContext<T>(
+  db: DrizzleDb,
+  tokenHash: string,
+  fn: (tx: DrizzleDb) => Promise<T>,
+  config?: PgTransactionConfig,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.records_export_token_hash', ${tokenHash}, true)`,
+    )
+    return fn(tx)
+  }, config)
+}

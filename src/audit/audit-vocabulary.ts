@@ -194,6 +194,12 @@ export const AUDIT_ACTIONS = {
   // READ of clinical data (every row in it was read to write it), so a
   // view, with the ids of what went in — never the content.
   RECORDS_EXPORTED: 'view',
+  // The emailed link (pass 2): an admin sent one to the patient's address
+  // (a change — a way into the record now exists) …
+  RECORDS_EXPORT_LINK_SENT: 'change',
+  // … and someone holding it typed a wrong date of birth: a failed proof,
+  // like a failed sign-in.
+  RECORDS_EXPORT_LINK_REFUSED: 'sign_in',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -225,6 +231,8 @@ export const AUDIT_AREAS = {
   // stored. The entry is about the patient (target_user_id), with no
   // entity id.
   records_exports: 'Records exports',
+  // The emailed links themselves (a table: who sent one, when, used or not).
+  records_export_links: 'Records exports',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -260,6 +268,9 @@ export const CLINICAL_AREAS = {
   // The ids of every note, program and session handed out: which records a
   // patient HAS is clinical information too.
   records_exports: true,
+  // A link's entries say who sent it to which address, when it expires, how
+  // many wrong dates of birth — nothing from the record.
+  records_export_links: false,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------

@@ -37,11 +37,12 @@ import {
   DEFAULT_TIME_ZONE,
   ExportRecordsQueryDto,
 } from './dto/export-records-query.dto'
+import { pdfFile } from './pdf-file'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
-// The records export (decisions §20). Pass 1: a patient downloads their own
-// record. Patients only — acting AS a patient: a practitioner reads the file
+// The records export (decisions §20): a patient downloads their own
+// record. (The emailed link's download is PublicRecordsExportController.) Patients only — acting AS a patient: a practitioner reads the file
 // in the app, and an admin never sees its content (decisions §16).
 @UseGuards(SessionAuthGuard, RolesGuard)
 @Roles(UserRole.PATIENT)
@@ -54,13 +55,9 @@ export class RecordsExportController {
   // the service writes RECORDS_EXPORTED itself, in the read's transaction,
   // as the medical files' reads do.
   //
-  // The answer is a FILE, not JSON:
-  //   - StreamableFile: Nest sends the bytes as they are, with the type and
-  //     the disposition given here, instead of serialising a value;
-  //   - `attachment; filename=…`: the browser saves it under that name
-  //     rather than trying to show it in the tab;
-  //   - `Cache-Control: no-store`: no browser or proxy keeps a copy of a
-  //     health record on disk after the download.
+  // The answer is a FILE, not JSON (pdfFile, shared with the emailed
+  // link's download), with `Cache-Control: no-store`: no browser or proxy
+  // keeps a copy of a health record on disk after the download.
   //
   // 5 a minute, like the password routes: each request reads the whole
   // record and draws a PDF — far heavier than an ordinary read, and a
@@ -73,14 +70,11 @@ export class RecordsExportController {
     @CurrentUser() user: CurrentUser,
     @Query() query: ExportRecordsQueryDto,
   ): Promise<StreamableFile> {
-    const { pdf, fileName } = await this.recordsExportService.exportOwnRecord(
-      user.id,
-      query.timeZone ?? DEFAULT_TIME_ZONE,
+    return pdfFile(
+      await this.recordsExportService.exportOwnRecord(
+        user.id,
+        query.timeZone ?? DEFAULT_TIME_ZONE,
+      ),
     )
-    return new StreamableFile(pdf, {
-      type: 'application/pdf',
-      disposition: `attachment; filename="${fileName}"`,
-      length: pdf.length,
-    })
   }
 }
