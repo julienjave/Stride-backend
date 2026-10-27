@@ -84,8 +84,11 @@ Log in as `admin@stride.test`. Under the shortcuts:
   Casey and the invited patients join **Patients without a care team** (Jo
   still has Sam). Reactivating Alex brings none of them back. A deactivated
   **patient** keeps their care team: log in as `sam@stride.test` and open
-  Frank (`former.patient@`) — the page says **Account deactivated** and still
-  shows his record. Run `npm run seed:dev -- --reset` afterwards.
+  Frank (`former.patient@`) — the page says **Account deactivated**, still
+  shows his record and his care team, and Sam can still leave it; nobody new
+  can join until the account is reactivated (the admin sees the same on
+  **Admin → Users → Frank Former**, with **End**). Run `npm run seed:dev --
+  --reset` afterwards.
 
 ## Two-factor sign-in
 

@@ -168,6 +168,16 @@ export const ENDED_NO_SHARED_CLINIC_REASON = 'No longer share a clinic'
 export const ENDED_PRACTITIONER_DEACTIVATED_REASON =
   "The practitioner's account was deactivated"
 
+// The refusal to ADD someone to a deactivated patient's care team (decided
+// with the person 2026-10-27, decisions §21). A deactivated patient keeps
+// their care team (§18) — it can still be read and a link can still be
+// ended — but giving a NEW person access to a former patient's record is a
+// step to take deliberately: reactivate the account first (audited), then
+// add. A 409, not a 404: the patient exists; it's their account's state that
+// conflicts with the request.
+export const DEACTIVATED_PATIENT_ADD_MESSAGE =
+  "This patient's account is deactivated. Reactivate it to add someone to their care team."
+
 // What an UPDATE ending links answers (`.returning(…)`), one shape for every
 // such UPDATE — it IS the EndedLink type.
 const ENDED_LINK_COLUMNS = {
@@ -315,7 +325,10 @@ export class CareTeamService {
     actor: Actor,
     includeEnded: boolean,
   ): Promise<CareTeamEntry[] | PatientCareTeamEntry[]> {
-    await this.assertActivePatient(patientId)
+    // Any patient account, active or NOT: a deactivated patient keeps their
+    // care team (decisions §18), and the team — and an admin — must still
+    // see it (until 2026-10-27 this was a 404, for every reader).
+    await this.findPatientOrThrow(patientId)
     await this.assertCanSeeCareTeam(patientId, actor)
     const entries = await this.findEntries(actor, {
       patientId,
@@ -356,7 +369,7 @@ export class CareTeamService {
       )
     }
 
-    await this.assertActivePatient(patientId)
+    const patient = await this.findPatientOrThrow(patientId)
     await this.assertActivePractitioner(practitionerId)
 
     // The caller must be in the patient's clinic (admins aside, as
@@ -365,6 +378,12 @@ export class CareTeamService {
       throw new ForbiddenException(
         'You can only join the care team of a patient in one of your clinics',
       )
+    }
+    // Only now, once the caller may act on this patient at all, their
+    // account's state: someone who may not see the patient learns nothing
+    // new from it (decisions §21).
+    if (!patient.isActive) {
+      throw new ConflictException(DEACTIVATED_PATIENT_ADD_MESSAGE)
     }
     // …and so must the practitioner being added — even when that is the
     // caller (then this repeats the check above; harmless and simpler than
@@ -597,7 +616,7 @@ export class CareTeamService {
     patientId: number,
     actor: Actor,
   ): Promise<CareTeamCandidate[]> {
-    await this.assertActivePatient(patientId)
+    const patient = await this.findPatientOrThrow(patientId)
     const isAdmin = actor.activeRole === UserRole.ADMIN
     const isClinicColleague =
       actor.activeRole === UserRole.PRACTITIONER &&
@@ -606,6 +625,11 @@ export class CareTeamService {
       throw new ForbiddenException(
         "You can't add anyone to this patient's care team",
       )
+    }
+    // The candidates exist only to be added — the same refusal as adding,
+    // in the same place (after the 403).
+    if (!patient.isActive) {
+      throw new ConflictException(DEACTIVATED_PATIENT_ADD_MESSAGE)
     }
 
     const patientClinics = await this.db
@@ -799,12 +823,36 @@ export class CareTeamService {
 
   // === HELPER FUNCTIONS ===================================================
 
-  // 404 unless `patientId` is an active user holding the patient role —
-  // care teams only exist for patients.
-  private async assertActivePatient(patientId: number) {
-    if (!(await this.hasActiveRole(patientId, UserRole.PATIENT))) {
+  // 404 unless `patientId` is an account holding the patient role — care
+  // teams only exist for patients. ACTIVE OR NOT: two different questions
+  // (decisions §21). "Is this a patient?" decides whether the URL names a
+  // care team at all; "is the account active?" says whether the person can
+  // sign in — it's answered here, for the caller to decide what it means
+  // (reading and ending: nothing; adding: a 409).
+  private async findPatientOrThrow(
+    patientId: number,
+  ): Promise<{ isActive: boolean }> {
+    const patient = await this.findPatientAccount(patientId)
+    if (!patient) {
       throw new NotFoundException(`Patient ${patientId} not found`)
     }
+    return patient
+  }
+
+  // The patient's account, or null when `patientId` holds no patient role
+  // (or doesn't exist). Read without the caller's row-security context, like
+  // hasActiveRole: who may see THIS patient is decided afterwards, by the
+  // route.
+  private async findPatientAccount(
+    patientId: number,
+  ): Promise<{ isActive: boolean } | null> {
+    const [row] = await this.db
+      .select({ isActive: users.isActive })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .where(and(eq(users.id, patientId), eq(userRoles.role, UserRole.PATIENT)))
+      .limit(1)
+    return row ?? null
   }
 
   // 400 unless `practitionerId` is an active practitioner. A 400 rather

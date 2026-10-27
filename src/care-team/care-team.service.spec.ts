@@ -175,14 +175,27 @@ describe('CareTeamService', () => {
 
   // --- The data helpers, replaced (see the note at the top) ---------------
 
-  function givenRoles(roles: { patient?: boolean; practitioner?: boolean }) {
+  // `patient`: does the id hold the patient role (else the 404);
+  // `patientActive`: is that account active (a deactivated patient keeps
+  // their care team — decisions §21). `practitioner`: is the practitioner
+  // named an ACTIVE one.
+  function givenRoles(roles: {
+    patient?: boolean
+    patientActive?: boolean
+    practitioner?: boolean
+  }) {
+    jest
+      .spyOn(service as any, 'findPatientAccount')
+      .mockResolvedValue(
+        (roles.patient ?? true)
+          ? { isActive: roles.patientActive ?? true }
+          : null,
+      )
     return jest
       .spyOn(service as any, 'hasActiveRole')
       .mockImplementation((_id: unknown, role: unknown) =>
         Promise.resolve(
-          role === UserRole.PATIENT
-            ? (roles.patient ?? true)
-            : (roles.practitioner ?? true),
+          role === UserRole.PRACTITIONER ? (roles.practitioner ?? true) : false,
         ),
       )
   }
@@ -305,15 +318,35 @@ describe('CareTeamService', () => {
   // === GET /users/:id/care-team ==========================================
 
   describe('listForPatient', () => {
-    it('404s when the id is not an active patient', async () => {
+    it('404s when the id is not a patient', async () => {
       givenRoles({ patient: false })
       const findEntries = givenEntries()
 
       await expect(
         service.listForPatient(PATIENT_ID, admin, false),
-      ).rejects.toThrow(NotFoundException)
+      ).rejects.toThrow(
+        new NotFoundException(`Patient ${PATIENT_ID} not found`),
+      )
       expect(findEntries).not.toHaveBeenCalled()
     })
+
+    // Decisions §18 / §21: a deactivated patient keeps their care team, and
+    // whoever could read it still can (it was a 404 for everyone).
+    it.each<[string, Actor, [number, number][]]>([
+      ['an admin', admin, []],
+      ['a practitioner sharing a clinic', practitioner, [[4, PATIENT_ID]]],
+    ])(
+      "lets %s see a DEACTIVATED patient's team",
+      async (_who, actor, shared) => {
+        givenRoles({ patientActive: false })
+        givenSharedClinics(shared)
+        givenEntries()
+
+        await expect(
+          service.listForPatient(PATIENT_ID, actor, true),
+        ).resolves.toStrictEqual([entry(77)])
+      },
+    )
 
     // toStrictEqual: the patient's answer must not have a `reason` key at
     // all (toEqual treats a missing key and an undefined one alike).
@@ -525,13 +558,49 @@ describe('CareTeamService', () => {
       expect(db.insert).not.toHaveBeenCalled()
     })
 
-    it('404s for an id that is not an active patient', async () => {
+    it('404s for an id that is not a patient', async () => {
       givenAllowed()
       givenRoles({ patient: false })
       await expect(
         service.addMember(PATIENT_ID, {}, practitioner),
-      ).rejects.toThrow(NotFoundException)
+      ).rejects.toThrow(
+        new NotFoundException(`Patient ${PATIENT_ID} not found`),
+      )
       expect(db.insert).not.toHaveBeenCalled()
+    })
+
+    // Decisions §21: nobody new on a deactivated patient's team — reactivate
+    // first. Both ways in: a practitioner joining, an admin adding.
+    it.each<[string, Actor, { practitionerId?: number }]>([
+      ['a practitioner joining', practitioner, {}],
+      ['an admin adding a practitioner', admin, { practitionerId: colleague }],
+    ])(
+      "refuses %s to a DEACTIVATED patient's team (409), inserting nothing",
+      async (_who, actor, dto) => {
+        givenAllowed()
+        givenRoles({ patientActive: false })
+        await expect(service.addMember(PATIENT_ID, dto, actor)).rejects.toThrow(
+          new ConflictException(
+            "This patient's account is deactivated. Reactivate it to add someone to their care team.",
+          ),
+        )
+        expect(db.insert).not.toHaveBeenCalled()
+      },
+    )
+
+    // The 409 comes after the access check: someone who may not act on this
+    // patient gets the 403 they'd get anyway, not news of the account.
+    it('answers a practitioner of another clinic with the 403, deactivated or not', async () => {
+      givenAllowed()
+      givenRoles({ patientActive: false })
+      givenSharedClinics([[colleague, PATIENT_ID]])
+      await expect(
+        service.addMember(PATIENT_ID, {}, practitioner),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'You can only join the care team of a patient in one of your clinics',
+        ),
+      )
     })
 
     it('refuses to add someone who is not an active practitioner', async () => {
@@ -822,6 +891,26 @@ describe('CareTeamService', () => {
           ),
         )
       }
+      expect(db.select).not.toHaveBeenCalled()
+    })
+
+    // Decisions §21: the candidates exist only to be added.
+    it('refuses the candidates of a DEACTIVATED patient (409) — after the 403', async () => {
+      givenRoles({ patientActive: false })
+      givenSharedClinics([[4, 9]])
+      for (const actor of [
+        { id: 1, activeRole: UserRole.ADMIN },
+        { id: 4, activeRole: UserRole.PRACTITIONER },
+      ]) {
+        await expect(service.listCandidates(9, actor)).rejects.toThrow(
+          new ConflictException(
+            "This patient's account is deactivated. Reactivate it to add someone to their care team.",
+          ),
+        )
+      }
+      await expect(
+        service.listCandidates(9, { id: 5, activeRole: UserRole.PRACTITIONER }),
+      ).rejects.toThrow(ForbiddenException)
       expect(db.select).not.toHaveBeenCalled()
     })
 

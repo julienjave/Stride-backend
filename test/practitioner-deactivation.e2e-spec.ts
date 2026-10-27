@@ -413,4 +413,127 @@ describe('Deactivating a practitioner (e2e)', () => {
       await sessionPool.query('DROP FUNCTION test_refuse_care_team_ended()')
     }
   })
+
+  // Decisions §21 (2026-10-27): a deactivated PATIENT keeps their care team
+  // (§18) — so it must still be READABLE (it was a 404 for everyone: the
+  // admin's user page and the team's own patient page both said "Couldn't
+  // load the care team") and its links can still END; only ADDING someone
+  // new waits for a reactivation. Fresh accounts, so the tests above don't
+  // matter: Dee (the patient), on Rory's and Una's teams; Vic, a colleague in
+  // the same clinic who isn't.
+  describe("a deactivated patient's care team", () => {
+    const DEACTIVATED_ADD =
+      "This patient's account is deactivated. Reactivate it to add someone to their care team."
+    let vic: ReturnType<typeof agent>
+
+    // Who is on Dee's team as an answer lists it, current links only unless
+    // asked: practitioner ids, sorted.
+    async function teamAsSeenBy(who: ReturnType<typeof agent>, query = '') {
+      const res = await who.get(`/users/${ids.dee}/care-team${query}`)
+      expect(res.status).toBe(200)
+      return (res.body as { practitioner: { id: number } }[])
+        .map((entry) => entry.practitioner.id)
+        .sort((a, b) => a - b)
+    }
+
+    async function linksOfDee() {
+      const { rows } = await sessionPool.query<{ count: string }>(
+        'SELECT count(*) FROM care_team_members WHERE patient_id = $1',
+        [ids.dee],
+      )
+      return Number(rows[0].count)
+    }
+
+    beforeAll(async () => {
+      await newUser('dee', 'patient')
+      await newUser('una', 'practitioner')
+      await newUser('vic', 'practitioner')
+      links.deeRory = await link('dee', 'rory', 'NULL')
+      links.deeUna = await link('dee', 'una', 'NULL')
+      vic = await signedIn('vic')
+      // Deactivated through the API — the real path.
+      expect((await admin.delete(`/users/${ids.dee}`)).status).toBe(200)
+      expect(await isActive('dee')).toBe(false)
+    })
+
+    it('is still read by the admin, the team, and a clinic colleague', async () => {
+      const team = [ids.rory, ids.una].sort((a, b) => a - b)
+      expect(await teamAsSeenBy(admin)).toEqual(team)
+      expect(await teamAsSeenBy(rory)).toEqual(team)
+      // Directory level, as for any patient of the clinic.
+      expect(await teamAsSeenBy(vic)).toEqual(team)
+      expect(await teamAsSeenBy(admin, '?includeEnded=true')).toEqual(team)
+    })
+
+    it('takes nobody new: 409 for joining, adding and the candidates — nothing written', async () => {
+      const before = await linksOfDee()
+
+      const join = await vic.post(`/users/${ids.dee}/care-team`).send({})
+      const add = await admin
+        .post(`/users/${ids.dee}/care-team`)
+        .send({ practitionerId: ids.vic })
+      const candidates = await admin.get(
+        `/users/${ids.dee}/care-team/candidates`,
+      )
+
+      for (const res of [join, add, candidates]) {
+        expect(res.status).toBe(409)
+        expect(res.body.message).toEqual([DEACTIVATED_ADD])
+      }
+      expect(await linksOfDee()).toBe(before)
+      const added = (await linkEntries()).filter(
+        (entry) =>
+          entry.target_user_id === ids.dee &&
+          ['CARE_TEAM_JOINED', 'CARE_TEAM_MEMBER_ADDED'].includes(entry.action),
+      )
+      expect(added).toEqual([])
+    })
+
+    it('still lets a practitioner leave it, and the admin end a link', async () => {
+      const left = await rory.post(
+        `/users/${ids.dee}/care-team/${ids.rory}/end`,
+      )
+      const ended = await admin.post(
+        `/users/${ids.dee}/care-team/${ids.una}/end`,
+      )
+
+      expect(left.status).toBe(201)
+      expect(ended.status).toBe(201)
+      expect(await linkRow(links.deeRory)).toMatchObject({
+        ended_by: ids.rory,
+        still_current: false,
+      })
+      expect(await linkRow(links.deeUna)).toMatchObject({
+        ended_by: ids.admin,
+        still_current: false,
+      })
+      expect(
+        (await linkEntries())
+          .filter((entry) => entry.target_user_id === ids.dee)
+          .map((entry) => [
+            entry.action,
+            entry.performed_by,
+            // A bigint column: node-postgres answers it as a string.
+            Number(entry.entity_id),
+          ]),
+      ).toEqual([
+        ['CARE_TEAM_ENDED', ids.rory, links.deeRory],
+        ['CARE_TEAM_ENDED', ids.admin, links.deeUna],
+      ])
+      // Gone from the current team; still in its history.
+      expect(await teamAsSeenBy(admin)).toEqual([])
+      expect(await teamAsSeenBy(admin, '?includeEnded=true')).toEqual(
+        [ids.rory, ids.una].sort((a, b) => a - b),
+      )
+    })
+
+    // The neighbour: "a patient, active or not" — still not "anyone".
+    it('still 404s for an id that is not a patient', async () => {
+      for (const id of [ids.vic, 999999]) {
+        const res = await admin.get(`/users/${id}/care-team`)
+        expect(res.status).toBe(404)
+        expect(res.body.message).toEqual([`Patient ${id} not found`])
+      }
+    })
+  })
 })
