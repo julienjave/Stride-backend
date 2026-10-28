@@ -127,7 +127,7 @@ export function renderRecordPdf(document: RecordDocument): Promise<Buffer> {
     write(document.title, BOLD)
     doc.moveDown(0.6)
     for (const block of document.blocks) drawBlock(doc, write, block)
-    drawFooters(doc, runsOf, document.footer)
+    drawFooters(doc, runsOf, document.footer, document.stamp)
     doc.end()
   })
 }
@@ -297,7 +297,10 @@ function keepRoom(doc: PDFKit.PDFDocument, height: number): void {
 }
 
 // "Health record of Pat Lee · copy made on October 26, 2026 · Page 2 of 5",
-// at the foot of every page. Written last, page by page (bufferPages).
+// at the foot of every page. Written last, page by page (bufferPages). A
+// review copy's stamp (decisions §25, pass 2) goes on the line above, in
+// bold: on EVERY page, so no page of a review copy can pass for the
+// patient's own.
 //
 // The footer sits INSIDE the bottom margin, where a flowing `text` would
 // start a new page instead. Drawn at an exact position with `lineBreak:
@@ -312,24 +315,42 @@ function drawFooters(
   doc: PDFKit.PDFDocument,
   runsOf: RunsOf,
   footer: string,
+  stamp: string | undefined,
 ): void {
   const { start, count } = doc.bufferedPageRange()
+  const y = doc.page.height - PAGE_MARGIN / 2
   for (let index = start; index < start + count; index++) {
     doc.switchToPage(index)
-    doc.fontSize(FOOTER_SIZE).fillColor(MUTED)
-    const runs = runsOf(
-      `${footer} · Page ${index - start + 1} of ${count}`,
-      BODY,
-    ).map((run) => ({
-      ...run,
-      width: doc.font(run.font).widthOfString(run.text),
-    }))
-    const total = runs.reduce((sum, run) => sum + run.width, 0)
-    let x = (doc.page.width - total) / 2
-    const y = doc.page.height - PAGE_MARGIN / 2
-    for (const run of runs) {
-      doc.font(run.font).text(run.text, x, y, { lineBreak: false })
-      x += run.width
+    doc.fontSize(FOOTER_SIZE)
+    if (stamp !== undefined) {
+      doc.fillColor(INK)
+      // One footer line's height above it (currentLineHeight at the footer's
+      // size), so the two never touch — still well inside the bottom margin.
+      drawCentredLine(doc, runsOf(stamp, BOLD), y - doc.currentLineHeight(true))
     }
+    doc.fillColor(MUTED)
+    drawCentredLine(
+      doc,
+      runsOf(`${footer} · Page ${index - start + 1} of ${count}`, BODY),
+      y,
+    )
+  }
+}
+
+// One line of runs, centred on the page at height `y`, never wrapped.
+function drawCentredLine(
+  doc: PDFKit.PDFDocument,
+  lineRuns: FontRun[],
+  y: number,
+): void {
+  const runs = lineRuns.map((run) => ({
+    ...run,
+    width: doc.font(run.font).widthOfString(run.text),
+  }))
+  const total = runs.reduce((sum, run) => sum + run.width, 0)
+  let x = (doc.page.width - total) / 2
+  for (const run of runs) {
+    doc.font(run.font).text(run.text, x, y, { lineBreak: false })
+    x += run.width
   }
 }

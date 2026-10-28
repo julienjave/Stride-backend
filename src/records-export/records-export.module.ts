@@ -40,5 +40,9 @@ import { PublicRecordsExportController } from './public-records-export.controlle
     RecordsExportLinksController,
   ],
   providers: [RecordsExportService, RecordsExportLinksService],
+  // The complaint review (decisions §25, pass 2) makes its copies with the
+  // same generator — one generator, so a review copy can never differ from
+  // the patient's own.
+  exports: [RecordsExportService],
 })
 export class RecordsExportModule {}

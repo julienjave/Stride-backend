@@ -370,6 +370,73 @@ describe('buildRecordDocument', () => {
     ])
   })
 
+  it('has no stamp on the patient’s own copy', () => {
+    expect(buildRecordDocument(record(), PARIS)).not.toHaveProperty('stamp')
+  })
+
+  // --- A review copy (decisions §25, pass 2) ---
+
+  const REVIEW = {
+    reviewId: 12,
+    madeBy: 'Avery Admin',
+    reason: 'Knee worse after the March program',
+    caseReference: 'CR-14',
+    expiresAt: new Date('2031-03-21T23:30:00.000Z'),
+  }
+
+  it('makes a review copy: its title, its stamp, and an account of it first', () => {
+    const own = buildRecordDocument(record(), PARIS)
+    const review = buildRecordDocument(record(), PARIS, REVIEW)
+
+    expect(review.title).toBe('Health record — review copy')
+    expect(review.stamp).toBe(
+      'Review copy — made by Avery Admin for complaint review 12 (case CR-14)',
+    )
+    expect(review.footer).toBe(own.footer)
+    expect(review.blocks.slice(0, 2)).toStrictEqual([
+      {
+        kind: 'paragraph',
+        text:
+          "Review copy, made for the clinic's internal review of a complaint — " +
+          "not the patient's own copy. The pages that follow are the patient's " +
+          'record exactly as their own copy shows it, written to them.',
+        muted: false,
+      },
+      {
+        kind: 'fields',
+        rows: [
+          ['Made by', 'Avery Admin'],
+          ['Complaint review', '12'],
+          ['Case reference', 'CR-14'],
+          ['Reason', 'Knee worse after the March program'],
+          // In the zone asked for, like every moment of the copy.
+          ['Review open until', 'March 22, 2031 at 12:30 AM'],
+        ],
+      },
+    ])
+    // After it, EXACTLY the patient's own document.
+    expect(review.blocks.slice(2)).toStrictEqual(own.blocks)
+  })
+
+  it('leaves the case reference out when there is none', () => {
+    const review = buildRecordDocument(record(), PARIS, {
+      ...REVIEW,
+      caseReference: null,
+    })
+    expect(review.stamp).toBe(
+      'Review copy — made by Avery Admin for complaint review 12',
+    )
+    expect(review.blocks[1]).toStrictEqual({
+      kind: 'fields',
+      rows: [
+        ['Made by', 'Avery Admin'],
+        ['Complaint review', '12'],
+        ['Reason', 'Knee worse after the March program'],
+        ['Review open until', 'March 22, 2031 at 12:30 AM'],
+      ],
+    })
+  })
+
   it('writes every date of the copy in the patient’s zone', () => {
     const document = buildRecordDocument(record(), MONTREAL)
 

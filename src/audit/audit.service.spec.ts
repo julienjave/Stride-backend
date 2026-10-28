@@ -133,7 +133,7 @@ describe('AuditService.actions', () => {
 
     const list = service.actions()
 
-    expect(list).toHaveLength(107)
+    expect(list).toHaveLength(110)
     expect(list.map((item) => item.action)).toEqual(
       list.map((item) => item.action).sort(),
     )

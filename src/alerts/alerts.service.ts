@@ -76,6 +76,10 @@ import {
   type AttendanceReview,
   type SessionAlertReason,
 } from './alert-rules'
+import {
+  ComplaintReviewNoticesService,
+  type ComplaintReviewAlert,
+} from './complaint-review-notices.service'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -147,7 +151,19 @@ export interface PersonName {
   lastName: string
 }
 
-export type Alert = AttendanceAlert | SessionAlert | CareTeamJoinAlert
+export type Alert =
+  AttendanceAlert | SessionAlert | CareTeamJoinAlert | ComplaintReviewAlert
+
+// The notices about WHO CAN SEE a patient's record (decisions §25): a
+// colleague joined the care team, an admin opened a complaint review. Shown
+// together, newest first, by the instant each happened.
+type AccessNotice = CareTeamJoinAlert | ComplaintReviewAlert
+
+function noticeMoment(notice: AccessNotice): number {
+  return notice.kind === 'care_team_join'
+    ? notice.link.startedAt.getTime()
+    : notice.review.openedAt.getTime()
+}
 
 // What POST /alerts/programs/:id/review answers: the review that now
 // covers the program's alert for this practitioner — the facts it saw and
@@ -220,6 +236,7 @@ export class AlertsService {
     private readonly careTeamService: CareTeamService,
     private readonly storageService: StorageService,
     private readonly auditService: AuditService,
+    private readonly complaintReviewNotices: ComplaintReviewNoticesService,
   ) {}
 
   // --- GET /alerts ---
@@ -259,9 +276,15 @@ export class AlertsService {
     // the transaction. (Mutation-checked: removing it changes no answer.)
     if (patientIds.length === 0) return []
 
-    // Colleagues who joined my patients' care teams — read on their own (they
-    // need no program: a patient with no program yet still has a team).
-    const joins = await this.joinNotices(currentUser, patientIds)
+    // Who else can see my patients' records: colleagues who joined their
+    // care teams, admins who opened a complaint review — read on their own
+    // (they need no program: a patient with no program yet still has a team).
+    // Merged newest first; Array.sort is STABLE (ES2019), so two notices of
+    // the same instant keep their own lists' order.
+    const notices: AccessNotice[] = [
+      ...(await this.joinNotices(currentUser, patientIds)),
+      ...(await this.complaintReviewNotices.list(currentUser, patientIds)),
+    ].sort((a, b) => noticeMoment(b) - noticeMoment(a))
 
     const read = await withRlsContext(this.db, currentUser, async (tx) => {
       // 1. The patients' programs — every status (a session of a program
@@ -406,7 +429,7 @@ export class AlertsService {
         people,
       }
     })
-    if (read === null) return joins
+    if (read === null) return notices
 
     // --- In memory: group, then ask the pure rules ---------------------------
 
@@ -544,8 +567,8 @@ export class AlertsService {
       ),
     )
     // The order on the home: what is happening to patients first (attendance,
-    // then sessions), then the changes to who treats them.
-    return [...clinical, ...joins]
+    // then sessions), then the changes to who can see their records.
+    return [...clinical, ...notices]
   }
 
   // --- Care-team join notices ----------------------------------------------

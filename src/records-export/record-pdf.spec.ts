@@ -149,6 +149,40 @@ describe('renderRecordPdf', () => {
     })
   })
 
+  // A review copy (decisions §25, pass 2): its stamp on every page, in
+  // bold, on the line just above the footer — never in the page's flow.
+  it('stamps every page of a review copy above its footer', async () => {
+    const lines = Array.from({ length: 120 }, (_, i) => paragraph(`Line ${i}`))
+    const STAMP = 'Review copy — made by Avery Admin for complaint review 12'
+    const pages = pdfPieces(
+      await renderRecordPdf({ ...documentOf(lines), stamp: STAMP }),
+    )
+
+    expect(pages.length).toBeGreaterThan(2)
+    for (const page of pages) {
+      const stamps = page.filter((piece) => piece.text === STAMP)
+      const footer = page.find((piece) => piece.text.includes(' · Page '))!
+      expect(stamps).toHaveLength(1)
+      // PDF coordinates start at the page's BOTTOM-left: a bigger y is
+      // higher. Above the footer, close to it, below everything else.
+      expect(stamps[0].y).toBeGreaterThan(footer.y)
+      expect(stamps[0].y - footer.y).toBeLessThan(15)
+      const body = page.filter(
+        (piece) => piece !== footer && piece !== stamps[0],
+      )
+      expect(Math.min(...body.map((piece) => piece.y))).toBeGreaterThan(
+        stamps[0].y,
+      )
+    }
+  })
+
+  it('draws no stamp on the patient’s own copy', async () => {
+    const pages = pdfPages(await render([paragraph('Line')]))
+    expect(pages.flat().some((text) => text.startsWith('Review copy'))).toBe(
+      false,
+    )
+  })
+
   // Whatever is above it, a heading is on the same page as the block after
   // it: a heading near the foot of a page moves to the next one. Tried at
   // every height a page can be filled to (one more paragraph each time), so

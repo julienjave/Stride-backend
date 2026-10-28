@@ -457,3 +457,43 @@ export function isJoinNoticeFor(
     link.startedAt >= cutoff
   )
 }
+
+// --- A COMPLAINT REVIEW WAS OPENED ------------------------------------------------------------------------
+
+// The fourth family (decisions §25, pass 2): an admin opened a complaint
+// review of a patient's record — a time-boxed access, outside the care team,
+// to copies of it. The care team is told (the person's choice): who opened
+// it, when, until when — never why (the reason is admins-only, down to the
+// database: complaint_review_reasons). Like a join, it never clears itself:
+// a review per practitioner (complaint_review_notice_reviews), the same 14
+// days (joinNoticeCutoff — both notices count from an instant).
+
+// One review, as the rule needs it.
+export interface ComplaintReviewFacts {
+  openedBy: number
+  openedAt: Date
+}
+
+// Is `review` a notice for practitioner `me`?
+//   - `me` is on the patient's care team NOW, and was there WHEN it opened
+//     (`myStart` at or before `openedAt`): the members whose work the review
+//     looks at. A practitioner who joins during the review isn't told — the
+//     join notices' rule ("announce what changed while I was there");
+//   - I didn't open it myself (an account can be both admin and
+//     practitioner: their own act is nothing to tell them about);
+//   - it opened within the last 14 days. An ENDED or EXPIRED review still
+//     counts: the access happened, which is what the notice is about — the
+//     screen says it's over.
+export function isComplaintReviewNoticeFor(
+  review: ComplaintReviewFacts,
+  me: number,
+  myStart: Date | undefined,
+  cutoff: Date,
+): boolean {
+  return (
+    myStart !== undefined &&
+    review.openedBy !== me &&
+    myStart <= review.openedAt &&
+    review.openedAt >= cutoff
+  )
+}

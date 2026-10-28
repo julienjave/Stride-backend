@@ -20,6 +20,7 @@ import {
   attendanceFacts,
   attendanceKeys,
   isAttendanceReviewed,
+  isComplaintReviewNoticeFor,
   isJoinNoticeFor,
   joinNoticeCutoff,
   inactivity,
@@ -727,5 +728,76 @@ describe('isJoinNoticeFor', () => {
     }
     expect(isJoinNoticeFor(atCutoff, ME, MY_START, CUTOFF)).toBe(true)
     expect(isJoinNoticeFor(justBefore, ME, MY_START, CUTOFF)).toBe(false)
+  })
+})
+
+describe('isComplaintReviewNoticeFor', () => {
+  // Me = practitioner 10, on the team since June 1st; admin 90 opens a review
+  // on June 10th.
+  const ME = 10
+  const MY_START = new Date('2031-06-01T09:00:00.000Z')
+  const CUTOFF = new Date('2031-06-05T00:00:00.000Z')
+  const opened = {
+    openedBy: 90,
+    openedAt: new Date('2031-06-10T09:00:00.000Z'),
+  }
+
+  it('tells a member who was on the team when it opened, within the window', () => {
+    expect(isComplaintReviewNoticeFor(opened, ME, MY_START, CUTOFF)).toBe(true)
+  })
+
+  it('counts a member who joined at the very instant it opened', () => {
+    // On the team "when it opened" includes the same instant (<=): the
+    // review looks at their work as much as anyone's.
+    expect(
+      isComplaintReviewNoticeFor(opened, ME, opened.openedAt, CUTOFF),
+    ).toBe(true)
+  })
+
+  it("tells nobody who isn't on the team now", () => {
+    expect(isComplaintReviewNoticeFor(opened, ME, undefined, CUTOFF)).toBe(
+      false,
+    )
+  })
+
+  it('tells nothing to a member who joined after it opened', () => {
+    expect(
+      isComplaintReviewNoticeFor(
+        opened,
+        ME,
+        new Date('2031-06-10T09:00:00.001Z'),
+        CUTOFF,
+      ),
+    ).toBe(false)
+  })
+
+  it('never tells the admin-practitioner who opened it', () => {
+    expect(
+      isComplaintReviewNoticeFor(
+        { ...opened, openedBy: ME },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(false)
+  })
+
+  it('keeps a review opened exactly at the cutoff, and drops an older one', () => {
+    expect(
+      isComplaintReviewNoticeFor(
+        { ...opened, openedAt: CUTOFF },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(true)
+    expect(
+      isComplaintReviewNoticeFor(
+        { ...opened, openedAt: new Date(CUTOFF.getTime() - 1) },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(false)
   })
 })

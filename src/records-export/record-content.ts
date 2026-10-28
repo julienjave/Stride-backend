@@ -145,12 +145,29 @@ export interface RecordDocument {
   title: string
   // Repeated in every page's footer, so a loose page still says whose it is.
   footer: string
+  // A REVIEW COPY's mark (decisions §25, pass 2), drawn on every page just
+  // above the footer, in bold: a page found on a desk says whose copy it is
+  // and why it exists. Absent on the patient's own copy.
+  stamp?: string
   blocks: RecordBlock[]
+}
+
+// What makes a copy a REVIEW copy: the complaint review it was made under
+// (complaint-reviews.service.ts). Words only — the service has read the
+// names; this file decides what is printed.
+export interface ReviewStamp {
+  reviewId: number
+  // The admin making the copy: "Avery Admin".
+  madeBy: string
+  reason: string
+  caseReference: string | null
+  expiresAt: Date
 }
 
 // --- WORDS -------------------------------------------------------------------------------------------------
 
 export const DOCUMENT_TITLE = 'Your health record'
+export const REVIEW_DOCUMENT_TITLE = 'Health record — review copy'
 
 const ENTRY_TYPE_LABELS: Record<MedicalFileEntryType, string> = {
   initial_assessment: 'Initial assessment',
@@ -544,15 +561,23 @@ function sessionExerciseLine(exercise: SessionExerciseRecord): string {
 
 // --- THE WHOLE DOCUMENT ------------------------------------------------------------------------------------
 
+// `review`: the copy is a complaint review's (decisions §25, pass 2). The
+// record itself is EXACTLY the patient's own copy — same blocks, same words,
+// still written to the patient ("your medical file"): the point of a review is
+// to see what the patient's record says, and one generator means the two can
+// never differ. What changes is around it: the title, a first block saying
+// what this copy is and why it was made, and the stamp on every page.
 export function buildRecordDocument(
   record: RecordData,
   timeZone: string,
+  review?: ReviewStamp,
 ): RecordDocument {
   const { patient } = record
   const name = `${patient.firstName} ${patient.lastName}`
   const madeAt = momentText(record.madeAt, timeZone)
 
   const blocks: RecordBlock[] = [
+    ...(review ? reviewBlocks(review, timeZone) : []),
     {
       kind: 'fields',
       rows: [
@@ -607,8 +632,45 @@ export function buildRecordDocument(
   }
 
   return {
-    title: DOCUMENT_TITLE,
+    title: review ? REVIEW_DOCUMENT_TITLE : DOCUMENT_TITLE,
     footer: `Health record of ${name} · copy made on ${momentDayText(record.madeAt, timeZone)}`,
+    ...(review ? { stamp: reviewStampText(review) } : {}),
     blocks,
   }
+}
+
+// "Review copy — made by Avery Admin for complaint review 12 (case CR-14)" —
+// the line on every page. Who and which review, not the reason: a page is
+// read by anyone who picks it up, and the reason is on the first page.
+export function reviewStampText(review: ReviewStamp): string {
+  const caseText =
+    review.caseReference === null ? '' : ` (case ${review.caseReference})`
+  return `Review copy — made by ${review.madeBy} for complaint review ${review.reviewId}${caseText}`
+}
+
+// The first page's account of the copy, ABOVE the patient's details: what it
+// is, who made it, why, and until when the review allowed copies.
+function reviewBlocks(review: ReviewStamp, timeZone: string): RecordBlock[] {
+  return [
+    {
+      kind: 'paragraph',
+      text:
+        "Review copy, made for the clinic's internal review of a complaint — " +
+        "not the patient's own copy. The pages that follow are the patient's " +
+        'record exactly as their own copy shows it, written to them.',
+      muted: false,
+    },
+    {
+      kind: 'fields',
+      rows: [
+        ['Made by', review.madeBy],
+        ['Complaint review', String(review.reviewId)],
+        ...(review.caseReference === null
+          ? []
+          : [['Case reference', review.caseReference] as [string, string]]),
+        ['Reason', review.reason],
+        ['Review open until', momentText(review.expiresAt, timeZone)],
+      ],
+    },
+  ]
 }

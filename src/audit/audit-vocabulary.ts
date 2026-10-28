@@ -175,6 +175,8 @@ export const AUDIT_ACTIONS = {
   // A practitioner marked a care-team join notice as seen (decisions §25):
   // a row written, so a change — like the two reviews above.
   CARE_TEAM_JOIN_REVIEWED: 'change',
+  // … and a complaint review's notice (decisions §25, pass 2).
+  COMPLAINT_REVIEW_NOTICE_REVIEWED: 'change',
   ALERTS_VIEWED: 'view',
 
   // Messaging (who wrote to whom and when — never the text)
@@ -203,6 +205,13 @@ export const AUDIT_ACTIONS = {
   // … and someone holding it typed a wrong date of birth: a failed proof,
   // like a failed sign-in.
   RECORDS_EXPORT_LINK_REFUSED: 'sign_in',
+
+  // The complaint review (decisions §25, pass 2): an admin opened a
+  // time-boxed access to one patient's record, with a reason — and ended it
+  // early. Each copy made under it is a RECORDS_EXPORTED (via
+  // complaint_review, performed by the admin).
+  COMPLAINT_REVIEW_OPENED: 'change',
+  COMPLAINT_REVIEW_ENDED: 'change',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -227,6 +236,7 @@ export const AUDIT_AREAS = {
   session_reviews: 'For review',
   program_alert_reviews: 'For review',
   care_team_join_reviews: 'For review',
+  complaint_review_notice_reviews: 'For review',
   alerts: 'For review',
   conversations: 'Messages',
   messages: 'Messages',
@@ -237,6 +247,7 @@ export const AUDIT_AREAS = {
   records_exports: 'Records exports',
   // The emailed links themselves (a table: who sent one, when, used or not).
   records_export_links: 'Records exports',
+  complaint_reviews: 'Complaint reviews',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -268,6 +279,9 @@ export const CLINICAL_AREAS = {
   // Which colleague joined which patient's team, and that someone saw it —
   // directory-level, like the care team itself (care_team_members: false).
   care_team_join_reviews: false,
+  // That a practitioner saw "a review of this record was opened" — about
+  // the review, not the record.
+  complaint_review_notice_reviews: false,
   alerts: true,
   conversations: true,
   messages: true,
@@ -278,6 +292,11 @@ export const CLINICAL_AREAS = {
   // A link's entries say who sent it to which address, when it expires, how
   // many wrong dates of birth — nothing from the record.
   records_export_links: false,
+  // Who opened a review, why, until when, who ended it — the admins' own
+  // act, written by them (the reason is on the patient's page too). Nothing
+  // from the record: the copies' entries (records_exports) hold its ids,
+  // and stay withheld.
+  complaint_reviews: false,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------

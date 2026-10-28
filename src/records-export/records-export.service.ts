@@ -22,7 +22,7 @@ import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
 import { UserRole } from '../users/dto/create-user.dto'
-import { buildRecordDocument } from './record-content'
+import { buildRecordDocument, type ReviewStamp } from './record-content'
 import { loadRecord } from './record-loader'
 import { renderRecordPdf } from './record-pdf'
 
@@ -36,9 +36,14 @@ export interface RecordExport {
 
 // Which way a copy left — written into its RECORDS_EXPORTED entry:
 //   - app: the patient, signed in, from My records;
-//   - emailed_link: through the link an admin emailed (which one).
+//   - emailed_link: through the link an admin emailed (which one);
+//   - complaint_review: an admin, under an open complaint review (decisions
+//     §25, pass 2) — with what the copy's stamp prints. The ONLY source not
+//     made by the patient: its entry names the admin as the one who made it.
 export type ExportSource =
-  { via: 'app' } | { via: 'emailed_link'; linkId: number }
+  | { via: 'app' }
+  | { via: 'emailed_link'; linkId: number }
+  | { via: 'complaint_review'; adminId: number; stamp: ReviewStamp }
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -103,18 +108,23 @@ export class RecordsExportService {
     source: ExportSource,
   ): Promise<RecordExport> {
     const record = await loadRecord(tx, patientId)
-    const pdf = await renderRecordPdf(buildRecordDocument(record, timeZone))
+    const review = source.via === 'complaint_review' ? source.stamp : undefined
+    const pdf = await renderRecordPdf(
+      buildRecordDocument(record, timeZone, review),
+    )
 
     // What went in, by id — never the content (an audit entry is not a
     // second copy of the record). Enough to answer "what did this patient
-    // receive on that day?" even after the record has grown.
+    // receive on that day?" — or what an admin's review copy held — even
+    // after the record has grown.
     await this.auditService.logInTransaction(tx, {
-      performedBy: patientId,
+      performedBy:
+        source.via === 'complaint_review' ? source.adminId : patientId,
       action: 'RECORDS_EXPORTED',
       targetUserId: patientId,
       entityType: 'records_exports',
       details: {
-        ...source,
+        ...sourceDetails(source),
         timeZone,
         medicalFileEntryIds: record.medicalFile.map((entry) => entry.id),
         programIds: record.programs.map((program) => program.id),
@@ -124,21 +134,47 @@ export class RecordsExportService {
       },
     })
 
-    return { pdf, fileName: exportFileName(record.madeAt, timeZone) }
+    // A review copy is named for its review: an admin may make copies for
+    // several reviews in a day, and "stride-health-record-…" in their
+    // Downloads would read as the patient's own copy.
+    const prefix =
+      source.via === 'complaint_review'
+        ? `stride-review-copy-${source.stamp.reviewId}`
+        : 'stride-health-record'
+    return { pdf, fileName: exportFileName(record.madeAt, timeZone, prefix) }
   }
 }
 
 // --- HELPERS -----------------------------------------------------------------------------------------------
 
+// The source as its audit entry records it: which way, and which link or
+// review — the review's id only (its reason is in its own entry,
+// COMPLAINT_REVIEW_OPENED; the admin is the entry's performed_by).
+function sourceDetails(source: ExportSource): Record<string, string | number> {
+  switch (source.via) {
+    case 'app':
+      return { via: 'app' }
+    case 'emailed_link':
+      return { via: 'emailed_link', linkId: source.linkId }
+    case 'complaint_review':
+      return { via: 'complaint_review', reviewId: source.stamp.reviewId }
+  }
+}
+
 // "stride-health-record-2026-10-26.pdf" — the day of the copy, in the
 // patient's zone. 'en-CA' writes a date as YYYY-MM-DD: sortable in a
-// Downloads folder, and the same shape on every machine.
-export function exportFileName(madeAt: Date, timeZone: string): string {
+// Downloads folder, and the same shape on every machine. `prefix`: a review
+// copy's ("stride-review-copy-12").
+export function exportFileName(
+  madeAt: Date,
+  timeZone: string,
+  prefix = 'stride-health-record',
+): string {
   const day = new Intl.DateTimeFormat('en-CA', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     timeZone,
   }).format(madeAt)
-  return `stride-health-record-${day}.pdf`
+  return `${prefix}-${day}.pdf`
 }

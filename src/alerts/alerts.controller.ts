@@ -31,6 +31,7 @@ import {
 } from '@nestjs/common'
 import { ApiTags } from '@nestjs/swagger'
 import { AlertsService } from './alerts.service'
+import { ComplaintReviewNoticesService } from './complaint-review-notices.service'
 import { AlertsQueryDto } from './dto/alerts-query.dto'
 import { ReviewProgramAlertDto } from './dto/review-program-alert.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -55,7 +56,10 @@ import { AuditedByService } from '../common/decorators/audited-by-service.decora
 @ApiTags('Alerts')
 @Controller('alerts')
 export class AlertsController {
-  constructor(private readonly alertsService: AlertsService) {}
+  constructor(
+    private readonly alertsService: AlertsService,
+    private readonly complaintReviewNotices: ComplaintReviewNoticesService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: CurrentUser, @Query() query: AlertsQueryDto) {
@@ -87,5 +91,17 @@ export class AlertsController {
     @CurrentUser() user: CurrentUser,
   ) {
     return this.alertsService.reviewCareTeamJoin(linkId, user)
+  }
+
+  // "Mark as reviewed" for a complaint review's notice (decisions §25, pass
+  // 2). No body, for the same reason: a review opens at an instant.
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post('complaint-reviews/:reviewId/review')
+  reviewComplaintReviewNotice(
+    @Param('reviewId', ParseIntPipe) reviewId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.complaintReviewNotices.review(reviewId, user)
   }
 }

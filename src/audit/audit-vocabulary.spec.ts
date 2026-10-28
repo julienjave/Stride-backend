@@ -148,10 +148,14 @@ describe('audit vocabulary', () => {
       // 106 actions (the 3 email-change ones and PASSWORD_CHANGED since
       // 2026-10-22, the 3 two-factor recovery ones since 2026-10-23,
       // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED and the emailed
-      // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED since
-      // 2026-10-28) — 107 —, 10 views, 9 sign-ins.
-      expect(changes).toHaveLength(107 - 10 - 9)
+      // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED and the
+      // complaint review's three since 2026-10-28) — 110 —, 10 views, 9
+      // sign-ins.
+      expect(changes).toHaveLength(110 - 10 - 9)
       expect(changes).toContain('CARE_TEAM_JOIN_REVIEWED')
+      expect(changes).toContain('COMPLAINT_REVIEW_OPENED')
+      expect(changes).toContain('COMPLAINT_REVIEW_ENDED')
+      expect(changes).toContain('COMPLAINT_REVIEW_NOTICE_REVIEWED')
       expect(changes).toContain('RECORDS_EXPORT_LINK_SENT')
       expect(changes).toContain('MFA_RECOVERY_CODES_REGENERATED')
       expect(changes).toContain('MFA_RESET_BY_ADMIN')

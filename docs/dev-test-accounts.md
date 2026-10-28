@@ -212,6 +212,14 @@ made, through the app's own code); the seed announces it just before.
   To see an admin's addition: as the admin, add Morgan to Pat's care team
   (**Admin → Users → Pat → Care team → Add someone**) — Alex then sees *Avery
   Admin added Morgan Reyes to the care team*.
+  **Complaint reviews** (since 2026-10-28): the seed opens none — to see one,
+  as the admin go to **Admin → Users → Pat → Complaint reviews → Open a
+  review**, give a reason (and a case reference if you like). For 7 days
+  **Download a review copy** saves Pat's record as a PDF stamped *Review copy*
+  on every page; each copy is in the audit log. **Alex** (on Pat's care team)
+  then sees *Avery Admin opened a complaint review of the record* in For
+  review — who, when, until, never the reason. Another admin (Morgan, as
+  admin) sees the review and can **End now**, but can't make copies with it.
 - **Messages** (`GET /conversations`; the screens come with Phase 5's
   frontend): a patient writes with the practitioners on their care team, and
   only while they are on it.
