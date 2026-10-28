@@ -16,7 +16,12 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import type { ExecutionContext } from '@nestjs/common'
-import { rateLimitsEnabled, throttlerOptions } from './rate-limits'
+import type { ThrottlerLimitDetail } from '@nestjs/throttler'
+import {
+  rateLimitsEnabled,
+  throttlerOptions,
+  tooManyAttemptsMessage,
+} from './rate-limits'
 
 // Each test passes its OWN environment object, so nothing here reads or
 // changes the real process.env (which other spec files share).
@@ -91,4 +96,62 @@ describe('throttlerOptions', () => {
       throttlerOptions({ RATE_LIMITS: 'off', NODE_ENV: 'production' }),
     ).toThrow(/not allowed when NODE_ENV=production/)
   })
+
+  // The 429's words come from the wait the guard has just put in
+  // Retry-After (timeToBlockExpire). The fixture gives the OTHER clock beside
+  // it, timeToExpire (when the counting window ends), a different value: code
+  // reading the wrong field would say "12 seconds" and fail here.
+  it('words the refusal with the wait the guard puts in Retry-After', () => {
+    const options = throttlerOptions({})
+    if (Array.isArray(options)) throw new Error('expected the object form')
+    const detail: ThrottlerLimitDetail = {
+      limit: 5,
+      ttl: 60_000,
+      key: 'a-key',
+      tracker: '127.0.0.1',
+      totalHits: 6,
+      timeToExpire: 12,
+      isBlocked: true,
+      timeToBlockExpire: 37,
+    }
+    if (typeof options.errorMessage !== 'function') {
+      throw new Error('expected errorMessage to be a function')
+    }
+    expect(options.errorMessage(anyRequest, detail)).toBe(
+      'Too many attempts in a short time. Try again in 37 seconds.',
+    )
+  })
+})
+
+describe('tooManyAttemptsMessage', () => {
+  it('says how many seconds to wait', () => {
+    expect(tooManyAttemptsMessage(37)).toBe(
+      'Too many attempts in a short time. Try again in 37 seconds.',
+    )
+    // The whole first minute of a block (the guard's longest wait here).
+    expect(tooManyAttemptsMessage(60)).toBe(
+      'Too many attempts in a short time. Try again in 60 seconds.',
+    )
+  })
+
+  // One second, not "1 seconds" — and 2 is already plural (the boundary).
+  it('says "1 second" for a single second', () => {
+    expect(tooManyAttemptsMessage(1)).toBe(
+      'Too many attempts in a short time. Try again in 1 second.',
+    )
+    expect(tooManyAttemptsMessage(2)).toBe(
+      'Too many attempts in a short time. Try again in 2 seconds.',
+    )
+  })
+
+  // No usable number (a storage of our own one day, say): words instead of
+  // "Try again in NaN seconds" or "in 0 seconds".
+  it.each([0, -3, 2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'says "wait a minute" without a usable number (%p)',
+    (value) => {
+      expect(tooManyAttemptsMessage(value)).toBe(
+        'Too many attempts in a short time. Wait a minute, then try again.',
+      )
+    },
+  )
 })

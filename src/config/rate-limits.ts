@@ -65,6 +65,34 @@ export function rateLimitsEnabled(
   return value === 'on'
 }
 
+// --- THE REFUSAL, IN PLAIN WORDS ---------------------------------------------------------------------------
+//
+// What a 429 says (decided 2026-10-27). The library's own message is
+// 'ThrottlerException: Too Many Requests' — a class name, not a sentence —
+// and the app's screens show the server's words for a refusal
+// (HttpExceptionFilter passes a deliberate HttpException's message through
+// unchanged). So a sign-in, a password form or a save refused by the limit
+// read "ThrottlerException: Too Many Requests". Writing the sentence HERE,
+// once, gives every screen and every other client the same plain words — the
+// backend's messages are part of its contract, written for people.
+//
+// The wait is the guard's own number: how long until this address may send
+// to this route again, in whole seconds — the value it also puts in the
+// Retry-After header, so the words and the header can never disagree.
+// "Attempts", not "requests": it reads right for a sign-in, a code and a
+// save alike, and says nothing about how the server counts.
+export function tooManyAttemptsMessage(secondsToWait: number): string {
+  const opening = 'Too many attempts in a short time.'
+  // The library always gives a whole number of at least 1 while a client is
+  // blocked; a storage of our own one day might not. Without a usable
+  // number, say how long in words rather than "Try again in NaN seconds".
+  if (!Number.isInteger(secondsToWait) || secondsToWait < 1) {
+    return `${opening} Wait a minute, then try again.`
+  }
+  const wait = secondsToWait === 1 ? '1 second' : `${secondsToWait} seconds`
+  return `${opening} Try again in ${wait}.`
+}
+
 // The throttler's options, built when the module is created (forRootAsync's
 // factory) — not when app.module.ts is imported, so a test that sets
 // RATE_LIMITS before building its app is the one that decides.
@@ -74,6 +102,12 @@ export function rateLimitsEnabled(
 //     every throttler — the global one and @Throttle's overrides alike (a
 //     route's @SkipThrottle() is a separate, per-route switch). Returning
 //     true lets the request through uncounted.
+//   - `errorMessage`: the words of the 429 (above). The guard calls it with
+//     the request's context and the limit's details at the moment it refuses;
+//     `timeToBlockExpire` is the wait it has just written into Retry-After
+//     (`timeToExpire`, beside it, is when the COUNTING window ends — a
+//     different clock). Only the object form of these options carries it;
+//     an array of throttlers would fall back to the library's text.
 export function throttlerOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): ThrottlerModuleOptions {
@@ -87,5 +121,7 @@ export function throttlerOptions(
       },
     ],
     skipIf: () => !enabled,
+    errorMessage: (_context, detail) =>
+      tooManyAttemptsMessage(detail.timeToBlockExpire),
   }
 }

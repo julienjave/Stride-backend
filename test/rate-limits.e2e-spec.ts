@@ -150,6 +150,49 @@ describe('Rate limits (e2e)', () => {
     ])
   })
 
+  // What the refusal SAYS (decided 2026-10-27): a sentence for people, not
+  // the library's 'ThrottlerException: Too Many Requests' — and its wait is
+  // the one the Retry-After header gives on the same answer. Both kinds of
+  // limit: an @Throttle override (the login) and the global one (a route
+  // without its own), which share the module's options. The sentence is
+  // written out here, not built with config/rate-limits.ts's function, so a
+  // change to that function's words can't pass by changing both sides.
+  it('says in plain words how long to wait, the same wait as Retry-After', async () => {
+    app = await buildApp('on')
+    interface ErrorBody {
+      statusCode: number
+      message: string[]
+      error: string
+    }
+    // The FIRST refusal starts the block: it lasts the limit's window (60 s,
+    // the library's default blockDuration), and the guard rounds the time
+    // left UP to whole seconds in the same call — 60, to the second, unless
+    // that one call took a full second.
+    const sixtySeconds =
+      'Too many attempts in a short time. Try again in 60 seconds.'
+
+    await statuses(login, 5)
+    const refusedLogin = await login()
+    expect(refusedLogin.status).toBe(429)
+    expect(refusedLogin.headers['retry-after']).toBe('60')
+    expect(refusedLogin.body as ErrorBody).toMatchObject({
+      statusCode: 429,
+      message: [sixtySeconds],
+      // The class name stays in `error`, where every refusal names its kind.
+      error: 'ThrottlerException',
+    })
+
+    const setupStatus = () =>
+      request(app.getHttpServer()).get('/auth/setup-status')
+    await statuses(setupStatus, 60)
+    const refusedRead = await setupStatus()
+    expect(refusedRead.status).toBe(429)
+    expect(refusedRead.headers['retry-after']).toBe('60')
+    expect((refusedRead.body as ErrorBody).message).toStrictEqual([
+      sixtySeconds,
+    ])
+  })
+
   // And the switch the other suites rely on: off means never counted — the
   // login limit (an @Throttle override) included.
   it('counts nothing when the limits are off', async () => {
