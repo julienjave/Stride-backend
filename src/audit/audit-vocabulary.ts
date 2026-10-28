@@ -172,6 +172,9 @@ export const AUDIT_ACTIONS = {
   // The practitioners' "For review" list (pain and attendance alerts)
   SESSION_REVIEWED: 'change',
   PROGRAM_ALERT_REVIEWED: 'change',
+  // A practitioner marked a care-team join notice as seen (decisions §25):
+  // a row written, so a change — like the two reviews above.
+  CARE_TEAM_JOIN_REVIEWED: 'change',
   ALERTS_VIEWED: 'view',
 
   // Messaging (who wrote to whom and when — never the text)
@@ -223,6 +226,7 @@ export const AUDIT_AREAS = {
   // "To-do", a name kept free for a real to-do list (roadmap, Phase 7).
   session_reviews: 'For review',
   program_alert_reviews: 'For review',
+  care_team_join_reviews: 'For review',
   alerts: 'For review',
   conversations: 'Messages',
   messages: 'Messages',
@@ -261,6 +265,9 @@ export const CLINICAL_AREAS = {
   sessions: true,
   session_reviews: true,
   program_alert_reviews: true,
+  // Which colleague joined which patient's team, and that someone saw it —
+  // directory-level, like the care team itself (care_team_members: false).
+  care_team_join_reviews: false,
   alerts: true,
   conversations: true,
   messages: true,

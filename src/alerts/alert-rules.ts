@@ -397,3 +397,63 @@ export function sessionReview(
 export function reviewWindowStart(today: string): string {
   return addDays(today, 1 - ALERT_THRESHOLDS.reviewWindowDays)
 }
+
+// --- A COLLEAGUE JOINED THE CARE TEAM ---------------------------------------------------------------------
+
+// The third family (decided with the person 2026-10-28, decisions §25 — the
+// post-Phase-6 tidy-up, pass 1): when someone joins a patient's care team, or
+// is added to it, the practitioners ALREADY on that team are told. Clinical
+// access comes with a care-team link (decisions §3), and a link is
+// self-service — so a new member is exactly the kind of change the rest of the
+// team should notice. Like a session to review, it never clears itself: hence
+// a review per practitioner (care_team_join_reviews) and the same 14 days.
+
+// One care-team link, as the rule needs it.
+export interface CareTeamLinkFacts {
+  practitionerId: number
+  // Who created the link: the practitioner themselves (they joined), a
+  // colleague or an admin (they were added) — or null for the links migration
+  // 0019 backfilled from the old "shares a clinic" rule, which nobody created
+  // and which announce nothing.
+  createdBy: number | null
+  startedAt: Date
+}
+
+// The earliest start a link may have and still be announced: 14 days before
+// `now` — counted in 24-hour steps, since a link starts at an INSTANT
+// (started_at, the database's now()), not on a calendar day like a session.
+// `now` is a parameter: no clock here.
+export function joinNoticeCutoff(now: Date): Date {
+  return new Date(
+    now.getTime() - ALERT_THRESHOLDS.reviewWindowDays * 24 * 60 * 60 * 1000,
+  )
+}
+
+// Is `link` a join to announce to practitioner `me`? Every condition is the
+// person's choice (2026-10-28) or follows from it:
+//   - `me` is on the patient's care team NOW (`myStart` — the start of my
+//     current link; undefined when I have none), and was there BEFORE the new
+//     member: a newcomer isn't told about the team they just joined, and
+//     someone who joins later doesn't learn older joins as news;
+//   - it isn't my own link, and I didn't create it (adding a colleague myself
+//     is nothing to tell me about);
+//   - someone did create it (not a backfilled row);
+//   - it started within the last 14 days.
+// A link that has ENDED since still counts (the person's choice): the new
+// member had access, which is what the notice is about — the screen says they
+// left.
+export function isJoinNoticeFor(
+  link: CareTeamLinkFacts,
+  me: number,
+  myStart: Date | undefined,
+  cutoff: Date,
+): boolean {
+  return (
+    myStart !== undefined &&
+    link.practitionerId !== me &&
+    link.createdBy !== null &&
+    link.createdBy !== me &&
+    link.startedAt > myStart &&
+    link.startedAt >= cutoff
+  )
+}

@@ -53,6 +53,7 @@ describe('audit vocabulary', () => {
       expect(areaOf('alerts')).toBe('For review')
       expect(areaOf('session_reviews')).toBe('For review')
       expect(areaOf('program_alert_reviews')).toBe('For review')
+      expect(areaOf('care_team_join_reviews')).toBe('For review')
       expect(areaOf('records_exports')).toBe('Records exports')
       expect(areaOf('records_export_links')).toBe('Records exports')
     })
@@ -78,6 +79,9 @@ describe('audit vocabulary', () => {
         'exercises',
         'program_templates',
         'records_export_links',
+        // A care-team join notice seen (2026-10-28): who joined whose team —
+        // directory-level, like care_team_members.
+        'care_team_join_reviews',
       ]) {
         expect([type, detailsShownToAdmins(type)]).toEqual([type, true])
       }
@@ -144,8 +148,10 @@ describe('audit vocabulary', () => {
       // 106 actions (the 3 email-change ones and PASSWORD_CHANGED since
       // 2026-10-22, the 3 two-factor recovery ones since 2026-10-23,
       // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED and the emailed
-      // link's two since 2026-10-26), 10 views, 9 sign-ins.
-      expect(changes).toHaveLength(106 - 10 - 9)
+      // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED since
+      // 2026-10-28) — 107 —, 10 views, 9 sign-ins.
+      expect(changes).toHaveLength(107 - 10 - 9)
+      expect(changes).toContain('CARE_TEAM_JOIN_REVIEWED')
       expect(changes).toContain('RECORDS_EXPORT_LINK_SENT')
       expect(changes).toContain('MFA_RECOVERY_CODES_REGENERATED')
       expect(changes).toContain('MFA_RESET_BY_ADMIN')

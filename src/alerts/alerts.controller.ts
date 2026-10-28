@@ -75,4 +75,17 @@ export class AlertsController {
   ) {
     return this.alertsService.reviewAttendance(programId, user, dto.today)
   }
+
+  // "Mark as reviewed" for a care-team join notice (decisions §25). No body:
+  // a link starts at an instant, so the 14 days are counted on the server's
+  // clock — there is no "today" of the practitioner's to send.
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post('care-team-joins/:linkId/review')
+  reviewCareTeamJoin(
+    @Param('linkId', ParseIntPipe) linkId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.alertsService.reviewCareTeamJoin(linkId, user)
+  }
 }

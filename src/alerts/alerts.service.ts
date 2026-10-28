@@ -24,10 +24,24 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   assignedPrograms,
+  careTeamJoinReviews,
+  careTeamMembers,
   programAlertReviews,
   sessionExercises,
   sessionReviews,
@@ -54,6 +68,8 @@ import {
   attendanceFacts,
   attendanceKeys,
   isAttendanceReviewed,
+  isJoinNoticeFor,
+  joinNoticeCutoff,
   reviewWindowStart,
   sessionReview,
   type AttendanceFacts,
@@ -107,7 +123,31 @@ export interface SessionAlert {
   hardExercises: { name: string; rating: number }[]
 }
 
-export type Alert = AttendanceAlert | SessionAlert
+// A colleague joined one of my patients' care teams (decisions §25, the
+// post-Phase-6 tidy-up — pass 1). Who, on whose team, when, and who added
+// them: `addedBy` is null when they joined by themselves. `endsAt` as stored:
+// in the past, they have left since (still announced — they had access); in
+// the future, a planned cover period; null, open-ended. No clinical data —
+// who is on a care team is directory-level information (decisions §3).
+export interface CareTeamJoinAlert {
+  kind: 'care_team_join'
+  patient: AlertPatient
+  link: {
+    id: number
+    practitioner: PersonName
+    addedBy: PersonName | null
+    startedAt: Date
+    endsAt: Date | null
+  }
+}
+
+export interface PersonName {
+  id: number
+  firstName: string
+  lastName: string
+}
+
+export type Alert = AttendanceAlert | SessionAlert | CareTeamJoinAlert
 
 // What POST /alerts/programs/:id/review answers: the review that now
 // covers the program's alert for this practitioner — the facts it saw and
@@ -120,6 +160,23 @@ export interface ProgramAlertReviewAnswer {
 
 const NOTHING_TO_REVIEW_MESSAGE =
   'Nothing on this program needs reviewing right now'
+
+// POST /alerts/care-team-joins/:linkId/review for a link that IS on one of my
+// patients' teams but isn't a notice for me (my own link, one I created, one
+// older than mine, or past the 14 days) — 409: the request is valid, the
+// link's state is what conflicts with it.
+export const NOT_A_JOIN_NOTICE_MESSAGE =
+  'This change to the care team is not in your For review list'
+
+// A care-team link is CURRENT at the database's now(): started, and not ended
+// (an end in the future is a planned cover, still current) — the condition
+// rls_care_team_member() writes (migration 0019), on the same clock.
+function currentLink() {
+  return and(
+    lte(careTeamMembers.startedAt, sql`now()`),
+    or(isNull(careTeamMembers.endsAt), gt(careTeamMembers.endsAt, sql`now()`)),
+  )
+}
 
 // One program's attendance facts for `today`, from ITS OWN schedule
 // versions and session rows: the summary (the same code as GET …/summary),
@@ -201,6 +258,10 @@ export class AlertsService {
     // nothing anyway (an empty `IN ()` matches no row) — this only spares
     // the transaction. (Mutation-checked: removing it changes no answer.)
     if (patientIds.length === 0) return []
+
+    // Colleagues who joined my patients' care teams — read on their own (they
+    // need no program: a patient with no program yet still has a team).
+    const joins = await this.joinNotices(currentUser, patientIds)
 
     const read = await withRlsContext(this.db, currentUser, async (tx) => {
       // 1. The patients' programs — every status (a session of a program
@@ -345,7 +406,7 @@ export class AlertsService {
         people,
       }
     })
-    if (read === null) return []
+    if (read === null) return joins
 
     // --- In memory: group, then ask the pure rules ---------------------------
 
@@ -455,14 +516,17 @@ export class AlertsService {
         b.session.localDate.localeCompare(a.session.localDate) ||
         b.session.id - a.session.id,
     )
-    const alerts = [...attendance, ...toReview]
+    const clinical = [...attendance, ...toReview]
     // AUDITED (the audit review, step 2): ONE ALERTS_VIEWED per patient the
     // list shows, naming exactly what it showed of them — the programs whose
     // attendance it reports, the sessions (with their pain scores) it asks
     // to review. A patient whose data was read but raised nothing was shown
-    // nothing, and gets no entry. Written before the answer.
+    // nothing, and gets no entry. Written before the answer. Only the
+    // CLINICAL alerts: a join notice shows who is on a care team, which is
+    // directory-level, not a read of the patient's clinical data (the care
+    // team's own page records no read either).
     await this.auditService.logReads(
-      perPatient(alerts, (alert) => alert.patient.id).map(
+      perPatient(clinical, (alert) => alert.patient.id).map(
         ([patientId, shown]) => ({
           performedBy: currentUser.id,
           action: 'ALERTS_VIEWED',
@@ -479,7 +543,267 @@ export class AlertsService {
         }),
       ),
     )
-    return alerts
+    // The order on the home: what is happening to patients first (attendance,
+    // then sessions), then the changes to who treats them.
+    return [...clinical, ...joins]
+  }
+
+  // --- Care-team join notices ----------------------------------------------
+
+  // The joins to announce to this practitioner, newest first. The rule is
+  // isJoinNoticeFor (pure, alert-rules.ts); the queries only gather what it
+  // needs, under the practitioner's row security.
+  private async joinNotices(
+    currentUser: CurrentUser,
+    patientIds: number[],
+  ): Promise<CareTeamJoinAlert[]> {
+    const now = new Date()
+    const cutoff = joinNoticeCutoff(now)
+    const read = await withRlsContext(this.db, currentUser, async (tx) => {
+      // My CURRENT link to each patient — when I joined (the rule announces
+      // only newer members). The exclusion constraint (0019) allows one
+      // current link per pair, so one row per patient at most. (Without the
+      // "current" condition, an ended earlier link of mine would come back
+      // too, and the Map below would keep whichever row came LAST. In the
+      // tests Postgres returns them in insertion order — the current one last
+      // — so that mutant survives; the condition is what makes the answer
+      // independent of row order, which SQL never promises. The review route,
+      // which reads ONE row, has a test that kills the same mutant.)
+      const mine = await tx
+        .select({
+          patientId: careTeamMembers.patientId,
+          startedAt: careTeamMembers.startedAt,
+        })
+        .from(careTeamMembers)
+        .where(
+          and(
+            eq(careTeamMembers.practitionerId, currentUser.id),
+            inArray(careTeamMembers.patientId, patientIds),
+            currentLink(),
+          ),
+        )
+      // The links that started within the window on those patients. The
+      // window here only spares reading every link ever — the RULE (which
+      // checks the window too) decides; mutation-checked as equivalent.
+      const recent = await tx
+        .select({
+          id: careTeamMembers.id,
+          patientId: careTeamMembers.patientId,
+          practitionerId: careTeamMembers.practitionerId,
+          createdBy: careTeamMembers.createdBy,
+          startedAt: careTeamMembers.startedAt,
+          endsAt: careTeamMembers.endsAt,
+        })
+        .from(careTeamMembers)
+        .where(
+          and(
+            inArray(careTeamMembers.patientId, patientIds),
+            gte(careTeamMembers.startedAt, cutoff),
+          ),
+        )
+      const reviewed =
+        recent.length === 0
+          ? []
+          : await tx
+              .select({ linkId: careTeamJoinReviews.careTeamMemberId })
+              .from(careTeamJoinReviews)
+              // Mine only — said here AND by the table's SELECT policy (own
+              // rows only, migration 0065): either alone is enough, so a
+              // mutant removing one survives; removing both was checked to
+              // fail the "still on C's list" test.
+              .where(
+                and(
+                  eq(careTeamJoinReviews.practitionerId, currentUser.id),
+                  inArray(
+                    careTeamJoinReviews.careTeamMemberId,
+                    recent.map((link) => link.id),
+                  ),
+                ),
+              )
+      return { mine, recent, reviewed }
+    })
+
+    const myStart = new Map(
+      read.mine.map((row) => [row.patientId, row.startedAt]),
+    )
+    const reviewedIds = new Set(read.reviewed.map((row) => row.linkId))
+    const notices = read.recent.filter(
+      (link) =>
+        !reviewedIds.has(link.id) &&
+        isJoinNoticeFor(
+          link,
+          currentUser.id,
+          myStart.get(link.patientId),
+          cutoff,
+        ),
+    )
+    if (notices.length === 0) return []
+
+    // The names (and the patients' photos), in one batched query on the
+    // service's own connection — AFTER the access decision, as the care team's
+    // list reads its "added by" names (CareTeamService): the admin who added
+    // someone is a user row a practitioner's row security may not show, and
+    // the name is what the notice is about.
+    const people = await this.db
+      .select({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        avatarPath: users.avatarPath,
+      })
+      .from(users)
+      .where(
+        inArray(users.id, [
+          ...new Set(
+            notices.flatMap((link) => [
+              link.patientId,
+              link.practitionerId,
+              // isJoinNoticeFor refused every link without a creator.
+              link.createdBy!,
+            ]),
+          ),
+        ]),
+      )
+    const byId = new Map(people.map((person) => [person.id, person]))
+    const name = (id: number): PersonName => {
+      const { firstName, lastName } = byId.get(id)!
+      return { id, firstName, lastName }
+    }
+
+    const alerts: CareTeamJoinAlert[] = []
+    for (const link of notices) {
+      const patient = byId.get(link.patientId)!
+      alerts.push({
+        kind: 'care_team_join',
+        patient: {
+          id: patient.id,
+          firstName: patient.firstName,
+          lastName: patient.lastName,
+          avatarUrl: await this.storageService.getPresignedUrlOrNull(
+            patient.avatarPath,
+            AVATAR_URL_EXPIRY_SECONDS,
+          ),
+        },
+        link: {
+          id: link.id,
+          practitioner: name(link.practitionerId),
+          // Joined by themselves → no "added by".
+          addedBy:
+            link.createdBy === link.practitionerId
+              ? null
+              : name(link.createdBy!),
+          startedAt: link.startedAt,
+          endsAt: link.endsAt,
+        },
+      })
+    }
+    return alerts.sort(
+      (a, b) =>
+        b.link.startedAt.getTime() - a.link.startedAt.getTime() ||
+        b.link.id - a.link.id,
+    )
+  }
+
+  // --- POST /alerts/care-team-joins/:linkId/review ---
+
+  // "Mark as reviewed" for a join notice: takes it off THIS practitioner's
+  // list (one row per practitioner and link). Idempotent: a second press
+  // writes nothing and answers the first review (ON CONFLICT DO NOTHING on the
+  // unique index — a concurrent second insert waits on the index, then does
+  // nothing).
+  //
+  // Refusals: a link the practitioner can't see, or on a patient whose care
+  // team they aren't on → 404 (one answer, so an outsider learns nothing);
+  // a link of my patient that isn't a notice for me → 409.
+  async reviewCareTeamJoin(
+    linkId: number,
+    currentUser: CurrentUser,
+  ): Promise<{ reviewedAt: Date }> {
+    return withRlsContext(this.db, currentUser, async (tx) => {
+      const [link] = await tx
+        .select({
+          id: careTeamMembers.id,
+          patientId: careTeamMembers.patientId,
+          practitionerId: careTeamMembers.practitionerId,
+          createdBy: careTeamMembers.createdBy,
+          startedAt: careTeamMembers.startedAt,
+        })
+        .from(careTeamMembers)
+        .where(eq(careTeamMembers.id, linkId))
+      if (
+        !link ||
+        !(await this.careTeamService.isOnCareTeam(
+          currentUser.id,
+          link.patientId,
+        ))
+      ) {
+        throw new NotFoundException(`Care-team link ${linkId} not found`)
+      }
+      const [mine] = await tx
+        .select({ startedAt: careTeamMembers.startedAt })
+        .from(careTeamMembers)
+        .where(
+          and(
+            eq(careTeamMembers.practitionerId, currentUser.id),
+            eq(careTeamMembers.patientId, link.patientId),
+            currentLink(),
+          ),
+        )
+      // The same rule as the list, so a review always covers a notice the
+      // list really showed.
+      if (
+        !isJoinNoticeFor(
+          link,
+          currentUser.id,
+          mine?.startedAt,
+          joinNoticeCutoff(new Date()),
+        )
+      ) {
+        throw new ConflictException(NOT_A_JOIN_NOTICE_MESSAGE)
+      }
+      // reviewed_at isn't sent: the trigger writes the database's now().
+      const [created] = await tx
+        .insert(careTeamJoinReviews)
+        .values({ careTeamMemberId: link.id, practitionerId: currentUser.id })
+        .onConflictDoNothing({
+          target: [
+            careTeamJoinReviews.careTeamMemberId,
+            careTeamJoinReviews.practitionerId,
+          ],
+        })
+        .returning({
+          id: careTeamJoinReviews.id,
+          reviewedAt: careTeamJoinReviews.reviewedAt,
+        })
+      if (!created) {
+        // Reviewed already: nothing written (the convention), the first
+        // review answered.
+        const [existing] = await tx
+          .select({ reviewedAt: careTeamJoinReviews.reviewedAt })
+          .from(careTeamJoinReviews)
+          .where(
+            and(
+              eq(careTeamJoinReviews.careTeamMemberId, link.id),
+              eq(careTeamJoinReviews.practitionerId, currentUser.id),
+            ),
+          )
+        return existing
+      }
+      // ONE complete entry in the same transaction (the audit convention):
+      // whose team, which link, who had joined.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'CARE_TEAM_JOIN_REVIEWED',
+        targetUserId: link.patientId,
+        entityType: 'care_team_join_reviews',
+        entityId: created.id,
+        details: {
+          careTeamLinkId: link.id,
+          practitionerId: link.practitionerId,
+        },
+      })
+      return { reviewedAt: created.reviewedAt }
+    })
   }
   // --- POST /alerts/programs/:programId/review ---
 

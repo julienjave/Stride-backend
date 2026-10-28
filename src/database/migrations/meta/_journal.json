@@ -449,6 +449,20 @@
       "when": 1793115635284,
       "tag": "0063_deactivated_patient_messaging",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1793203473800,
+      "tag": "0064_care_team_join_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1793203494161,
+      "tag": "0065_care_team_join_reviews_rls",
+      "breakpoints": true
     }
   ]
 }

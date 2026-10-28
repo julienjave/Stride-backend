@@ -20,6 +20,8 @@ import {
   attendanceFacts,
   attendanceKeys,
   isAttendanceReviewed,
+  isJoinNoticeFor,
+  joinNoticeCutoff,
   inactivity,
   isLongRun,
   isRunning,
@@ -640,5 +642,90 @@ describe('isAttendanceReviewed', () => {
     const atTheMoment = new Date('2031-06-24T09:00:00.000Z')
     expect(isAttendanceReviewed(both, review, justBefore)).toBe(true)
     expect(isAttendanceReviewed(both, review, atTheMoment)).toBe(false)
+  })
+})
+
+describe('joinNoticeCutoff', () => {
+  it('is exactly 14 × 24 hours before now — instants, not calendar days', () => {
+    // Across the clocks going back in Paris (2031-10-26): 14 days of 24 hours
+    // land at the same UTC time of day, whatever the local clock did.
+    expect(
+      joinNoticeCutoff(new Date('2031-11-03T10:00:00.000Z')),
+    ).toStrictEqual(new Date('2031-10-20T10:00:00.000Z'))
+  })
+})
+
+describe('isJoinNoticeFor', () => {
+  // Me = practitioner 10, on the team since June 1st; Sam (20) joins June 10th.
+  const ME = 10
+  const MY_START = new Date('2031-06-01T09:00:00.000Z')
+  const CUTOFF = new Date('2031-06-05T00:00:00.000Z')
+  const samJoined = {
+    practitionerId: 20,
+    createdBy: 20,
+    startedAt: new Date('2031-06-10T09:00:00.000Z'),
+  }
+
+  it('announces a colleague who joined after me, within the window', () => {
+    expect(isJoinNoticeFor(samJoined, ME, MY_START, CUTOFF)).toBe(true)
+  })
+
+  it('announces a colleague someone ELSE added (an admin, another colleague)', () => {
+    expect(
+      isJoinNoticeFor({ ...samJoined, createdBy: 99 }, ME, MY_START, CUTOFF),
+    ).toBe(true)
+  })
+
+  it("tells nobody who isn't on the team now", () => {
+    expect(isJoinNoticeFor(samJoined, ME, undefined, CUTOFF)).toBe(false)
+  })
+
+  it('never announces my own link', () => {
+    expect(
+      isJoinNoticeFor(
+        { ...samJoined, practitionerId: ME, createdBy: 99 },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(false)
+  })
+
+  it('never announces a colleague I added myself', () => {
+    expect(
+      isJoinNoticeFor({ ...samJoined, createdBy: ME }, ME, MY_START, CUTOFF),
+    ).toBe(false)
+  })
+
+  it('announces nothing for a backfilled link (no creator)', () => {
+    expect(
+      isJoinNoticeFor({ ...samJoined, createdBy: null }, ME, MY_START, CUTOFF),
+    ).toBe(false)
+  })
+
+  it('tells a newcomer nothing about members who were there before them', () => {
+    // My link starts AFTER Sam's — and one starting at the same instant (one
+    // transaction) isn't "after" either.
+    expect(
+      isJoinNoticeFor(
+        samJoined,
+        ME,
+        new Date('2031-06-11T09:00:00.000Z'),
+        CUTOFF,
+      ),
+    ).toBe(false)
+    expect(isJoinNoticeFor(samJoined, ME, samJoined.startedAt, CUTOFF)).toBe(
+      false,
+    )
+  })
+
+  it('keeps a join from exactly the cutoff, drops one a millisecond older', () => {
+    const atCutoff = { ...samJoined, startedAt: CUTOFF }
+    const justBefore = {
+      ...samJoined,
+      startedAt: new Date(CUTOFF.getTime() - 1),
+    }
+    expect(isJoinNoticeFor(atCutoff, ME, MY_START, CUTOFF)).toBe(true)
+    expect(isJoinNoticeFor(justBefore, ME, MY_START, CUTOFF)).toBe(false)
   })
 })

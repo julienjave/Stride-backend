@@ -204,6 +204,14 @@ made, through the app's own code); the seed announces it just before.
   happened. A program's alert clears itself when the patient acts, or when
   that practitioner marks it reviewed on the program page's banner — then it
   stays off their list until something changes, or for 14 days.
+  **Care-team joins** (since 2026-10-28): when someone joins a patient's care
+  team, or is added to it, the practitioners already on it see it here — so
+  **Alex** also sees *Sam Okafor joined the care team* (Jo) and **Sam** sees
+  *Blake Martin joined the care team* (Robin). **Mark as reviewed** in the row
+  takes it off that practitioner's list; it leaves by itself after 14 days.
+  To see an admin's addition: as the admin, add Morgan to Pat's care team
+  (**Admin → Users → Pat → Care team → Add someone**) — Alex then sees *Avery
+  Admin added Morgan Reyes to the care team*.
 - **Messages** (`GET /conversations`; the screens come with Phase 5's
   frontend): a patient writes with the practitioners on their care team, and
   only while they are on it.

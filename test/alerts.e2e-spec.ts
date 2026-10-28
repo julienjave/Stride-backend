@@ -1319,4 +1319,417 @@ describe('Alerts and session reviews (e2e)', () => {
       expect(await programReviewAudit(program.id)).toEqual([])
     })
   })
+
+  // --- Care-team join notices (decisions §25, the tidy-up's pass 1) -------------
+
+  describe('care-team join notices', () => {
+    interface JoinBody {
+      kind: 'care_team_join'
+      patient: { id: number; firstName: string; lastName: string }
+      link: {
+        id: number
+        practitioner: { id: number; firstName: string; lastName: string }
+        addedBy: { id: number; firstName: string; lastName: string } | null
+        startedAt: string
+        endsAt: string | null
+      }
+    }
+    // The join notices of one practitioner's list, about one patient.
+    const joinsOf = async (
+      who: ReturnType<typeof agent>,
+      patientId: number,
+    ) => {
+      const res = await who.get(`/alerts?today=${today}`)
+      expect(res.status).toBe(200)
+      return bodyOf<{ kind: string; patient: { id: number } }[]>(res).filter(
+        (alert) =>
+          alert.kind === 'care_team_join' && alert.patient.id === patientId,
+      ) as JoinBody[]
+    }
+    // The links of a patient, as the owner, oldest first.
+    async function linksOf(patientId: number) {
+      const { rows } = await sessionPool.query<{
+        id: number
+        practitioner_id: number
+      }>(
+        'SELECT id, practitioner_id FROM care_team_members WHERE patient_id = $1 ORDER BY started_at, id',
+        [patientId],
+      )
+      return rows
+    }
+    const linkOf = async (patientId: number, practitionerId: number) =>
+      (await linksOf(patientId))
+        .filter((link) => link.practitioner_id === practitionerId)
+        .at(-1)!.id
+    async function joinReviews(linkId: number) {
+      const { rows } = await sessionPool.query<{
+        practitioner_id: number
+        reviewed_at: Date
+      }>(
+        'SELECT practitioner_id, reviewed_at FROM care_team_join_reviews WHERE care_team_member_id = $1 ORDER BY id',
+        [linkId],
+      )
+      return rows
+    }
+    async function joinReviewAudit(linkId: number) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const { rows } = await sessionPool.query<{
+        performed_by: number
+        target_user_id: number
+        entity_type: string
+        entity_id: string
+        details: Record<string, unknown>
+      }>(
+        `SELECT performed_by, target_user_id, entity_type, entity_id, details
+         FROM audit_logs
+         WHERE action = 'CARE_TEAM_JOIN_REVIEWED' AND (details->>'careTeamLinkId')::int = $1
+         ORDER BY id`,
+        [linkId],
+      )
+      return rows
+    }
+
+    // D: a fourth practitioner of the clinic, added by the admin below.
+    let practitionerD: ReturnType<typeof agent>
+    let practitionerDId: number
+    // A patient with A (creator) and C (added by A) on the team, then B
+    // joining by themselves, then the admin adding D.
+    let patientId: number
+    // A patient whose care team A isn't on (B creates them) — B's link on them.
+    let elsewhereLink: number
+    beforeAll(async () => {
+      practitionerD = agent()
+      const email = `practitioner-d-${stamp}@example.com`
+      const res = await admin.post('/users').send({
+        email,
+        role: 'practitioner',
+        firstName: 'Practitioner',
+        lastName: 'D',
+        licenseNumber: `PT-d-${stamp}`,
+        clinicId,
+      })
+      practitionerDId = bodyOf<{ id: number }>(res).id
+      await activateAccount(sessionPool, email)
+      await practitionerD
+        .post('/auth/login')
+        .send({ email, password: 'password123' })
+
+      patientId = await newPatient('Joined')
+      expect(
+        (await practitionerB.post(`/users/${patientId}/care-team`).send({}))
+          .status,
+      ).toBe(201)
+      expect(
+        (
+          await admin
+            .post(`/users/${patientId}/care-team`)
+            .send({ practitionerId: practitionerDId })
+        ).status,
+      ).toBe(201)
+
+      const other = await practitionerB.post('/users').send({
+        email: `patient-elsewhere-${stamp}@example.com`,
+        role: 'patient',
+        firstName: 'Patient',
+        lastName: 'Elsewhere',
+        dateOfBirth: '1990-01-01',
+        clinicId,
+      })
+      expect(other.status).toBe(201)
+      elsewhereLink = await linkOf(
+        bodyOf<{ id: number }>(other).id,
+        practitionerBId,
+      )
+    })
+
+    it('tells the members already there — who joined, who added them, when', async () => {
+      const bLink = await linkOf(patientId, practitionerBId)
+      const dLink = await linkOf(patientId, practitionerDId)
+      for (const who of [practitionerA, practitionerC]) {
+        const joins = await joinsOf(who, patientId)
+        // Newest first: D (added by the admin), then B (joined by themselves).
+        expect(joins.map((join) => join.link.id)).toEqual([dLink, bLink])
+        expect(joins[0]).toStrictEqual({
+          kind: 'care_team_join',
+          patient: expect.objectContaining({
+            id: patientId,
+            firstName: 'Patient',
+            lastName: 'Joined',
+          }),
+          link: {
+            id: dLink,
+            practitioner: {
+              id: practitionerDId,
+              firstName: 'Practitioner',
+              lastName: 'D',
+            },
+            addedBy: { id: adminId, firstName: 'Alerts', lastName: 'Admin' },
+            startedAt: expect.any(String),
+            endsAt: null,
+          },
+        })
+        expect(joins[1].link.practitioner.id).toBe(practitionerBId)
+        expect(joins[1].link.addedBy).toBeNull()
+      }
+    })
+
+    it('comes after every clinical alert in the list', async () => {
+      // Its own patient: a join (B) AND a clinical alert (a painful session
+      // yesterday), so this test doesn't depend on the blocks above having
+      // run — and "Joined" keeps no program (the test below needs that).
+      const ordered = await newPatient('Ordered')
+      expect(
+        (await practitionerB.post(`/users/${ordered}/care-team`).send({}))
+          .status,
+      ).toBe(201)
+      const program = await newProgram(ordered, 3, 'Join order program')
+      await plantSession(program, 1, { painBefore: 2, painAfter: 9 })
+      const res = await practitionerA.get(`/alerts?today=${today}`)
+      const kinds = bodyOf<{ kind: string }[]>(res).map((alert) => alert.kind)
+      const firstJoin = kinds.indexOf('care_team_join')
+      expect(firstJoin).toBeGreaterThan(0)
+      expect(
+        kinds.slice(firstJoin).every((kind) => kind === 'care_team_join'),
+      ).toBe(true)
+    })
+
+    it('tells a newcomer only about those who came after them', async () => {
+      // B joined before D: B learns of D only. D, the newest, learns nothing —
+      // and never of their own link.
+      expect(
+        (await joinsOf(practitionerB, patientId)).map(
+          (join) => join.link.practitioner.id,
+        ),
+      ).toEqual([practitionerDId])
+      expect(await joinsOf(practitionerD, patientId)).toEqual([])
+    })
+
+    it('never tells someone about a colleague they added themselves (A added C)', async () => {
+      const ids = (await joinsOf(practitionerA, patientId)).map(
+        (join) => join.link.practitioner.id,
+      )
+      expect(ids).not.toContain(practitionerCId)
+    })
+
+    it('records no clinical read for a patient shown only by a join notice', async () => {
+      // This patient has no program: only the join notices show them.
+      await joinsOf(practitionerA, patientId)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const { rows } = await sessionPool.query(
+        `SELECT 1 FROM audit_logs WHERE action = 'ALERTS_VIEWED' AND target_user_id = $1`,
+        [patientId],
+      )
+      expect(rows).toEqual([])
+    })
+
+    it('marks a notice reviewed for that practitioner only, once, with one entry', async () => {
+      const bLink = await linkOf(patientId, practitionerBId)
+      const first = await practitionerA.post(
+        `/alerts/care-team-joins/${bLink}/review`,
+      )
+      expect(first.status).toBe(200)
+      const reviewedAt = bodyOf<{ reviewedAt: string }>(first).reviewedAt
+      // Again: nothing written, the same review answered.
+      const again = await practitionerA.post(
+        `/alerts/care-team-joins/${bLink}/review`,
+      )
+      expect(again.status).toBe(200)
+      expect(bodyOf<{ reviewedAt: string }>(again).reviewedAt).toBe(reviewedAt)
+
+      const stored = await joinReviews(bLink)
+      expect(stored.map((row) => row.practitioner_id)).toEqual([
+        practitionerAId,
+      ])
+      expect(stored[0].reviewed_at.toISOString()).toBe(reviewedAt)
+      const audit = await joinReviewAudit(bLink)
+      expect(audit).toHaveLength(1)
+      expect(audit[0]).toStrictEqual({
+        performed_by: practitionerAId,
+        target_user_id: patientId,
+        entity_type: 'care_team_join_reviews',
+        entity_id: expect.any(String),
+        details: { careTeamLinkId: bLink, practitionerId: practitionerBId },
+      })
+
+      // Off A's list; still on C's.
+      expect(
+        (await joinsOf(practitionerA, patientId)).map((join) => join.link.id),
+      ).not.toContain(bLink)
+      expect(
+        (await joinsOf(practitionerC, patientId)).map((join) => join.link.id),
+      ).toContain(bLink)
+    })
+
+    it("refuses what isn't a notice for the practitioner (409) and what they can't see (404)", async () => {
+      const aLink = await linkOf(patientId, practitionerAId)
+      const cLink = await linkOf(patientId, practitionerCId)
+      // My own link, and one I created: on my patient, but not a notice for me.
+      for (const link of [aLink, cLink]) {
+        const res = await practitionerA.post(
+          `/alerts/care-team-joins/${link}/review`,
+        )
+        expect(res.status).toBe(409)
+        expect(bodyOf<ErrorBody>(res).message).toEqual([
+          'This change to the care team is not in your For review list',
+        ])
+      }
+      // A patient whose team A isn't on: 404, like a link that doesn't exist
+      // — an outsider learns nothing.
+      for (const link of [elsewhereLink, 999999]) {
+        const res = await practitionerA.post(
+          `/alerts/care-team-joins/${link}/review`,
+        )
+        expect(res.status).toBe(404)
+        expect(bodyOf<ErrorBody>(res).message).toEqual([
+          `Care-team link ${link} not found`,
+        ])
+      }
+      expect(await joinReviews(elsewhereLink)).toEqual([])
+      // Practitioners only.
+      const res = await admin.post(`/alerts/care-team-joins/${cLink}/review`)
+      expect(res.status).toBe(403)
+      expect(bodyOf<ErrorBody>(res).message).toEqual([
+        'You do not have permission to access this resource',
+      ])
+    })
+
+    it('still announces a member who has left since, with when they left', async () => {
+      const dLink = await linkOf(patientId, practitionerDId)
+      expect(
+        (
+          await admin
+            .post(`/users/${patientId}/care-team/${practitionerDId}/end`)
+            .send({})
+        ).status,
+      ).toBe(201)
+      const [notice] = (await joinsOf(practitionerC, patientId)).filter(
+        (join) => join.link.id === dLink,
+      )
+      expect(notice.link.endsAt).not.toBeNull()
+    })
+
+    it('counts from my CURRENT link: after I left and rejoined, an earlier newcomer is no news', async () => {
+      // A leaves, B joins, A rejoins: A's current link is newer than B's —
+      // A's ended first link (older than B's) must not count.
+      const id = await newPatient('Rejoined')
+      expect(
+        (
+          await practitionerA
+            .post(`/users/${id}/care-team/${practitionerAId}/end`)
+            .send({})
+        ).status,
+      ).toBe(201)
+      expect(
+        (await practitionerB.post(`/users/${id}/care-team`).send({})).status,
+      ).toBe(201)
+      expect(
+        (await practitionerA.post(`/users/${id}/care-team`).send({})).status,
+      ).toBe(201)
+      expect(await joinsOf(practitionerA, id)).toEqual([])
+      const bLink = await linkOf(id, practitionerBId)
+      const res = await practitionerA.post(
+        `/alerts/care-team-joins/${bLink}/review`,
+      )
+      expect(res.status).toBe(409)
+      // C, there all along, is told — of B, and of A's return.
+      expect(
+        (await joinsOf(practitionerC, id)).map(
+          (join) => join.link.practitioner.id,
+        ),
+      ).toEqual([practitionerAId, practitionerBId])
+    })
+
+    it('drops a join older than 14 days', async () => {
+      // A second patient: A, C, then B — every link moved back as the owner,
+      // A's and C's well before B's, so only the 14 days decide.
+      const id = await newPatient('Older')
+      expect(
+        (await practitionerB.post(`/users/${id}/care-team`).send({})).status,
+      ).toBe(201)
+      await sessionPool.query(
+        `UPDATE care_team_members SET started_at = started_at - interval '30 days'
+         WHERE patient_id = $1 AND practitioner_id <> $2`,
+        [id, practitionerBId],
+      )
+      const move = (days: number) =>
+        sessionPool.query(
+          `UPDATE care_team_members SET started_at = now() - make_interval(days => $3)
+           WHERE patient_id = $1 AND practitioner_id = $2`,
+          [id, practitionerBId, days],
+        )
+      await move(13)
+      expect(await joinsOf(practitionerA, id)).toHaveLength(1)
+      await move(15)
+      expect(await joinsOf(practitionerA, id)).toEqual([])
+      const bLink = await linkOf(id, practitionerBId)
+      expect(
+        (await practitionerA.post(`/alerts/care-team-joins/${bLink}/review`))
+          .status,
+      ).toBe(409)
+    })
+
+    it('holds at the database: own rows only, for a patient on my team, the moment the server’s', async () => {
+      const bLink = await linkOf(patientId, practitionerBId)
+      // In C's name, by A: refused (42501), as is a link of a patient A isn't
+      // treating — B's own patient from the test above.
+      const forC = await asActor(
+        practitionerAId,
+        'practitioner',
+        sql`INSERT INTO care_team_join_reviews (care_team_member_id, practitioner_id) VALUES (${bLink}, ${practitionerCId})`,
+      )
+      expect(forC).toStrictEqual({ error: { code: '42501' } })
+      const notMine = await asActor(
+        practitionerAId,
+        'practitioner',
+        sql`INSERT INTO care_team_join_reviews (care_team_member_id, practitioner_id) VALUES (${elsewhereLink}, ${practitionerAId})`,
+      )
+      expect(notMine).toStrictEqual({ error: { code: '42501' } })
+      // C's own: allowed, with the server's moment whatever is sent.
+      const own = await asActor(
+        practitionerCId,
+        'practitioner',
+        sql`INSERT INTO care_team_join_reviews (care_team_member_id, practitioner_id, reviewed_at)
+            VALUES (${bLink}, ${practitionerCId}, '2000-01-01T00:00:00Z')
+            RETURNING reviewed_at > now() - interval '1 minute' AS fresh`,
+      )
+      expect(own).toStrictEqual({ rowCount: 1, rows: [{ fresh: true }] })
+      // A's review (written here as the owner, if the test above hasn't) is
+      // A's alone: C, an admin, and A acting as a patient see none of it.
+      await sessionPool.query(
+        'INSERT INTO care_team_join_reviews (care_team_member_id, practitioner_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [bLink, practitionerAId],
+      )
+      const read = sql`SELECT count(*)::int AS n FROM care_team_join_reviews WHERE care_team_member_id = ${bLink}`
+      expect(
+        await asActor(practitionerAId, 'practitioner', read),
+      ).toStrictEqual({ rowCount: 1, rows: [{ n: 1 }] })
+      expect(
+        await asActor(practitionerCId, 'practitioner', read),
+      ).toStrictEqual({ rowCount: 1, rows: [{ n: 0 }] })
+      expect(await asActor(adminId, 'admin', read)).toStrictEqual({
+        rowCount: 1,
+        rows: [{ n: 0 }],
+      })
+      expect(await asActor(practitionerAId, 'patient', read)).toStrictEqual({
+        rowCount: 1,
+        rows: [{ n: 0 }],
+      })
+      // Written once: no UPDATE, no DELETE.
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE care_team_join_reviews SET reviewed_at = now() WHERE care_team_member_id = ${bLink}`,
+        ),
+      ).toStrictEqual({ rowCount: 0, rows: [] })
+      expect(
+        await asActor(
+          practitionerAId,
+          'practitioner',
+          sql`DELETE FROM care_team_join_reviews WHERE care_team_member_id = ${bLink}`,
+        ),
+      ).toStrictEqual({ rowCount: 0, rows: [] })
+      expect(await joinReviews(bLink)).toHaveLength(1)
+    })
+  })
 })

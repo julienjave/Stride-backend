@@ -37,3 +37,4 @@ export * from './audit-logs.schema'
 
 export * from './session-reviews.schema'
 export * from './program-alert-reviews.schema'
+export * from './care-team-join-reviews.schema'
