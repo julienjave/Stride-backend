@@ -201,7 +201,7 @@ async function run(): Promise<void> {
       const emptied = report.filter((r) => r.deleted > 0)
       console.log(
         `Reset: deleted ${emptied.map((r) => `${r.deleted} ${r.table}`).join(', ') || 'nothing'} ` +
-          '(library exercises kept; stored photos and logos are not deleted from storage).',
+          '(library exercises kept; stored photos and logos stay in storage until `npm run storage:sweep -- --delete` collects them, 24 hours later).',
       )
     }
 

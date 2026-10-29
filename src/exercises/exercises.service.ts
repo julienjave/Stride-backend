@@ -31,6 +31,7 @@ import { CreateExerciseDto } from './dto/create-exercise.dto'
 import { UpdateExerciseDto } from './dto/update-exercise.dto'
 import { FindExercisesQueryDto } from './dto/find-exercises-query.dto'
 import { StorageService } from '../storage/storage.service'
+import { storeAll, undoStoredOnFailure } from '../storage/compensation'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
@@ -102,31 +103,44 @@ export class ExercisesService {
     const exercise = await this.findOne(id)
     this.assertCanModify(exercise, currentUser)
 
-    const newKeys: string[] = []
-    for (const [index, file] of files.entries()) {
-      const objectKey = `exercises/${id}/upload-${Date.now()}-${index}.${extensionForMimeType(file.mimetype)}`
-      await this.storageService.upload(objectKey, file.buffer, file.mimetype)
-      newKeys.push(objectKey)
-    }
+    // Stored one at a time (storeAll): if the 2nd of 3 fails, the 1st is
+    // deleted before the error goes on — nothing would ever point at it.
+    const stamp = Date.now()
+    const newKeys = await storeAll(
+      this.storageService,
+      files.map((file, index) => ({
+        key: `exercises/${id}/upload-${stamp}-${index}.${extensionForMimeType(file.mimetype)}`,
+        put: (key: string) =>
+          this.storageService.upload(key, file.buffer, file.mimetype),
+      })),
+    )
 
     // Appended to the list as it is NOW, under the lock — read before the
     // upload, a photo added meanwhile by another request would be dropped.
-    const updated = await withRlsContext(this.db, currentUser, async (tx) => {
-      const before = await this.lockExercise(tx, id)
-      const [row] = await tx
-        .update(exercises)
-        .set({ mediaUrls: [...before.mediaUrls, ...newKeys] })
-        .where(eq(exercises.id, id))
-        .returning()
-      await this.auditService.logInTransaction(tx, {
-        performedBy: currentUser.id,
-        action: 'EXERCISE_PHOTOS_ADDED',
-        entityType: 'exercises',
-        entityId: id,
-        details: { added: newKeys },
-      })
-      return row
-    })
+    // If this transaction fails (the database refusing it, say), the files
+    // just stored point at nothing: they're deleted before the error goes on
+    // (undoStoredOnFailure, src/storage/compensation.ts).
+    const updated = await undoStoredOnFailure(
+      this.storageService,
+      newKeys,
+      () =>
+        withRlsContext(this.db, currentUser, async (tx) => {
+          const before = await this.lockExercise(tx, id)
+          const [row] = await tx
+            .update(exercises)
+            .set({ mediaUrls: [...before.mediaUrls, ...newKeys] })
+            .where(eq(exercises.id, id))
+            .returning()
+          await this.auditService.logInTransaction(tx, {
+            performedBy: currentUser.id,
+            action: 'EXERCISE_PHOTOS_ADDED',
+            entityType: 'exercises',
+            entityId: id,
+            details: { added: newKeys },
+          })
+          return row
+        }),
+    )
     return this.withImages(updated)
   }
 

@@ -81,6 +81,18 @@ export function programPhotoKey(patientId: number, extension: string) {
   return `patients/${patientId}/exercise-photos/${randomUUID()}.${extension}`
 }
 
+// What an ASSIGNED_PROGRAM_ARCHIVED entry says about the own photos deleted
+// with the program: their keys (the files are gone after the commit, so the
+// trail is the only place left that says which files there were). Present
+// only when there were some, so the entry of a program without own photos
+// keeps the shape it always had. Keys, never signed URLs: a URL expires in
+// minutes, a key names the file for good.
+export function deletedPhotosDetail(keys: string[]): {
+  deletedOwnPhotos?: string[]
+} {
+  return keys.length > 0 ? { deletedOwnPhotos: keys } : {}
+}
+
 // The extension of an existing key, for a COPY's new key — the copy is the
 // same file, so the same type. Lower-cased; 'bin' when there is none, the
 // same fallback as extensionForMimeType (image-upload.config.ts). Only the

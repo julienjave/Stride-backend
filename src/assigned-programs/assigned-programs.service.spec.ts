@@ -4071,6 +4071,9 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   // unless a test says otherwise — and their checklist rows.
   let closedSessions: Record<string, unknown>[]
   let checklistRows: Record<string, unknown>[]
+  // The program's exercises as archiving locks them (dropOwnPhotos): their
+  // own photos, in id order. None unless a test says otherwise.
+  let exerciseRows: { mediaUrls: string[] }[]
   let calls: string[]
   let setValues: jest.Mock
   let db: Record<string, unknown> & { transaction: jest.Mock }
@@ -4099,6 +4102,8 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
     sessionRows = []
     closedSessions = []
     checklistRows = []
+    exerciseRows = []
+    storageService.deleteUnreferenced.mockClear()
     setValues = jest.fn((values: Record<string, unknown>) => {
       // The sessions' UPDATE (its `endedAt` is SQL — now() — so it isn't
       // written out): recorded by what it does.
@@ -4154,11 +4159,23 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
               calls.push('lock')
               return Promise.resolve([])
             }),
-            // The closed sessions' checklists (one query for all).
-            orderBy: jest.fn(() => {
-              calls.push('read checklists')
-              return Promise.resolve(checklistRows)
-            }),
+            // The closed sessions' checklists (one query for all) when
+            // awaited; the program's exercises, locked, when .for() follows
+            // (archiving: dropOwnPhotos) — a thenable again, so only the one
+            // really used is recorded.
+            orderBy: jest.fn(() => ({
+              then: (
+                resolve: (rows: unknown) => unknown,
+                reject: (error: unknown) => unknown,
+              ) => {
+                calls.push('read checklists')
+                return Promise.resolve(checklistRows).then(resolve, reject)
+              },
+              for: jest.fn(() => {
+                calls.push('lock exercises')
+                return Promise.resolve(exerciseRows)
+              }),
+            })),
           }),
         }),
       })),
@@ -4205,6 +4222,7 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
         'read program',
         'read sessions',
         'update {"isArchived":true}',
+        'lock exercises',
         'audit ASSIGNED_PROGRAM_ARCHIVED',
       ])
       expect(auditService.logInTransaction).toHaveBeenCalledWith(
@@ -4224,6 +4242,49 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
           },
         }),
       )
+    })
+
+    // Cancelling archives it, so its own photos go too — as with archive().
+    it("drops the exercises' own photos when a cancel archives the program", async () => {
+      exerciseRows = [{ mediaUrls: ['patients/20/a.png'] }]
+
+      await service.close(900, practitioner, 'cancel', today)
+
+      expect(afterChecks()).toEqual([
+        'lock',
+        'read program',
+        'read sessions',
+        'update {"isArchived":true}',
+        'lock exercises',
+        'update {"mediaUrls":[]}',
+        'audit ASSIGNED_PROGRAM_ARCHIVED',
+      ])
+      const [[, entry]] = auditService.logInTransaction.mock.calls.slice(
+        -1,
+      ) as [unknown, { details: unknown }][]
+      const details = entry.details as Record<string, unknown>
+      expect(Object.keys(details)).toEqual([
+        'reason',
+        'program',
+        'deletedOwnPhotos',
+      ])
+      expect(details.reason).toBe('cancelled before any session')
+      expect(details.deletedOwnPhotos).toEqual(['patients/20/a.png'])
+      expect(storageService.deleteUnreferenced.mock.calls).toEqual([
+        ['patients/20/a.png'],
+      ])
+    })
+
+    // A cancel that does NOT archive (the program has sessions) keeps the
+    // photos: the program is part of the record, read-only.
+    it('keeps the own photos when the cancelled program had sessions', async () => {
+      sessionRows = [{ localDate: addDays(today, -2), status: 'completed' }]
+      exerciseRows = [{ mediaUrls: ['patients/20/a.png'] }]
+
+      await service.close(900, practitioner, 'cancel', today)
+
+      expect(calls).not.toContain('lock exercises')
+      expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
     })
 
     // Any session counts — even one started and never completed: it is a
@@ -4405,6 +4466,8 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
   })
 
   describe('archive', () => {
+    // No own photos: nothing emptied, nothing deleted, and the entry keeps
+    // the shape it always had.
     it('archives a program with no session, audited with what it was', async () => {
       await service.archive(900, practitioner)
 
@@ -4413,8 +4476,82 @@ describe('AssignedProgramsService — closing and archiving (step 2b-iii)', () =
         'read program',
         'read sessions',
         'update {"isArchived":true}',
+        'lock exercises',
         'audit ASSIGNED_PROGRAM_ARCHIVED',
       ])
+      const [[, entry]] = auditService.logInTransaction.mock.calls.slice(
+        -1,
+      ) as [unknown, { details: unknown }][]
+      expect(Object.keys(entry.details as object)).toEqual(['program'])
+      expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
+    })
+
+    // Decided 2026-10-29: the exercises' OWN photos go with the program —
+    // emptied AFTER the program is archived (the guard's exception, 0070,
+    // needs the program archived), listed in the entry, and their files
+    // deleted once the transaction is over.
+    it("drops the exercises' own photos: emptied after the archive, listed in the entry, files deleted after the commit", async () => {
+      exerciseRows = [
+        { mediaUrls: ['patients/20/a.png', 'patients/20/b.png'] },
+        { mediaUrls: [] },
+        { mediaUrls: ['patients/20/c.png'] },
+      ]
+      // The transaction is over when its callback's promise settles: the
+      // deletes must come after that, not inside it.
+      let transactionsOpen = 0
+      db.transaction.mockImplementation(
+        async (fn: (tx: unknown) => unknown) => {
+          transactionsOpen += 1
+          try {
+            return await fn(db)
+          } finally {
+            transactionsOpen -= 1
+          }
+        },
+      )
+      const openWhenDeleting: number[] = []
+      storageService.deleteUnreferenced.mockImplementation(() => {
+        openWhenDeleting.push(transactionsOpen)
+        return Promise.resolve()
+      })
+
+      await service.archive(900, practitioner)
+
+      expect(afterChecks()).toEqual([
+        'lock',
+        'read program',
+        'read sessions',
+        'update {"isArchived":true}',
+        'lock exercises',
+        'update {"mediaUrls":[]}',
+        'audit ASSIGNED_PROGRAM_ARCHIVED',
+      ])
+      const [[, entry]] = auditService.logInTransaction.mock.calls.slice(
+        -1,
+      ) as [unknown, { details: unknown }][]
+      const details = entry.details as Record<string, unknown>
+      expect(Object.keys(details)).toEqual(['program', 'deletedOwnPhotos'])
+      expect(details.deletedOwnPhotos).toEqual([
+        'patients/20/a.png',
+        'patients/20/b.png',
+        'patients/20/c.png',
+      ])
+      expect(storageService.deleteUnreferenced.mock.calls).toEqual([
+        ['patients/20/a.png'],
+        ['patients/20/b.png'],
+        ['patients/20/c.png'],
+      ])
+      expect(openWhenDeleting).toEqual([0, 0, 0])
+    })
+
+    // A failed transaction deletes nothing: the rows still point at the
+    // files (the rollback put the photos back).
+    it('deletes no file when the transaction fails', async () => {
+      exerciseRows = [{ mediaUrls: ['patients/20/a.png'] }]
+      auditService.logInTransaction.mockRejectedValueOnce(new Error('down'))
+
+      await expect(service.archive(900, practitioner)).rejects.toThrow('down')
+      expect(storageService.deleteUnreferenced).not.toHaveBeenCalled()
     })
 
     it('refuses a program with sessions: cancel it instead', async () => {

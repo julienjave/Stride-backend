@@ -15,6 +15,7 @@
     "seed:exercises": "ts-node scripts/seed-exercises.ts",
     "seed:dev": "ts-node scripts/seed-dev.ts",
     "seed": "npm run seed:exercises && npm run seed:dev --",
+    "storage:sweep": "ts-node scripts/storage-sweep.ts",
     "db:create-app-role": "ts-node scripts/create-app-role.ts",
     "db:create-app-role:test": "cross-env POSTGRES_DB=stride_test npm run db:create-app-role",
     "db:migrate:all": "npx drizzle-kit migrate && npm run db:migrate:test",

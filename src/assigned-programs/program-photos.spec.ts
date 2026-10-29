@@ -28,6 +28,7 @@ import {
   NO_LIBRARY_PHOTOS_MESSAGE,
   PHOTO_LIMIT_MESSAGE,
   PROGRAM_EXERCISE_PHOTO_LIMIT,
+  deletedPhotosDetail,
   programPhotoKey,
 } from './program-photos'
 
@@ -142,5 +143,20 @@ describe('assertOwnPhoto', () => {
         "This photo is not one of this exercise's own photos",
       ),
     )
+  })
+})
+
+// What an archive's audit entry says about the photos deleted with the
+// program: the keys when there were some; NO key at all otherwise, so the
+// entry of a program without own photos keeps its old shape.
+describe('deletedPhotosDetail', () => {
+  it('lists the keys when photos were deleted', () => {
+    expect(deletedPhotosDetail(['patients/1/a.png'])).toStrictEqual({
+      deletedOwnPhotos: ['patients/1/a.png'],
+    })
+  })
+
+  it('adds nothing when there were none', () => {
+    expect(deletedPhotosDetail([])).toStrictEqual({})
   })
 })

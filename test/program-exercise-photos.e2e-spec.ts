@@ -862,6 +862,133 @@ describe('Program exercise photos (e2e)', () => {
     ).toEqual([pathOf(bridgeOf(first).ownImages[0].url)])
   })
 
+  // --- 6b. Deleting a program deletes its own photos (2026-10-29) ---------------------------------------------
+
+  // Archiving — the app's "delete", only for a program with no session —
+  // takes its exercises' own photos with it: the rows emptied, the keys
+  // listed in the archive's entry, the files deleted. The library's photos
+  // are the library's, and stay.
+  describe('deleting a program', () => {
+    // A program whose Bridge has two own photos and whose Plank has one.
+    async function programWithOwnPhotos() {
+      const program = await assign()
+      const bridge = await upload(
+        practitionerA,
+        imagesPath(program, bridgeOf(program)),
+        ['b1', 'b2'],
+      )
+      expect(bridge.status).toBe(201)
+      const plank = await upload(
+        practitionerA,
+        imagesPath(program, plankOf(program)),
+        ['p1'],
+      )
+      expect(plank.status).toBe(201)
+      const latest = bodyOf<Program>(plank)
+      // In the rows' id order (Bridge was added to the program first), each
+      // row's photos in their own order — the order of the entry's list.
+      const keys = [bridgeOf(latest), plankOf(latest)].flatMap((row) =>
+        row.ownImages.map((image) => image.objectKey),
+      )
+      expect(keys).toHaveLength(3)
+      return { program, keys }
+    }
+
+    async function storedPhotos(programId: number) {
+      const { rows } = await sessionPool.query<{ media_urls: string[] }>(
+        'SELECT media_urls FROM assigned_program_exercises WHERE assigned_program_id = $1 ORDER BY id',
+        [programId],
+      )
+      return rows.map((row) => row.media_urls)
+    }
+
+    async function expectDropped(programId: number, keys: string[]) {
+      expect(await storedPhotos(programId)).toEqual([[], []])
+      for (const key of keys) {
+        expect(await contentOfKey(key)).toBe(404)
+      }
+      expect(await contentOfKey(libraryKeys[0])).toBe('library-one')
+      const [entry] = (await changeEntries(programId)).slice(-1)
+      expect(entry.action).toBe('ASSIGNED_PROGRAM_ARCHIVED')
+      return entry.details as Record<string, unknown>
+    }
+
+    it('deletes them when an active program is deleted', async () => {
+      const { program, keys } = await programWithOwnPhotos()
+
+      const res = await practitionerA.delete(`/assigned-programs/${program.id}`)
+
+      expect(res.status).toBe(200)
+      const details = await expectDropped(program.id, keys)
+      expect(Object.keys(details)).toEqual(['program', 'deletedOwnPhotos'])
+      expect(details.deletedOwnPhotos).toEqual(keys)
+    })
+
+    // Its exercises are already guarded (0031: a completed program can't
+    // change) — the guard's one exception (0070) is what lets this through.
+    it('deletes them when a COMPLETED program with no session is deleted', async () => {
+      const { program, keys } = await programWithOwnPhotos()
+      const completed = await practitionerA
+        .post(`/assigned-programs/${program.id}/complete`)
+        .send({ today })
+      expect(completed.status).toBe(200)
+
+      const res = await practitionerA.delete(`/assigned-programs/${program.id}`)
+
+      expect(res.status).toBe(200)
+      const details = await expectDropped(program.id, keys)
+      expect(details.deletedOwnPhotos).toEqual(keys)
+    })
+
+    it('deletes them when cancelling deletes the program (no session)', async () => {
+      const { program, keys } = await programWithOwnPhotos()
+
+      const res = await practitionerA
+        .post(`/assigned-programs/${program.id}/cancel`)
+        .send({ today })
+
+      expect(res.status).toBe(200)
+      expect(bodyOf<{ outcome: string }>(res).outcome).toBe('archived')
+      const details = await expectDropped(program.id, keys)
+      expect(Object.keys(details)).toEqual([
+        'reason',
+        'program',
+        'deletedOwnPhotos',
+      ])
+      expect(details.deletedOwnPhotos).toEqual(keys)
+    })
+
+    // A program with no own photo: its entry keeps the shape it had.
+    it('adds nothing to the entry of a program without own photos', async () => {
+      const program = await assign()
+      const res = await practitionerA.delete(`/assigned-programs/${program.id}`)
+      expect(res.status).toBe(200)
+      const [entry] = (await changeEntries(program.id)).slice(-1)
+      expect(Object.keys(entry.details as object)).toEqual(['program'])
+    })
+
+    // With a session, cancelling KEEPS the program — part of the record,
+    // read-only — and its photos with it.
+    it('keeps them when a program with sessions is cancelled', async () => {
+      const { program, keys } = await programWithOwnPhotos()
+      const started = await patient.post('/sessions').send({
+        assignedProgramId: program.id,
+        localDate: today,
+        workoutId: program.workouts[0].id,
+      })
+      expect(started.status).toBe(201)
+
+      const res = await practitionerA
+        .post(`/assigned-programs/${program.id}/cancel`)
+        .send({ today })
+
+      expect(res.status).toBe(200)
+      expect(bodyOf<{ outcome: string }>(res).outcome).toBe('cancelled')
+      expect((await storedPhotos(program.id)).flat()).toEqual(keys)
+      expect(await contentOfKey(keys[0])).toBe('b1')
+    })
+  })
+
   // --- 7. The database's own guarantees ----------------------------------------------------------------------
 
   describe('database guarantees', () => {
@@ -950,6 +1077,96 @@ describe('Program exercise photos (e2e)', () => {
             WHERE id = ${bridgeOf(program).id}`,
       )
       expect(result).toEqual({ rowCount: 0 })
+    })
+
+    // The guard's one exception (0070): an ARCHIVED program's exercise may
+    // lose its own photos — and nothing else, and no other program's.
+    describe("the closed-program guard's exception (0070)", () => {
+      let archived: Program
+      let cancelled: Program
+      const practitioner = () => ({
+        userId: practitionerAId,
+        role: 'practitioner',
+      })
+
+      beforeAll(async () => {
+        archived = await assign()
+        // Archived with a photo still on its row: planted as the owner (the
+        // app would have emptied it), so the exception has something to do.
+        await sessionPool.query(
+          "UPDATE assigned_program_exercises SET media_urls = ARRAY['patients/0/planted.png'] WHERE id = $1",
+          [bridgeOf(archived).id],
+        )
+        await sessionPool.query(
+          'UPDATE assigned_programs SET is_archived = true WHERE id = $1',
+          [archived.id],
+        )
+        cancelled = await assign()
+        await sessionPool.query(
+          "UPDATE assigned_program_exercises SET media_urls = ARRAY['patients/0/planted.png'] WHERE id = $1",
+          [bridgeOf(cancelled).id],
+        )
+        await sessionPool.query(
+          "UPDATE assigned_programs SET status = 'cancelled' WHERE id = $1",
+          [cancelled.id],
+        )
+      })
+
+      it('lets the photos of an archived program be emptied', async () => {
+        const result = await run(
+          practitioner(),
+          sql`UPDATE assigned_program_exercises SET media_urls = '{}'
+              WHERE id = ${bridgeOf(archived).id}`,
+        )
+        expect(result).toEqual({ rowCount: 1 })
+      })
+
+      it('refuses emptying them together with another change', async () => {
+        const result = await run(
+          practitioner(),
+          sql`UPDATE assigned_program_exercises SET media_urls = '{}', sets = 9
+              WHERE id = ${bridgeOf(archived).id}`,
+        )
+        expect(result).toEqual({
+          error: { code: '23514', constraint: 'assigned_program_closed' },
+        })
+      })
+
+      it('refuses any other change to an archived program', async () => {
+        const result = await run(
+          practitioner(),
+          sql`UPDATE assigned_program_exercises SET media_urls = ARRAY['patients/0/other.png']
+              WHERE id = ${bridgeOf(archived).id}`,
+        )
+        expect(result).toEqual({
+          error: { code: '23514', constraint: 'assigned_program_closed' },
+        })
+      })
+
+      // Cancelled with sessions = part of the record: its photos stay.
+      it('refuses emptying the photos of a program that is closed but not archived', async () => {
+        const result = await run(
+          practitioner(),
+          sql`UPDATE assigned_program_exercises SET media_urls = '{}'
+              WHERE id = ${bridgeOf(cancelled).id}`,
+        )
+        expect(result).toEqual({
+          error: { code: '23514', constraint: 'assigned_program_closed' },
+        })
+      })
+
+      // The other tables the function guards: the exception is for program
+      // exercises only (a workout of an archived program stays final).
+      it("leaves the other tables' guard as it was", async () => {
+        const result = await run(
+          practitioner(),
+          sql`UPDATE program_workouts SET name = 'Renamed'
+              WHERE id = ${archived.workouts[0].id}`,
+        )
+        expect(result).toEqual({
+          error: { code: '23514', constraint: 'assigned_program_closed' },
+        })
+      })
     })
 
     // The closed-program guard (0031) covers the new columns too: they're

@@ -29,6 +29,7 @@ import { clinics, userClinics, users, userRoles } from '../database/schema'
 import { CreateClinicDto } from './dto/create-clinic.dto'
 import { UpdateClinicDto } from './dto/update-clinic.dto'
 import { StorageService } from '../storage/storage.service'
+import { undoStoredOnFailure } from '../storage/compensation'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
@@ -199,28 +200,31 @@ export class ClinicsService {
     const objectKey = `clinics/${id}/logo-${Date.now()}.${extensionForMimeType(file.mimetype)}`
     await this.storageService.upload(objectKey, file.buffer, file.mimetype)
     // The logo it replaces is read under the row's lock, inside the
-    // transaction — the one the entry names, and the one deleted below.
-    const { updated, existing } = await withRlsContext(
-      this.db,
-      currentUser,
-      async (tx) => {
-        const before = await this.lockClinic(tx, id)
-        const [row] = await tx
-          .update(clinics)
-          .set({ logoPath: objectKey })
-          .where(eq(clinics.id, id))
-          .returning()
-        await this.auditService.logInTransaction(tx, {
-          performedBy: currentUser.id,
-          action: 'CLINIC_LOGO_CHANGED',
-          entityType: 'clinics',
-          entityId: id,
-          details: {
-            changes: { logoPath: { from: before.logoPath, to: objectKey } },
-          },
-        })
-        return { updated: row, existing: before }
-      },
+    // transaction — the one the entry names, and the one deleted below. If
+    // the transaction fails, the logo just uploaded points at nothing, and is
+    // deleted before the error goes on (undoStoredOnFailure).
+    const { updated, existing } = await undoStoredOnFailure(
+      this.storageService,
+      [objectKey],
+      () =>
+        withRlsContext(this.db, currentUser, async (tx) => {
+          const before = await this.lockClinic(tx, id)
+          const [row] = await tx
+            .update(clinics)
+            .set({ logoPath: objectKey })
+            .where(eq(clinics.id, id))
+            .returning()
+          await this.auditService.logInTransaction(tx, {
+            performedBy: currentUser.id,
+            action: 'CLINIC_LOGO_CHANGED',
+            entityType: 'clinics',
+            entityId: id,
+            details: {
+              changes: { logoPath: { from: before.logoPath, to: objectKey } },
+            },
+          })
+          return { updated: row, existing: before }
+        }),
     )
     // Only AFTER the new file is safely uploaded and the DB successfully
     // points at it — deleting the OLD file at this point, not before,

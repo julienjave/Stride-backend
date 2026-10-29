@@ -39,6 +39,7 @@ import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
 import { GrantRoleDto } from './dto/grant-role.dto'
 import { StorageService } from '../storage/storage.service'
+import { undoStoredOnFailure } from '../storage/compensation'
 import { extensionForMimeType } from '../common/config/image-upload.config'
 import { withRlsContext } from '../database/rls-context'
 import {
@@ -476,31 +477,36 @@ export class UsersService {
     // The previous key is read INSIDE the transaction, under the row's lock
     // (lockUser): the photo it replaces is then certainly the one the audit
     // entry names — and the one deleted below. The transaction returns both
-    // the updated row and that key.
-    const { updated, previousPath } = await withRlsContext(
-      this.db,
-      currentUser,
-      async (tx) => {
-        const before = await this.lockUser(tx, id)
-        const [row] = await tx
-          .update(users)
-          .set({ avatarPath: objectKey })
-          .where(eq(users.id, id))
-          .returning()
-        // Storage keys, not URLs: a signed URL expires in minutes, the key
-        // says for good which file was shown before and after.
-        await this.auditService.logInTransaction(tx, {
-          performedBy: currentUser.id,
-          action: 'USER_AVATAR_CHANGED',
-          targetUserId: id,
-          entityType: 'users',
-          entityId: id,
-          details: {
-            changes: { avatarPath: { from: before.avatarPath, to: objectKey } },
-          },
-        })
-        return { updated: row, previousPath: before.avatarPath }
-      },
+    // the updated row and that key. If it fails, the photo just uploaded
+    // points at nothing, and is deleted before the error goes on
+    // (undoStoredOnFailure, src/storage/compensation.ts).
+    const { updated, previousPath } = await undoStoredOnFailure(
+      this.storageService,
+      [objectKey],
+      () =>
+        withRlsContext(this.db, currentUser, async (tx) => {
+          const before = await this.lockUser(tx, id)
+          const [row] = await tx
+            .update(users)
+            .set({ avatarPath: objectKey })
+            .where(eq(users.id, id))
+            .returning()
+          // Storage keys, not URLs: a signed URL expires in minutes, the key
+          // says for good which file was shown before and after.
+          await this.auditService.logInTransaction(tx, {
+            performedBy: currentUser.id,
+            action: 'USER_AVATAR_CHANGED',
+            targetUserId: id,
+            entityType: 'users',
+            entityId: id,
+            details: {
+              changes: {
+                avatarPath: { from: before.avatarPath, to: objectKey },
+              },
+            },
+          })
+          return { updated: row, previousPath: before.avatarPath }
+        }),
     )
     // Order matters: upload the new file, point the row at it, and only
     // THEN delete the old one. If anything before this line fails, the

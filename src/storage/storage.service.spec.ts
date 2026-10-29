@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { Logger } from '@nestjs/common'
 import {
   CopyObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
@@ -191,5 +192,68 @@ describe('the storage client, on the wire', () => {
     expect(received.length).toBeGreaterThanOrEqual(1)
     expect(Date.now() - started).toBeLessThan(2_000)
     client.destroy()
+  })
+})
+
+// listObjects(): the PAGING — an S3 server answers at most 1,000 keys a
+// request; the real listing against an S3 server is in
+// test/storage-sweep.e2e-spec.ts (moto). The spy answers two pages.
+describe('StorageService.listObjects', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('reads every page, sending back the continuation token, and yields each object in order', async () => {
+    const first = new Date('2031-01-01T00:00:00Z')
+    const second = new Date('2031-01-02T00:00:00Z')
+    const send = jest
+      .spyOn(S3Client.prototype, 'send')
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: 'avatars/1/a.png', LastModified: first, Size: 10 },
+          // Never happens with a real server; skipped, never guessed.
+          { Key: undefined, LastModified: first, Size: 1 },
+        ],
+        IsTruncated: true,
+        NextContinuationToken: 'page-2',
+      } as never)
+      .mockResolvedValueOnce({
+        Contents: [{ Key: 'avatars/2/b.png', LastModified: second }],
+        IsTruncated: false,
+      } as never)
+
+    const listed: unknown[] = []
+    for await (const object of new StorageService().listObjects('avatars/')) {
+      listed.push(object)
+    }
+
+    expect(listed).toEqual([
+      { key: 'avatars/1/a.png', lastModified: first, size: 10 },
+      // No Size in the answer: 0.
+      { key: 'avatars/2/b.png', lastModified: second, size: 0 },
+    ])
+    const inputs = send.mock.calls.map(([command]) => {
+      expect(command).toBeInstanceOf(ListObjectsV2Command)
+      return (command as ListObjectsV2Command).input
+    })
+    expect(inputs).toEqual([
+      { Bucket: 'stride', Prefix: 'avatars/', ContinuationToken: undefined },
+      { Bucket: 'stride', Prefix: 'avatars/', ContinuationToken: 'page-2' },
+    ])
+  })
+
+  // An empty folder: one request, nothing yielded (Contents is absent).
+  it('yields nothing for an empty prefix', async () => {
+    const send = jest
+      .spyOn(S3Client.prototype, 'send')
+      .mockResolvedValueOnce({ IsTruncated: false } as never)
+
+    const listed: unknown[] = []
+    for await (const object of new StorageService().listObjects('clinics/')) {
+      listed.push(object)
+    }
+
+    expect(listed).toEqual([])
+    expect(send).toHaveBeenCalledTimes(1)
   })
 })

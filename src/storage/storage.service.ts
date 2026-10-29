@@ -32,8 +32,16 @@ import {
   CopyObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+
+// One object as the storage server lists it (listObjects below).
+export interface StoredObject {
+  key: string
+  lastModified: Date
+  size: number
+}
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -226,6 +234,48 @@ export class StorageService implements OnModuleInit {
     return this.getPresignedUrl(objectKey, expirySeconds)
   }
 
+  // --- LISTING ---
+
+  // Every object whose key starts with `prefix`, with when it was last
+  // written — for the storage sweeper (scripts/storage-sweep.ts), which
+  // compares them with the keys the database references. Nothing in the app
+  // itself lists storage: every file is reached through its row.
+  //
+  // S3's ListObjectsV2 answers at most 1,000 keys per request. When there
+  // are more, the answer says IsTruncated and gives a NextContinuationToken;
+  // sending it back asks for the next page. An ASYNC GENERATOR (`async *`,
+  // `yield`) hands the objects to the caller one by one, fetching the next
+  // page only when the caller gets there — `for await (const o of
+  // storage.listObjects('avatars/'))` — so the whole bucket never has to be
+  // in memory at once, and the paging stays hidden in here.
+  async *listObjects(prefix: string): AsyncGenerator<StoredObject> {
+    let continuationToken: string | undefined
+    do {
+      const page = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      )
+      for (const object of page.Contents ?? []) {
+        // The SDK types every field as optional; a listed object always has
+        // a key and a date, so one without them is skipped, never guessed.
+        if (object.Key === undefined || object.LastModified === undefined) {
+          continue
+        }
+        yield {
+          key: object.Key,
+          lastModified: object.LastModified,
+          size: object.Size ?? 0,
+        }
+      }
+      continuationToken = page.IsTruncated
+        ? page.NextContinuationToken
+        : undefined
+    } while (continuationToken !== undefined)
+  }
+
   // --- DELETE ROUTES ---
 
   // Actually frees the bytes in storage — deleting a row's reference to an
@@ -248,8 +298,8 @@ export class StorageService implements OnModuleInit {
   // file costs a little disk space and nothing else; nothing links to it.
   //
   // It's still logged, not silently ignored: a warning naming the key is
-  // what makes the leftover file findable later (a periodic cleanup of
-  // unreferenced keys is noted in deferred-improvements.md).
+  // what makes the leftover file findable later — and the storage sweeper
+  // (npm run storage:sweep) collects it.
   //
   // Lives HERE, not in each service: avatars, clinic logos and exercise
   // photos all need exactly this, and one definition means one place that

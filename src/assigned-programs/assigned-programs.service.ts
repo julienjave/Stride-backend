@@ -27,6 +27,7 @@ import {
 } from '@nestjs/common'
 import {
   and,
+  asc,
   count,
   countDistinct,
   desc,
@@ -86,6 +87,11 @@ import { AuditService } from '../audit/audit.service'
 import { perPatient } from '../audit/clinical-reads'
 import type { AuditAction } from '../audit/audit-vocabulary'
 import { StorageService } from '../storage/storage.service'
+import {
+  deleteAllUnreferenced,
+  storeAll,
+  undoStoredOnFailure,
+} from '../storage/compensation'
 import { assertStartDateMovable, planStartDateMove } from './start-date-move'
 import {
   assertProgramOpen,
@@ -97,6 +103,7 @@ import {
   assertOwnPhoto,
   assertPhotoRoom,
   assertSamePhotos,
+  deletedPhotosDetail,
   extensionOfKey,
   NO_LIBRARY_PHOTOS_MESSAGE,
   programPhotoKey,
@@ -458,8 +465,10 @@ export class AssignedProgramsService {
     // doesn't have (a 400), the database refusing — the transaction rolls
     // back, and the copies point at nothing: they're deleted (best-effort)
     // before the error goes on to the client.
-    const programId = await this.undoPhotosOnFailure(photoKeys.flat(), () =>
-      this.insertProgram(currentUser, dto, source, photoKeys),
+    const programId = await undoStoredOnFailure(
+      this.storageService,
+      photoKeys.flat(),
+      () => this.insertProgram(currentUser, dto, source, photoKeys),
     )
 
     // Deliberately its own, separate RLS-scoped transaction — by the time
@@ -470,7 +479,7 @@ export class AssignedProgramsService {
 
   // create()'s transaction: the program, its workouts, its exercises, its
   // first schedule version and the audit entry — all or nothing. Its own
-  // method so create() can wrap it in undoPhotosOnFailure; the body is
+  // method so create() can wrap it in undoStoredOnFailure; the body is
   // create()'s, unchanged but for the photo columns.
   private async insertProgram(
     currentUser: CurrentUser,
@@ -1556,10 +1565,16 @@ export class AssignedProgramsService {
   // patient's clinical record, and hiding it would hide that history — it is
   // CANCELLED instead (it stays visible, read-only). Decided from the
   // current state, under the program's row lock, like close().
+  //
+  // Its exercises' OWN photos go with it (decided 2026-10-29): a deleted
+  // program is never shown again, and a photo of the patient kept without a
+  // use is data held for nothing. dropOwnPhotos empties the rows in this
+  // transaction; the files are deleted after the commit, best-effort.
   async archive(id: number, currentUser: CurrentUser) {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
-    return withRlsContext(this.db, currentUser, async (tx) => {
+    let photosToDelete: string[] = []
+    const answer = await withRlsContext(this.db, currentUser, async (tx) => {
       const current = await this.lockAndReadProgram(tx, id)
       // Already archived: nothing left to delete (the same 409 as any write
       // on it). A completed program with no session may still be archived.
@@ -1574,16 +1589,22 @@ export class AssignedProgramsService {
         .set({ isArchived: true })
         .where(eq(assignedPrograms.id, id))
         .returning()
+      photosToDelete = await this.dropOwnPhotos(tx, id)
       await this.auditService.logInTransaction(tx, {
         performedBy: currentUser.id,
         action: 'ASSIGNED_PROGRAM_ARCHIVED',
         targetUserId: current.patientId,
         entityType: 'assigned-programs',
         entityId: id,
-        details: { program: programForAudit(current) },
+        details: {
+          program: programForAudit(current),
+          ...deletedPhotosDetail(photosToDelete),
+        },
       })
       return archived
     })
+    await deleteAllUnreferenced(this.storageService, photosToDelete)
+    return answer
   }
 
   // GET /assigned-programs/:id/closing?today= — what cancelling and what
@@ -1655,6 +1676,8 @@ export class AssignedProgramsService {
     const program = await this.findProgramOrThrow(id, currentUser)
     await this.assertCanManage(program.patientId, currentUser)
 
+    // Archiving drops the exercises' own photos, as archive() does.
+    let photosToDelete: string[] = []
     const outcome = await withRlsContext(
       this.db,
       currentUser,
@@ -1674,6 +1697,7 @@ export class AssignedProgramsService {
             .update(assignedPrograms)
             .set({ isArchived: true })
             .where(eq(assignedPrograms.id, id))
+          photosToDelete = await this.dropOwnPhotos(tx, id)
           await this.auditService.logInTransaction(tx, {
             performedBy: currentUser.id,
             action: 'ASSIGNED_PROGRAM_ARCHIVED',
@@ -1683,6 +1707,7 @@ export class AssignedProgramsService {
             details: {
               reason: 'cancelled before any session',
               program: programForAudit(current),
+              ...deletedPhotosDetail(photosToDelete),
             },
           })
           return 'archived'
@@ -1715,6 +1740,8 @@ export class AssignedProgramsService {
         return status
       },
     )
+    // After the commit, best-effort (empty unless the program was archived).
+    await deleteAllUnreferenced(this.storageService, photosToDelete)
 
     return {
       outcome,
@@ -1867,7 +1894,7 @@ export class AssignedProgramsService {
     // failed, the row would still point at the files, so they must not be
     // gone; once it has committed, a storage hiccup only leaves an orphaned
     // file (logged), never an error for a removal that worked.
-    await this.deletePhotos(filesToDelete)
+    await deleteAllUnreferenced(this.storageService, filesToDelete)
     // The full program (it used to answer with nothing), like every write.
     return this.findProgramWithExercises(assignedProgramId, currentUser)
   }
@@ -2126,7 +2153,7 @@ export class AssignedProgramsService {
   // since readPhotoTarget (retired meanwhile, or another addition taking
   // the room). Any failure — those checks, a trigger refusing (the program
   // closed meanwhile: 0031), the CHECK — rolls back, and the files are
-  // deleted (undoPhotosOnFailure): nothing points at them.
+  // deleted (undoStoredOnFailure): nothing points at them.
   private async appendOwnPhotos(
     program: { id: number; patientId: number },
     rowId: number,
@@ -2134,7 +2161,7 @@ export class AssignedProgramsService {
     keys: string[],
     details: { source: 'upload' | 'library'; copiedFrom?: string[] },
   ) {
-    await this.undoPhotosOnFailure(keys, () =>
+    await undoStoredOnFailure(this.storageService, keys, () =>
       withRlsContext(this.db, currentUser, async (tx) => {
         const row = await this.lockProgramExercise(tx, program.id, rowId)
         assertNotRetired(row)
@@ -2596,22 +2623,19 @@ export class AssignedProgramsService {
   // goes on: nothing points at them yet, and nothing ever will.
   // One at a time, not all at once (Promise.all): at most 10 files, and a
   // failure stops the rest instead of racing them.
+  // The storing and the undo are storeAll's (src/storage/compensation.ts,
+  // shared with the library, avatars and logos); this only names the keys.
   private async putPhotos(
     patientId: number,
     items: { extension: string; put: (key: string) => Promise<unknown> }[],
   ): Promise<string[]> {
-    const stored: string[] = []
-    try {
-      for (const item of items) {
-        const key = programPhotoKey(patientId, item.extension)
-        await item.put(key)
-        stored.push(key)
-      }
-    } catch (error) {
-      await this.deletePhotos(stored)
-      throw error
-    }
-    return stored
+    return storeAll(
+      this.storageService,
+      items.map((item) => ({
+        key: programPhotoKey(patientId, item.extension),
+        put: item.put,
+      })),
+    )
   }
 
   // "Assign again": copies each source exercise's own photos (one list per
@@ -2640,28 +2664,44 @@ export class AssignedProgramsService {
     return result
   }
 
-  // Runs `work` (a transaction that will point rows at `keys`); if it fails,
-  // the files at `keys` are deleted before the error goes on — the rollback
-  // left nothing pointing at them. Files the database DOES point at are
-  // never deleted here: this only runs when the work failed.
-  private async undoPhotosOnFailure<T>(
-    keys: string[],
-    work: () => Promise<T>,
-  ): Promise<T> {
-    try {
-      return await work()
-    } catch (error) {
-      await this.deletePhotos(keys)
-      throw error
+  // Empties the own photos of an ARCHIVED program's exercises and returns
+  // their keys (every exercise, in id order, each one's photos in its own
+  // order), for the audit entry and for deleting the files after the commit.
+  //
+  // Called AFTER the program row is archived, in the same transaction: the
+  // closed-program guard (0031) refuses every change to a closed program's
+  // exercises, with ONE exception (migration 0070) — emptying media_urls,
+  // and nothing else, on an exercise whose program is ARCHIVED. A completed
+  // program with no session may still be archived (archive()), so "before
+  // the program is archived" would not be open either.
+  //
+  // EVERY exercise of the program is locked (FOR UPDATE), not only the ones
+  // with photos: a photo upload committing at this very moment holds its
+  // row's lock, so this waits for it and then reads the row WITH the new
+  // photos — filtering on "has photos" in SQL would judge that row by the
+  // snapshot (no photos yet) and skip it, leaving its new files behind.
+  // The archiving practitioner manages the program (assertCanManage), so
+  // the rows' UPDATE policy lets them lock every one.
+  // No UPDATE at all when there is nothing to empty (most programs): the
+  // closing's write stays the one it always was.
+  private async dropOwnPhotos(
+    tx: DrizzleDb,
+    programId: number,
+  ): Promise<string[]> {
+    const rows = await tx
+      .select({ mediaUrls: assignedProgramExercises.mediaUrls })
+      .from(assignedProgramExercises)
+      .where(eq(assignedProgramExercises.assignedProgramId, programId))
+      .orderBy(asc(assignedProgramExercises.id))
+      .for('update')
+    const keys = rows.flatMap((row) => row.mediaUrls)
+    if (keys.length > 0) {
+      await tx
+        .update(assignedProgramExercises)
+        .set({ mediaUrls: [] })
+        .where(eq(assignedProgramExercises.assignedProgramId, programId))
     }
-  }
-
-  // Best-effort deletion of files nothing points at (any more, or ever):
-  // deleteUnreferenced never throws — it logs what it couldn't delete.
-  private async deletePhotos(keys: string[]) {
-    await Promise.all(
-      keys.map((key) => this.storageService.deleteUnreferenced(key)),
-    )
+    return keys
   }
 
   // Where an exercise added (or moved) to this workout goes: after its
