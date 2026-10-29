@@ -57,6 +57,9 @@ describe('Password change (e2e)', () => {
       firstName: 'Pat',
       lastName: 'Ient',
       dateOfBirth: '1980-02-03',
+      // Many patients with one name and birthday, on purpose: the
+      // possible-duplicate warning has its own suite (possible-duplicates).
+      allowPossibleDuplicate: true,
       clinicId,
     })
     expect(res.status).toBe(201)

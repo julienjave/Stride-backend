@@ -26,6 +26,7 @@ import {
   ArrayMaxSize,
   IsDateString,
   ValidateIf,
+  IsBoolean,
 } from 'class-validator'
 import { UserRole } from './create-user.dto'
 
@@ -67,4 +68,15 @@ export class GrantRoleDto {
   @IsString()
   @MaxLength(100)
   position?: string
+
+  // "I've seen the warning, create it anyway" (decisions §27, pass 2). A
+  // patient with the same name and date of birth found elsewhere makes the
+  // request answer 409 `possible_duplicate`; sent again with this flag, the
+  // creation goes ahead and its audit entry names the possible duplicates.
+  // A warning, not a rule — two real people can share a name and a birthday.
+  // Ignored for other roles, and when the account already has a patient
+  // profile (no new patient record is made then).
+  @IsOptional()
+  @IsBoolean()
+  allowPossibleDuplicate?: boolean
 }

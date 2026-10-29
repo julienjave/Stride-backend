@@ -61,6 +61,7 @@ import {
   needsAttention,
   type AttentionKind,
 } from '../admin-metrics/attention-rules'
+import { possibleDuplicateConflict, sameName } from './possible-duplicates'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 
@@ -139,6 +140,25 @@ function translateDuplicateAccount<T>(write: () => Promise<T>) {
 
 // Who is creating an account (and so sending its first invitation).
 type InvitingUser = { id: number; activeRole: UserRole }
+
+// An existing patient who may be the person being created (decisions §27).
+interface PossibleDuplicate {
+  id: number
+  firstName: string
+  lastName: string
+  isActive: boolean
+}
+
+// What a creation's (or a role grant's) audit entry says about them: their
+// ids, only when there were some — the trail a merge will start from. The
+// entry of an ordinary creation keeps the shape it always had.
+function possibleDuplicatesDetail(matches: PossibleDuplicate[]): {
+  possibleDuplicateOf?: number[]
+} {
+  return matches.length > 0
+    ? { possibleDuplicateOf: matches.map((match) => match.id) }
+    : {}
+}
 
 // What POST /users adds to the created user: its first invitation, and
 // whether the email went out (false → the screen offers to send it again).
@@ -233,8 +253,30 @@ export class UsersService {
     // creating a practitioner inserts their licenseNumber. dto.email arrives
     // normalised (@NormalizeEmail() on the DTO), so "taken" ignores case.
     // A refusal aborts the transaction: no account, no invitation, no entry.
+    // The patients this one may duplicate (decisions §27, pass 2) — set
+    // inside the transaction, named in the audit entry when the creation
+    // went ahead anyway.
+    let possibleDuplicates: PossibleDuplicate[] = []
+
     const created = await translateDuplicateAccount(() =>
       withRlsContext(this.db, requestingUser, async (tx) => {
+        // Before anything is written: a warning that stops the request
+        // leaves nothing to roll back. Inside the transaction all the same,
+        // so the patients compared are those of the moment of the insert.
+        if (dto.role === UserRole.PATIENT) {
+          possibleDuplicates = await this.findPossibleDuplicates(tx, {
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            dateOfBirth: dto.dateOfBirth!,
+          })
+          if (possibleDuplicates.length > 0 && !dto.allowPossibleDuplicate) {
+            throw await this.possibleDuplicateRefusal(
+              requestingUser,
+              possibleDuplicates,
+            )
+          }
+        }
+
         const [user] = await tx
           .insert(users)
           .values({
@@ -338,6 +380,7 @@ export class UsersService {
             record: dto,
             ...(creatorLink ? { careTeamLinkId: creatorLink.id } : {}),
             invitationId: issued.invitation.id,
+            ...possibleDuplicatesDetail(possibleDuplicates),
           },
         })
 
@@ -381,7 +424,10 @@ export class UsersService {
     dto: GrantRoleDto,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    await this.findOne(userId)
+    const account = await this.findOne(userId)
+
+    // Set when a patient profile is created (below), for the audit entry.
+    let possibleDuplicates: PossibleDuplicate[] = []
 
     // Wrapped: granting the practitioner role inserts a licenseNumber; and a
     // role the account already has is refused by user_roles' UNIQUE — the
@@ -419,6 +465,22 @@ export class UsersService {
             where: eq(patientProfiles.userId, userId),
           })
           if (!hasProfile) {
+            // A new patient record for an account that exists already (a
+            // staff member who becomes a patient): the same warning as a
+            // creation — the person may already have a patient account under
+            // another address. (The account itself can't match: it has no
+            // patient profile yet — that's why one is being created.)
+            possibleDuplicates = await this.findPossibleDuplicates(tx, {
+              firstName: account.firstName,
+              lastName: account.lastName,
+              dateOfBirth: dto.dateOfBirth!,
+            })
+            if (possibleDuplicates.length > 0 && !dto.allowPossibleDuplicate) {
+              throw await this.possibleDuplicateRefusal(
+                currentUser,
+                possibleDuplicates,
+              )
+            }
             profile = { dateOfBirth: dto.dateOfBirth! }
             await tx
               .insert(patientProfiles)
@@ -446,7 +508,11 @@ export class UsersService {
           targetUserId: userId,
           entityType: 'users',
           entityId: userId,
-          details: { role: dto.role, profile },
+          details: {
+            role: dto.role,
+            profile,
+            ...possibleDuplicatesDetail(possibleDuplicates),
+          },
         })
 
         return this.getRolesForUser(userId, tx)
@@ -1034,6 +1100,93 @@ export class UsersService {
       { ...(await this.toPublic(reactivated)), roles },
       roles,
     )
+  }
+
+  // === POSSIBLE DUPLICATES (decisions §27, pass 2) ===========================
+
+  // Existing patients who may be the same person: the same date of birth
+  // (found by the database — an exact comparison on a `date`, a handful of
+  // rows), then the same name (decided by sameName — the one normaliser, in
+  // TypeScript). Every patient account counts, active or not, in any
+  // clinic: a former patient coming back is the commonest duplicate.
+  //
+  // Read under the requester's own row security, deliberately: `users` and
+  // `patient_profiles` are readable by every signed-in session at the row
+  // level (USING (true) — 0007 / 0010; what a person may SEE of another is
+  // decided by the services). So no SECURITY DEFINER function is needed;
+  // what leaves this service is decided by possibleDuplicateRefusal.
+  // Ordered by id: the oldest account first, in the answer and the entry.
+  private async findPossibleDuplicates(
+    tx: DrizzleDb,
+    person: { firstName: string; lastName: string; dateOfBirth: string },
+  ): Promise<PossibleDuplicate[]> {
+    const sameBirthday = await tx
+      .select({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        isActive: users.isActive,
+      })
+      .from(patientProfiles)
+      .innerJoin(users, eq(users.id, patientProfiles.userId))
+      .where(eq(patientProfiles.dateOfBirth, person.dateOfBirth))
+      .orderBy(asc(users.id))
+    return sameBirthday.filter((row) => sameName(row, person))
+  }
+
+  // What the 409 may say, by who asks (decisions §27: a warning that reveals
+  // nothing a person couldn't already see):
+  //   - an ADMIN sees every account (the users list shows them all): each
+  //     match with its clinics and whether it's active, to open and compare;
+  //   - a PRACTITIONER sees what their clinic directory would show — the
+  //     matches that are active patients of one of their clinics, described
+  //     exactly as a directory row (CareTeamService.directoryEntries) — and
+  //     only THAT other matches exist (`elsewhere`): no name, no clinic, no
+  //     id of a patient they have no business seeing.
+  private async possibleDuplicateRefusal(
+    requester: InvitingUser,
+    matches: PossibleDuplicate[],
+  ) {
+    if (requester.activeRole === UserRole.ADMIN) {
+      return possibleDuplicateConflict({
+        matches: await this.describeForAdmin(matches),
+      })
+    }
+    const inYourClinics = await this.careTeamService.directoryEntries(
+      requester.id,
+      matches.map((match) => match.id),
+    )
+    return possibleDuplicateConflict({
+      inYourClinics,
+      elsewhere: inYourClinics.length < matches.length,
+    })
+  }
+
+  private async describeForAdmin(matches: PossibleDuplicate[]) {
+    const memberships = await this.db
+      .select({
+        userId: userClinics.userId,
+        id: clinics.id,
+        name: clinics.name,
+      })
+      .from(userClinics)
+      .innerJoin(clinics, eq(clinics.id, userClinics.clinicId))
+      .where(
+        inArray(
+          userClinics.userId,
+          matches.map((match) => match.id),
+        ),
+      )
+      .orderBy(asc(clinics.name))
+    return matches.map((match) => ({
+      id: match.id,
+      firstName: match.firstName,
+      lastName: match.lastName,
+      isActive: match.isActive,
+      clinics: memberships
+        .filter((row) => row.userId === match.id)
+        .map(({ id, name }) => ({ id, name })),
+    }))
   }
 
   // === HELPER FUNCTIONS =====================================================

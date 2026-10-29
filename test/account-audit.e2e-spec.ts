@@ -105,16 +105,20 @@ describe('Account audit trail (e2e)', () => {
   // team automatically.
   async function newPatient(who: ReturnType<typeof agent> = practitionerA) {
     const email = uniqueEmail('patient')
+    // A last name of its own: two patients with one name and birthday would
+    // get the possible-duplicate warning (decisions §27) — not this suite's
+    // subject, and its exact entries must not carry the go-ahead.
+    const lastName = `Ient ${counter}`
     const res = await who.post('/users').send({
       email,
       role: 'patient',
       firstName: 'Pat',
-      lastName: 'Ient',
+      lastName,
       dateOfBirth: '1980-02-03',
       clinicId: clinicXId,
     })
     expect(res.status).toBe(201)
-    return { id: res.body.id as number, email }
+    return { id: res.body.id as number, email, lastName }
   }
 
   async function createAndLogIn(
@@ -271,7 +275,7 @@ describe('Account audit trail (e2e)', () => {
               email: patient.email,
               role: 'patient',
               firstName: 'Pat',
-              lastName: 'Ient',
+              lastName: patient.lastName,
               dateOfBirth: '1980-02-03',
               clinicId: clinicXId,
             },

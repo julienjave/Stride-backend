@@ -164,6 +164,9 @@ describe('Records export links (e2e)', () => {
     const res = await admin.post('/users').send({
       email,
       role: 'patient',
+      // Many patients with one name and birthday, on purpose: the
+      // possible-duplicate warning has its own suite (possible-duplicates).
+      allowPossibleDuplicate: true,
       firstName,
       lastName: 'Linked',
       dateOfBirth: DATE_OF_BIRTH,

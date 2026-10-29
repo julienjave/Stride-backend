@@ -100,11 +100,18 @@ function duplicateLicenseError() {
 // mock db/tx object that predates this feature. This is that shared,
 // generic "resolves to no clinics" chain; tests specifically about
 // clinic membership build their own explicit version instead.
+// Also the possible-duplicates lookup (decisions §27): patient_profiles ⋈
+// users WHERE … ORDER BY — `where` answers both ways, awaited (the clinics)
+// or followed by orderBy (no patient with that birthday).
 function emptyClinicsSelect() {
   return jest.fn().mockReturnValue({
     from: jest.fn().mockReturnValue({
       innerJoin: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue([]),
+        where: jest.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            orderBy: jest.fn().mockResolvedValue([]),
+          }),
+        ),
       }),
     }),
   })

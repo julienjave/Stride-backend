@@ -139,7 +139,11 @@ describe('Complaint reviews (e2e)', () => {
 
   async function newAccount(fields: Record<string, unknown>) {
     const email = `acct-${++counter}-${stamp}@example.com`
-    const res = await admin.post('/users').send({ email, ...fields })
+    // Many patients with one name and birthday, on purpose: the
+    // possible-duplicate warning has its own suite (possible-duplicates).
+    const res = await admin
+      .post('/users')
+      .send({ email, allowPossibleDuplicate: true, ...fields })
     expect(res.status).toBe(201)
     await activateAccount(sessionPool, email)
     const agent = request.agent(app.getHttpServer())

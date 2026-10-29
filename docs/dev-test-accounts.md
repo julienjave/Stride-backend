@@ -268,6 +268,32 @@ made, through the app's own code); the seed announces it just before.
     `MEDICAL_FILE_ENTRY_VIEWED` (one entry) — including a patient reading
     their own.
 
+## Possible duplicate patients
+
+Creating a patient whose **date of birth and name** match an existing patient's
+(ignoring case, accents, hyphens and spaces, or with first and last name
+swapped) shows a warning instead of creating the account straight away. Two
+real people can share both, so it is never a refusal.
+
+- **As a practitioner, a match in your clinics:** log in as `sam@stride.test`,
+  **Patients → Add patient → Invite a new patient**: **Pat Lee**, born
+  **1988-04-12**, any new email. Pat is shown as a patient of your clinic with **Add to my patients**
+  (the better answer, if it's the same person). "pat lee", "LEE / Pat" or
+  "Pát Lee" match too.
+- **As a practitioner, a match you can't see:** still as Sam, invite **Frank
+  Former**, born **1958-08-08**. Frank is deactivated, so Sam only reads that
+  an account exists that he can't see — check with an admin — then **Invite
+  Frank Former anyway**.
+- **As the admin:** `admin@stride.test`, **Admin → Users → Add a user**, a
+  patient **Frank Former**, born 1958-08-08. Every match is listed — Frank,
+  "· Deactivated", Riverside Physio — each opening in a new tab.
+  **Create Frank Former anyway** goes through, and the audit log's entry says
+  **Possible duplicate of (user ids)**. Granting the patient role to an
+  existing account (**Admin → Users →** an account **→ Grant a role**) warns
+  the same way.
+
+Run `npm run seed:dev -- --reset` afterwards to remove the extra accounts.
+
 ## Health record copies
 
 A patient's whole record — medical file, programs and sessions — as one PDF,

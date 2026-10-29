@@ -520,17 +520,60 @@ export class CareTeamService {
     practitionerId: number,
     search?: string,
   ): Promise<DirectoryPatient[]> {
-    const myClinics = await this.db
-      .select({ clinicId: userClinics.clinicId })
-      .from(userClinics)
-      .where(eq(userClinics.userId, practitionerId))
-    const myClinicIds = myClinics.map((row) => row.clinicId)
+    const myClinicIds = await this.clinicIdsOf(practitionerId)
     if (myClinicIds.length === 0) {
       return []
     }
 
     const term = search?.trim()
+    const rows = await this.directoryRows(
+      myClinicIds,
+      // "Marie", "Martin" and "Marie Martin" all find Marie Martin:
+      // the search runs against "first last" as one string.
+      term
+        ? ilike(
+            sql`${users.firstName} || ' ' || ${users.lastName}`,
+            containsPattern(term),
+          )
+        : undefined,
+    )
+    return this.describeForDirectory(practitionerId, myClinicIds, rows)
+  }
+
+  // The same rows, for given patients (decisions §27, pass 2): those of
+  // `patientIds` this practitioner's directory would show — active patients
+  // of one of their clinics — described exactly as a search result is. Used
+  // by the possible-duplicate warning, so a match in my clinic is shown the
+  // way the directory shows it, with what the directory offers ("Add to my
+  // patients", or "Open"), and nothing more. A patient left out (another
+  // clinic, a deactivated account) is simply not returned.
+  async directoryEntries(
+    practitionerId: number,
+    patientIds: number[],
+  ): Promise<DirectoryPatient[]> {
+    const myClinicIds = await this.clinicIdsOf(practitionerId)
+    if (myClinicIds.length === 0) {
+      return []
+    }
+    const rows = await this.directoryRows(
+      myClinicIds,
+      inArray(users.id, patientIds),
+    )
+    return this.describeForDirectory(practitionerId, myClinicIds, rows)
+  }
+
+  private async clinicIdsOf(userId: number): Promise<number[]> {
     const rows = await this.db
+      .select({ clinicId: userClinics.clinicId })
+      .from(userClinics)
+      .where(eq(userClinics.userId, userId))
+    return rows.map((row) => row.clinicId)
+  }
+
+  // Active patients of `myClinicIds` matching `condition`, by name, at most
+  // DIRECTORY_RESULT_LIMIT — the directory's one query.
+  private directoryRows(myClinicIds: number[], condition: SQL | undefined) {
+    return this.db
       .selectDistinct({
         id: users.id,
         firstName: users.firstName,
@@ -547,19 +590,20 @@ export class CareTeamService {
           eq(userRoles.role, UserRole.PATIENT),
           eq(users.isActive, true),
           inArray(userClinics.clinicId, myClinicIds),
-          // "Marie", "Martin" and "Marie Martin" all find Marie Martin:
-          // the search runs against "first last" as one string.
-          term
-            ? ilike(
-                sql`${users.firstName} || ' ' || ${users.lastName}`,
-                containsPattern(term),
-              )
-            : undefined,
+          condition,
         ),
       )
       .orderBy(asc(users.lastName), asc(users.firstName))
       .limit(DIRECTORY_RESULT_LIMIT)
+  }
 
+  // Each row as the directory answers it: its avatar signed, the clinics it
+  // shares with ME (never its full list), and whether I'm on its care team.
+  private async describeForDirectory(
+    practitionerId: number,
+    myClinicIds: number[],
+    rows: Awaited<ReturnType<CareTeamService['directoryRows']>>,
+  ): Promise<DirectoryPatient[]> {
     if (rows.length === 0) {
       return []
     }

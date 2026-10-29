@@ -559,6 +559,9 @@ describe('Auth — MFA and password recovery (e2e)', () => {
         firstName: 'Check',
         lastName: 'Link',
         dateOfBirth: '1990-01-01',
+        // Many patients with one name and birthday, on purpose: the
+        // possible-duplicate warning has its own suite (possible-duplicates).
+        allowPossibleDuplicate: true,
       })
       expect(created.status).toBe(201)
       await activateAccount(sessionPool, email, 'password123')

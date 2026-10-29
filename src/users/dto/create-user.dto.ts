@@ -29,6 +29,7 @@ import {
   IsDateString,
   IsInt,
   ValidateIf,
+  IsBoolean,
 } from 'class-validator'
 import { hasStartedAddress } from '../../common/validators/has-started-address'
 import { NormalizeEmail } from '../../common/email-address'
@@ -150,4 +151,14 @@ export class CreateUserDto {
   @IsOptional()
   @IsInt()
   clinicId?: number
+
+  // "I've seen the warning, create it anyway" (decisions §27, pass 2). A
+  // patient with the same name and date of birth found elsewhere makes the
+  // request answer 409 `possible_duplicate`; sent again with this flag, the
+  // creation goes ahead and its audit entry names the possible duplicates.
+  // A warning, not a rule — two real people can share a name and a birthday.
+  // Ignored for other roles (only a patient has a date of birth to match).
+  @IsOptional()
+  @IsBoolean()
+  allowPossibleDuplicate?: boolean
 }
