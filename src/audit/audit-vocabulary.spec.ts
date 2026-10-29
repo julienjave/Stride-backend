@@ -60,6 +60,7 @@ describe('audit vocabulary', () => {
       expect(areaOf('legal_disclosure_notice_reviews')).toBe('For review')
       expect(areaOf('patient_merges')).toBe('Patient merges')
       expect(areaOf('patient_merge_records')).toBe('Patient merges')
+      expect(areaOf('patient_merge_notice_reviews')).toBe('For review')
     })
 
     it('shows an entity type it does not know as stored', () => {
@@ -93,6 +94,7 @@ describe('audit vocabulary', () => {
         // A patient merge (2026-10-29): which two accounts, their links,
         // clinics, invitations, the profile fields filled — account-level.
         'patient_merges',
+        'patient_merge_notice_reviews',
       ]) {
         expect([type, detailsShownToAdmins(type)]).toEqual([type, true])
       }
@@ -163,9 +165,10 @@ describe('audit vocabulary', () => {
       // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED and the emailed
       // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED and the
       // complaint review's three since 2026-10-28, the legal disclosure's
-      // two the same day, the patient merge's two since 2026-10-29) — 114 —,
-      // 10 views, 9 sign-ins.
-      expect(changes).toHaveLength(114 - 10 - 9)
+      // two the same day, the patient merge's three since 2026-10-29) — 115
+      // —, 10 views, 9 sign-ins.
+      expect(changes).toHaveLength(115 - 10 - 9)
+      expect(changes).toContain('PATIENT_MERGE_NOTICE_REVIEWED')
       expect(changes).toContain('PATIENT_MERGED')
       expect(changes).toContain('PATIENT_MERGE_RECORDS_MOVED')
       expect(changes).toContain('LEGAL_DISCLOSURE_MADE')

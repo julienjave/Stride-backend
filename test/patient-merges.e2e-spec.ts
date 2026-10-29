@@ -22,6 +22,7 @@ import {
   NOT_PATIENTS_MESSAGE,
   SURVIVOR_DEACTIVATED_MESSAGE,
 } from '../src/patient-merges/patient-merge-rules'
+import { NOT_A_MERGE_NOTICE_MESSAGE } from '../src/alerts/patient-merge-notices.service'
 
 // Merging two accounts of the same patient (decisions §27, pass 3):
 // POST /users/:id/merge { intoUserId, currentPassword }. The account in the
@@ -1018,6 +1019,134 @@ describe('Patient merges (e2e)', () => {
         [],
       )
       expect(row.public_can).toBe(false)
+    })
+  })
+
+  // --- Pass 4: the list for admins, the care team's notice ---
+
+  describe('GET /patient-merges', () => {
+    it('lists every merge for admins, newest first, naming who merged', async () => {
+      const kept = await newPatient('Listed')
+      const dup = await newPatient('Listed')
+      const merged = await merge(dup.id, kept.id)
+      expect(merged.status).toBe(200)
+      const [adminRow] = await ownerRows<{ id: number }>(
+        'SELECT id FROM users WHERE email = $1',
+        [`admin-${stamp}@example.com`],
+      )
+
+      const res = await admin.get('/patient-merges')
+      expect(res.status).toBe(200)
+      const list = res.body as {
+        id: number
+        mergedId: number
+        survivorId: number
+        mergedAt: string
+        mergedBy: { id: number; firstName: string; lastName: string }
+      }[]
+      expect(list[0]).toStrictEqual({
+        id: merged.body.mergeId,
+        mergedId: dup.id,
+        survivorId: kept.id,
+        mergedAt: list[0].mergedAt,
+        mergedBy: { id: adminRow.id, firstName: 'Avery', lastName: 'Admin' },
+      })
+      // Newest first.
+      const times = list.map((row) => Date.parse(row.mergedAt))
+      expect(times).toStrictEqual([...times].sort((a, b) => b - a))
+    })
+
+    it('is for admins only', async () => {
+      expect((await alex.get('/patient-merges')).status).toBe(403)
+    })
+  })
+
+  describe("the care team's notice", () => {
+    async function alertsOf(who: Agent) {
+      const res = await who.get('/alerts').query({ today })
+      expect(res.status).toBe(200)
+      return (res.body as { kind: string; merge?: { id: number } }[]).filter(
+        (alert) => alert.kind === 'patient_merge',
+      )
+    }
+
+    it('tells a member who was on the team, until they mark it reviewed — once', async () => {
+      const kept = await newPatient('Noticed')
+      const dup = await newPatient('Noticed')
+      await join(alex, kept.id)
+      const merged = await merge(dup.id, kept.id)
+      expect(merged.status).toBe(200)
+      const mergeId = merged.body.mergeId as number
+      const [adminRow] = await ownerRows<{ id: number }>(
+        'SELECT id FROM users WHERE email = $1',
+        [`admin-${stamp}@example.com`],
+      )
+
+      const notices = await alertsOf(alex)
+      const mine = notices.filter((alert) => alert.merge?.id === mergeId)
+      expect(mine).toStrictEqual([
+        {
+          kind: 'patient_merge',
+          patient: {
+            id: kept.id,
+            firstName: 'Pat',
+            lastName: 'Noticed',
+            avatarUrl: null,
+          },
+          merge: {
+            id: mergeId,
+            mergedBy: {
+              id: adminRow.id,
+              firstName: 'Avery',
+              lastName: 'Admin',
+            },
+            mergedAt: (mine[0] as unknown as { merge: { mergedAt: string } })
+              .merge.mergedAt,
+          },
+        },
+      ])
+
+      const first = await alex.post(`/alerts/patient-merges/${mergeId}/review`)
+      expect(first.status).toBe(200)
+      const again = await alex.post(`/alerts/patient-merges/${mergeId}/review`)
+      expect(again.status).toBe(200)
+      expect(again.body).toStrictEqual(first.body)
+      expect(
+        (await alertsOf(alex)).some((alert) => alert.merge?.id === mergeId),
+      ).toBe(false)
+      const entries = await ownerRows<{ action: string; details: unknown }>(
+        `SELECT action, details FROM audit_logs
+          WHERE action = 'PATIENT_MERGE_NOTICE_REVIEWED' AND target_user_id = $1`,
+        [kept.id],
+      )
+      expect(entries).toStrictEqual([
+        {
+          action: 'PATIENT_MERGE_NOTICE_REVIEWED',
+          details: { mergeId, mergedBy: adminRow.id },
+        },
+      ])
+    })
+
+    it('says nothing to a practitioner who joined after the merge (409), and hides it from one off the team (404)', async () => {
+      const kept = await newPatient('Later')
+      const dup = await newPatient('Later')
+      const merged = await merge(dup.id, kept.id)
+      const mergeId = merged.body.mergeId as number
+
+      const outsider = await sam.post(
+        `/alerts/patient-merges/${mergeId}/review`,
+      )
+      expect(outsider.status).toBe(404)
+
+      await join(sam, kept.id)
+      expect(
+        (await alertsOf(sam)).some((alert) => alert.merge?.id === mergeId),
+      ).toBe(false)
+      const late = await sam.post(`/alerts/patient-merges/${mergeId}/review`)
+      expect([late.status, late.body.message]).toStrictEqual([
+        409,
+        [NOT_A_MERGE_NOTICE_MESSAGE],
+      ])
     })
   })
 })

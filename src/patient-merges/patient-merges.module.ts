@@ -18,7 +18,10 @@ import { Module } from '@nestjs/common'
 import { EmailModule } from '../email/email.module'
 import { MessagingEventsModule } from '../messaging/messaging-events.module'
 import { MfaModule } from '../mfa/mfa.module'
-import { PatientMergesController } from './patient-merges.controller'
+import {
+  PatientMergesController,
+  PatientMergesListController,
+} from './patient-merges.controller'
 import { PatientMergesService } from './patient-merges.service'
 
 // Merging duplicate patient accounts (decisions §27). StepUpService comes
@@ -26,7 +29,7 @@ import { PatientMergesService } from './patient-merges.service'
 // database are global.
 @Module({
   imports: [EmailModule, MessagingEventsModule, MfaModule],
-  controllers: [PatientMergesController],
+  controllers: [PatientMergesController, PatientMergesListController],
   providers: [PatientMergesService],
 })
 export class PatientMergesModule {}

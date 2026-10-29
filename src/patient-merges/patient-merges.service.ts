@@ -40,7 +40,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common'
-import { inArray, sql } from 'drizzle-orm'
+import { desc, eq, inArray, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { withRlsContext } from '../database/rls-context'
 import { patientMerges, userRoles, users } from '../database/schema'
@@ -67,6 +67,17 @@ import {
 // --- TYPES -------------------------------------------------------------------------------------------------
 
 type Admin = { id: number; activeRole: UserRole }
+
+// One merge as GET /patient-merges lists it: which account went into which,
+// when, by whom. The admin's screens join it with the users list — the
+// "Merged" badge, the "Merged into …" banner.
+export interface PatientMergeRecord {
+  id: number
+  mergedId: number
+  survivorId: number
+  mergedAt: Date
+  mergedBy: { id: number; firstName: string; lastName: string }
+}
 
 // What the route answers: which merge, which two accounts. Nothing of what
 // moved — those ids are clinical (patient_merge_records) and the admin's
@@ -104,6 +115,38 @@ export class PatientMergesService {
     private readonly messagingEvents: MessagingEvents,
     private readonly stepUp: StepUpService,
   ) {}
+
+  // GET /patient-merges — every merge, newest first. Admins only (the
+  // controller); read under the admin's context, which patient_merges_select
+  // lets through. A clinic merges rarely: one list, no paging.
+  async list(admin: Admin): Promise<PatientMergeRecord[]> {
+    const rows = await withRlsContext(this.db, admin, (tx) =>
+      tx
+        .select({
+          id: patientMerges.id,
+          mergedId: patientMerges.mergedId,
+          survivorId: patientMerges.survivorId,
+          mergedAt: patientMerges.mergedAt,
+          adminId: users.id,
+          adminFirstName: users.firstName,
+          adminLastName: users.lastName,
+        })
+        .from(patientMerges)
+        .innerJoin(users, eq(users.id, patientMerges.mergedBy))
+        .orderBy(desc(patientMerges.mergedAt), desc(patientMerges.id)),
+    )
+    return rows.map((row) => ({
+      id: row.id,
+      mergedId: row.mergedId,
+      survivorId: row.survivorId,
+      mergedAt: row.mergedAt,
+      mergedBy: {
+        id: row.adminId,
+        firstName: row.adminFirstName,
+        lastName: row.adminLastName,
+      },
+    }))
+  }
 
   // POST /users/:id/merge — merges `mergedId` INTO `survivorId`.
   async merge(

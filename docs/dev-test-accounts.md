@@ -294,6 +294,33 @@ real people can share both, so it is never a refusal.
 
 Run `npm run seed:dev -- --reset` afterwards to remove the extra accounts.
 
+## Merging duplicate patients
+
+When one patient ends up with two accounts, an admin merges them: everything
+of one account (programs, sessions, medical file, messages, care team) moves
+to the other, and the emptied account is deactivated for good.
+
+1. Make a second account for Pat: as `admin@stride.test`, **Admin → Users →
+   Add user**, a patient **Pat Lee**, born **1988-04-12**, any new email, then
+   **Create Pat Lee anyway**.
+2. Open that new account's page and choose **Merge with another account…**
+   (section **Duplicate account**). Pick Pat's account (`pat@stride.test`) in
+   **The other account**: the two show side by side, with what differs said
+   above them.
+3. Choose **Keep Pat Lee (pat@stride.test)**, read what will happen, enter
+   your password (`password123`), then **Merge the accounts**.
+4. The merged account's page now says **Merged into Pat Lee** and offers
+   nothing else; the users list (tick **Show deactivated users**) marks it
+   **Merged**. Pat gets an email (Mailpit) saying the accounts were combined,
+   and the audit log has **Merged two accounts of a patient**.
+5. Log in as `alex@stride.test` (on Pat's care team): **For review** shows
+   *Avery Admin merged a second account of this patient into this one*, with
+   **Mark as reviewed** and **Open patient**.
+
+A merged account can't be reactivated, and merging asks for the admin's
+password every time (and a code, with two-factor sign-in on). Run
+`npm run seed:dev -- --reset` afterwards.
+
 ## Health record copies
 
 A patient's whole record — medical file, programs and sessions — as one PDF,

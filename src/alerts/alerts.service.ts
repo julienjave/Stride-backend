@@ -84,6 +84,10 @@ import {
   LegalDisclosureNoticesService,
   type LegalDisclosureAlert,
 } from './legal-disclosure-notices.service'
+import {
+  PatientMergeNoticesService,
+  type PatientMergeAlert,
+} from './patient-merge-notices.service'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -161,13 +165,20 @@ export type Alert =
   | CareTeamJoinAlert
   | ComplaintReviewAlert
   | LegalDisclosureAlert
+  | PatientMergeAlert
 
 // The notices about WHO CAN SEE a patient's record (decisions §25): a
 // colleague joined the care team, an admin opened a complaint review, an
 // admin disclosed the record because the law required it. Shown together,
 // newest first, by the instant each happened.
+// Since pass 4 of the duplicate-patients item (decisions §27), also: an admin
+// merged a second account of the patient into this one — the record changed
+// shape, so the team is told the same way.
 type AccessNotice =
-  CareTeamJoinAlert | ComplaintReviewAlert | LegalDisclosureAlert
+  | CareTeamJoinAlert
+  | ComplaintReviewAlert
+  | LegalDisclosureAlert
+  | PatientMergeAlert
 
 function noticeMoment(notice: AccessNotice): number {
   switch (notice.kind) {
@@ -177,6 +188,8 @@ function noticeMoment(notice: AccessNotice): number {
       return notice.review.openedAt.getTime()
     case 'legal_disclosure':
       return notice.disclosure.madeAt.getTime()
+    case 'patient_merge':
+      return notice.merge.mergedAt.getTime()
   }
 }
 
@@ -253,6 +266,7 @@ export class AlertsService {
     private readonly auditService: AuditService,
     private readonly complaintReviewNotices: ComplaintReviewNoticesService,
     private readonly legalDisclosureNotices: LegalDisclosureNoticesService,
+    private readonly patientMergeNotices: PatientMergeNoticesService,
   ) {}
 
   // --- GET /alerts ---
@@ -302,6 +316,7 @@ export class AlertsService {
       ...(await this.joinNotices(currentUser, patientIds)),
       ...(await this.complaintReviewNotices.list(currentUser, patientIds)),
       ...(await this.legalDisclosureNotices.list(currentUser, patientIds)),
+      ...(await this.patientMergeNotices.list(currentUser, patientIds)),
     ].sort((a, b) => noticeMoment(b) - noticeMoment(a))
 
     const read = await withRlsContext(this.db, currentUser, async (tx) => {

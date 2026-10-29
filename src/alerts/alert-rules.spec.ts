@@ -23,6 +23,7 @@ import {
   isComplaintReviewNoticeFor,
   isJoinNoticeFor,
   isLegalDisclosureNoticeFor,
+  isPatientMergeNoticeFor,
   joinNoticeCutoff,
   inactivity,
   isLongRun,
@@ -829,6 +830,39 @@ describe('isLegalDisclosureNoticeFor', () => {
     expect(
       isLegalDisclosureNoticeFor(
         { ...made, madeAt: new Date('2031-06-04T23:59:59.999Z') },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(false)
+  })
+})
+
+describe('isPatientMergeNoticeFor', () => {
+  // The same rule on a merge's admin and moment: me = practitioner 10, on the
+  // team since June 1st; admin 90 merges on June 10th.
+  const ME = 10
+  const MY_START = new Date('2031-06-01T09:00:00.000Z')
+  const CUTOFF = new Date('2031-06-05T00:00:00.000Z')
+  const merge = { mergedBy: 90, mergedAt: new Date('2031-06-10T09:00:00.000Z') }
+
+  it('tells a member who was on the team when the merge happened, within the window', () => {
+    expect(isPatientMergeNoticeFor(merge, ME, MY_START, CUTOFF)).toBe(true)
+  })
+
+  it('tells nobody who joined after it, nor the admin who merged, nor anyone off the team', () => {
+    const after = new Date('2031-06-10T09:00:00.001Z')
+    expect(isPatientMergeNoticeFor(merge, ME, after, CUTOFF)).toBe(false)
+    expect(
+      isPatientMergeNoticeFor({ ...merge, mergedBy: ME }, ME, MY_START, CUTOFF),
+    ).toBe(false)
+    expect(isPatientMergeNoticeFor(merge, ME, undefined, CUTOFF)).toBe(false)
+  })
+
+  it('drops a merge before the cutoff', () => {
+    expect(
+      isPatientMergeNoticeFor(
+        { ...merge, mergedAt: new Date('2031-06-04T23:59:59.999Z') },
         ME,
         MY_START,
         CUTOFF,

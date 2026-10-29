@@ -234,6 +234,9 @@ export const AUDIT_ACTIONS = {
   // repaired from.
   PATIENT_MERGED: 'change',
   PATIENT_MERGE_RECORDS_MOVED: 'change',
+  // … and a practitioner on the survivor's care team marked its notice as
+  // reviewed (pass 4).
+  PATIENT_MERGE_NOTICE_REVIEWED: 'change',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -276,6 +279,7 @@ export const AUDIT_AREAS = {
   // No table of that name: the clinical half of a merge's record (the ids of
   // what moved), kept apart so its area can be withheld.
   patient_merge_records: 'Patient merges',
+  patient_merge_notice_reviews: 'For review',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -338,6 +342,9 @@ export const CLINICAL_AREAS = {
   patient_merges: false,
   // The ids of every program, session, medical file and message moved.
   patient_merge_records: true,
+  // That a practitioner saw "two accounts of this patient were merged" —
+  // about the merge, not the record.
+  patient_merge_notice_reviews: false,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------

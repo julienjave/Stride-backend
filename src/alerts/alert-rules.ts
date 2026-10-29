@@ -523,3 +523,30 @@ export function isLegalDisclosureNoticeFor(
     cutoff,
   )
 }
+
+// The sixth family (decisions §27, pass 4): an admin merged two accounts of a
+// patient into this one. The care team is told (the person's choice) — who
+// merged, when — because the record they treat just changed shape: programs,
+// sessions and notes from the other account appear in it. The complaint
+// review's rule again, on the merge's admin and moment: the members on the
+// survivor's team WHEN it happened (a link moved from the other account keeps
+// its start), not its admin, for 14 days, until each marks it reviewed
+// (patient_merge_notice_reviews).
+export interface PatientMergeFacts {
+  mergedBy: number
+  mergedAt: Date
+}
+
+export function isPatientMergeNoticeFor(
+  merge: PatientMergeFacts,
+  me: number,
+  myStart: Date | undefined,
+  cutoff: Date,
+): boolean {
+  return isComplaintReviewNoticeFor(
+    { openedBy: merge.mergedBy, openedAt: merge.mergedAt },
+    me,
+    myStart,
+    cutoff,
+  )
+}

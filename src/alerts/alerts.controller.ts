@@ -33,6 +33,7 @@ import { ApiTags } from '@nestjs/swagger'
 import { AlertsService } from './alerts.service'
 import { ComplaintReviewNoticesService } from './complaint-review-notices.service'
 import { LegalDisclosureNoticesService } from './legal-disclosure-notices.service'
+import { PatientMergeNoticesService } from './patient-merge-notices.service'
 import { AlertsQueryDto } from './dto/alerts-query.dto'
 import { ReviewProgramAlertDto } from './dto/review-program-alert.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -61,6 +62,7 @@ export class AlertsController {
     private readonly alertsService: AlertsService,
     private readonly complaintReviewNotices: ComplaintReviewNoticesService,
     private readonly legalDisclosureNotices: LegalDisclosureNoticesService,
+    private readonly patientMergeNotices: PatientMergeNoticesService,
   ) {}
 
   @Get()
@@ -117,5 +119,17 @@ export class AlertsController {
     @CurrentUser() user: CurrentUser,
   ) {
     return this.legalDisclosureNotices.review(disclosureId, user)
+  }
+
+  // "Mark as reviewed" for a patient merge's notice (decisions §27, pass 4).
+  // No body: a merge happens at an instant.
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post('patient-merges/:mergeId/review')
+  reviewPatientMergeNotice(
+    @Param('mergeId', ParseIntPipe) mergeId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.patientMergeNotices.review(mergeId, user)
   }
 }

@@ -22,6 +22,7 @@ import { AlertsController } from './alerts.controller'
 import { AlertsService } from './alerts.service'
 import { ComplaintReviewNoticesService } from './complaint-review-notices.service'
 import { LegalDisclosureNoticesService } from './legal-disclosure-notices.service'
+import { PatientMergeNoticesService } from './patient-merge-notices.service'
 import { CareTeamModule } from '../care-team/care-team.module'
 import { StorageModule } from '../storage/storage.module'
 
@@ -38,6 +39,7 @@ import { StorageModule } from '../storage/storage.module'
     AlertsService,
     ComplaintReviewNoticesService,
     LegalDisclosureNoticesService,
+    PatientMergeNoticesService,
   ],
 })
 export class AlertsModule {}

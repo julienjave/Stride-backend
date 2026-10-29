@@ -23,6 +23,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -44,6 +45,7 @@ import { MergePatientDto } from './dto/merge-patient.dto'
 import {
   PatientMergesService,
   type PatientMergeAnswer,
+  type PatientMergeRecord,
 } from './patient-merges.service'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
@@ -78,5 +80,22 @@ export class PatientMergesController {
       { currentPassword: dto.currentPassword, mfaCode: dto.mfaCode },
       req.sessionID,
     )
+  }
+}
+
+// Every merge, for the admin's screens (pass 4): the users list's "Merged"
+// badge and a merged account's "Merged into …" banner. Its own path rather
+// than /users/merges: GET /users/:id parses `:id` as a number and would
+// answer "merges" with a 400 if Nest tried it first.
+@ApiTags('Users')
+@UseGuards(SessionAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
+@Controller('patient-merges')
+export class PatientMergesListController {
+  constructor(private readonly mergesService: PatientMergesService) {}
+
+  @Get()
+  list(@CurrentUser() admin: CurrentUser): Promise<PatientMergeRecord[]> {
+    return this.mergesService.list(admin)
   }
 }
