@@ -32,6 +32,7 @@ import {
 import { ApiTags } from '@nestjs/swagger'
 import { AlertsService } from './alerts.service'
 import { ComplaintReviewNoticesService } from './complaint-review-notices.service'
+import { LegalDisclosureNoticesService } from './legal-disclosure-notices.service'
 import { AlertsQueryDto } from './dto/alerts-query.dto'
 import { ReviewProgramAlertDto } from './dto/review-program-alert.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
@@ -59,6 +60,7 @@ export class AlertsController {
   constructor(
     private readonly alertsService: AlertsService,
     private readonly complaintReviewNotices: ComplaintReviewNoticesService,
+    private readonly legalDisclosureNotices: LegalDisclosureNoticesService,
   ) {}
 
   @Get()
@@ -103,5 +105,17 @@ export class AlertsController {
     @CurrentUser() user: CurrentUser,
   ) {
     return this.complaintReviewNotices.review(reviewId, user)
+  }
+
+  // "Mark as reviewed" for a legal disclosure's notice (decisions §25, pass
+  // 3). No body: a disclosure is made at an instant.
+  @AuditedByService()
+  @HttpCode(HttpStatus.OK)
+  @Post('legal-disclosures/:disclosureId/review')
+  reviewLegalDisclosureNotice(
+    @Param('disclosureId', ParseIntPipe) disclosureId: number,
+    @CurrentUser() user: CurrentUser,
+  ) {
+    return this.legalDisclosureNotices.review(disclosureId, user)
   }
 }

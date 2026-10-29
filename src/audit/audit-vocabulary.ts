@@ -212,6 +212,16 @@ export const AUDIT_ACTIONS = {
   // complaint_review, performed by the admin).
   COMPLAINT_REVIEW_OPENED: 'change',
   COMPLAINT_REVIEW_ENDED: 'change',
+
+  // The legal disclosure (decisions §25, pass 3): an admin recorded an order
+  // and made its one copy — to whom, under what, which parts and period, a
+  // hold. Its copy is ALSO a RECORDS_EXPORTED (via legal_disclosure,
+  // performed by the admin), written in the same transaction: the two
+  // entries have different readers (this one's details are shown to admins,
+  // the copy's ids are clinical and withheld).
+  LEGAL_DISCLOSURE_MADE: 'change',
+  // … and a practitioner on the care team marked its notice as reviewed.
+  LEGAL_DISCLOSURE_NOTICE_REVIEWED: 'change',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -248,6 +258,8 @@ export const AUDIT_AREAS = {
   // The emailed links themselves (a table: who sent one, when, used or not).
   records_export_links: 'Records exports',
   complaint_reviews: 'Complaint reviews',
+  legal_disclosures: 'Legal disclosures',
+  legal_disclosure_notice_reviews: 'For review',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -282,6 +294,9 @@ export const CLINICAL_AREAS = {
   // That a practitioner saw "a review of this record was opened" — about
   // the review, not the record.
   complaint_review_notice_reviews: false,
+  // That a practitioner saw "this record was disclosed" — about the
+  // disclosure, not the record.
+  legal_disclosure_notice_reviews: false,
   alerts: true,
   conversations: true,
   messages: true,
@@ -297,6 +312,11 @@ export const CLINICAL_AREAS = {
   // from the record: the copies' entries (records_exports) hold its ids,
   // and stay withheld.
   complaint_reviews: false,
+  // To whom a record was disclosed, under what order, which PARTS and
+  // period, the hold — the admins' own act, all of it on the patient's page
+  // too. Nothing from the record: the copy's entry (records_exports) holds
+  // its ids, and stays withheld.
+  legal_disclosures: false,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------

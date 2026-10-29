@@ -22,9 +22,15 @@ import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { withRlsContext } from '../database/rls-context'
 import { AuditService } from '../audit/audit.service'
 import { UserRole } from '../users/dto/create-user.dto'
-import { buildRecordDocument, type ReviewStamp } from './record-content'
+import {
+  buildRecordDocument,
+  type CopyMark,
+  type DisclosureStamp,
+  type ReviewStamp,
+} from './record-content'
 import { loadRecord } from './record-loader'
 import { renderRecordPdf } from './record-pdf'
+import { scopeRecord } from './record-scope'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -38,12 +44,17 @@ export interface RecordExport {
 //   - app: the patient, signed in, from My records;
 //   - emailed_link: through the link an admin emailed (which one);
 //   - complaint_review: an admin, under an open complaint review (decisions
-//     §25, pass 2) — with what the copy's stamp prints. The ONLY source not
-//     made by the patient: its entry names the admin as the one who made it.
+//     §25, pass 2) — with what the copy's stamp prints;
+//   - legal_disclosure: an admin, for a legal disclosure (pass 3) — with the
+//     order's details, which also say WHAT the copy holds (its parts and
+//     period).
+// The last two are the sources not made by the patient: their entries name
+// the admin as the one who made the copy.
 export type ExportSource =
   | { via: 'app' }
   | { via: 'emailed_link'; linkId: number }
   | { via: 'complaint_review'; adminId: number; stamp: ReviewStamp }
+  | { via: 'legal_disclosure'; adminId: number; stamp: DisclosureStamp }
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -56,7 +67,10 @@ export type ExportSource =
 //     /records-export), or — for one who can't sign in — through a link an
 //     admin emails to the patient's own address, opened with their date of
 //     birth (RecordsExportLinksService). Both go through
-//     exportInTransaction below.
+//     exportInTransaction below. The two exceptions are decided elsewhere,
+//     each with its own grant and record (decisions §25): an admin's REVIEW
+//     copy under an open complaint review, and a DISCLOSED copy made for a
+//     legal order — the same function, told so by its `source`.
 //   - MADE ON REQUEST, NEVER STORED. No copy waits in storage: one would be
 //     another place holding clinical content, and out of date the next day.
 //   - ONE MOMENT. The reads run in a REPEATABLE READ transaction: every
@@ -107,10 +121,22 @@ export class RecordsExportService {
     timeZone: string,
     source: ExportSource,
   ): Promise<RecordExport> {
-    const record = await loadRecord(tx, patientId)
-    const review = source.via === 'complaint_review' ? source.stamp : undefined
+    // A disclosed copy reads messages only when the order covers them, and
+    // never the accounting; then it is narrowed to the order's parts and
+    // period BEFORE anything is drawn or recorded — what is out of scope
+    // reaches neither the PDF nor the ids below.
+    const disclosure =
+      source.via === 'legal_disclosure' ? source.stamp : undefined
+    const loaded = await loadRecord(tx, patientId, {
+      messages: disclosure?.parts.includes('messages') ?? false,
+      disclosures: disclosure === undefined,
+    })
+    const record =
+      disclosure === undefined
+        ? loaded
+        : scopeRecord(loaded, disclosure, timeZone)
     const pdf = await renderRecordPdf(
-      buildRecordDocument(record, timeZone, review),
+      buildRecordDocument(record, timeZone, copyMark(source)),
     )
 
     // What went in, by id — never the content (an audit entry is not a
@@ -118,8 +144,7 @@ export class RecordsExportService {
     // receive on that day?" — or what an admin's review copy held — even
     // after the record has grown.
     await this.auditService.logInTransaction(tx, {
-      performedBy:
-        source.via === 'complaint_review' ? source.adminId : patientId,
+      performedBy: 'adminId' in source ? source.adminId : patientId,
       action: 'RECORDS_EXPORTED',
       targetUserId: patientId,
       entityType: 'records_exports',
@@ -131,17 +156,26 @@ export class RecordsExportService {
         sessionIds: record.programs.flatMap((program) =>
           program.sessions.map((session) => session.id),
         ),
+        // Only a disclosed copy can hold messages — and only then is the
+        // key written (an absent key: no messages part; an empty list: the
+        // part was included, and the period held none).
+        ...(record.conversations === undefined
+          ? {}
+          : {
+              messageIds: record.conversations.flatMap((conversation) =>
+                conversation.messages.map((message) => message.id),
+              ),
+            }),
       },
     })
 
-    // A review copy is named for its review: an admin may make copies for
-    // several reviews in a day, and "stride-health-record-…" in their
-    // Downloads would read as the patient's own copy.
-    const prefix =
-      source.via === 'complaint_review'
-        ? `stride-review-copy-${source.stamp.reviewId}`
-        : 'stride-health-record'
-    return { pdf, fileName: exportFileName(record.madeAt, timeZone, prefix) }
+    // A review copy, or a disclosed one, is named for what it was made
+    // for: an admin may make several in a day, and "stride-health-record-…"
+    // in their Downloads would read as the patient's own copy.
+    return {
+      pdf,
+      fileName: exportFileName(record.madeAt, timeZone, fileNamePrefix(source)),
+    }
   }
 }
 
@@ -158,6 +192,34 @@ function sourceDetails(source: ExportSource): Record<string, string | number> {
       return { via: 'emailed_link', linkId: source.linkId }
     case 'complaint_review':
       return { via: 'complaint_review', reviewId: source.stamp.reviewId }
+    case 'legal_disclosure':
+      return {
+        via: 'legal_disclosure',
+        disclosureId: source.stamp.disclosureId,
+      }
+  }
+}
+
+// What kind of copy the document is — none for the patient's own.
+function copyMark(source: ExportSource): CopyMark | undefined {
+  switch (source.via) {
+    case 'complaint_review':
+      return { kind: 'review', review: source.stamp }
+    case 'legal_disclosure':
+      return { kind: 'disclosure', disclosure: source.stamp }
+    default:
+      return undefined
+  }
+}
+
+function fileNamePrefix(source: ExportSource): string {
+  switch (source.via) {
+    case 'complaint_review':
+      return `stride-review-copy-${source.stamp.reviewId}`
+    case 'legal_disclosure':
+      return `stride-disclosure-${source.stamp.disclosureId}`
+    default:
+      return 'stride-health-record'
   }
 }
 

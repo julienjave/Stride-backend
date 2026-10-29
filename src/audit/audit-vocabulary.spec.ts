@@ -56,6 +56,8 @@ describe('audit vocabulary', () => {
       expect(areaOf('care_team_join_reviews')).toBe('For review')
       expect(areaOf('records_exports')).toBe('Records exports')
       expect(areaOf('records_export_links')).toBe('Records exports')
+      expect(areaOf('legal_disclosures')).toBe('Legal disclosures')
+      expect(areaOf('legal_disclosure_notice_reviews')).toBe('For review')
     })
 
     it('shows an entity type it does not know as stored', () => {
@@ -82,6 +84,10 @@ describe('audit vocabulary', () => {
         // A care-team join notice seen (2026-10-28): who joined whose team —
         // directory-level, like care_team_members.
         'care_team_join_reviews',
+        // A legal disclosure (2026-10-28): to whom and under what — the
+        // admins' own act; the copy's ids are records_exports, withheld.
+        'legal_disclosures',
+        'legal_disclosure_notice_reviews',
       ]) {
         expect([type, detailsShownToAdmins(type)]).toEqual([type, true])
       }
@@ -149,9 +155,11 @@ describe('audit vocabulary', () => {
       // 2026-10-22, the 3 two-factor recovery ones since 2026-10-23,
       // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED and the emailed
       // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED and the
-      // complaint review's three since 2026-10-28) — 110 —, 10 views, 9
-      // sign-ins.
-      expect(changes).toHaveLength(110 - 10 - 9)
+      // complaint review's three since 2026-10-28, the legal disclosure's
+      // two the same day) — 112 —, 10 views, 9 sign-ins.
+      expect(changes).toHaveLength(112 - 10 - 9)
+      expect(changes).toContain('LEGAL_DISCLOSURE_MADE')
+      expect(changes).toContain('LEGAL_DISCLOSURE_NOTICE_REVIEWED')
       expect(changes).toContain('CARE_TEAM_JOIN_REVIEWED')
       expect(changes).toContain('COMPLAINT_REVIEW_OPENED')
       expect(changes).toContain('COMPLAINT_REVIEW_ENDED')

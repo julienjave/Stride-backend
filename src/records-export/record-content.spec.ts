@@ -18,12 +18,14 @@
 import {
   buildRecordDocument,
   dayText,
+  disclosureStampText,
   doseText,
   durationText,
   groupIntoNotes,
   momentText,
   sessionOutcome,
   workoutLabel,
+  type DisclosureStamp,
   type PrescribedExercise,
   type RecordBlock,
   type RecordData,
@@ -386,7 +388,10 @@ describe('buildRecordDocument', () => {
 
   it('makes a review copy: its title, its stamp, and an account of it first', () => {
     const own = buildRecordDocument(record(), PARIS)
-    const review = buildRecordDocument(record(), PARIS, REVIEW)
+    const review = buildRecordDocument(record(), PARIS, {
+      kind: 'review',
+      review: REVIEW,
+    })
 
     expect(review.title).toBe('Health record — review copy')
     expect(review.stamp).toBe(
@@ -420,8 +425,8 @@ describe('buildRecordDocument', () => {
 
   it('leaves the case reference out when there is none', () => {
     const review = buildRecordDocument(record(), PARIS, {
-      ...REVIEW,
-      caseReference: null,
+      kind: 'review',
+      review: { ...REVIEW, caseReference: null },
     })
     expect(review.stamp).toBe(
       'Review copy — made by Avery Admin for complaint review 12',
@@ -807,5 +812,426 @@ describe('buildRecordDocument', () => {
         .filter((block) => block.kind === 'heading' && block.level === 2)
         .map((block) => (block.kind === 'heading' ? block.text : '')),
     ).toEqual(['Shoulder', 'Knee'])
+  })
+})
+
+// --- THE ACCOUNTING OF DISCLOSURES (decisions §25, pass 3) -------------------------------------------------
+
+describe('buildRecordDocument — the accounting of disclosures', () => {
+  const disclosed = {
+    id: 4,
+    // 23:30 UTC: the 22nd in Paris, the 21st in Montreal.
+    madeAt: new Date('2031-03-21T23:30:00Z'),
+    recipientName: 'Jane Roe',
+    recipientOrganisation: 'Montreal Police',
+    legalBasis: 'court_order' as const,
+    basisExplanation: null,
+    parts: ['medical_file' as const, 'messages' as const],
+    period: { from: '2031-01-01', to: '2031-02-28' },
+  }
+
+  it('lists each disclosure last: who, why, what, which period — in the zone asked', () => {
+    const { blocks } = buildRecordDocument(
+      record({
+        disclosures: [
+          disclosed,
+          {
+            ...disclosed,
+            id: 3,
+            recipientName: 'Dr. Coroner',
+            recipientOrganisation: null,
+            legalBasis: 'other',
+            basisExplanation: 'A tribunal order',
+            parts: ['sessions'],
+            period: { from: null, to: null },
+          },
+        ],
+      }),
+      MONTREAL,
+    )
+    const start = blocks.findIndex(
+      (block) =>
+        block.kind === 'heading' && block.text === 'Disclosures of your record',
+    )
+    expect(blocks.slice(start)).toStrictEqual([
+      { kind: 'heading', level: 1, text: 'Disclosures of your record' },
+      {
+        kind: 'paragraph',
+        text:
+          'When the law requires it — a court order, for example — a clinic ' +
+          'may have to give a copy of a record to someone outside it without ' +
+          'asking the patient first. Each time that happened with your record ' +
+          "is listed here. Copies you download yourself aren't.",
+        muted: false,
+      },
+      {
+        kind: 'heading',
+        level: 2,
+        text: 'March 21, 2031 · Jane Roe (Montreal Police)',
+      },
+      {
+        kind: 'fields',
+        rows: [
+          ['Given to', 'Jane Roe'],
+          ['Organisation', 'Montreal Police'],
+          ['Why', 'A court order'],
+          ['What', 'Medical file and messages'],
+          ['Period', 'January 1, 2031 to February 28, 2031'],
+        ],
+      },
+      { kind: 'heading', level: 2, text: 'March 21, 2031 · Dr. Coroner' },
+      {
+        kind: 'fields',
+        rows: [
+          ['Given to', 'Dr. Coroner'],
+          ['Why', 'Another legal basis: A tribunal order'],
+          ['What', 'Sessions'],
+          ['Period', 'all dates'],
+        ],
+      },
+    ])
+  })
+
+  it('says so when there is none — and prints nothing when it was not read', () => {
+    const empty = buildRecordDocument(record({ disclosures: [] }), PARIS)
+    expect(empty.blocks.slice(-1)).toStrictEqual([
+      {
+        kind: 'paragraph',
+        text: 'Your record has not been disclosed outside the clinic.',
+        muted: true,
+      },
+    ])
+    const notRead = buildRecordDocument(record(), PARIS)
+    expect(
+      notRead.blocks.some(
+        (block) =>
+          block.kind === 'heading' &&
+          block.text === 'Disclosures of your record',
+      ),
+    ).toBe(false)
+  })
+})
+
+// --- THE DISCLOSED COPY (decisions §25, pass 3) ------------------------------------------------------------
+
+describe('buildRecordDocument — a disclosed copy', () => {
+  const STAMP: DisclosureStamp = {
+    disclosureId: 4,
+    madeBy: 'Avery Admin',
+    recipientName: 'Jane Roe',
+    recipientOrganisation: 'Montreal Police',
+    legalBasis: 'subpoena',
+    basisExplanation: null,
+    orderReference: '500-17-123',
+    receivedOn: '2031-03-01',
+    parts: ['medical_file', 'messages'],
+    period: { from: '2031-03-01', to: '2031-03-31' },
+  }
+  const disclose = (data: RecordData, stamp: DisclosureStamp = STAMP) =>
+    buildRecordDocument(data, PARIS, { kind: 'disclosure', disclosure: stamp })
+  const headings = (blocks: RecordBlock[], level: number) =>
+    blocks
+      .filter((block) => block.kind === 'heading' && block.level === level)
+      .map((block) => (block.kind === 'heading' ? block.text : ''))
+
+  it('opens with what the copy is, for whom, under what — then the patient, no email', () => {
+    const document = disclose(record())
+
+    expect(document.title).toBe('Health record — disclosed copy')
+    // The record's moment in Paris: already the 15th.
+    expect(document.stamp).toBe(
+      'Disclosed to Montreal Police under a subpoena (ref. 500-17-123) on March 15, 2031 · disclosure 4',
+    )
+    expect(document.footer).toBe(
+      'Health record of Pat Lee · copy made on March 15, 2031',
+    )
+    expect(document.blocks.slice(0, 5)).toStrictEqual([
+      {
+        kind: 'paragraph',
+        text:
+          'Copy disclosed outside the clinic because the law required it — ' +
+          "not the patient's own copy. It holds only the parts of the record " +
+          'and the period listed here.',
+        muted: false,
+      },
+      {
+        kind: 'fields',
+        rows: [
+          ['Disclosed to', 'Jane Roe'],
+          ['Organisation', 'Montreal Police'],
+          ['Legal basis', 'A subpoena, with the assurances the law requires'],
+          ['Order reference', '500-17-123'],
+          ['Request received on', 'March 1, 2031'],
+          ['Made by', 'Avery Admin'],
+          ['Disclosure', '4'],
+          ['Parts included', 'Medical file and messages'],
+          [
+            'Period',
+            'March 1, 2031 to March 31, 2031 (days in Europe/Paris time)',
+          ],
+        ],
+      },
+      {
+        kind: 'fields',
+        rows: [
+          ['Name', 'Pat Lee'],
+          ['Date of birth', 'April 12, 1988'],
+          ['Copy made on', 'March 15, 2031 at 12:30 AM (Europe/Paris time)'],
+        ],
+      },
+      {
+        kind: 'paragraph',
+        text:
+          "What follows is the patient's record as Stride held it when this " +
+          'copy was made, limited to the parts and the period above. It uses ' +
+          "the words of the patient's own copy, written to them. Nothing in a " +
+          'medical file is ever changed or removed — a correction is a new ' +
+          'entry, and the version it replaced is shown under it.',
+        muted: false,
+      },
+      {
+        kind: 'paragraph',
+        text: 'Not included: exercise programs and sessions.',
+        muted: true,
+      },
+    ])
+  })
+
+  it('leaves out the rows it has nothing for, and the "Not included" line when all went', () => {
+    const document = disclose(record(), {
+      ...STAMP,
+      recipientOrganisation: null,
+      orderReference: null,
+      parts: ['medical_file', 'programs', 'sessions', 'messages'],
+    })
+    const [, order] = document.blocks
+    expect(
+      order.kind === 'fields' && order.rows.map(([label]) => label),
+    ).toEqual([
+      'Disclosed to',
+      'Legal basis',
+      'Request received on',
+      'Made by',
+      'Disclosure',
+      'Parts included',
+      'Period',
+    ])
+    expect(
+      document.blocks.some(
+        (block) =>
+          block.kind === 'paragraph' && block.text.startsWith('Not included'),
+      ),
+    ).toBe(false)
+  })
+
+  it('prints only the parts included, each saying when the period held none', () => {
+    const fileAndMessages = disclose(record())
+    expect(headings(fileAndMessages.blocks, 1)).toEqual([
+      'Medical file',
+      'Messages',
+    ])
+    expect(fileAndMessages.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No medical file entries in this period.',
+      muted: true,
+    })
+    expect(fileAndMessages.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No messages in this period.',
+      muted: true,
+    })
+
+    const programsOnly = disclose(record(), { ...STAMP, parts: ['programs'] })
+    expect(headings(programsOnly.blocks, 1)).toEqual(['Exercise programs'])
+    expect(programsOnly.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No exercise programs in this period.',
+      muted: true,
+    })
+    const sessionsOnly = disclose(record(), { ...STAMP, parts: ['sessions'] })
+    expect(headings(sessionsOnly.blocks, 1)).toEqual(['Sessions'])
+    expect(sessionsOnly.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No sessions in this period.',
+      muted: true,
+    })
+  })
+
+  it('shows a program’s prescription with "programs", its sessions with "sessions"', () => {
+    const data = record({
+      programs: [
+        program({
+          workouts: [
+            {
+              id: 11,
+              name: 'Mobility',
+              exercises: [exercise({ sets: 3, reps: 10 })],
+            },
+          ],
+          sessions: [session()],
+        }),
+      ],
+    })
+    const both = disclose(data, { ...STAMP, parts: ['programs', 'sessions'] })
+    expect(headings(both.blocks, 1)).toEqual(['Exercise programs and sessions'])
+    expect(headings(both.blocks, 3)).toEqual([
+      'Workout A · Mobility',
+      'Sessions (1)',
+    ])
+
+    const programs = disclose(data, { ...STAMP, parts: ['programs'] })
+    expect(headings(programs.blocks, 3)).toEqual(['Workout A · Mobility'])
+    expect(headings(programs.blocks, 4)).toEqual([])
+
+    const sessions = disclose(data, { ...STAMP, parts: ['sessions'] })
+    expect(headings(sessions.blocks, 2)).toEqual(['Knee Rehab'])
+    expect(headings(sessions.blocks, 3)).toEqual(['Sessions (1)'])
+    // The session still names its workout.
+    expect(headings(sessions.blocks, 4)).toEqual([
+      'March 10, 2031 · Workout A · Mobility',
+    ])
+
+    const empty = disclose(record({ programs: [program()] }), {
+      ...STAMP,
+      parts: ['programs', 'sessions'],
+    })
+    expect(empty.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No sessions in this period.',
+      muted: true,
+    })
+  })
+
+  it('writes each conversation: who and when, then the text — a deleted one without', () => {
+    const { blocks } = disclose(
+      record({
+        conversations: [
+          {
+            id: 1,
+            practitioner: { firstName: 'Alex', lastName: 'Chen' },
+            messages: [
+              {
+                id: 1,
+                fromPatient: false,
+                sentAt: new Date('2031-03-10T09:00:00Z'),
+                body: 'Start with the lighter band.',
+              },
+              {
+                id: 2,
+                fromPatient: true,
+                sentAt: new Date('2031-03-10T10:30:00Z'),
+                body: null,
+              },
+            ],
+          },
+          {
+            id: 2,
+            practitioner: { firstName: 'Sam', lastName: 'Okafor' },
+            messages: [
+              {
+                id: 3,
+                fromPatient: true,
+                sentAt: new Date('2031-03-11T08:00:00Z'),
+                body: 'Thank you!',
+              },
+            ],
+          },
+        ],
+      }),
+    )
+    const start = blocks.findIndex(
+      (block) => block.kind === 'heading' && block.text === 'Messages',
+    )
+    expect(blocks.slice(start)).toStrictEqual([
+      { kind: 'heading', level: 1, text: 'Messages' },
+      { kind: 'heading', level: 2, text: 'With Alex Chen (2 messages)' },
+      {
+        kind: 'text',
+        label: 'Alex Chen · March 10, 2031 at 10:00 AM',
+        text: 'Start with the lighter band.',
+      },
+      {
+        kind: 'paragraph',
+        text: "Pat Lee · March 10, 2031 at 11:30 AM — deleted by its sender before it was read; its text isn't shown.",
+        muted: true,
+      },
+      { kind: 'heading', level: 2, text: 'With Sam Okafor (1 message)' },
+      {
+        kind: 'text',
+        label: 'Pat Lee · March 11, 2031 at 9:00 AM',
+        text: 'Thank you!',
+      },
+    ])
+  })
+
+  it('says when a note here was corrected after the period', () => {
+    const { blocks } = disclose(
+      record({
+        medicalFile: [entry(1, '2031-03-05T09:00:00Z', { amendedById: 2 })],
+      }),
+    )
+    expect(blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'This note was corrected later, after the period this copy covers.',
+      muted: true,
+    })
+    // Never in the patient's own copy, where the correction is there too.
+    const own = buildRecordDocument(
+      record({
+        medicalFile: [
+          entry(2, '2031-03-06T09:00:00Z', {
+            amendsId: 1,
+            amendmentReason: 'Typo',
+          }),
+          entry(1, '2031-03-05T09:00:00Z', { amendedById: 2 }),
+        ],
+      }),
+      PARIS,
+    )
+    expect(
+      own.blocks.some(
+        (block) =>
+          block.kind === 'paragraph' && block.text.includes('corrected later'),
+      ),
+    ).toBe(false)
+  })
+
+  describe('disclosureStampText', () => {
+    const madeAt = new Date('2031-03-14T23:30:00Z')
+
+    it('names the organisation, or the person when there is none', () => {
+      expect(
+        disclosureStampText(
+          { ...STAMP, recipientOrganisation: null, orderReference: null },
+          madeAt,
+          MONTREAL,
+        ),
+      ).toBe(
+        'Disclosed to Jane Roe under a subpoena on March 14, 2031 · disclosure 4',
+      )
+    })
+
+    it('cuts a long recipient or reference to fit one line', () => {
+      const stamp = disclosureStampText(
+        {
+          ...STAMP,
+          recipientOrganisation: 'O'.repeat(61),
+          orderReference: `${'R'.repeat(59)} tail`,
+        },
+        madeAt,
+        PARIS,
+      )
+      expect(stamp).toBe(
+        `Disclosed to ${'O'.repeat(59)}… under a subpoena (ref. ${'R'.repeat(59)}…) on March 15, 2031 · disclosure 4`,
+      )
+      // Exactly 60 characters: kept whole.
+      expect(
+        disclosureStampText(
+          { ...STAMP, recipientOrganisation: 'O'.repeat(60) },
+          madeAt,
+          PARIS,
+        ),
+      ).toContain(`to ${'O'.repeat(60)} under`)
+    })
   })
 })

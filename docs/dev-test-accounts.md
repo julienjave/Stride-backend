@@ -220,6 +220,17 @@ made, through the app's own code); the seed announces it just before.
   then sees *Avery Admin opened a complaint review of the record* in For
   review — who, when, until, never the reason. Another admin (Morgan, as
   admin) sees the review and can **End now**, but can't make copies with it.
+  **Legal disclosures** (since 2026-10-28): the seed makes none — to try one,
+  as the admin go to **Admin → Users → Pat → Legal disclosures → Record a
+  disclosure**: the recipient, the legal basis, the day the request arrived,
+  the parts of the record (messages leave the app only this way) and, if you
+  like, a period. **Record and download** saves ONE PDF, stamped *Disclosed to
+  … under … on …* on every page; there is no second copy. Pat then finds it on
+  **Profile → My records → When your record was shared**, and at the end of
+  their own PDF copy; **Alex** sees *Avery Admin disclosed the record to …* in
+  For review — who, when, to whom, never the order. Tick **Hold it back from
+  Pat** (a day after today, and the agency's statement): Pat's list and copy
+  leave it out until that day, and Alex's row says when Pat will see it.
 - **Messages** (`GET /conversations`; the screens come with Phase 5's
   frontend): a patient writes with the practitioners on their care team, and
   only while they are on it.

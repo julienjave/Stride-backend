@@ -30,6 +30,16 @@
 import type { MedicalFileEntry } from '../medical-files/medical-files.service'
 import type { MedicalFileEntryType } from '../medical-files/medical-file-rules'
 import type { WeightUnit } from '../database/schema/weight-unit.schema'
+import type { LegalBasis } from '../database/schema/legal-disclosures.schema'
+import {
+  LEGAL_BASIS_IN_SENTENCE,
+  legalBasisText,
+  missingPartsText,
+  partsText,
+  periodText,
+  type DisclosurePart,
+  type DisclosurePeriod,
+} from '../legal-disclosures/legal-disclosure-rules'
 
 // --- THE RECORD, AS LOADED ---------------------------------------------------------------------------------
 
@@ -113,12 +123,54 @@ export interface RecordProgram {
   sessions: RecordSession[]
 }
 
+// One message of a conversation, as the PATIENT reads it (decisions §25,
+// pass 3 — messages leave the app only in a legal disclosure). `body` is
+// null for a message its sender deleted: the text stays in the database, but
+// both participants see it without — and a copy read as the patient shows
+// what the patient sees.
+export interface RecordMessage {
+  id: number
+  fromPatient: boolean
+  sentAt: Date
+  body: string | null
+}
+
+// One conversation: the patient with one practitioner. Messages oldest
+// first, as a conversation reads.
+export interface RecordConversation {
+  id: number
+  practitioner: PersonName
+  messages: RecordMessage[]
+}
+
+// One line of the patient's ACCOUNTING OF DISCLOSURES (HIPAA 164.528): a time
+// the clinic gave their record to someone outside it because the law
+// required it. Read as the patient, so a disclosure the law lets the clinic
+// hold back for a time isn't here until then (migration 0069).
+export interface RecordDisclosure {
+  id: number
+  madeAt: Date
+  recipientName: string
+  recipientOrganisation: string | null
+  legalBasis: LegalBasis
+  basisExplanation: string | null
+  parts: DisclosurePart[]
+  period: DisclosurePeriod
+}
+
 export interface RecordData {
   patient: RecordPatient
   // Newest first, as loadMedicalFileEntries answers.
   medicalFile: MedicalFileEntry[]
   // Newest first (by first day).
   programs: RecordProgram[]
+  // Loaded only for a legal disclosure that includes messages; absent, the
+  // document has no messages part at all.
+  conversations?: RecordConversation[]
+  // Loaded for the patient's own copy (and a review copy, which is exactly
+  // that); absent from a disclosure's copy, whose content is only what the
+  // order covers. Newest first.
+  disclosures?: RecordDisclosure[]
   // The moment the record was read (the transaction's now(), the same
   // instant as the audit entry's created_at).
   madeAt: Date
@@ -164,10 +216,37 @@ export interface ReviewStamp {
   expiresAt: Date
 }
 
+// What makes a copy a DISCLOSED copy: the legal disclosure it was made for
+// (decisions §25, pass 3 — legal-disclosures.service.ts). The order's details
+// as the admin recorded them; the copy's moment is the record's own madeAt
+// (one transaction, one now()).
+export interface DisclosureStamp {
+  disclosureId: number
+  // The admin who made it: "Avery Admin".
+  madeBy: string
+  recipientName: string
+  recipientOrganisation: string | null
+  legalBasis: LegalBasis
+  basisExplanation: string | null
+  orderReference: string | null
+  // The day the request reached the clinic ('YYYY-MM-DD').
+  receivedOn: string
+  parts: DisclosurePart[]
+  period: DisclosurePeriod
+}
+
+// A copy that ISN'T the patient's own, and why — the third argument of
+// buildRecordDocument. A tagged union: `kind` says which, and TypeScript
+// then knows which fields exist.
+export type CopyMark =
+  | { kind: 'review'; review: ReviewStamp }
+  | { kind: 'disclosure'; disclosure: DisclosureStamp }
+
 // --- WORDS -------------------------------------------------------------------------------------------------
 
 export const DOCUMENT_TITLE = 'Your health record'
 export const REVIEW_DOCUMENT_TITLE = 'Health record — review copy'
+export const DISCLOSURE_DOCUMENT_TITLE = 'Health record — disclosed copy'
 
 const ENTRY_TYPE_LABELS: Record<MedicalFileEntryType, string> = {
   initial_assessment: 'Initial assessment',
@@ -365,6 +444,17 @@ function noteBlocks(note: NoteVersions, timeZone: string): RecordBlock[] {
     },
     ...versionBlocks(latest, timeZone),
   ]
+  // The latest version HERE was corrected by one that isn't in this copy —
+  // which only happens in a disclosed copy, when the correction was written
+  // after the period it covers (a patient's own copy holds every version).
+  // Said, so nobody reads a superseded note as the current one.
+  if (latest.amendedById !== null) {
+    blocks.push({
+      kind: 'paragraph',
+      text: 'This note was corrected later, after the period this copy covers.',
+      muted: true,
+    })
+  }
   // Each earlier version, with when it was replaced — the next newer
   // version's moment (the one before it in the list, or the latest).
   earlier.forEach((version, index) => {
@@ -406,7 +496,29 @@ function versionBlocks(
 
 // --- PROGRAMS AND SESSIONS ---------------------------------------------------------------------------------
 
-function programBlocks(program: RecordProgram): RecordBlock[] {
+// What a program's blocks show. The patient's own copy shows everything; a
+// disclosed copy shows the parts the order covers — the prescription with
+// "programs", the sessions with "sessions" (a program kept only for its
+// sessions still gets its heading and dates: they say what the sessions
+// were part of).
+interface ProgramParts {
+  prescription: boolean
+  sessions: boolean
+  // A disclosed copy's sessions are those of a period: "none in this
+  // period", not "none yet".
+  inPeriod: boolean
+}
+
+const WHOLE_PROGRAM: ProgramParts = {
+  prescription: true,
+  sessions: true,
+  inPeriod: false,
+}
+
+function programBlocks(
+  program: RecordProgram,
+  parts: ProgramParts = WHOLE_PROGRAM,
+): RecordBlock[] {
   const dates =
     program.endDate === null
       ? `${dayText(program.startDate)} – no end date`
@@ -428,18 +540,21 @@ function programBlocks(program: RecordProgram): RecordBlock[] {
 
   // The prescription as it stands now (a session below keeps what was asked
   // on its own day).
-  program.workouts.forEach((workout, position) => {
-    blocks.push({
-      kind: 'heading',
-      level: 3,
-      text: `Workout ${workoutLabel(position, workout.name)}`,
+  if (parts.prescription) {
+    program.workouts.forEach((workout, position) => {
+      blocks.push({
+        kind: 'heading',
+        level: 3,
+        text: `Workout ${workoutLabel(position, workout.name)}`,
+      })
+      blocks.push(
+        workout.exercises.length === 0
+          ? { kind: 'paragraph', text: 'No exercises.', muted: true }
+          : { kind: 'list', items: workout.exercises.map(exerciseLine) },
+      )
     })
-    blocks.push(
-      workout.exercises.length === 0
-        ? { kind: 'paragraph', text: 'No exercises.', muted: true }
-        : { kind: 'list', items: workout.exercises.map(exerciseLine) },
-    )
-  })
+  }
+  if (!parts.sessions) return blocks
 
   blocks.push({
     kind: 'heading',
@@ -450,7 +565,11 @@ function programBlocks(program: RecordProgram): RecordBlock[] {
         : `Sessions (${program.sessions.length})`,
   })
   if (program.sessions.length === 0) {
-    blocks.push({ kind: 'paragraph', text: 'No sessions yet.', muted: true })
+    blocks.push({
+      kind: 'paragraph',
+      text: parts.inPeriod ? 'No sessions in this period.' : 'No sessions yet.',
+      muted: true,
+    })
   }
   const positions = new Map(
     program.workouts.map((workout, position) => [workout.id, position]),
@@ -561,17 +680,24 @@ function sessionExerciseLine(exercise: SessionExerciseRecord): string {
 
 // --- THE WHOLE DOCUMENT ------------------------------------------------------------------------------------
 
-// `review`: the copy is a complaint review's (decisions §25, pass 2). The
-// record itself is EXACTLY the patient's own copy — same blocks, same words,
-// still written to the patient ("your medical file"): the point of a review is
-// to see what the patient's record says, and one generator means the two can
-// never differ. What changes is around it: the title, a first block saying
-// what this copy is and why it was made, and the stamp on every page.
+// `copy`: absent for the patient's own copy. Otherwise:
+//   - a REVIEW copy (decisions §25, pass 2). The record itself is EXACTLY the
+//     patient's own copy — same blocks, same words, still written to the
+//     patient ("your medical file"): the point of a review is to see what the
+//     patient's record says, and one generator means the two can never
+//     differ. What changes is around it: the title, a first block saying
+//     what this copy is and why it was made, and the stamp on every page.
+//   - a DISCLOSED copy (pass 3): only the parts and the period the order
+//     covers — its own document, below (disclosedDocument).
 export function buildRecordDocument(
   record: RecordData,
   timeZone: string,
-  review?: ReviewStamp,
+  copy?: CopyMark,
 ): RecordDocument {
+  if (copy?.kind === 'disclosure') {
+    return disclosedDocument(record, timeZone, copy.disclosure)
+  }
+  const review = copy?.kind === 'review' ? copy.review : undefined
   const { patient } = record
   const name = `${patient.firstName} ${patient.lastName}`
   const madeAt = momentText(record.madeAt, timeZone)
@@ -631,6 +757,12 @@ export function buildRecordDocument(
     blocks.push(...programBlocks(program))
   }
 
+  // The accounting of disclosures, when it was read (always, for the patient's
+  // own copy and a review copy — the loader's choice).
+  if (record.disclosures !== undefined) {
+    blocks.push(...accountingBlocks(record.disclosures, timeZone))
+  }
+
   return {
     title: review ? REVIEW_DOCUMENT_TITLE : DOCUMENT_TITLE,
     footer: `Health record of ${name} · copy made on ${momentDayText(record.madeAt, timeZone)}`,
@@ -673,4 +805,293 @@ function reviewBlocks(review: ReviewStamp, timeZone: string): RecordBlock[] {
       ],
     },
   ]
+}
+
+// --- THE ACCOUNTING OF DISCLOSURES -------------------------------------------------------------------------
+
+// The patient's own list of the times their record left the clinic because
+// the law required it (HIPAA 164.528; decisions §25, pass 3 — "who, why,
+// when, what": recipient, legal basis, date, parts and period). The same
+// facts as My records' "Your record was shared" list.
+function accountingBlocks(
+  disclosures: RecordDisclosure[],
+  timeZone: string,
+): RecordBlock[] {
+  const blocks: RecordBlock[] = [
+    { kind: 'heading', level: 1, text: 'Disclosures of your record' },
+    {
+      kind: 'paragraph',
+      text:
+        'When the law requires it — a court order, for example — a clinic ' +
+        'may have to give a copy of a record to someone outside it without ' +
+        'asking the patient first. Each time that happened with your record ' +
+        "is listed here. Copies you download yourself aren't.",
+      muted: false,
+    },
+  ]
+  if (disclosures.length === 0) {
+    blocks.push({
+      kind: 'paragraph',
+      text: 'Your record has not been disclosed outside the clinic.',
+      muted: true,
+    })
+  }
+  for (const disclosure of disclosures) {
+    const rows: [string, string][] = [['Given to', disclosure.recipientName]]
+    if (disclosure.recipientOrganisation !== null) {
+      rows.push(['Organisation', disclosure.recipientOrganisation])
+    }
+    rows.push(
+      [
+        'Why',
+        legalBasisText(disclosure.legalBasis, disclosure.basisExplanation),
+      ],
+      ['What', partsText(disclosure.parts)],
+      ['Period', periodText(disclosure.period, dayText)],
+    )
+    blocks.push(
+      {
+        kind: 'heading',
+        level: 2,
+        text: `${momentDayText(disclosure.madeAt, timeZone)} · ${recipientText(disclosure)}`,
+      },
+      { kind: 'fields', rows },
+    )
+  }
+  return blocks
+}
+
+// "Jane Roe (Montreal Police)", or the name alone.
+function recipientText(recipient: {
+  recipientName: string
+  recipientOrganisation: string | null
+}): string {
+  return recipient.recipientOrganisation === null
+    ? recipient.recipientName
+    : `${recipient.recipientName} (${recipient.recipientOrganisation})`
+}
+
+// --- THE DISCLOSED COPY ------------------------------------------------------------------------------------
+
+// A legal disclosure's document (decisions §25, pass 3). The record arrives
+// already narrowed to the order's parts and period (scopeRecord,
+// record-scope.ts); this decides what is SAID: what this copy is, for whom
+// and why (first page), the patient's identity, then each included part —
+// and only those — in the patient's own copy's words.
+function disclosedDocument(
+  record: RecordData,
+  timeZone: string,
+  disclosure: DisclosureStamp,
+): RecordDocument {
+  const { patient } = record
+  const name = `${patient.firstName} ${patient.lastName}`
+  const parts = new Set(disclosure.parts)
+  const missing = missingPartsText(disclosure.parts)
+
+  const blocks: RecordBlock[] = [
+    ...disclosureBlocks(disclosure, timeZone),
+    {
+      kind: 'fields',
+      // No email: a disclosure carries what identifies the patient (name,
+      // date of birth), not how to reach them — the least that serves.
+      rows: [
+        ['Name', name],
+        ['Date of birth', dayText(patient.dateOfBirth)],
+        [
+          'Copy made on',
+          `${momentText(record.madeAt, timeZone)} (${timeZone} time)`,
+        ],
+      ],
+    },
+    {
+      kind: 'paragraph',
+      text:
+        "What follows is the patient's record as Stride held it when this " +
+        'copy was made, limited to the parts and the period above. It uses ' +
+        "the words of the patient's own copy, written to them. Nothing in a " +
+        'medical file is ever changed or removed — a correction is a new ' +
+        'entry, and the version it replaced is shown under it.',
+      muted: false,
+    },
+    ...(missing === null
+      ? []
+      : [
+          {
+            kind: 'paragraph',
+            text: `Not included: ${missing}.`,
+            muted: true,
+          } satisfies RecordBlock,
+        ]),
+  ]
+
+  if (parts.has('medical_file')) {
+    blocks.push({ kind: 'heading', level: 1, text: 'Medical file' })
+    const notes = groupIntoNotes(record.medicalFile)
+    if (notes.length === 0) {
+      blocks.push({
+        kind: 'paragraph',
+        text: 'No medical file entries in this period.',
+        muted: true,
+      })
+    }
+    for (const note of notes) blocks.push(...noteBlocks(note, timeZone))
+  }
+
+  const prescription = parts.has('programs')
+  const sessions = parts.has('sessions')
+  if (prescription || sessions) {
+    blocks.push({
+      kind: 'heading',
+      level: 1,
+      text:
+        prescription && sessions
+          ? 'Exercise programs and sessions'
+          : prescription
+            ? 'Exercise programs'
+            : 'Sessions',
+    })
+    if (record.programs.length === 0) {
+      blocks.push({
+        kind: 'paragraph',
+        text: prescription
+          ? 'No exercise programs in this period.'
+          : 'No sessions in this period.',
+        muted: true,
+      })
+    }
+    for (const program of record.programs) {
+      blocks.push(
+        ...programBlocks(program, { prescription, sessions, inPeriod: true }),
+      )
+    }
+  }
+
+  if (parts.has('messages')) {
+    blocks.push(...messageBlocks(record.conversations ?? [], patient, timeZone))
+  }
+
+  return {
+    title: DISCLOSURE_DOCUMENT_TITLE,
+    footer: `Health record of ${name} · copy made on ${momentDayText(record.madeAt, timeZone)}`,
+    stamp: disclosureStampText(disclosure, record.madeAt, timeZone),
+    blocks,
+  }
+}
+
+// The first page's account of the disclosure, ABOVE the patient's details:
+// what this copy is, who receives it, under what, and what it holds.
+function disclosureBlocks(
+  disclosure: DisclosureStamp,
+  timeZone: string,
+): RecordBlock[] {
+  const rows: [string, string][] = [['Disclosed to', disclosure.recipientName]]
+  if (disclosure.recipientOrganisation !== null) {
+    rows.push(['Organisation', disclosure.recipientOrganisation])
+  }
+  rows.push([
+    'Legal basis',
+    legalBasisText(disclosure.legalBasis, disclosure.basisExplanation),
+  ])
+  if (disclosure.orderReference !== null) {
+    rows.push(['Order reference', disclosure.orderReference])
+  }
+  rows.push(
+    ['Request received on', dayText(disclosure.receivedOn)],
+    ['Made by', disclosure.madeBy],
+    ['Disclosure', String(disclosure.disclosureId)],
+    ['Parts included', partsText(disclosure.parts)],
+    [
+      'Period',
+      // The days are read in the copy's zone (a note written late on the
+      // 31st in Montreal is an April 1 note in Paris) — said, so the reader
+      // knows which.
+      `${periodText(disclosure.period, dayText)} (days in ${timeZone} time)`,
+    ],
+  )
+  return [
+    {
+      kind: 'paragraph',
+      text:
+        'Copy disclosed outside the clinic because the law required it — ' +
+        "not the patient's own copy. It holds only the parts of the record " +
+        'and the period listed here.',
+      muted: false,
+    },
+    { kind: 'fields', rows },
+  ]
+}
+
+// The longest recipient or reference the one-line stamp prints in full;
+// longer ones are cut with "…" (the first page has them whole). The stamp is
+// drawn on a single line, never wrapped (record-pdf.ts).
+const STAMP_PART_MAX = 60
+
+function shortened(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`
+}
+
+// "Disclosed to Montreal Police under a court order (ref. 500-17-123) on
+// October 28, 2026 · disclosure 4" — on every page. Who receives it (the
+// organisation if there is one — the name is on the first page), under what,
+// when, and which disclosure, so a loose page leads back to its record.
+export function disclosureStampText(
+  disclosure: DisclosureStamp,
+  madeAt: Date,
+  timeZone: string,
+): string {
+  const who = shortened(
+    disclosure.recipientOrganisation ?? disclosure.recipientName,
+    STAMP_PART_MAX,
+  )
+  const reference =
+    disclosure.orderReference === null
+      ? ''
+      : ` (ref. ${shortened(disclosure.orderReference, STAMP_PART_MAX)})`
+  return (
+    `Disclosed to ${who} under ${LEGAL_BASIS_IN_SENTENCE[disclosure.legalBasis]}` +
+    `${reference} on ${momentDayText(madeAt, timeZone)} · disclosure ${disclosure.disclosureId}`
+  )
+}
+
+// --- MESSAGES ----------------------------------------------------------------------------------------------
+
+// The conversations of the period, each with one practitioner, its messages
+// oldest first — "who · when", then the text as written.
+function messageBlocks(
+  conversations: RecordConversation[],
+  patient: PersonName,
+  timeZone: string,
+): RecordBlock[] {
+  const blocks: RecordBlock[] = [
+    { kind: 'heading', level: 1, text: 'Messages' },
+  ]
+  if (conversations.length === 0) {
+    blocks.push({
+      kind: 'paragraph',
+      text: 'No messages in this period.',
+      muted: true,
+    })
+  }
+  const patientName = `${patient.firstName} ${patient.lastName}`
+  for (const conversation of conversations) {
+    const practitionerName = `${conversation.practitioner.firstName} ${conversation.practitioner.lastName}`
+    blocks.push({
+      kind: 'heading',
+      level: 2,
+      text: `With ${practitionerName} (${plural(conversation.messages.length, 'message')})`,
+    })
+    for (const message of conversation.messages) {
+      const label = `${message.fromPatient ? patientName : practitionerName} · ${momentText(message.sentAt, timeZone)}`
+      blocks.push(
+        message.body === null
+          ? {
+              kind: 'paragraph',
+              text: `${label} — deleted by its sender before it was read; its text isn't shown.`,
+              muted: true,
+            }
+          : { kind: 'text', label, text: message.body },
+      )
+    }
+  }
+  return blocks
 }

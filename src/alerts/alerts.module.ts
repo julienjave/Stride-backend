@@ -21,6 +21,7 @@ import { Module } from '@nestjs/common'
 import { AlertsController } from './alerts.controller'
 import { AlertsService } from './alerts.service'
 import { ComplaintReviewNoticesService } from './complaint-review-notices.service'
+import { LegalDisclosureNoticesService } from './legal-disclosure-notices.service'
 import { CareTeamModule } from '../care-team/care-team.module'
 import { StorageModule } from '../storage/storage.module'
 
@@ -33,6 +34,10 @@ import { StorageModule } from '../storage/storage.module'
 @Module({
   imports: [CareTeamModule, StorageModule],
   controllers: [AlertsController],
-  providers: [AlertsService, ComplaintReviewNoticesService],
+  providers: [
+    AlertsService,
+    ComplaintReviewNoticesService,
+    LegalDisclosureNoticesService,
+  ],
 })
 export class AlertsModule {}

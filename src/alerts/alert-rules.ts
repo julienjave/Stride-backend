@@ -497,3 +497,29 @@ export function isComplaintReviewNoticeFor(
     review.openedAt >= cutoff
   )
 }
+
+// The fifth family (decisions §25, pass 3): an admin disclosed a patient's
+// record outside the clinic because the law required it. The care team is
+// told (the person's choice): who made it, when, and to whom — never the
+// order's reference or details (admins-only, down to the database). The
+// complaint review's rule exactly, on a disclosure's maker and moment: the
+// members on the team WHEN it was made, not its maker, for 14 days, until
+// each marks it reviewed (legal_disclosure_notice_reviews).
+export interface LegalDisclosureFacts {
+  madeBy: number
+  madeAt: Date
+}
+
+export function isLegalDisclosureNoticeFor(
+  disclosure: LegalDisclosureFacts,
+  me: number,
+  myStart: Date | undefined,
+  cutoff: Date,
+): boolean {
+  return isComplaintReviewNoticeFor(
+    { openedBy: disclosure.madeBy, openedAt: disclosure.madeAt },
+    me,
+    myStart,
+    cutoff,
+  )
+}

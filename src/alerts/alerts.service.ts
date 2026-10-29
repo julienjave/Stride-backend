@@ -80,6 +80,10 @@ import {
   ComplaintReviewNoticesService,
   type ComplaintReviewAlert,
 } from './complaint-review-notices.service'
+import {
+  LegalDisclosureNoticesService,
+  type LegalDisclosureAlert,
+} from './legal-disclosure-notices.service'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -152,17 +156,28 @@ export interface PersonName {
 }
 
 export type Alert =
-  AttendanceAlert | SessionAlert | CareTeamJoinAlert | ComplaintReviewAlert
+  | AttendanceAlert
+  | SessionAlert
+  | CareTeamJoinAlert
+  | ComplaintReviewAlert
+  | LegalDisclosureAlert
 
 // The notices about WHO CAN SEE a patient's record (decisions §25): a
-// colleague joined the care team, an admin opened a complaint review. Shown
-// together, newest first, by the instant each happened.
-type AccessNotice = CareTeamJoinAlert | ComplaintReviewAlert
+// colleague joined the care team, an admin opened a complaint review, an
+// admin disclosed the record because the law required it. Shown together,
+// newest first, by the instant each happened.
+type AccessNotice =
+  CareTeamJoinAlert | ComplaintReviewAlert | LegalDisclosureAlert
 
 function noticeMoment(notice: AccessNotice): number {
-  return notice.kind === 'care_team_join'
-    ? notice.link.startedAt.getTime()
-    : notice.review.openedAt.getTime()
+  switch (notice.kind) {
+    case 'care_team_join':
+      return notice.link.startedAt.getTime()
+    case 'complaint_review':
+      return notice.review.openedAt.getTime()
+    case 'legal_disclosure':
+      return notice.disclosure.madeAt.getTime()
+  }
 }
 
 // What POST /alerts/programs/:id/review answers: the review that now
@@ -237,6 +252,7 @@ export class AlertsService {
     private readonly storageService: StorageService,
     private readonly auditService: AuditService,
     private readonly complaintReviewNotices: ComplaintReviewNoticesService,
+    private readonly legalDisclosureNotices: LegalDisclosureNoticesService,
   ) {}
 
   // --- GET /alerts ---
@@ -277,13 +293,15 @@ export class AlertsService {
     if (patientIds.length === 0) return []
 
     // Who else can see my patients' records: colleagues who joined their
-    // care teams, admins who opened a complaint review — read on their own
-    // (they need no program: a patient with no program yet still has a team).
+    // care teams, admins who opened a complaint review, records disclosed
+    // outside the clinic — read on their own (they need no program: a
+    // patient with no program yet still has a team).
     // Merged newest first; Array.sort is STABLE (ES2019), so two notices of
     // the same instant keep their own lists' order.
     const notices: AccessNotice[] = [
       ...(await this.joinNotices(currentUser, patientIds)),
       ...(await this.complaintReviewNotices.list(currentUser, patientIds)),
+      ...(await this.legalDisclosureNotices.list(currentUser, patientIds)),
     ].sort((a, b) => noticeMoment(b) - noticeMoment(a))
 
     const read = await withRlsContext(this.db, currentUser, async (tx) => {

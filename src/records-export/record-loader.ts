@@ -27,16 +27,23 @@
 //
 // Seven queries, whatever the size of the record (never one per program or
 // per session): each reads every row of its table for the whole record, and
-// the rows are grouped here, in memory.
+// the rows are grouped here, in memory. Two more when asked (decisions §25,
+// pass 3): the conversations and their messages (a legal disclosure that
+// includes them), and the accounting of disclosures (the patient's own copy).
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { DrizzleDb } from '../database/drizzle.provider'
 import {
   assignedProgramExercises,
   assignedPrograms,
+  conversations,
+  legalDisclosureDetails,
+  legalDisclosures,
   medicalFiles,
+  messages,
   patientProfiles,
   programWorkouts,
   sessionExercises,
@@ -44,9 +51,12 @@ import {
   users,
 } from '../database/schema'
 import { loadMedicalFileEntries } from '../medical-files/medical-files.service'
+import { partsFromFlags } from '../legal-disclosures/legal-disclosure-rules'
 import type {
   PrescribedExercise,
+  RecordConversation,
   RecordData,
+  RecordDisclosure,
   RecordProgram,
   RecordSession,
   RecordWorkout,
@@ -55,9 +65,23 @@ import type {
 
 // --- LOADING -----------------------------------------------------------------------------------------------
 
+// What to read besides the file, the programs and the sessions:
+//   - messages: ONLY for a legal disclosure that includes them — no other
+//     copy ever holds messages (decisions §25), so nothing else reads them;
+//   - disclosures: the patient's accounting — for the patient's own copy
+//     (and a review copy, which is exactly that), never for a disclosed
+//     copy (no order covers the other disclosures).
+export interface RecordLoadOptions {
+  messages: boolean
+  disclosures: boolean
+}
+
+const OWN_COPY: RecordLoadOptions = { messages: false, disclosures: true }
+
 export async function loadRecord(
   tx: DrizzleDb,
   patientId: number,
+  options: RecordLoadOptions = OWN_COPY,
 ): Promise<RecordData> {
   // The moment of the copy: now() is the TRANSACTION's start — the same
   // instant the audit entry, written in this transaction, will carry.
@@ -88,7 +112,117 @@ export async function loadRecord(
   )
   const programs = await loadPrograms(tx, patientId)
 
-  return { patient, medicalFile, programs, madeAt }
+  return {
+    patient,
+    medicalFile,
+    programs,
+    ...(options.messages
+      ? { conversations: await loadConversations(tx, patientId) }
+      : {}),
+    ...(options.disclosures
+      ? { disclosures: await loadDisclosures(tx, patientId) }
+      : {}),
+    madeAt,
+  }
+}
+
+// The patient's conversations and every message in them — as the PATIENT
+// reads them: the transaction acts as the patient, so the conversations'
+// policies (0048: participants only) decide which ones exist, and a message
+// is visible when its conversation is (0005). Two queries; the practitioner's
+// name comes with the conversation (users are readable by every session).
+async function loadConversations(
+  tx: DrizzleDb,
+  patientId: number,
+): Promise<RecordConversation[]> {
+  const practitioner = alias(users, 'practitioner')
+  const conversationRows = await tx
+    .select({
+      id: conversations.id,
+      practitioner: {
+        firstName: practitioner.firstName,
+        lastName: practitioner.lastName,
+      },
+    })
+    .from(conversations)
+    .innerJoin(practitioner, eq(practitioner.id, conversations.practitionerId))
+    .where(eq(conversations.patientId, patientId))
+    // A stable order: the conversation started first comes first.
+    .orderBy(asc(conversations.createdAt), asc(conversations.id))
+  if (conversationRows.length === 0) return []
+
+  const messageRows = await tx
+    .select({
+      id: messages.id,
+      conversationId: messages.conversationId,
+      senderId: messages.senderId,
+      messageBody: messages.messageBody,
+      sentAt: messages.sentAt,
+      deletedAt: messages.deletedAt,
+    })
+    .from(messages)
+    .where(
+      inArray(
+        messages.conversationId,
+        conversationRows.map((conversation) => conversation.id),
+      ),
+    )
+    // Oldest first, as a conversation reads; the id breaks a tie.
+    .orderBy(asc(messages.sentAt), asc(messages.id))
+
+  const byConversation = groupBy(messageRows, (row) => row.conversationId)
+  return conversationRows.map((conversation) => ({
+    ...conversation,
+    messages: (byConversation.get(conversation.id) ?? []).map((row) => ({
+      id: row.id,
+      fromPatient: row.senderId === patientId,
+      sentAt: row.sentAt,
+      // A deleted message's text stays in the row; the patient reads it
+      // without (toPublicMessage, messaging) — and so does the copy.
+      body: row.deletedAt === null ? row.messageBody : null,
+    })),
+  }))
+}
+
+// The patient's accounting of disclosures, newest first — as the PATIENT
+// reads it: a disclosure still held back (0069's policy) isn't returned, so
+// no copy can show it before its time.
+async function loadDisclosures(
+  tx: DrizzleDb,
+  patientId: number,
+): Promise<RecordDisclosure[]> {
+  const rows = await tx
+    .select({
+      id: legalDisclosures.id,
+      madeAt: legalDisclosures.madeAt,
+      recipientName: legalDisclosures.recipientName,
+      recipientOrganisation: legalDisclosures.recipientOrganisation,
+      legalBasis: legalDisclosureDetails.legalBasis,
+      basisExplanation: legalDisclosureDetails.basisExplanation,
+      includesMedicalFile: legalDisclosureDetails.includesMedicalFile,
+      includesPrograms: legalDisclosureDetails.includesPrograms,
+      includesSessions: legalDisclosureDetails.includesSessions,
+      includesMessages: legalDisclosureDetails.includesMessages,
+      periodFrom: legalDisclosureDetails.periodFrom,
+      periodTo: legalDisclosureDetails.periodTo,
+    })
+    .from(legalDisclosures)
+    .innerJoin(
+      legalDisclosureDetails,
+      eq(legalDisclosureDetails.disclosureId, legalDisclosures.id),
+    )
+    .where(eq(legalDisclosures.patientId, patientId))
+    .orderBy(desc(legalDisclosures.madeAt), desc(legalDisclosures.id))
+  return rows.map((row) => ({
+    id: row.id,
+    madeAt: row.madeAt,
+    recipientName: row.recipientName,
+    recipientOrganisation: row.recipientOrganisation,
+    legalBasis: row.legalBasis,
+    basisExplanation: row.basisExplanation,
+    parts: partsFromFlags(row),
+    period: { from: row.periodFrom, to: row.periodTo },
+  }))
 }
 
 async function loadPrograms(

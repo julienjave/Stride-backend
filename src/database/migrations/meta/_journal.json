@@ -477,6 +477,20 @@
       "when": 1793210201244,
       "tag": "0067_complaint_reviews_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1793229735282,
+      "tag": "0068_legal_disclosures",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793229755485,
+      "tag": "0069_legal_disclosures_rls",
+      "breakpoints": true
     }
   ]
 }

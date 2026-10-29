@@ -22,6 +22,7 @@ import {
   isAttendanceReviewed,
   isComplaintReviewNoticeFor,
   isJoinNoticeFor,
+  isLegalDisclosureNoticeFor,
   joinNoticeCutoff,
   inactivity,
   isLongRun,
@@ -794,6 +795,40 @@ describe('isComplaintReviewNoticeFor', () => {
     expect(
       isComplaintReviewNoticeFor(
         { ...opened, openedAt: new Date(CUTOFF.getTime() - 1) },
+        ME,
+        MY_START,
+        CUTOFF,
+      ),
+    ).toBe(false)
+  })
+})
+
+describe('isLegalDisclosureNoticeFor', () => {
+  // The complaint review's rule, on a disclosure's maker and moment — each
+  // field must reach the right place: me = practitioner 10, on the team since
+  // June 1st; admin 90 discloses on June 10th.
+  const ME = 10
+  const MY_START = new Date('2031-06-01T09:00:00.000Z')
+  const CUTOFF = new Date('2031-06-05T00:00:00.000Z')
+  const made = { madeBy: 90, madeAt: new Date('2031-06-10T09:00:00.000Z') }
+
+  it('tells a member who was on the team when it was made, within the window', () => {
+    expect(isLegalDisclosureNoticeFor(made, ME, MY_START, CUTOFF)).toBe(true)
+  })
+
+  it('tells nobody who joined after it, nor its maker, nor anyone off the team', () => {
+    const after = new Date('2031-06-10T09:00:00.001Z')
+    expect(isLegalDisclosureNoticeFor(made, ME, after, CUTOFF)).toBe(false)
+    expect(
+      isLegalDisclosureNoticeFor({ ...made, madeBy: ME }, ME, MY_START, CUTOFF),
+    ).toBe(false)
+    expect(isLegalDisclosureNoticeFor(made, ME, undefined, CUTOFF)).toBe(false)
+  })
+
+  it('drops one made before the cutoff', () => {
+    expect(
+      isLegalDisclosureNoticeFor(
+        { ...made, madeAt: new Date('2031-06-04T23:59:59.999Z') },
         ME,
         MY_START,
         CUTOFF,
