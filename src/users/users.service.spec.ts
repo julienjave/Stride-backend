@@ -5,7 +5,11 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common'
-import { UsersService } from './users.service'
+import {
+  MERGED_ACCOUNT_REACTIVATION_MESSAGE,
+  UsersService,
+} from './users.service'
+import { patientMerges } from '../database/schema'
 import { StorageService } from '../storage/storage.service'
 import { AuditService } from '../audit/audit.service'
 import { CareTeamService } from '../care-team/care-team.service'
@@ -102,10 +106,13 @@ function duplicateLicenseError() {
 // clinic membership build their own explicit version instead.
 // Also the possible-duplicates lookup (decisions §27): patient_profiles ⋈
 // users WHERE … ORDER BY — `where` answers both ways, awaited (the clinics)
-// or followed by orderBy (no patient with that birthday).
+// or followed by orderBy (no patient with that birthday). The lookup's
+// "not merged away" subquery (pass 3) is built with from(…).where(…) and
+// never awaited on its own — the outer query carries it.
 function emptyClinicsSelect() {
   return jest.fn().mockReturnValue({
     from: jest.fn().mockReturnValue({
+      where: jest.fn(),
       innerJoin: jest.fn().mockReturnValue({
         where: jest.fn(() =>
           Object.assign(Promise.resolve([]), {
@@ -1786,6 +1793,24 @@ describe('UsersService.reactivate', () => {
     })
   })
 
+  // An account merged into another (decisions §27, pass 3) stays
+  // deactivated: 409, and nothing written.
+  it('refuses to reactivate an account merged into another', async () => {
+    db.query.users.findFirst.mockResolvedValue({ id: 5, isActive: false })
+    const { tx, set } = accountTx({
+      locked: { id: 5, isActive: false },
+      roles: [UserRole.PATIENT],
+      mergedAway: true,
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+
+    await expect(
+      usersService.reactivate(5, { id: 1, activeRole: UserRole.ADMIN }),
+    ).rejects.toThrow(MERGED_ACCOUNT_REACTIVATION_MESSAGE)
+    expect(set).not.toHaveBeenCalled()
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
+
   // In the reactivation's own transaction, naming the account (targetUserId
   // — the old entry had none, so "what happened to this account" missed it).
   it('audits the reactivation in its transaction, naming who did it and whose account it was', async () => {
@@ -2187,6 +2212,8 @@ function accountTx(options: {
   // the account's sessions. The same execute() also sets the RLS context,
   // whose answer nobody reads.
   sessions?: string[]
+  // Whether patient_merges has a row merging this account away (pass 3).
+  mergedAway?: boolean
 }) {
   const result = options.updateResult ?? (() => Promise.resolve(undefined))
   const after = options.after ?? options.locked
@@ -2216,14 +2243,22 @@ function accountTx(options: {
     }),
     update: jest.fn(() => ({ set })),
     select: jest.fn(() => ({
-      from: jest.fn(() => ({
-        where: jest.fn(() =>
-          Object.assign(Promise.resolve(rolesRows), { for: lockFor }),
-        ),
-        innerJoin: jest.fn(() => ({
-          where: jest.fn().mockResolvedValue([]),
-        })),
-      })),
+      from: jest.fn((table: unknown) =>
+        table === patientMerges
+          ? {
+              where: jest
+                .fn()
+                .mockResolvedValue(options.mergedAway ? [{ id: 1 }] : []),
+            }
+          : {
+              where: jest.fn(() =>
+                Object.assign(Promise.resolve(rolesRows), { for: lockFor }),
+              ),
+              innerJoin: jest.fn(() => ({
+                where: jest.fn().mockResolvedValue([]),
+              })),
+            },
+      ),
     })),
     query: {
       users: { findFirst: jest.fn().mockResolvedValue(after) },

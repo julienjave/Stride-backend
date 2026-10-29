@@ -384,6 +384,41 @@ describe('EmailService', () => {
     })
   })
 
+  describe('sendPatientMergedNotice', () => {
+    it('tells the surviving address its accounts were combined, where to sign in, and who to ask', async () => {
+      await service.sendPatientMergedNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.from).toBe('Stride <noreply@stride.test>')
+      expect(email.subject).toBe('Your Stride accounts were combined')
+      for (const body of [email.text, email.html]) {
+        expect(body).toContain(
+          'found a second Stride account in your name and combined it with this one',
+        )
+        expect(body).toContain('with this email address from now on')
+        expect(body).toContain('https://app.stride.test/login')
+        expect(body).toContain(
+          'If you think this is a mistake, contact your clinic',
+        )
+      }
+    })
+
+    it('escapes the first name', async () => {
+      await service.sendPatientMergedNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).not.toContain('<b>Pat</b>')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

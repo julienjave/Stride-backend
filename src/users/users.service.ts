@@ -24,7 +24,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common'
-import { eq, and, asc, inArray, sql } from 'drizzle-orm'
+import { eq, and, asc, inArray, notExists, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
@@ -34,6 +34,7 @@ import {
   adminProfiles,
   userClinics,
   clinics,
+  patientMerges,
 } from '../database/schema'
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
@@ -174,6 +175,10 @@ export interface CreatedUserInvitation {
 // softDelete(): who may deactivate an account holding the practitioner role.
 export const DEACTIVATE_PRACTITIONER_MESSAGE =
   "Only an admin, or the practitioner themselves, can deactivate a practitioner's account"
+
+// reactivate(): an account merged into another stays deactivated.
+export const MERGED_ACCOUNT_REACTIVATION_MESSAGE =
+  "This account was merged into another patient's account, so it can't be reactivated."
 
 @Injectable()
 export class UsersService {
@@ -1129,7 +1134,19 @@ export class UsersService {
       })
       .from(patientProfiles)
       .innerJoin(users, eq(users.id, patientProfiles.userId))
-      .where(eq(patientProfiles.dateOfBirth, person.dateOfBirth))
+      .where(
+        and(
+          eq(patientProfiles.dateOfBirth, person.dateOfBirth),
+          // An account merged away (pass 3) is no longer a person of its
+          // own: its records are on the survivor — which this finds anyway.
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(patientMerges)
+              .where(eq(patientMerges.mergedId, users.id)),
+          ),
+        ),
+      )
       .orderBy(asc(users.id))
     return sameBirthday.filter((row) => sameName(row, person))
   }
@@ -1275,6 +1292,12 @@ export class UsersService {
     if (before.isActive === isActive) {
       return { row: before, endedSessionIds: [] }
     }
+    // An account merged into another (decisions §27, pass 3) stays
+    // deactivated for good: its records live on the survivor, and bringing
+    // it back would give the same person a second, empty account again.
+    if (isActive && (await this.wasMergedAway(tx, id))) {
+      throw new ConflictException(MERGED_ACCOUNT_REACTIVATION_MESSAGE)
+    }
     const [row] = await tx
       .update(users)
       .set({ isActive })
@@ -1316,6 +1339,15 @@ export class UsersService {
       ENDED_PRACTITIONER_DEACTIVATED_REASON,
     )
     return { row, endedSessionIds }
+  }
+
+  // Was this account merged into another (a row in patient_merges)?
+  private async wasMergedAway(tx: DrizzleDb, id: number): Promise<boolean> {
+    const [merge] = await tx
+      .select({ id: patientMerges.id })
+      .from(patientMerges)
+      .where(eq(patientMerges.mergedId, id))
+    return merge !== undefined
   }
 
   // The raw `users` row, or a 404. RAW means unstripped — passwordHash,

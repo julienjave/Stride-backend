@@ -432,6 +432,36 @@ export class EmailService {
     })
   }
 
+  // Two accounts of this patient were merged into this one (decisions §27,
+  // pass 3 — the person chose to tell the patient). Sent to the SURVIVING
+  // address only. Deliberately silent about the other account: if an admin
+  // ever merged two DIFFERENT people by mistake, naming the other address
+  // would hand one stranger's email to another. Nothing clinical either — an
+  // email is not a secure channel (the messages notice's rule): it says what
+  // happened, where to sign in, and who to ask.
+  async sendPatientMergedNotice(email: MfaNoticeEmail): Promise<void> {
+    const signInUrl = `${frontendUrl()}/login`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: 'Your Stride accounts were combined',
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>Your clinic found a second Stride account in your name and combined it with this one, so your programs, sessions, messages and records are now all in one place.</p>
+             <p><a href="${escapeHtml(signInUrl)}">Sign in</a> with this email address from now on. The other account can no longer be used.</p>
+             <p>If you think this is a mistake, contact your clinic straight away.</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        'Your clinic found a second Stride account in your name and combined it with this one, so your programs, sessions, messages and records are now all in one place.',
+        '',
+        `Sign in with this email address from now on: ${signInUrl}`,
+        'The other account can no longer be used.',
+        '',
+        'If you think this is a mistake, contact your clinic straight away.',
+      ].join('\n'),
+    })
+  }
+
   // A session of this account was signed out after 5 failed step-ups in a
   // row (decisions §16, privacy and security pass 2): someone signed in as
   // this account kept getting the current password — or the two-factor code

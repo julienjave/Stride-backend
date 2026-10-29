@@ -44,6 +44,7 @@ import { AdminMetricsModule } from './admin-metrics/admin-metrics.module'
 import { RecordsExportModule } from './records-export/records-export.module'
 import { ComplaintReviewsModule } from './complaint-reviews/complaint-reviews.module'
 import { LegalDisclosuresModule } from './legal-disclosures/legal-disclosures.module'
+import { PatientMergesModule } from './patient-merges/patient-merges.module'
 import { throttlerOptions } from './config/rate-limits'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
@@ -104,6 +105,7 @@ import { throttlerOptions } from './config/rate-limits'
     RecordsExportModule,
     ComplaintReviewsModule,
     LegalDisclosuresModule,
+    PatientMergesModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the

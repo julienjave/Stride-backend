@@ -107,6 +107,22 @@ async function run() {
       `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${POSTGRES_APP_USER}`,
     )
 
+    // merge_patients() (migration 0072) is the one SECURITY DEFINER
+    // function: EXECUTE is revoked from PUBLIC there, so the app's role
+    // needs it granted by name. The migration grants it when the role
+    // already exists; this covers a database whose role is created after
+    // the migrations (the usual order). Checked first with to_regprocedure,
+    // which answers NULL for a function that doesn't exist yet — a database
+    // migrated only up to 0071 must not make this script fail.
+    const { rows: mergeFunction } = await pool.query<{ present: boolean }>(
+      `SELECT to_regprocedure('merge_patients(integer, integer)') IS NOT NULL AS present`,
+    )
+    if (mergeFunction[0]?.present) {
+      await pool.query(
+        `GRANT EXECUTE ON FUNCTION merge_patients(integer, integer) TO ${POSTGRES_APP_USER}`,
+      )
+    }
+
     console.log('')
     console.log(`Done. Role "${POSTGRES_APP_USER}" is ready:`)
     console.log('  - NOT a superuser, owns no tables')
@@ -114,6 +130,7 @@ async function run() {
     console.log('  - SELECT, INSERT, UPDATE, DELETE on all existing tables in public')
     console.log('  - USAGE, SELECT on all existing sequences in public')
     console.log('  - Default privileges set so future tables/sequences are granted automatically')
+    console.log('  - EXECUTE on merge_patients(), when it exists')
   } finally {
     await pool.end()
   }

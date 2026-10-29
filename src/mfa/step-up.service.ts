@@ -162,6 +162,7 @@ export type StepUpPurpose =
   | 'mfa_disable'
   | 'recovery_codes'
   | 'mfa_reset'
+  | 'patient_merge'
 
 // Why a step-up failed: the password, or one of the second factor's own
 // refusals (wrong, already used, a recovery code that isn't one).

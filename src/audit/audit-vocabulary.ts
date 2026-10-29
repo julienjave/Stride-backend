@@ -222,6 +222,18 @@ export const AUDIT_ACTIONS = {
   LEGAL_DISCLOSURE_MADE: 'change',
   // … and a practitioner on the care team marked its notice as reviewed.
   LEGAL_DISCLOSURE_NOTICE_REVIEWED: 'change',
+
+  // Merging two accounts of the same patient (decisions §27, pass 3): TWO
+  // entries for one merge, written in its transaction — like a legal
+  // disclosure, because they have different readers. PATIENT_MERGED is the
+  // admins' own act (which accounts, the care-team links, clinics,
+  // invitations, profile fields): shown to admins. PATIENT_MERGE_RECORDS_MOVED
+  // lists every program, session, medical file and message that moved — which
+  // records a patient HAS is clinical (records_exports' reasoning), so its
+  // details are withheld from admins; it is the record a mistaken merge is
+  // repaired from.
+  PATIENT_MERGED: 'change',
+  PATIENT_MERGE_RECORDS_MOVED: 'change',
 } as const satisfies Record<string, AuditKind>
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS
@@ -260,6 +272,10 @@ export const AUDIT_AREAS = {
   complaint_reviews: 'Complaint reviews',
   legal_disclosures: 'Legal disclosures',
   legal_disclosure_notice_reviews: 'For review',
+  patient_merges: 'Patient merges',
+  // No table of that name: the clinical half of a merge's record (the ids of
+  // what moved), kept apart so its area can be withheld.
+  patient_merge_records: 'Patient merges',
 } as const satisfies Record<string, string>
 
 export type AuditEntityType = keyof typeof AUDIT_AREAS
@@ -317,6 +333,11 @@ export const CLINICAL_AREAS = {
   // too. Nothing from the record: the copy's entry (records_exports) holds
   // its ids, and stays withheld.
   legal_disclosures: false,
+  // Which two accounts were merged, by whom; the care-team links, clinics,
+  // invitations and profile fields involved — account-level, like users.
+  patient_merges: false,
+  // The ids of every program, session, medical file and message moved.
+  patient_merge_records: true,
 } as const satisfies Record<AuditEntityType, boolean>
 
 // --- LOOKUPS --------------------------------------------------------------------------------------------
