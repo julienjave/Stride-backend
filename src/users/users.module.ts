@@ -19,6 +19,7 @@
 
 import { Module } from '@nestjs/common'
 import { UsersController } from './users.controller'
+import { AdminUsersController } from './admin-users.controller'
 import { UsersService } from './users.service'
 import { StorageModule } from '../storage/storage.module'
 import { CareTeamModule } from '../care-team/care-team.module'
@@ -31,6 +32,8 @@ import { MessagingEventsModule } from '../messaging/messaging-events.module'
 // (InvitationsModule deliberately doesn't import UsersModule back.)
 // MessagingEventsModule: deactivating an account closes its sockets
 // (UsersController.remove). It imports nothing, so no cycle.
+// AdminUsersController: the Users page's paged list (GET /admin/users) —
+// its own path, beside /admin/metrics, served by the same UsersService.
 @Module({
   imports: [
     StorageModule,
@@ -38,7 +41,7 @@ import { MessagingEventsModule } from '../messaging/messaging-events.module'
     InvitationsModule,
     MessagingEventsModule,
   ],
-  controllers: [UsersController],
+  controllers: [UsersController, AdminUsersController],
   providers: [UsersService],
   exports: [UsersService],
 })

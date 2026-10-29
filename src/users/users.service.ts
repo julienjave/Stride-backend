@@ -24,7 +24,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common'
-import { eq, and, asc, inArray, notExists, sql } from 'drizzle-orm'
+import { eq, and, asc, count, inArray, notExists, sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
   users,
@@ -39,6 +39,11 @@ import {
 import { CreateUserDto, UserRole } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
 import { GrantRoleDto } from './dto/grant-role.dto'
+import {
+  ListUsersQueryDto,
+  USER_LIST_PAGE_SIZE,
+} from './dto/list-users-query.dto'
+import { userListWhere } from './user-list'
 import { StorageService } from '../storage/storage.service'
 import { undoStoredOnFailure } from '../storage/compensation'
 import { extensionForMimeType } from '../common/config/image-upload.config'
@@ -58,10 +63,6 @@ import {
   CareTeamService,
   ENDED_PRACTITIONER_DEACTIVATED_REASON,
 } from '../care-team/care-team.service'
-import {
-  needsAttention,
-  type AttentionKind,
-} from '../admin-metrics/attention-rules'
 import { possibleDuplicateConflict, sameName } from './possible-duplicates'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
@@ -620,45 +621,63 @@ export class UsersService {
     )
   }
 
-  // The users list filtered to one "needs attention" group (decisions §17,
-  // GET /users?attention=…; admins — checked by the controller). The SAME
-  // condition the admin home counts with (attention-rules.ts), so the home's
-  // number and this list always agree; and the same order as the home's
-  // first five (last name, first name, then id — two people can share a
-  // name, and the id keeps the order the same on every load), so the list
-  // continues where the home's names stop.
+  // The Users page (GET /admin/users — Phase 6.5, decided 2026-10-29): one
+  // page of accounts matching the filters, and how many match in all.
   //
-  // Under the admin's row-security context, unlike findAll(): the rule reads
-  // care_team_members, which shows no row to a query without one — every
-  // patient would then look unattended. (users itself is readable by
-  // anyone, which is why findAll() needs no context.) The condition already
-  // means "active" accounts, so there is no includeInactive here.
-  async findNeedingAttention(
-    attention: AttentionKind,
+  // Under the admin's row-security context, unlike findAll(): the attention
+  // rules read care_team_members, which shows no row to a query without one
+  // — every patient would then look unattended. (users itself is readable by
+  // anyone, which is why findAll() needs no context.)
+  //
+  // The core builder (select().from()), not db.query.users.findMany: the
+  // relational builder renders EVERY column of a raw `where` against its own
+  // table's alias — care_team_members.practitioner_id came out as
+  // "users"."practitioner_id" (found by an e2e test, a 500). The core
+  // builder writes the SQL as given.
+  //
+  // The order — last name, first name, then id — is a TOTAL order: two
+  // people can share a name, and the id decides between them the same way on
+  // every query. Paging with LIMIT / OFFSET is only correct over such an
+  // order; with ties left to chance, an account could appear on page 1 and
+  // page 2, and another on neither. It is also the admin home's order for
+  // its first five names, so a group's list continues where they stop.
+  //
+  // The rows and the count run in ONE transaction, side by side, with the
+  // same WHERE (userListWhere). Under READ COMMITTED each statement still
+  // takes its own snapshot, so an account created between the two could make
+  // the total one off for that answer — harmless for a page count, and the
+  // next page asks again.
+  async findPage(
+    query: ListUsersQueryDto,
     currentUser: { id: number; activeRole: UserRole },
   ) {
-    //
-    // The core builder (select().from()), not db.query.users.findMany as in
-    // findAll(): the relational builder renders EVERY column in its `where`
-    // against its own table's alias — care_team_members.practitioner_id came
-    // out as "users"."practitioner_id" (found by the e2e test, a 500). The
-    // core builder writes the SQL as given. Same rows either way: every
-    // column of users.
-    const rows = await withRlsContext(this.db, currentUser, (tx) =>
-      tx
-        .select()
-        .from(users)
-        .where(
-          needsAttention(attention, {
-            id: sql`${users.id}`,
-            isActive: sql`${users.isActive}`,
-          }),
-        )
-        .orderBy(asc(users.lastName), asc(users.firstName), asc(users.id)),
+    const page = query.page ?? 1
+    const limit = query.limit ?? USER_LIST_PAGE_SIZE
+    const where = userListWhere(query)
+    const [rows, [{ total }]] = await withRlsContext(
+      this.db,
+      currentUser,
+      (tx) =>
+        Promise.all([
+          tx
+            .select()
+            .from(users)
+            .where(where)
+            .orderBy(asc(users.lastName), asc(users.firstName), asc(users.id))
+            .limit(limit)
+            .offset((page - 1) * limit),
+          tx.select({ total: count() }).from(users).where(where),
+        ]),
     )
-    return this.attachProfilesToMany(
+    const data = await this.attachProfilesToMany(
       await Promise.all(rows.map((u) => this.toPublic(u))),
     )
+    // The audit log's shape: a page past the last answers no rows and says
+    // how many pages there are, so the screen can offer the way back.
+    return {
+      data,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    }
   }
 
   // dbOrTx defaults to this.db (a fresh connection, always seeing the

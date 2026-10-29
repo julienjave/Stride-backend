@@ -76,6 +76,16 @@ Log in as `admin@stride.test`. Under the shortcuts:
     again**. (A revoked invitation isn't listed: someone decided it.)
   The group's title and "and N more" lead to the users list filtered the same
   way (**Show:** at the top of Admin → Users).
+- **The users list** (**Admin → Users**) has a **Search** (part of a name, or
+  of an email), **Role**, **Clinic** (one, or **No clinic**), **Status**
+  (active, deactivated, or all) and the **Show** groups above; they combine,
+  live in the address (Back and a shared link keep them), and the list comes
+  25 accounts a page. Try **Role: Practitioners**, then **Clinic: Harbour
+  Sports Clinic**, then Back.
+- **The numbers keep themselves current:** above **Metrics**, "Updated … ·
+  refreshes every minute" and a **Refresh** button. Leave the home open and
+  create a user in another tab — within a minute the numbers and Recent
+  activity include it.
 - **Recent activity** — the newest changes from the audit log, with **See all
   changes**.
 - **Deactivating a practitioner ends their care-team links** — try it on
