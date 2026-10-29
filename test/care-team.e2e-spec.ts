@@ -948,4 +948,239 @@ describe('Care team (e2e)', () => {
       }
     })
   })
+
+  // Migration 0073 (decided with the person 2026-10-29): the database allows
+  // exactly the one UPDATE the app makes — ending a CURRENT link, now
+  // (ends_at = now(), ended_by = whoever ends it) — and nothing else. The
+  // UPDATE policy (0019) already says WHO; this says WHAT.
+  //
+  // Every statement here also sets ended_by to the actor: the policy's WITH
+  // CHECK requires it, so without the trigger each refused statement would
+  // SUCCEED — these are the holes the trigger closes, not requests something
+  // else already stops. And each refused one ALSO ends the link now
+  // (ends_at = now()), where it can, so that only the rule under test is
+  // broken. The answer names the trigger's constraint, so another layer
+  // refusing instead would fail the test.
+  //
+  // On a patient of their own, created for this block, with three links: A
+  // (open-ended), B (a planned cover) and C (ended long ago), planted as the
+  // owner. Their own patient matters: with any LATER link for the same pair,
+  // re-opening the ended one would be refused by the no-overlap constraint
+  // instead — a first version of this block, on patient2, passed on the old
+  // database for exactly that reason (the parity test's later cover).
+  describe('only ending a link (the database)', () => {
+    let patient3Id: number
+    let openId: number
+    let coverId: number
+    let endedId: number
+
+    const refused = { code: '23514', constraint: 'care_team_member_end_only' }
+
+    // As the app's role with `userId` acting as `role` (like asUser), but
+    // ALWAYS rolled back, so every test starts from the same three links.
+    // The answer: how many rows changed, or the error's code and constraint.
+    class RolledBack extends Error {
+      constructor(readonly rowCount: number) {
+        super('rolled back on purpose')
+      }
+    }
+    async function attempt(userId: number, role: string, statement: SQL) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`SELECT set_config('app.current_user_id', ${String(userId)}, true),
+                       set_config('app.current_role', ${role}, true)`,
+          )
+          throw new RolledBack((await tx.execute(statement)).rowCount ?? 0)
+        })
+      } catch (error) {
+        if (error instanceof RolledBack) return { rowCount: error.rowCount }
+        const cause = (
+          error as { cause?: { code?: string; constraint?: string } }
+        ).cause
+        return { code: cause?.code, constraint: cause?.constraint }
+      }
+      throw new Error('unreachable: attempt() always rolls back')
+    }
+
+    async function plant(
+      practitionerId: number,
+      startedAt: string,
+      endsAt: string | null,
+      endedBy: number | null,
+    ) {
+      const { rows } = await sessionPool.query<{ id: number }>(
+        `INSERT INTO care_team_members
+           (patient_id, practitioner_id, created_by, started_at, ends_at, ended_by)
+         VALUES ($1, $2, $3, now() - $4::interval, now() + $5::interval, $6)
+         RETURNING id`,
+        [patient3Id, practitionerId, adminId, startedAt, endsAt, endedBy],
+      )
+      return rows[0].id
+    }
+
+    beforeAll(async () => {
+      // Created by the admin, so on nobody's care team yet; never logs in.
+      const created = await admin.post('/users').send({
+        email: `ct-patient3-${Date.now()}@example.com`,
+        role: 'patient',
+        firstName: 'Nora',
+        lastName: 'Linkguard',
+        dateOfBirth: '1979-06-30',
+        clinicId: clinicYId,
+      })
+      expect(created.status).toBe(201)
+      patient3Id = created.body.id as number
+      // now() + NULL::interval is NULL: an open-ended link.
+      openId = await plant(practitionerAId, '1 hour', null, null)
+      coverId = await plant(practitionerBId, '1 hour', '7 days', null)
+      endedId = await plant(
+        practitionerCId,
+        '10 days',
+        '-9 days',
+        practitionerCId,
+      )
+    })
+
+    // The neighbours first: the change the app really makes still works —
+    // for the practitioner on the link, on an open link and on a planned
+    // cover, and for an admin.
+    it('lets a current link be ended now, by the practitioner on it or an admin', async () => {
+      expect(
+        await attempt(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE care_team_members SET ends_at = now(), ended_by = ${practitionerAId}
+              WHERE id = ${openId}`,
+        ),
+      ).toEqual({ rowCount: 1 })
+      expect(
+        await attempt(
+          practitionerBId,
+          'practitioner',
+          sql`UPDATE care_team_members SET ends_at = now(), ended_by = ${practitionerBId}
+              WHERE id = ${coverId}`,
+        ),
+      ).toEqual({ rowCount: 1 })
+      expect(
+        await attempt(
+          adminId,
+          'admin',
+          sql`UPDATE care_team_members SET ends_at = now(), ended_by = ${adminId}
+              WHERE id = ${openId}`,
+        ),
+      ).toEqual({ rowCount: 1 })
+    })
+
+    // Who the link is about, when it started, who made it and why: never
+    // rewritten — not even bundled with a legitimate end.
+    // Each change is a function: the ids exist only once the suite's set-up
+    // has run, after it.each's table is built.
+    it.each([
+      ['the patient', () => sql`patient_id = ${adminId}`],
+      ['the start', () => sql`started_at = started_at - interval '1 day'`],
+      ['the creator', () => sql`created_by = ${practitionerAId}`],
+      ['the reason', () => sql`reason = 'Rewritten'`],
+    ])('refuses changing %s, even while ending the link', async (_, change) => {
+      expect(
+        await attempt(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE care_team_members
+              SET ends_at = now(), ended_by = ${practitionerAId}, ${change()}
+              WHERE id = ${openId}`,
+        ),
+      ).toEqual(refused)
+    })
+
+    // Moving a link to another practitioner, as the admin (the policy lets
+    // an admin update any link — a practitioner moving their own link to a
+    // colleague would also fail the policy's WITH CHECK).
+    it('refuses moving a link to another practitioner, even for an admin', async () => {
+      expect(
+        await attempt(
+          adminId,
+          'admin',
+          sql`UPDATE care_team_members
+              SET ends_at = now(), ended_by = ${adminId}, practitioner_id = ${practitionerCId}
+              WHERE id = ${openId}`,
+        ),
+      ).toEqual(refused)
+    })
+
+    // An ended link is final: re-opening it would bring clinical access
+    // back with no CARE_TEAM_JOINED in the audit log; "ending" it again
+    // would rewrite when it ended. (Joining again is a NEW link — the API's
+    // way, tested above.)
+    it('refuses re-opening an ended link, or ending it again', async () => {
+      expect(
+        await attempt(
+          practitionerCId,
+          'practitioner',
+          sql`UPDATE care_team_members SET ends_at = NULL, ended_by = ${practitionerCId}
+              WHERE id = ${endedId}`,
+        ),
+      ).toEqual(refused)
+      expect(
+        await attempt(
+          practitionerCId,
+          'practitioner',
+          sql`UPDATE care_team_members SET ends_at = now(), ended_by = ${practitionerCId}
+              WHERE id = ${endedId}`,
+        ),
+      ).toEqual(refused)
+    })
+
+    // The end is NOW, nothing else: not backdated ("I stopped last week" —
+    // still after the start, so the table's CHECK has nothing to say), not
+    // a planned cover pushed further out, not made open-ended.
+    it('refuses any end but now', async () => {
+      expect(
+        await attempt(
+          practitionerAId,
+          'practitioner',
+          sql`UPDATE care_team_members
+              SET ends_at = now() - interval '10 minutes', ended_by = ${practitionerAId}
+              WHERE id = ${openId}`,
+        ),
+      ).toEqual(refused)
+      expect(
+        await attempt(
+          practitionerBId,
+          'practitioner',
+          sql`UPDATE care_team_members
+              SET ends_at = now() + interval '14 days', ended_by = ${practitionerBId}
+              WHERE id = ${coverId}`,
+        ),
+      ).toEqual(refused)
+      expect(
+        await attempt(
+          practitionerBId,
+          'practitioner',
+          sql`UPDATE care_team_members SET ends_at = NULL, ended_by = ${practitionerBId}
+              WHERE id = ${coverId}`,
+        ),
+      ).toEqual(refused)
+    })
+
+    // The owner is exempt: the e2e set-ups backdate links (started_at), and
+    // the patient merge (a SECURITY DEFINER function, run as the owner)
+    // moves links to the surviving account (patient_id).
+    it('exempts the owner', async () => {
+      const client = await sessionPool.connect()
+      try {
+        await client.query('BEGIN')
+        const { rowCount } = await client.query(
+          `UPDATE care_team_members
+           SET started_at = started_at - interval '1 day', patient_id = $2
+           WHERE id = $1`,
+          [openId, adminId],
+        )
+        expect(rowCount).toBe(1)
+      } finally {
+        await client.query('ROLLBACK')
+        client.release()
+      }
+    })
+  })
 })

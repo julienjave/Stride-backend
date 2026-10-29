@@ -26,7 +26,8 @@ import { ONE_SESSION_A_DAY_MESSAGE } from '../../sessions/session-rules'
 
 // The filter shapes every error response. Here: the database errors it
 // translates (the closed-program guard, migration 0031; the retired-exercise
-// guard, 0033; the blank-title CHECKs, 0035) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
+// guard, 0033; the blank-title CHECKs, 0035; the end-date and care-team
+// guards, 0073) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
 // status() and json() calls are recorded.
 describe('HttpExceptionFilter', () => {
   function run(exception: unknown) {
@@ -178,6 +179,35 @@ describe('HttpExceptionFilter', () => {
     })
   })
 
+  // Migration 0073's two triggers: the end-date rule's own 400, in
+  // end-date.ts's words (so the client can't tell which layer refused), and
+  // a 409 for a care-team link changed in any way but being ended. Full
+  // bodies again.
+  it.each([
+    [
+      'assigned_program_end_date_not_past',
+      400,
+      'BadRequestException',
+      "The end date can't be moved into the past: to end the program now, complete or cancel it",
+    ],
+    [
+      'care_team_member_end_only',
+      409,
+      'ConflictException',
+      'A care-team link can only be ended, and only while it is current',
+    ],
+  ])('answers %s with a %i', (constraint, statusCode, error, message) => {
+    const { status, body } = run(databaseError('23514', constraint))
+    expect(status).toBe(statusCode)
+    expect({ ...body, timestamp: 'any' }).toStrictEqual({
+      statusCode,
+      message: [message],
+      error,
+      timestamp: 'any',
+      path: '/sessions',
+    })
+  })
+
   // A guard of 0048 that the filter must NOT translate: refusing a new
   // message that claims to be read already is a bug in the caller, never a
   // request to fix — a 500 like any other unexpected CHECK. (A translation
@@ -191,10 +221,13 @@ describe('HttpExceptionFilter', () => {
   // Any other CHECK failure is still an unexpected error: a 500, its details
   // kept out of the response. The second case is a neighbour of the title
   // CHECKs — another CHECK on the same table — so a translation that
-  // matched on the TABLE instead of the constraint would fail here.
+  // matched on the TABLE instead of the constraint would fail here. The
+  // third is the same for migration 0073's care-team guard (its table's
+  // own CHECK: an end before the start is a bug, not a request to fix).
   it.each([
     'assigned_programs_ends_after_start',
     'assigned_programs_not_based_on_itself',
+    'care_team_members_ends_after_start',
   ])('leaves other database errors (%s) as a 500', (constraint) => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined)
     const { status, body } = run(databaseError('23514', constraint))

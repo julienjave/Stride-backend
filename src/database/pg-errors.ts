@@ -201,6 +201,17 @@ export const USERS_EMAIL_NORMALIZED = 'users_email_normalized'
 // grantRole and ClinicsService.addMember turn its 23505 into their 409.
 export const USER_ROLES_USER_ROLE_UNIQUE = 'user_roles_user_role_unique'
 export const USER_CLINICS_USER_CLINIC_UNIQUE = 'user_clinics_user_clinic_unique'
+// Not real CHECKs: the names migration 0073's triggers give their refusals
+// (two deferred improvements, decided 2026-10-29). A care-team link can only
+// be ENDED — ends_at = now(), while it is current — and nothing else about it
+// changes; an ACTIVE program's end date never moves before yesterday in UTC.
+// The API never asks for either (CareTeamService only ends current links;
+// AssignedProgramsService.update checks the end date first, end-date.ts), so
+// these are the database's half of those rules, for any writer.
+// HttpExceptionFilter turns each into the answer the app's own rule gives.
+export const CARE_TEAM_MEMBER_END_ONLY = 'care_team_member_end_only'
+export const ASSIGNED_PROGRAM_END_DATE_NOT_PAST =
+  'assigned_program_end_date_not_past'
 
 // --- HELPER ------------------------------------------------------------------------------------------------
 

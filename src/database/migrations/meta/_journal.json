@@ -512,6 +512,13 @@
       "when": 1793284110611,
       "tag": "0072_patient_merge_function",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1793293770797,
+      "tag": "0073_care_team_and_end_date_guards",
+      "breakpoints": true
     }
   ]
 }

@@ -50,7 +50,11 @@ import { users } from './users.schema'
 //   - an EXCLUSION constraint forbidding two OVERLAPPING periods for the same
 //     patient and practitioner (a plain UNIQUE can't express "no overlap in
 //     time"), which also makes "join twice at the same moment" impossible;
-//   - the row-level security policies.
+//   - the row-level security policies;
+//   - (migration 0073) a trigger making ENDING the only change a link ever
+//     gets from the app: ends_at = now() and ended_by, on a link that is
+//     still current — nothing else about it changes, and an ended link is
+//     final. The tables' owner is exempt (the seed, test set-up, the merge).
 export const careTeamMembers = pgTable(
   'care_team_members',
   {

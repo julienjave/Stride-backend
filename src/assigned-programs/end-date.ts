@@ -23,6 +23,17 @@ import { addDays, utcToday } from '../common/calendar-date'
 // Moving a program's END date (step 3b-0, decided 2026-10-13) — the twin of
 // start-date-move.ts's rule for the start. A pure function: the new end date
 // and a clock in, a 400 or nothing out.
+//
+// The database keeps the same rule for every writer since migration 0073
+// (decided 2026-10-29): a trigger on assigned_programs refuses an ACTIVE
+// program's end date moving before yesterday in UTC, and HttpExceptionFilter
+// answers that refusal with this message — so the client reads one answer,
+// whichever layer refused.
+
+// --- MESSAGE -----------------------------------------------------------------------------------------------
+
+export const END_DATE_IN_PAST_MESSAGE =
+  "The end date can't be moved into the past: to end the program now, complete or cancel it"
 
 // --- RULE --------------------------------------------------------------------------------------------------
 
@@ -51,8 +62,6 @@ export function assertEndDateMovable(
   now: Date = new Date(),
 ) {
   if (newEnd !== null && newEnd < addDays(utcToday(now), -1)) {
-    throw new BadRequestException(
-      "The end date can't be moved into the past: to end the program now, complete or cancel it",
-    )
+    throw new BadRequestException(END_DATE_IN_PAST_MESSAGE)
   }
 }

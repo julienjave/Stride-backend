@@ -30,10 +30,12 @@ import {
 import { Request, Response } from 'express'
 import {
   ASSIGNED_PROGRAM_CLOSED,
+  ASSIGNED_PROGRAM_END_DATE_NOT_PAST,
   ASSIGNED_PROGRAM_EXERCISE_RETIRED,
   ASSIGNED_PROGRAM_EXERCISES_PHOTO_LIMIT,
   ASSIGNED_PROGRAMS_TITLE_NOT_BLANK,
   PROGRAM_TEMPLATES_TITLE_NOT_BLANK,
+  CARE_TEAM_MEMBER_END_ONLY,
   CONVERSATION_PARTICIPANTS_FIXED,
   MESSAGE_CONTENT_FIXED,
   MESSAGE_DELETE_WINDOW,
@@ -50,6 +52,7 @@ import {
   SESSION_FINISHED_MESSAGE,
 } from '../../sessions/session-rules'
 import { PHOTO_LIMIT_MESSAGE } from '../../assigned-programs/program-photos'
+import { END_DATE_IN_PAST_MESSAGE } from '../../assigned-programs/end-date'
 import {
   BLANK_MESSAGE_MESSAGE,
   CONVERSATION_FIXED_MESSAGE,
@@ -74,6 +77,14 @@ export const CLOSED_PROGRAM_MESSAGE =
 export const RETIRED_EXERCISE_MESSAGE =
   'This exercise was removed from the program, so it can no longer change'
 
+// A care-team link can only be ENDED, now, while it is current (migration
+// 0073). No route asks for anything else — CareTeamService only ends current
+// links — so no service says these words; they're here for a future route
+// that tries another change, which then gets a readable 409 instead of a 500
+// (the same choice as the conversation-participants guard, below).
+export const CARE_TEAM_LINK_FIXED_MESSAGE =
+  'A care-team link can only be ended, and only while it is current'
+
 // The database refusals a client can cause, each turned into the answer the
 // app's own checks would have given:
 // - "the request is fine, but the data it targets can't change any more" —
@@ -82,7 +93,10 @@ export const RETIRED_EXERCISE_MESSAGE =
 //   rule, in its words (blankTitleMessage). The DTOs refuse a blank title
 //   first, so today nothing reaches these CHECKs through the API; if a
 //   future write path ever skipped the DTOs, the client would still get a
-//   400 that says what's wrong, not a 500.
+//   400 that says what's wrong, not a 500;
+// - an open program's end date moved into the past, a care-team link changed
+//   in any way but being ended (migration 0073's triggers) — the end-date
+//   rule's 400, and a 409.
 // Every other database error stays a 500: it means a bug, not a request to
 // fix.
 //
@@ -120,6 +134,19 @@ export function translateDatabaseRefusal(caught: unknown): unknown {
   }
   if (isCheckViolation(caught, ASSIGNED_PROGRAMS_TITLE_NOT_BLANK)) {
     return new BadRequestException(blankTitleMessage('program'))
+  }
+  // An open program's end date moved into the past (migration 0073): the
+  // service's own 400, in its words (end-date.ts). The service checks first,
+  // with the request's clock; the trigger, with the transaction's — so this
+  // is reached through the API only within a moment of midnight UTC, and by
+  // a future write path that skipped the service's check.
+  if (isCheckViolation(caught, ASSIGNED_PROGRAM_END_DATE_NOT_PAST)) {
+    return new BadRequestException(END_DATE_IN_PAST_MESSAGE)
+  }
+  // Anything but ending a current link, now (migration 0073) — a 409: the
+  // request may be well-formed, the link's state is what refuses it.
+  if (isCheckViolation(caught, CARE_TEAM_MEMBER_END_ONLY)) {
+    return new ConflictException(CARE_TEAM_LINK_FIXED_MESSAGE)
   }
   // Messaging (migrations 0047 / 0048). A message's text: IsMessageBody
   // refuses a blank or over-long one first, so these two are safety nets

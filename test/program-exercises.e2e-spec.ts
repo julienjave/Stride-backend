@@ -45,7 +45,8 @@ import { addDays, utcToday } from '../src/common/calendar-date'
 //      foreign key decides, and the race between the two is proven;
 //   3. each session keeps a COPY of what it was prescribed;
 //   4. the end date never moves into the past;
-//   5. the database's own guarantees (migrations 0032 and 0033).
+//   5. the database's own guarantees (migrations 0032 and 0033, and 0073's
+//      half of the end-date rule).
 //
 // Its own file — first for the rate limits (60 requests a minute per route),
 // off in the e2e suites since 2026-10-15 (test/support/e2e-env.ts). Dates
@@ -1620,6 +1621,143 @@ describe('Program exercises (e2e)', () => {
               WHERE id = ${sessionExerciseId} RETURNING id`,
         ),
       ).toEqual({ rows: [{ id: String(sessionExerciseId) }] })
+    })
+
+    // The end date's DATABASE half (migration 0073, decided 2026-10-29): the
+    // rule of section 7 — an open program's end never moves before yesterday
+    // in UTC — for every writer, not only the service. Through the API the
+    // service refuses first with the same 400 (HttpExceptionFilter answers
+    // the trigger in its words), so an API test can't tell the layers apart:
+    // these write as the app's role directly, which only the trigger can
+    // refuse. Each program is the test's own (started 10 days ago, so an end
+    // in the past is still after the start — never a CHECK's business).
+    describe("the end date's database half", () => {
+      const refused = {
+        error: {
+          code: '23514',
+          constraint: 'assigned_program_end_date_not_past',
+        },
+      }
+
+      it("refuses an open program's end date before yesterday in UTC, for the app", async () => {
+        const open = await assign(10)
+        // No RETURNING on a refusal: returning the row would ask the SELECT
+        // policy too, which could answer first and hide what refused.
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs SET end_date = ${addDays(today, -2)}
+                WHERE id = ${open.id}`,
+          ),
+        ).toEqual(refused)
+      })
+
+      // The boundary and the other allowed moves, as in end-date.ts: from
+      // yesterday in UTC on (someone's today), later, and open-ended.
+      it('lets the app move it to yesterday in UTC or later, or clear it', async () => {
+        const open = await assign(10)
+        for (const endDate of [addDays(today, -1), today, addDays(today, 30)]) {
+          expect(
+            await run(
+              asA(),
+              sql`UPDATE assigned_programs SET end_date = ${endDate}
+                  WHERE id = ${open.id} RETURNING id`,
+            ),
+          ).toEqual({ rows: [{ id: open.id }] })
+        }
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs SET end_date = NULL
+                WHERE id = ${open.id} RETURNING id`,
+          ),
+        ).toEqual({ rows: [{ id: open.id }] })
+      })
+
+      // "Moving" is the rule: an end ALREADY in the past (a program left
+      // open after its last day) doesn't stop other changes, nor re-sending
+      // it as it is — only a different past day is refused.
+      it('leaves an end date already in the past alone when it stays the same', async () => {
+        const open = await assign(10)
+        await sessionPool.query(
+          'UPDATE assigned_programs SET end_date = $2 WHERE id = $1',
+          [open.id, addDays(today, -5)],
+        )
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs SET title = 'Renamed', end_date = end_date
+                WHERE id = ${open.id} RETURNING id`,
+          ),
+        ).toEqual({ rows: [{ id: open.id }] })
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs SET end_date = ${addDays(today, -4)}
+                WHERE id = ${open.id}`,
+          ),
+        ).toEqual(refused)
+      })
+
+      // Closing has its OWN rule for the end date (closingEndDate): the
+      // practitioner's yesterday — two days before UTC's today when their
+      // today is UTC's yesterday. The trigger stays out of a close's way
+      // (decided with the person): through the real route, it ends there.
+      it("lets Complete end a program on the practitioner's own yesterday, two days back in UTC", async () => {
+        const open = await assign(10)
+        const completed = await practitionerA
+          .post(`/assigned-programs/${open.id}/complete`)
+          .send({ today: addDays(today, -1) })
+        expect(completed.status).toBe(200)
+        const read = await practitionerA.get(`/assigned-programs/${open.id}`)
+        expect(read.body as { status: string; endDate: string }).toMatchObject({
+          status: 'completed',
+          endDate: addDays(today, -2),
+        })
+      })
+
+      // A CLOSED program's end date is the closed-program guard's (0031) to
+      // refuse — "closed", not "in the past": this trigger looks at programs
+      // that are active before AND after the change. It fires first
+      // (triggers run in name order), so the second statement — re-opening
+      // the program while backdating its end — is the one where OLD's status
+      // decides the answer: without that test, this trigger would call it
+      // "in the past", when what's wrong is that the program is closed.
+      it('answers a closed program with the closed-program guard', async () => {
+        const open = await assign(10)
+        const completed = await practitionerA
+          .post(`/assigned-programs/${open.id}/complete`)
+          .send({ today })
+        expect(completed.status).toBe(200)
+        const closed = {
+          error: { code: '23514', constraint: 'assigned_program_closed' },
+        }
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs SET end_date = ${addDays(today, -5)}
+                WHERE id = ${open.id}`,
+          ),
+        ).toEqual(closed)
+        expect(
+          await run(
+            asA(),
+            sql`UPDATE assigned_programs
+                SET status = 'active', end_date = ${addDays(today, -5)}
+                WHERE id = ${open.id}`,
+          ),
+        ).toEqual(closed)
+      })
+
+      it('exempts the owner (migrations, the seed, test set-up)', async () => {
+        const open = await assign(10)
+        expect(
+          await asOwner(
+            'UPDATE assigned_programs SET end_date = $2 WHERE id = $1',
+            [open.id, addDays(today, -5)],
+          ),
+        ).toEqual({ rowCount: 1 })
+      })
     })
   })
 })
