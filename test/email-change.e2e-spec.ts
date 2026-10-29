@@ -24,6 +24,7 @@ import {
   SAME_EMAIL_MESSAGE,
 } from '../src/email-change/email-change.service'
 import { WRONG_PASSWORD_MESSAGE } from '../src/common/current-password'
+import { AUTHENTICATOR_LABEL_NOTE } from '../src/email/email.service'
 
 // Changing one's own sign-in email ("Change email", Phase 6 pass 2 —
 // decisions §12). What the person chose, and what these tests hold the code
@@ -546,6 +547,29 @@ describe('Email change (e2e)', () => {
   // === Confirming ============================================================
 
   describe('confirming (POST /auth/email-change/confirm)', () => {
+    // An authenticator app keeps the label it scanned — the OLD email: the
+    // notice of an account with two-factor on says so (decided 2026-10-29).
+    it('tells an account with two-factor on that its authenticator app keeps the old address', async () => {
+      const pat = await newPerson()
+      const moved = freshAddress('moved-mfa')
+      await ask(pat.signedIn, moved)
+      // Two-factor turned on between the request and the click, as the
+      // owner (the request itself was made without a code); what the
+      // confirmation reads is the account at the moment it confirms.
+      await sessionPool.query(
+        "UPDATE users SET mfa_enabled = true, mfa_secret = 'stored-secret' WHERE id = $1",
+        [pat.id],
+      )
+
+      expect((await confirm(tokenFrom(moved, '/confirm-email'))).status).toBe(
+        200,
+      )
+
+      const changed = outbox.lastSentTo(pat.email)
+      expect(changed.subject).toBe('Your Stride sign-in email was changed')
+      expect(changed.text).toContain(AUTHENTICATOR_LABEL_NOTE)
+    })
+
     it('changes the email, signs the account out everywhere, and tells the old address', async () => {
       const pat = await newPerson()
       const second = agent()
@@ -585,6 +609,8 @@ describe('Email change (e2e)', () => {
       expect(changed.subject).toBe('Your Stride sign-in email was changed')
       expect(changed.text).toContain('now signs in with e•••@e•••.com')
       expect(changed.text).not.toContain(moved)
+      // Two-factor is off: nothing about an authenticator app.
+      expect(changed.text).not.toContain(AUTHENTICATOR_LABEL_NOTE)
 
       const [row] = await requestsOf(pat.id)
       expect(row.confirmed).toBe(true)

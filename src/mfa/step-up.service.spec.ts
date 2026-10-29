@@ -26,6 +26,7 @@ import {
 import * as bcrypt from 'bcrypt'
 import { OTP } from 'otplib'
 import { SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 import type { DrizzleDb } from '../database/drizzle.provider'
 import type { AuditService } from '../audit/audit.service'
 import type { EmailService } from '../email/email.service'
@@ -115,7 +116,7 @@ function fakeTx({ spent = [{ id: 1 }] as unknown[], left = 7 } = {}) {
   }
 }
 
-// The failure's own transaction (failureRecorder): the database runs the
+// The failure's own transaction (the attempt's `failed`): the database runs the
 // callback with a stand-in whose UPDATE … RETURNING answers the count after
 // the increment (`failures`) — or nothing, for an account gone meanwhile.
 function fakeDb(row: { failures: number } | null) {
@@ -137,7 +138,8 @@ let sendRecoveryCodeUsedNotice: jest.Mock
 let sendStepUpSignOutNotice: jest.Mock
 let disconnectSession: jest.Mock
 
-// The service, with a database for failureRecorder's own transaction.
+// The service, with a database for the attempt's own transactions
+// (`failed`: a failure recorded, or a passed code spent again).
 function serviceWith(db: DrizzleDb) {
   return new StepUpService(
     db,
@@ -165,10 +167,16 @@ afterEach(() => {
 
 // --- TESTS -------------------------------------------------------------------------------------------------
 
-describe('StepUpService.confirm', () => {
+// Pat's step-up for a password change — the attempt every confirm test
+// uses (the actor's id, 7, is the account the step-up is written for).
+const pat7 = { id: 7, activeRole: 'patient' as never }
+const attemptOf = (on: StepUpService = service) =>
+  on.attempt(pat7, 'sid-1', 'password_change')
+
+describe('StepUpAttempt.confirm', () => {
   it('passes on the password alone for an account without two-factor, and ignores a code', async () => {
     const { tx, update } = fakeTx()
-    const receipt = await service.confirm(tx, 7, mfaOff, {
+    const receipt = await attemptOf().confirm(tx, mfaOff, {
       currentPassword: 'password123',
       mfaCode: '000000',
     })
@@ -184,7 +192,7 @@ describe('StepUpService.confirm', () => {
     const { tx, update } = fakeTx()
     for (const account of [mfaOff, mfaOn]) {
       await expect(
-        service.confirm(tx, 7, account, {
+        attemptOf().confirm(tx, account, {
           currentPassword: 'wrong',
           mfaCode: goodCode,
         }),
@@ -194,7 +202,7 @@ describe('StepUpService.confirm', () => {
   })
 
   // Each wrong proof is a StepUpRefusedException carrying WHY — what
-  // failureRecorder counts. Still a 400 with the same words (above).
+  // the attempt's `failed` counts. Still a 400 with the same words (above).
   it.each([
     ['a wrong password', mfaOffLater, 'wrong', undefined, 'wrong_password'],
     ['a wrong app code', mfaOnLater, 'password123', '000000', 'wrong_code'],
@@ -209,8 +217,8 @@ describe('StepUpService.confirm', () => {
     'says why it refused %s',
     async (_name, account, currentPassword, mfaCode, reason) => {
       const { tx } = fakeTx({ spent: [] })
-      const refusal = await service
-        .confirm(tx, 7, account(), { currentPassword, mfaCode })
+      const refusal = await attemptOf()
+        .confirm(tx, account(), { currentPassword, mfaCode })
         .catch((error: unknown) => error)
       expect(refusal).toBeInstanceOf(StepUpRefusedException)
       expect((refusal as StepUpRefusedException).reason).toBe(reason)
@@ -219,10 +227,9 @@ describe('StepUpService.confirm', () => {
 
   it('refuses a step-up made too early as a code already used', async () => {
     const { tx } = fakeTx()
-    const refusal = await service
+    const refusal = await attemptOf()
       .confirm(
         tx,
-        7,
         { ...mfaOn, mfaLastUsedStep: STEP },
         { currentPassword: 'password123', mfaCode: goodCode },
       )
@@ -233,8 +240,8 @@ describe('StepUpService.confirm', () => {
   // Not a failed proof: nothing was guessed — so not counted.
   it('asks for the code when two-factor is on and none was sent', async () => {
     const { tx } = fakeTx()
-    const refusal = await service
-      .confirm(tx, 7, mfaOn, { currentPassword: 'password123' })
+    const refusal = await attemptOf()
+      .confirm(tx, mfaOn, { currentPassword: 'password123' })
       .catch((error: unknown) => error)
     expect(refusal).toStrictEqual(
       new BadRequestException(MFA_CODE_REQUIRED_MESSAGE),
@@ -246,9 +253,8 @@ describe('StepUpService.confirm', () => {
   // there were some.
   it('puts the failures in a row back to 0 when it passes', async () => {
     const off = fakeTx()
-    await service.confirm(
+    await attemptOf().confirm(
       off.tx,
-      7,
       { ...mfaOff, stepUpFailures: 3 },
       { currentPassword: 'password123' },
     )
@@ -256,9 +262,8 @@ describe('StepUpService.confirm', () => {
 
     // With two-factor on: the code spent, then the count reset.
     const on = fakeTx()
-    await service.confirm(
+    await attemptOf().confirm(
       on.tx,
-      7,
       { ...mfaOn, stepUpFailures: 3 },
       { currentPassword: 'password123', mfaCode: goodCode },
     )
@@ -271,9 +276,8 @@ describe('StepUpService.confirm', () => {
   it('leaves the count alone when it fails', async () => {
     const { tx, set } = fakeTx()
     await expect(
-      service.confirm(
+      attemptOf().confirm(
         tx,
-        7,
         { ...mfaOn, stepUpFailures: 3 },
         { currentPassword: 'password123', mfaCode: '000000' },
       ),
@@ -283,7 +287,7 @@ describe('StepUpService.confirm', () => {
 
   it('passes with an app code, recording its step — no extra entry, no notice', async () => {
     const { tx, set } = fakeTx()
-    const receipt = await service.confirm(tx, 7, mfaOn, {
+    const receipt = await attemptOf().confirm(tx, mfaOn, {
       currentPassword: 'password123',
       mfaCode: goodCode,
     })
@@ -296,7 +300,7 @@ describe('StepUpService.confirm', () => {
   it('refuses a wrong app code, and records nothing', async () => {
     const { tx, update } = fakeTx()
     await expect(
-      service.confirm(tx, 7, mfaOn, {
+      attemptOf().confirm(tx, mfaOn, {
         currentPassword: 'password123',
         mfaCode: '000000',
       }),
@@ -308,7 +312,7 @@ describe('StepUpService.confirm', () => {
   // only once the caller says its transaction committed.
   it('passes with a recovery code: its entry in the transaction, its notice after the commit', async () => {
     const { tx, update } = fakeTx({ left: 7 })
-    const receipt = await service.confirm(tx, 7, mfaOn, {
+    const receipt = await attemptOf().confirm(tx, mfaOn, {
       currentPassword: 'password123',
       mfaCode: 'abcde-23456',
     })
@@ -338,7 +342,7 @@ describe('StepUpService.confirm', () => {
   it('refuses a recovery code that is unknown or used, writing no entry', async () => {
     const { tx } = fakeTx({ spent: [] })
     await expect(
-      service.confirm(tx, 7, mfaOn, {
+      attemptOf().confirm(tx, mfaOn, {
         currentPassword: 'password123',
         mfaCode: 'abcde-23456',
       }),
@@ -351,9 +355,8 @@ describe('StepUpService.confirm', () => {
   it('refuses when two-factor is on but there is no secret to check against', async () => {
     const { tx, update } = fakeTx()
     await expect(
-      service.confirm(
+      attemptOf().confirm(
         tx,
-        7,
         { ...mfaOn, mfaSecret: null },
         { currentPassword: 'password123', mfaCode: goodCode },
       ),
@@ -367,7 +370,7 @@ describe('StepUpService.confirm', () => {
     const log = jest.spyOn(Logger.prototype, 'error').mockReturnValue()
     sendRecoveryCodeUsedNotice.mockRejectedValue(new Error('smtp down'))
     const { tx } = fakeTx()
-    const receipt = await service.confirm(tx, 7, mfaOn, {
+    const receipt = await attemptOf().confirm(tx, mfaOn, {
       currentPassword: 'password123',
       mfaCode: 'abcde-23456',
     })
@@ -380,11 +383,12 @@ describe('StepUpService.confirm', () => {
   })
 })
 
-describe('StepUpService.confirmPassword (two-factor set-up)', () => {
+describe('StepUpAttempt.confirmPassword (two-factor set-up)', () => {
   it('refuses a wrong password as a counted failure', async () => {
     const { tx, set } = fakeTx()
     const refusal = await service
-      .confirmPassword(tx, 7, { passwordHash: hash, stepUpFailures: 2 }, 'x')
+      .attempt(pat7, 'sid-1', 'mfa_setup')
+      .confirmPassword(tx, { passwordHash: hash, stepUpFailures: 2 }, 'x')
       .catch((error: unknown) => error)
     // Still the 400 every caller answered before, with its words.
     expect(refusal).toBeInstanceOf(BadRequestException)
@@ -397,26 +401,28 @@ describe('StepUpService.confirmPassword (two-factor set-up)', () => {
 
   it('passes, putting the count back to 0 only when there was one', async () => {
     const before = fakeTx()
-    await service.confirmPassword(
-      before.tx,
-      7,
-      { passwordHash: hash, stepUpFailures: 0 },
-      'password123',
-    )
+    await service
+      .attempt(pat7, 'sid-1', 'mfa_setup')
+      .confirmPassword(
+        before.tx,
+        { passwordHash: hash, stepUpFailures: 0 },
+        'password123',
+      )
     expect(before.update).not.toHaveBeenCalled()
 
     const after = fakeTx()
-    await service.confirmPassword(
-      after.tx,
-      7,
-      { passwordHash: hash, stepUpFailures: 4 },
-      'password123',
-    )
+    await service
+      .attempt(pat7, 'sid-1', 'mfa_setup')
+      .confirmPassword(
+        after.tx,
+        { passwordHash: hash, stepUpFailures: 4 },
+        'password123',
+      )
     expect(after.set.mock.calls).toStrictEqual([[{ stepUpFailures: 0 }]])
   })
 })
 
-describe('StepUpService.failureRecorder', () => {
+describe('StepUpAttempt.failed — a failed step-up', () => {
   const pat = { id: 7, activeRole: 'patient' as never }
   const refused = () =>
     new StepUpRefusedException(WRONG_PASSWORD_MESSAGE, 'wrong_password')
@@ -428,7 +434,7 @@ describe('StepUpService.failureRecorder', () => {
     const { db, transaction } = fakeDb({ failures: 1 })
     const other = new ConflictException('Two-factor sign-in is already on')
     await expect(
-      serviceWith(db).failureRecorder(pat, 'sid-1', 'mfa_setup')(other),
+      serviceWith(db).attempt(pat, 'sid-1', 'mfa_setup').failed(other),
     ).rejects.toBe(other)
     expect(transaction).not.toHaveBeenCalled()
     expect(logInTransaction).not.toHaveBeenCalled()
@@ -440,7 +446,7 @@ describe('StepUpService.failureRecorder', () => {
     const { db, tx, set, execute } = fakeDb({ failures: 4 })
     const refusal = refused()
     await expect(
-      serviceWith(db).failureRecorder(pat, 'sid-1', 'email_change')(refusal),
+      serviceWith(db).attempt(pat, 'sid-1', 'email_change').failed(refusal),
     ).rejects.toBe(refusal)
 
     // ONE write, of the count alone — as an SQL expression (`+ 1`, computed
@@ -477,7 +483,7 @@ describe('StepUpService.failureRecorder', () => {
   it('signs the session out at the 5th failure in a row', async () => {
     const { db, set, execute } = fakeDb({ failures: 5 })
     await expect(
-      serviceWith(db).failureRecorder(pat, 'sid-1', 'mfa_disable')(refused()),
+      serviceWith(db).attempt(pat, 'sid-1', 'mfa_disable').failed(refused()),
     ).rejects.toStrictEqual(
       new UnauthorizedException(STEP_UP_SIGNED_OUT_MESSAGE),
     )
@@ -514,7 +520,7 @@ describe('StepUpService.failureRecorder', () => {
   it('does not sign out below the limit', async () => {
     const { db } = fakeDb({ failures: 4 })
     await expect(
-      serviceWith(db).failureRecorder(pat, 'sid-1', 'mfa_reset')(refused()),
+      serviceWith(db).attempt(pat, 'sid-1', 'mfa_reset').failed(refused()),
     ).rejects.toBeInstanceOf(StepUpRefusedException)
     expect(disconnectSession).not.toHaveBeenCalled()
   })
@@ -525,7 +531,7 @@ describe('StepUpService.failureRecorder', () => {
     const { db } = fakeDb(null)
     const refusal = refused()
     await expect(
-      serviceWith(db).failureRecorder(pat, 'sid-1', 'mfa_setup')(refusal),
+      serviceWith(db).attempt(pat, 'sid-1', 'mfa_setup').failed(refusal),
     ).rejects.toBe(refusal)
     expect(logInTransaction).not.toHaveBeenCalled()
   })
@@ -535,16 +541,201 @@ describe('StepUpService.failureRecorder', () => {
     sendStepUpSignOutNotice.mockRejectedValue(new Error('smtp down'))
     const { db } = fakeDb({ failures: 5 })
     await expect(
-      serviceWith(db).failureRecorder(
-        pat,
-        'sid-1',
-        'password_change',
-      )(refused()),
+      serviceWith(db)
+        .attempt(pat, 'sid-1', 'password_change')
+        .failed(refused()),
     ).rejects.toBeInstanceOf(UnauthorizedException)
     await new Promise((resolve) => setImmediate(resolve))
     expect(log.mock.calls).toStrictEqual([
       [
         'Failed to send the step-up sign-out notice to pat@example.com: smtp down',
+      ],
+    ])
+  })
+})
+
+// A step-up that PASSED, then a change that failed (2026-10-29): the
+// rollback un-spent the second factor; `failed` spends it again in a
+// transaction of its own, then lets the change's error through.
+describe('StepUpAttempt.failed — a step-up that passed, a change that failed', () => {
+  // The re-spend's own transaction: the account's name and email (a
+  // select), the spend (an update — RETURNING finds the recovery code, or
+  // not), and the count of codes left (a second select).
+  function respendDb({ codeSpent = true, left = 6 } = {}) {
+    const set = jest.fn()
+    const returning = jest.fn().mockResolvedValue(codeSpent ? [{ id: 3 }] : [])
+    set.mockReturnValue({
+      where: jest.fn().mockReturnValue({
+        then: (resolve: (value: undefined) => void) => resolve(undefined),
+        returning,
+      }),
+    })
+    const update = jest.fn().mockReturnValue({ set })
+    const select = jest
+      .fn()
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () =>
+            Promise.resolve([{ email: 'pat@example.com', firstName: 'Pat' }]),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: () => Promise.resolve([{ remaining: left }]) }),
+      })
+    const execute = jest.fn().mockResolvedValue({ rows: [] })
+    const tx = { update, select, execute } as unknown as DrizzleDb
+    const transaction = jest.fn((fn: (t: DrizzleDb) => Promise<unknown>) =>
+      fn(tx),
+    )
+    return {
+      db: { transaction } as unknown as DrizzleDb,
+      tx,
+      transaction,
+      set,
+    }
+  }
+
+  // The change's own error, thrown after the step-up passed.
+  const changeRefused = () => new BadRequestException('That is already yours')
+
+  it('spends an app code again — its step, never lowering a later one', async () => {
+    const respend = respendDb()
+    const attempt = serviceWith(respend.db).attempt(
+      pat7,
+      'sid-1',
+      'email_change',
+    )
+    await attempt.confirm(fakeTx().tx, mfaOn, {
+      currentPassword: 'password123',
+      mfaCode: goodCode,
+    })
+    const error = changeRefused()
+    await expect(attempt.failed(error)).rejects.toBe(error)
+
+    expect(respend.transaction).toHaveBeenCalledTimes(1)
+    // ONE write: the step, as GREATEST(stored, this step) — computed by the
+    // database, so a later code used meanwhile keeps its place.
+    const writes = respend.set.mock.calls as [Record<string, unknown>][]
+    expect(writes).toHaveLength(1)
+    const value = writes[0][0].mfaLastUsedStep
+    expect(value).toBeInstanceOf(SQL)
+    // Rendered as Postgres would receive it: the stored column, and this
+    // code's step as a parameter.
+    const { sql: text, params } = new PgDialect().sqlToQuery(value as SQL)
+    expect(text).toBe('GREATEST("users"."mfa_last_used_step", $1)')
+    expect(params).toStrictEqual([STEP])
+    // An app code is no event of its own: no entry, no notice.
+    expect(logInTransaction).not.toHaveBeenCalled()
+    expect(sendRecoveryCodeUsedNotice).not.toHaveBeenCalled()
+  })
+
+  it('spends a recovery code again: its entry (the change not made) and its notice', async () => {
+    const respend = respendDb({ left: 6 })
+    const attempt = serviceWith(respend.db).attempt(
+      pat7,
+      'sid-1',
+      'password_change',
+    )
+    // The confirm's own transaction answers the code as found, 7 left.
+    const confirmTx = fakeTx({ left: 7 })
+    const receipt = await attempt.confirm(confirmTx.tx, mfaOn, {
+      currentPassword: 'password123',
+      mfaCode: 'ABCDE-23456',
+    })
+    // The confirm's entry was written in the change's transaction (rolled
+    // back with it); forget it, to see only the re-spend's.
+    logInTransaction.mockClear()
+    const error = changeRefused()
+    await expect(attempt.failed(error)).rejects.toBe(error)
+
+    expect(respend.set.mock.calls).toHaveLength(1)
+    expect(logInTransaction.mock.calls).toStrictEqual([
+      [
+        respend.tx,
+        {
+          performedBy: 7,
+          action: 'MFA_RECOVERY_CODE_USED',
+          targetUserId: 7,
+          entityType: 'users',
+          entityId: 7,
+          details: { remaining: 6, changeNotMade: true },
+        },
+      ],
+    ])
+    expect(sendRecoveryCodeUsedNotice.mock.calls).toStrictEqual([
+      [{ to: 'pat@example.com', firstName: 'Pat', remaining: 6 }],
+    ])
+    // The receipt of the rolled-back change is never called by the caller;
+    // calling it would send a second notice — it stays the confirm's own.
+    expect(receipt).toBeDefined()
+  })
+
+  // Between the rollback and the re-spend, the same code may have been used
+  // by another request, or new codes made: nothing to spend, nothing to say.
+  it('writes no entry and sends no notice when the recovery code is gone meanwhile', async () => {
+    const respend = respendDb({ codeSpent: false })
+    const attempt = serviceWith(respend.db).attempt(
+      pat7,
+      'sid-1',
+      'mfa_disable',
+    )
+    await attempt.confirm(fakeTx().tx, mfaOn, {
+      currentPassword: 'password123',
+      mfaCode: 'ABCDE-23456',
+    })
+    logInTransaction.mockClear()
+    await expect(attempt.failed(changeRefused())).rejects.toBeInstanceOf(
+      BadRequestException,
+    )
+    expect(logInTransaction).not.toHaveBeenCalled()
+    expect(sendRecoveryCodeUsedNotice).not.toHaveBeenCalled()
+  })
+
+  // No second factor passed: nothing to spend — no transaction at all.
+  it.each([
+    [
+      'two-factor is off (the password alone passed)',
+      () => mfaOff,
+      { currentPassword: 'password123' },
+    ],
+    ['the code was missing', () => mfaOn, { currentPassword: 'password123' }],
+    [
+      'the code was wrong',
+      () => mfaOn,
+      { currentPassword: 'password123', mfaCode: '000000' },
+    ],
+  ])('spends nothing when %s', async (_name, account, proof) => {
+    const respend = respendDb()
+    const attempt = serviceWith(respend.db).attempt(
+      pat7,
+      'sid-1',
+      'email_change',
+    )
+    await attempt
+      .confirm(fakeTx({ spent: [] }).tx, account(), proof)
+      .catch(() => undefined)
+    const error = changeRefused()
+    await expect(attempt.failed(error)).rejects.toBe(error)
+    expect(respend.transaction).not.toHaveBeenCalled()
+  })
+
+  // The re-spend failing must not hide the change's own error: it is
+  // logged, and the client gets what the change answered.
+  it('logs a failed re-spend and still throws the change’s error', async () => {
+    const log = jest.spyOn(Logger.prototype, 'error').mockReturnValue()
+    const broken = {
+      transaction: jest.fn().mockRejectedValue(new Error('db down')),
+    } as unknown as DrizzleDb
+    const attempt = serviceWith(broken).attempt(pat7, 'sid-1', 'email_change')
+    await attempt.confirm(fakeTx().tx, mfaOn, {
+      currentPassword: 'password123',
+      mfaCode: goodCode,
+    })
+    const error = changeRefused()
+    await expect(attempt.failed(error)).rejects.toBe(error)
+    expect(log.mock.calls).toStrictEqual([
+      [
+        'Failed to spend a second factor again after a rolled-back change (user 7): db down',
       ],
     ])
   })

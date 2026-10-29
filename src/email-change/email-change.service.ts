@@ -179,6 +179,9 @@ export class EmailChangeService {
     const confirmToken = randomBytes(32).toString('hex')
     const cancelToken = randomBytes(32).toString('hex')
 
+    // This request's step-up: confirmed inside the transaction, its `failed`
+    // in the `.catch` below (StepUpService.attempt).
+    const attempt = this.stepUp.attempt(currentUser, sessionId, 'email_change')
     const { pending, taken, user, stepUp } = await withRlsContext(
       this.db,
       currentUser,
@@ -202,12 +205,7 @@ export class EmailChangeService {
         // stored; a wrong password or code is then recorded on its own
         // (`.catch` below — decisions §16).
         if (!user) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-        const stepUp = await this.stepUp.confirm(
-          tx,
-          currentUser.id,
-          user,
-          proof,
-        )
+        const stepUp = await attempt.confirm(tx, user, proof)
         if (newEmail === user.email) {
           throw new BadRequestException(SAME_EMAIL_MESSAGE)
         }
@@ -271,9 +269,11 @@ export class EmailChangeService {
         }
       },
     ).catch(
-      // A failed step-up: recorded and counted once the transaction above
-      // has rolled back; the 5th in a row signs this session out.
-      this.stepUp.failureRecorder(currentUser, sessionId, 'email_change'),
+      // Once the transaction above has rolled back: a failed step-up
+      // recorded and counted (the 5th in a row signs this session out), or
+      // — the step-up passed but the change failed (the address is already
+      // yours, say) — the code spent anyway.
+      attempt.failed,
     )
 
     // A recovery code's notice, if one was used (StepUpService).
@@ -395,6 +395,7 @@ export class EmailChangeService {
             email: users.email,
             firstName: users.firstName,
             isActive: users.isActive,
+            mfaEnabled: users.mfaEnabled,
           })
           .from(users)
           .where(eq(users.id, request.userId))
@@ -442,6 +443,7 @@ export class EmailChangeService {
           oldEmail: account.email,
           newEmail: request.newEmail,
           firstName: account.firstName,
+          twoFactorOn: account.mfaEnabled,
           endedSessionIds: ended.rows.map((row) => row.sid),
         }
       },
@@ -465,6 +467,7 @@ export class EmailChangeService {
         to: outcome.oldEmail,
         firstName: outcome.firstName,
         maskedNewEmail: maskEmail(outcome.newEmail),
+        twoFactorOn: outcome.twoFactorOn,
       }),
     )
     return { email: outcome.newEmail }

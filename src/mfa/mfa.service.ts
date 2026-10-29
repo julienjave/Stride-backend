@@ -135,6 +135,7 @@ export class MfaService {
   ): Promise<MfaSetup> {
     const secret = newMfaSecret()
 
+    const attempt = this.stepUp.attempt(currentUser, sessionId, 'mfa_setup')
     const email = await withRlsContext(this.db, currentUser, async (tx) => {
       const account = await lockAccount(tx, currentUser.id)
       // The password only — not the whole step-up: MFA is off here (on is
@@ -142,12 +143,7 @@ export class MfaService {
       // FIRST: without it, the request learns nothing, not even whether MFA
       // is on. A wrong one is counted like any failed step-up.
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      await this.stepUp.confirmPassword(
-        tx,
-        currentUser.id,
-        account,
-        currentPassword,
-      )
+      await attempt.confirmPassword(tx, account, currentPassword)
       if (account.mfaEnabled) {
         throw new ConflictException(MFA_ALREADY_ON_MESSAGE)
       }
@@ -174,7 +170,7 @@ export class MfaService {
           : {}),
       })
       return account.email
-    }).catch(this.stepUp.failureRecorder(currentUser, sessionId, 'mfa_setup'))
+    }).catch(attempt.failed)
 
     // After the commit — the QR code is drawn from data that is now stored.
     // The label is the sign-in email, what the app shows next to the codes.
@@ -288,15 +284,15 @@ export class MfaService {
   ): Promise<RecoveryCodes> {
     const recoveryCodes = newRecoveryCodes()
 
+    const attempt = this.stepUp.attempt(
+      currentUser,
+      sessionId,
+      'recovery_codes',
+    )
     const stepUp = await withRlsContext(this.db, currentUser, async (tx) => {
       const account = await lockAccount(tx, currentUser.id)
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      const receipt = await this.stepUp.confirm(
-        tx,
-        currentUser.id,
-        account,
-        proof,
-      )
+      const receipt = await attempt.confirm(tx, account, proof)
       // Off: the step-up checked only the password; there are no codes.
       if (!account.mfaEnabled) {
         throw new BadRequestException(MFA_NOT_ON_MESSAGE)
@@ -319,9 +315,7 @@ export class MfaService {
         },
       })
       return receipt
-    }).catch(
-      this.stepUp.failureRecorder(currentUser, sessionId, 'recovery_codes'),
-    )
+    }).catch(attempt.failed)
 
     stepUp.afterCommit()
     return { recoveryCodes }
@@ -338,10 +332,11 @@ export class MfaService {
     code: string,
     sessionId: string,
   ): Promise<void> {
+    const attempt = this.stepUp.attempt(currentUser, sessionId, 'mfa_disable')
     const outcome = await withRlsContext(this.db, currentUser, async (tx) => {
       const account = await lockAccount(tx, currentUser.id)
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      const stepUp = await this.stepUp.confirm(tx, currentUser.id, account, {
+      const stepUp = await attempt.confirm(tx, account, {
         currentPassword,
         mfaCode: code,
       })
@@ -358,7 +353,7 @@ export class MfaService {
         entityId: currentUser.id,
       })
       return { email: account.email, firstName: account.firstName, stepUp }
-    }).catch(this.stepUp.failureRecorder(currentUser, sessionId, 'mfa_disable'))
+    }).catch(attempt.failed)
 
     outcome.stepUp.afterCommit()
     this.notify('disabled notice', outcome.email, () =>
@@ -387,6 +382,7 @@ export class MfaService {
       throw new ForbiddenException(MFA_RESET_OWN_MESSAGE)
     }
 
+    const attempt = this.stepUp.attempt(admin, sessionId, 'mfa_reset')
     const outcome = await withRlsContext(this.db, admin, async (tx) => {
       // BOTH rows locked — the admin's (their step-up spends a code) and the
       // target's — in ONE statement, in id order. Two admins resetting each
@@ -406,7 +402,7 @@ export class MfaService {
       const own = rows.find((row) => row.id === admin.id)
       const target = rows.find((row) => row.id === targetId)
       if (!own) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      const stepUp = await this.stepUp.confirm(tx, admin.id, own, proof)
+      const stepUp = await attempt.confirm(tx, own, proof)
       if (!target) throw new NotFoundException(`User ${targetId} not found`)
       if (!target.mfaEnabled) {
         throw new BadRequestException(MFA_NOT_ON_MESSAGE)
@@ -428,7 +424,7 @@ export class MfaService {
         endedSessionIds,
         stepUp,
       }
-    }).catch(this.stepUp.failureRecorder(admin, sessionId, 'mfa_reset'))
+    }).catch(attempt.failed)
 
     for (const ended of outcome.endedSessionIds) {
       this.messagingEvents.disconnectSession(ended)

@@ -327,7 +327,7 @@ export class RecordsExportLinksService {
   //
   // A wrong date of birth throws WrongDateOfBirth out of that transaction
   // (rolled back: nothing happened), and is counted AFTERWARDS in a
-  // transaction of its own — the step-up's pattern (failureRecorder): a
+  // transaction of its own — the step-up's pattern (StepUpAttempt.failed): a
   // failure counted inside the rolled-back transaction would vanish with
   // it. Two requests with the same link at once (a double click): the second
   // meets a serialization failure, runs again (retriedOnce, above), and is

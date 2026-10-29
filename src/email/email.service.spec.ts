@@ -17,7 +17,11 @@
 
 import { Test } from '@nestjs/testing'
 import { EMAIL_TRANSPORT, type OutgoingEmail } from './email-transport'
-import { EmailService, describeWhere } from './email.service'
+import {
+  AUTHENTICATOR_LABEL_NOTE,
+  EmailService,
+  describeWhere,
+} from './email.service'
 
 describe('EmailService', () => {
   let service: EmailService
@@ -102,6 +106,7 @@ describe('EmailService', () => {
         to: 'old@example.com',
         firstName: 'Pat',
         maskedNewEmail: 'n•••@e•••.com',
+        twoFactorOn: false,
       })
 
       const email = send.mock.calls[0][0]
@@ -109,6 +114,37 @@ describe('EmailService', () => {
       expect(email.subject).toBe('Your Stride sign-in email was changed')
       expect(email.text).toContain('now signs in with n•••@e•••.com')
       expect(email.html).not.toContain('href')
+      // Without two-factor, nothing about an authenticator app.
+      expect(email.text).not.toContain('authenticator')
+      expect(email.html).not.toContain('authenticator')
+    })
+
+    // With two-factor on: the app keeps the old address as its label — said
+    // in both bodies, between the change and the "wasn't you" line.
+    it('tells an account with two-factor on that its authenticator app keeps the old address', async () => {
+      await service.sendEmailChangedNotice({
+        to: 'old@example.com',
+        firstName: 'Pat',
+        maskedNewEmail: 'n•••@e•••.com',
+        twoFactorOn: true,
+      })
+
+      const email = send.mock.calls[0][0]
+      expect(email.text).toBe(
+        [
+          'Hello Pat,',
+          '',
+          'Your Stride account now signs in with n•••@e•••.com, and was signed out on your other devices. This address will no longer receive emails about it.',
+          '',
+          AUTHENTICATOR_LABEL_NOTE,
+          '',
+          "If this wasn't you, contact your clinic straight away.",
+        ].join('\n'),
+      )
+      expect(email.html).toContain(`<p>${AUTHENTICATOR_LABEL_NOTE}</p>`)
+      expect(email.html.indexOf(AUTHENTICATOR_LABEL_NOTE)).toBeLessThan(
+        email.html.indexOf("If this wasn't you"),
+      )
     })
 
     // A first name is typed by a person: in HTML it must stay text.
@@ -140,6 +176,7 @@ describe('EmailService', () => {
             to: 'o@x.com',
             firstName: name,
             maskedNewEmail: 'n•••@x•••.com',
+            twoFactorOn: true,
           }),
       ],
     ])('escapes the first name in the %s', async (_what, sendIt) => {

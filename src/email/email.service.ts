@@ -59,6 +59,12 @@ export interface EmailChangeNoticeEmail {
   maskedNewEmail: string
 }
 
+export interface EmailChangedNoticeEmail extends EmailChangeNoticeEmail {
+  // Two-factor sign-in is on: the notice says what the authenticator app
+  // will keep showing.
+  twoFactorOn: boolean
+}
+
 export interface EmailChangeRequestedNoticeEmail extends EmailChangeNoticeEmail {
   // The cancel link's token: the old inbox may stop the change.
   rawCancelToken: string
@@ -101,6 +107,14 @@ export interface RecordsExportLinkEmail {
   // where to download a copy in the app, any time, without asking.
   canSignIn: boolean
 }
+
+// --- CONSTANTS ---------------------------------------------------------------------------------------------
+
+// What an account with two-factor sign-in on is told after an email change:
+// the authenticator app keeps the old address as its label. Exported: the
+// frontend's Two-factor page says the same (twoFactorRules.ts there).
+export const AUTHENTICATOR_LABEL_NOTE =
+  'Your authenticator app may still show your old email address next to Stride: apps keep the name they were given when you set them up. Your codes keep working. To see the new address there, turn two-factor sign-in off and on again from your profile.'
 
 // --- SERVICE -----------------------------------------------------------------------------------------------
 
@@ -260,19 +274,29 @@ export class EmailService {
   }
 
   // To the OLD address once the change is made: the last email it receives
-  // about this account.
-  async sendEmailChangedNotice(email: EmailChangeNoticeEmail): Promise<void> {
+  // about this account. With two-factor sign-in on, one more paragraph: an
+  // authenticator app names the account by the label in the QR code it
+  // scanned — the email at the time — and never reads it again, so it keeps
+  // showing the OLD address (decided with the person 2026-10-29: say so,
+  // rather than label accounts by something else). The codes don't depend on
+  // the label: nothing stops working.
+  async sendEmailChangedNotice(email: EmailChangedNoticeEmail): Promise<void> {
     await this.transport.send({
       from: senderAddress(),
       to: email.to,
       subject: 'Your Stride sign-in email was changed',
       html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Your Stride account now signs in with ${escapeHtml(email.maskedNewEmail)}, and was signed out on your other devices. This address will no longer receive emails about it.</p>
+             <p>Your Stride account now signs in with ${escapeHtml(email.maskedNewEmail)}, and was signed out on your other devices. This address will no longer receive emails about it.</p>${
+               email.twoFactorOn
+                 ? `\n             <p>${AUTHENTICATOR_LABEL_NOTE}</p>`
+                 : ''
+             }
              <p>If this wasn't you, contact your clinic straight away.</p>`,
       text: [
         `Hello ${email.firstName},`,
         '',
         `Your Stride account now signs in with ${email.maskedNewEmail}, and was signed out on your other devices. This address will no longer receive emails about it.`,
+        ...(email.twoFactorOn ? ['', AUTHENTICATOR_LABEL_NOTE] : []),
         '',
         "If this wasn't you, contact your clinic straight away.",
       ].join('\n'),

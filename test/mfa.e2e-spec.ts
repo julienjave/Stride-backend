@@ -35,6 +35,7 @@ import {
   MFA_RESET_OWN_MESSAGE,
   MFA_SETUP_FIRST_MESSAGE,
 } from '../src/mfa/mfa.service'
+import { SAME_EMAIL_MESSAGE } from '../src/email-change/email-change.service'
 
 // Two-factor sign-in (MFA enrolment, Phase 6 — pass 1, hardening what
 // existed). What the person chose, and what these tests hold the code to:
@@ -819,6 +820,114 @@ describe('Two-factor sign-in (e2e)', () => {
     })
   })
 
+  // A step-up that PASSED, then a change that failed for another reason
+  // (2026-10-29): the rollback took the spend with it, so the code stayed
+  // usable. Now it is spent again after the rollback — an app code and a
+  // recovery code alike (the person's choice), and the failure is not a
+  // failed step-up (nothing counted: the proof was right).
+  describe('a passed step-up whose change then fails', () => {
+    // "Change my email to the address I already have": refused AFTER the
+    // step-up (SAME_EMAIL_MESSAGE), the cheapest such failure to cause.
+    const changeEmailToOwn = (
+      pat: { email: string; signedIn: Agent },
+      mfaCode: string,
+    ) =>
+      pat.signedIn.post('/auth/email-change').send({
+        newEmail: pat.email,
+        currentPassword: 'password123',
+        mfaCode,
+      })
+
+    async function failuresInARowOf(userId: number) {
+      const { rows } = await sessionPool.query<{ step_up_failures: number }>(
+        'SELECT step_up_failures FROM users WHERE id = $1',
+        [userId],
+      )
+      return rows[0].step_up_failures
+    }
+
+    it('spends the app code anyway: the same code is refused for the next change', async () => {
+      const pat = await newPerson()
+      const secret = await turnOn(pat)
+      const code = await freshCode(secret, 10)
+
+      const refused = await changeEmailToOwn(pat, code)
+      expect(refused.status).toBe(400)
+      expect(refused.body.message).toEqual([SAME_EMAIL_MESSAGE])
+      // Spent: its step stored although the change's transaction rolled
+      // back — and not counted as a failed step-up.
+      expect((await mfaColumnsOf(pat.id)).mfa_last_used_step).toBe(
+        currentStep(),
+      )
+      expect(await failuresInARowOf(pat.id)).toBe(0)
+
+      const again = await pat.signedIn.post('/auth/password').send({
+        currentPassword: 'password123',
+        newPassword: 'a-new-password',
+        mfaCode: code,
+      })
+      expect(again.status).toBe(400)
+      expect(again.body.message).toEqual([MFA_CODE_ALREADY_USED_MESSAGE])
+    })
+
+    it('spends the recovery code anyway — with its entry, which says the change was not made, and its notice', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+      const sentBefore = outbox.sentTo(pat.email).length
+
+      const refused = await changeEmailToOwn(pat, codes[2])
+      expect(refused.status).toBe(400)
+      expect(refused.body.message).toEqual([SAME_EMAIL_MESSAGE])
+
+      expect((await recoveryRows(pat.id)).map((row) => row.used)).toEqual([
+        false,
+        false,
+        true,
+        ...Array<boolean>(7).fill(false),
+      ])
+      expect((await mfaEntries(pat.id)).slice(2)).toStrictEqual([
+        {
+          action: 'MFA_RECOVERY_CODE_USED',
+          performed_by: pat.id,
+          target_user_id: pat.id,
+          entity_type: 'users',
+          entity_id: pat.id,
+          details: { remaining: 9, changeNotMade: true },
+        },
+      ])
+      const sent = outbox.sentTo(pat.email).slice(sentBefore)
+      expect(sent.map((email) => email.subject)).toEqual([
+        'A recovery code was used on your Stride account',
+      ])
+      expect(sent[0].text).toContain('You have 9 recovery codes left.')
+      expect(await failuresInARowOf(pat.id)).toBe(0)
+
+      const again = await pat.signedIn.post('/auth/password').send({
+        currentPassword: 'password123',
+        newPassword: 'a-new-password',
+        mfaCode: codes[2],
+      })
+      expect(again.status).toBe(400)
+      expect(again.body.message).toEqual([INVALID_RECOVERY_CODE_MESSAGE])
+    })
+
+    // A refusal BEFORE the code is checked spends nothing: a wrong
+    // password (the step-up's own first rule) leaves the code usable.
+    it('spends nothing when the password was wrong', async () => {
+      const pat = await newPerson()
+      const { codes } = await turnOnWithCodes(pat)
+
+      const refused = await pat.signedIn.post('/auth/email-change').send({
+        newEmail: `mfa-wrongpw-${stamp}@example.com`,
+        currentPassword: 'not-my-password',
+        mfaCode: codes[0],
+      })
+      expect(refused.status).toBe(400)
+      expect(refused.body.message).toEqual([WRONG_PASSWORD_MESSAGE])
+      expect((await recoveryRows(pat.id)).every((row) => !row.used)).toBe(true)
+    })
+  })
+
   // === Pass 2 — recovery codes =================================================
 
   // --- Helpers for pass 2 ----------------------------------------------------
@@ -1265,6 +1374,36 @@ describe('Two-factor sign-in (e2e)', () => {
       })
       expect(missing.status).toBe(404)
       expect(missing.body.message).toEqual(['User 999999 not found'])
+    })
+
+    // The admin's code passed, then the reset was refused (the account has
+    // two-factor off): the ADMIN's code is spent anyway — the same code
+    // can't then reset someone else.
+    it("spends the admin's code even when the reset is then refused", async () => {
+      const ana = await newAdmin()
+      const anaSecret = await turnOn(ana)
+      const off = await newPerson()
+      const on = await newPerson()
+      await turnOn(on)
+      const code = await freshCode(anaSecret, 10)
+
+      const refused = await reset(ana.signedIn, off.id, {
+        currentPassword: 'password123',
+        mfaCode: code,
+      })
+      expect(refused.status).toBe(400)
+      expect(refused.body.message).toEqual([MFA_NOT_ON_MESSAGE])
+      expect((await mfaColumnsOf(ana.id)).mfa_last_used_step).toBe(
+        currentStep(),
+      )
+
+      const again = await reset(ana.signedIn, on.id, {
+        currentPassword: 'password123',
+        mfaCode: code,
+      })
+      expect(again.status).toBe(400)
+      expect(again.body.message).toEqual([MFA_CODE_ALREADY_USED_MESSAGE])
+      expect((await mfaColumnsOf(on.id)).mfa_enabled).toBe(true)
     })
 
     // The ADMIN's own step-up: an admin with two-factor on gives their own

@@ -159,9 +159,10 @@ export function mfaCodeRefusalMessage(reason: MfaCodeRefusal): string {
     : INVALID_MFA_CODE_MESSAGE
 }
 
-// Remembers that the code of `step` was used. In the caller's transaction:
-// if the action the code allowed is rolled back, the code isn't spent either
-// (it achieved nothing). The account's row must already be locked.
+// Remembers that the code of `step` was used. In the caller's transaction,
+// so it is rolled back with it — a step-up then spends the code again on
+// its own (second-factor.ts, spendAgain). The account's row must already be
+// locked.
 export async function recordMfaStep(
   tx: DrizzleDb,
   userId: number,

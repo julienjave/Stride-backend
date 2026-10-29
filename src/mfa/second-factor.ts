@@ -22,7 +22,7 @@ import { applyDecorators } from '@nestjs/common'
 import { ValidateBy } from 'class-validator'
 import { and, count, eq, isNull, sql } from 'drizzle-orm'
 import type { DrizzleDb } from '../database/drizzle.provider'
-import { mfaRecoveryCodes } from '../database/schema'
+import { mfaRecoveryCodes, users } from '../database/schema'
 import {
   checkMfaCode,
   mfaCodeRefusalMessage,
@@ -53,8 +53,10 @@ import {
 //     COMMITTED re-checks the WHERE on the new version), finds it used, and
 //     changes nothing — refused.
 // Spending happens in the caller's transaction, on the account's locked row,
-// like recordMfaStep: if the action is refused or rolled back, the code
-// isn't spent.
+// like recordMfaStep: if the action is then refused or rolled back, the
+// spend is rolled back with it. A step-up spends it AGAIN afterwards, in a
+// transaction of its own (spendAgain below — StepUpAttempt): a code that was
+// shown to work must not work twice, whatever happened next.
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
 
@@ -69,9 +71,17 @@ export const INVALID_RECOVERY_CODE_MESSAGE =
 
 export type SecondFactorRefusal = MfaCodeRefusal | 'wrong_recovery_code'
 
+// A good code says WHAT was spent — an app code's step, a recovery code's
+// hash (never the code itself) — so it can be spent again if the
+// transaction that spent it is rolled back (spendAgain).
 export type SecondFactorCheck =
-  | { ok: true; kind: 'totp' }
-  | { ok: true; kind: 'recovery_code'; remaining: number }
+  | { ok: true; kind: 'totp'; step: number }
+  | {
+      ok: true
+      kind: 'recovery_code'
+      codeHash: string
+      remaining: number
+    }
   | { ok: false; reason: SecondFactorRefusal }
 
 export type SecondFactorUse = Extract<SecondFactorCheck, { ok: true }>
@@ -115,7 +125,7 @@ export async function trySecondFactor(
     const check = await checkMfaCode(account, input)
     if (!check.ok) return check
     await recordMfaStep(tx, userId, check.step)
-    return { ok: true, kind: 'totp' }
+    return { ok: true, kind: 'totp', step: check.step }
   }
 
   // used_at's value is the guard trigger's (now()); it just has to be
@@ -125,18 +135,32 @@ export async function trySecondFactor(
   // in the code, and it is what lets the lookup use the (user_id,
   // code_hash) index. Removing BOTH layers fails the e2e test "refused for
   // another account".
+  const codeHash = hashRecoveryCode(recoveryCode)
+  const remaining = await spendRecoveryCode(tx, userId, codeHash)
+  if (remaining === null) return { ok: false, reason: 'wrong_recovery_code' }
+  return { ok: true, kind: 'recovery_code', codeHash, remaining }
+}
+
+// Marks the recovery code of `codeHash` used — if it is the account's and
+// still unused — and answers how many are left; null when there was nothing
+// to spend. ONE UPDATE is the check and the write (see the file's comment).
+async function spendRecoveryCode(
+  tx: DrizzleDb,
+  userId: number,
+  codeHash: string,
+): Promise<number | null> {
   const spent = await tx
     .update(mfaRecoveryCodes)
     .set({ usedAt: sql`now()` })
     .where(
       and(
         eq(mfaRecoveryCodes.userId, userId),
-        eq(mfaRecoveryCodes.codeHash, hashRecoveryCode(recoveryCode)),
+        eq(mfaRecoveryCodes.codeHash, codeHash),
         isNull(mfaRecoveryCodes.usedAt),
       ),
     )
     .returning({ id: mfaRecoveryCodes.id })
-  if (spent.length === 0) return { ok: false, reason: 'wrong_recovery_code' }
+  if (spent.length === 0) return null
 
   // How many are left — the notice and the audit entry say it, so the
   // person knows when to ask for new ones.
@@ -146,7 +170,37 @@ export async function trySecondFactor(
     .where(
       and(eq(mfaRecoveryCodes.userId, userId), isNull(mfaRecoveryCodes.usedAt)),
     )
-  return { ok: true, kind: 'recovery_code', remaining: left.remaining }
+  return left.remaining
+}
+
+// Spends again a second factor that passed in a transaction since ROLLED
+// BACK (a step-up whose change then failed — StepUpAttempt). In `tx`, a new
+// transaction. Answers what this spend did:
+//   - an app code: its step recorded — with GREATEST, never lowering the
+//     stored one: between the rollback and now, another request may have
+//     used a LATER code, and putting the earlier step back would make that
+//     later code usable a second time. (GREATEST ignores a NULL: the first
+//     step ever recorded is simply this one.) Nothing else to say;
+//   - a recovery code: spent if it is still unused (another request, or new
+//     codes, may have got there first) → how many are left, or null if
+//     there was nothing to spend.
+export async function spendAgain(
+  tx: DrizzleDb,
+  userId: number,
+  use: SecondFactorUse,
+): Promise<{ recoveryCodesLeft: number | null }> {
+  if (use.kind === 'totp') {
+    await tx
+      .update(users)
+      .set({
+        mfaLastUsedStep: sql`GREATEST(${users.mfaLastUsedStep}, ${use.step})`,
+      })
+      .where(eq(users.id, userId))
+    return { recoveryCodesLeft: null }
+  }
+  return {
+    recoveryCodesLeft: await spendRecoveryCode(tx, userId, use.codeHash),
+  }
 }
 
 // The words for a refusal.

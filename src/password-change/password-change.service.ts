@@ -58,7 +58,7 @@ export interface PasswordChange {
 // decisions §13). The person's choices: every OTHER session signed out,
 // always; a pending email change cancelled (reason `password_changed`); a
 // wrong current password refused — and, since the privacy and security pass
-// (decisions §16), recorded and counted (StepUpService.failureRecorder).
+// (decisions §16), recorded and counted (StepUpService.attempt — its `failed`).
 //
 //   check the two values ──► hash the new one ──► ONE transaction:
 //     lock the account · the step-up (the current password, and a
@@ -96,6 +96,13 @@ export class PasswordChangeService {
     // the app stores (reset, invitation, first admin).
     const newPasswordHash = await bcrypt.hash(newPassword, 10)
 
+    // This request's step-up: confirmed inside the transaction, its `failed`
+    // in the `.catch` below (StepUpService.attempt).
+    const attempt = this.stepUp.attempt(
+      currentUser,
+      keptSessionId,
+      'password_change',
+    )
     const outcome = await withRlsContext(this.db, currentUser, async (tx) => {
       // The account's row, LOCKED until the commit, and the step-up checked
       // against what the lock returns. Checking first and
@@ -119,7 +126,7 @@ export class PasswordChangeService {
       // (`.catch` below — decisions §16). `!account` keeps TypeScript on
       // the safe side — the same refusal (not counted: nothing was guessed).
       if (!account) throw new BadRequestException(WRONG_PASSWORD_MESSAGE)
-      const stepUp = await this.stepUp.confirm(tx, currentUser.id, account, {
+      const stepUp = await attempt.confirm(tx, account, {
         currentPassword,
         mfaCode,
       })
@@ -193,13 +200,10 @@ export class PasswordChangeService {
         stepUp,
       }
     }).catch(
-      // A failed step-up: recorded and counted once the transaction above
-      // has rolled back; the 5th in a row signs this session out.
-      this.stepUp.failureRecorder(
-        currentUser,
-        keptSessionId,
-        'password_change',
-      ),
+      // Once the transaction above has rolled back: a failed step-up
+      // recorded and counted (the 5th in a row signs this session out), or
+      // — the step-up passed but the change failed — the code spent anyway.
+      attempt.failed,
     )
 
     // A recovery code's notice, if one was used (StepUpService).
