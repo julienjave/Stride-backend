@@ -17,8 +17,14 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+import { ValidateIf } from 'class-validator'
 import { IsCalendarDate } from '../../common/validators/is-calendar-date'
-import { ScheduleVersionInputDto } from './schedule-input.dto'
+import {
+  OnlyForType,
+  ScheduleType,
+  ScheduleVersionInputDto,
+  sentWith,
+} from './schedule-input.dto'
 
 // --- DATA TRANSFER OBJECT ----------------------------------------------------------------------------------
 
@@ -35,4 +41,17 @@ import { ScheduleVersionInputDto } from './schedule-input.dto'
 export class AddScheduleVersionDto extends ScheduleVersionInputDto {
   @IsCalendarDate()
   effectiveFrom!: string
+
+  // A PAUSE WITH AN END (roadmap Phase 6.5): "paused from effectiveFrom,
+  // BACK ON resumeOn" — the first day the schedule applies again (the
+  // person's choice, 2026-10-29: the same meaning as any version's
+  // effectiveFrom, so "back on Monday 26" is a version starting on the
+  // 26th). Optional, and only with type 'paused' (OnlyForType — refused,
+  // not ignored, on another type: a client sending it there has a bug).
+  // Its relation to effectiveFrom and to the program's dates needs the
+  // program, so the service checks those.
+  @ValidateIf(sentWith('resumeOn'))
+  @OnlyForType(ScheduleType.PAUSED)
+  @IsCalendarDate()
+  resumeOn?: string | null
 }

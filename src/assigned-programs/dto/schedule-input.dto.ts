@@ -63,7 +63,7 @@ interface WithType {
 // schedule. Refused (400) rather than silently ignored: a client sending
 // both probably has a bug, and saving one half of what it sent would hide
 // it.
-function OnlyForType(type: ScheduleType, options?: ValidationOptions) {
+export function OnlyForType(type: ScheduleType, options?: ValidationOptions) {
   return ValidateBy(
     {
       name: 'onlyForType',
@@ -92,7 +92,7 @@ const requiredFor = (type: ScheduleType, field: string) => (dto: object) =>
   (dto as Record<string, unknown>)[field] != null
 
 // An OPTIONAL field of one type: checked only when sent.
-const sentWith = (field: string) => (dto: object) =>
+export const sentWith = (field: string) => (dto: object) =>
   (dto as Record<string, unknown>)[field] != null
 
 // --- ONE DAY -----------------------------------------------------------------------------------------------

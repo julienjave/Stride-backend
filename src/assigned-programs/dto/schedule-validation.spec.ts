@@ -234,6 +234,52 @@ describe('schedule version validation', () => {
       'effectiveFrom: effectiveFrom must be a date written as YYYY-MM-DD',
     ])
   })
+
+  // A pause with an end (roadmap Phase 6.5): `resumeOn`, the back-on day.
+  describe('resumeOn', () => {
+    it.each([
+      ['a back-on day', '2026-10-26'],
+      ['absent', undefined],
+      ['null (a form that always sends the key)', null],
+    ])('accepts a pause with %s', async (_label, resumeOn) => {
+      expect(
+        await check(AddScheduleVersionDto, {
+          type: 'paused',
+          effectiveFrom: TODAY,
+          resumeOn,
+        }),
+      ).toEqual([])
+    })
+
+    it.each([
+      ['a timestamp', '2026-10-26T08:00:00Z'],
+      ['an impossible day', '2026-02-30'],
+      ['a number', 20261026],
+    ])('refuses a resumeOn that is %s', async (_label, resumeOn) => {
+      expect(
+        await check(AddScheduleVersionDto, {
+          type: 'paused',
+          effectiveFrom: TODAY,
+          resumeOn,
+        }),
+      ).toEqual(['resumeOn: resumeOn must be a date written as YYYY-MM-DD'])
+    })
+
+    // Refused, not ignored, on a schedule that isn't a pause: "back on" means
+    // nothing for a schedule that never stopped.
+    it.each([
+      ['specific days', { type: 'weekdays', days: MON_A_WED_B }],
+      ['a weekly count', { type: 'times_per_week', timesPerWeek: 3 }],
+    ])('refuses it on %s', async (_label, schedule) => {
+      expect(
+        await check(AddScheduleVersionDto, {
+          ...schedule,
+          effectiveFrom: TODAY,
+          resumeOn: '2026-10-26',
+        }),
+      ).toEqual(["resumeOn: resumeOn is only allowed when type is 'paused'"])
+    })
+  })
 })
 
 describe('CreateAssignedProgramDto', () => {

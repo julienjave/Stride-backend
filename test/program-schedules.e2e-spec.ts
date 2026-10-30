@@ -1112,6 +1112,218 @@ describe('Program schedules (e2e)', () => {
   // that the endpoint feeds the module the right data (only COMPLETED
   // sessions, by the patient's local date) and that only the right people
   // may ask.
+  // --- A pause with an end (roadmap Phase 6.5) ---------------------------------
+
+  // "Pause from D, back on R" in ONE request: the pause and the schedule
+  // after it, in one transaction, under one audit entry.
+  describe('a pause with an end', () => {
+    const pauseUntil = (programId: number, from: string, resumeOn: string) =>
+      practitionerA
+        .post(`/assigned-programs/${programId}/schedules`)
+        .send({ type: 'paused', effectiveFrom: from, resumeOn })
+
+    it('writes the pause and, from the back-on day, the schedule in force before it', async () => {
+      const program = await createProgram()
+      const a = program.workouts[0].id
+
+      const res = await pauseUntil(program.id, today, addDays(today, 7))
+      expect(res.status).toBe(201)
+      expect(summary(res.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [today, 'paused'],
+        [addDays(today, 7), [1, 3, 5]],
+      ])
+      // The SAME days with the SAME workouts — a copy, as a new version.
+      const resumed = (res.body.schedules as ScheduleVersion[])[2]
+      expect(resumed.days).toEqual(
+        [1, 3, 5].map((weekday) => ({ weekday, workoutId: a })),
+      )
+      expect(resumed.createdBy).toBe(practitionerAId)
+      expect(resumed.id).not.toBe(
+        (res.body.schedules as ScheduleVersion[])[0].id,
+      )
+    })
+
+    it('resumes the schedule in force just before the pause, not the first one', async () => {
+      const program = await createProgram()
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ ...THREE_A_WEEK, effectiveFrom: today })
+
+      const res = await pauseUntil(
+        program.id,
+        addDays(today, 3),
+        addDays(today, 10),
+      )
+      expect(summary(res.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [today, 3],
+        [addDays(today, 3), 'paused'],
+        [addDays(today, 10), 3],
+      ])
+    })
+
+    // Giving an open pause an end: it is replaced by the new pause, and
+    // what comes back is the schedule before the OLD pause.
+    it('skips a pause already in force, resuming the schedule before it', async () => {
+      const program = await createProgram()
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ type: 'paused', effectiveFrom: today })
+
+      const res = await pauseUntil(
+        program.id,
+        addDays(today, 2),
+        addDays(today, 9),
+      )
+      expect(res.status).toBe(201)
+      expect(summary(res.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [today, 'paused'],
+        [addDays(today, 2), 'paused'],
+        [addDays(today, 9), [1, 3, 5]],
+      ])
+    })
+
+    // The ordinary rule of every schedule change: from its day on, it
+    // replaces what was planned — the back-on version included.
+    it('replaces the changes planned from the pause day on', async () => {
+      const program = await createProgram()
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ ...THREE_A_WEEK, effectiveFrom: addDays(today, 20) })
+
+      const res = await pauseUntil(program.id, today, addDays(today, 7))
+      expect(summary(res.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+        [today, 'paused'],
+        [addDays(today, 7), [1, 3, 5]],
+      ])
+    })
+
+    it('accepts the program’s last day as the back-on day', async () => {
+      const program = await createProgram({ endsIn: 10 })
+      const res = await pauseUntil(program.id, today, addDays(today, 10))
+      expect(res.status).toBe(201)
+    })
+
+    it.each([
+      [
+        'the pause day itself',
+        0,
+        'The back-on date must be after the day the pause starts',
+      ],
+      [
+        'a day before the pause',
+        -1,
+        'The back-on date must be after the day the pause starts',
+      ],
+    ])(
+      'refuses %s as the back-on day, changing nothing',
+      async (_label, offset, message) => {
+        const program = await createProgram()
+        const res = await pauseUntil(program.id, today, addDays(today, offset))
+        expect(res.status).toBe(400)
+        expect(res.body.message).toEqual([message])
+        expect((await auditTrail(program.id)).map((r) => r.action)).toEqual([
+          'ASSIGNED_PROGRAM_CREATED',
+        ])
+      },
+    )
+
+    it('refuses a back-on day after the program ends', async () => {
+      const program = await createProgram({ endsIn: 10 })
+      const res = await pauseUntil(program.id, today, addDays(today, 11))
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        `The program ends on ${addDays(today, 10)}: to pause until its end, leave the back-on date empty`,
+      ])
+    })
+
+    it('refuses a back-on day on a schedule that is not a pause', async () => {
+      const program = await createProgram()
+      const res = await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({
+          ...THREE_A_WEEK,
+          effectiveFrom: today,
+          resumeOn: addDays(today, 7),
+        })
+      expect(res.status).toBe(400)
+      expect(res.body.message).toEqual([
+        "resumeOn is only allowed when type is 'paused'",
+      ])
+    })
+
+    it('records ONE entry: the pause, the back-on day and the schedule that comes back', async () => {
+      const program = await createProgram()
+      const a = program.workouts[0].id
+      await pauseUntil(program.id, today, addDays(today, 7))
+
+      const trail = await auditTrail(program.id)
+      expect(trail.map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+        'ASSIGNED_PROGRAM_SCHEDULE_SET',
+      ])
+      expect(trail[1].details).toMatchObject({
+        effectiveFrom: today,
+        added: { type: 'paused', effectiveFrom: today },
+        resumeOn: addDays(today, 7),
+        resumed: {
+          type: 'weekdays',
+          days: [1, 3, 5].map((weekday) => ({ weekday, workoutId: a })),
+          effectiveFrom: addDays(today, 7),
+          createdBy: practitionerAId,
+        },
+        replaced: [],
+      })
+    })
+
+    it('records no back-on keys for an open-ended pause', async () => {
+      const program = await createProgram()
+      await practitionerA
+        .post(`/assigned-programs/${program.id}/schedules`)
+        .send({ type: 'paused', effectiveFrom: today })
+      const details = (await auditTrail(program.id))[1].details!
+      expect(Object.keys(details).sort()).toEqual([
+        'added',
+        'effectiveFrom',
+        'replaced',
+      ])
+    })
+
+    // The reason this is ONE route: if the back-on version can't be written,
+    // the pause isn't either. A trigger refuses only the second insert.
+    it('writes neither version when the back-on one fails', async () => {
+      const program = await createProgram()
+      const backOn = addDays(today, 7)
+      await sessionPool.query(`
+        CREATE FUNCTION ps_refuse_resume() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'resume insert refused (test)'; END $$;
+        CREATE TRIGGER ps_refuse_resume BEFORE INSERT ON program_schedules
+          FOR EACH ROW WHEN (NEW.effective_from = DATE '${backOn}')
+          EXECUTE FUNCTION ps_refuse_resume();
+      `)
+      try {
+        const res = await pauseUntil(program.id, today, backOn)
+        expect(res.status).toBe(500)
+      } finally {
+        await sessionPool.query(`
+          DROP TRIGGER ps_refuse_resume ON program_schedules;
+          DROP FUNCTION ps_refuse_resume();
+        `)
+      }
+      // The trail first: the read below writes its own PROGRAM_VIEWED.
+      expect((await auditTrail(program.id)).map((r) => r.action)).toEqual([
+        'ASSIGNED_PROGRAM_CREATED',
+      ])
+      const now = await practitionerA.get(`/assigned-programs/${program.id}`)
+      expect(summary(now.body.schedules)).toEqual([
+        [program.startDate, [1, 3, 5]],
+      ])
+    })
+  })
+
   describe('the summary', () => {
     const summaryOf = (
       agent: ReturnType<typeof request.agent>,

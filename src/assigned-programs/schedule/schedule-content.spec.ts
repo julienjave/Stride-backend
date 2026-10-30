@@ -17,8 +17,10 @@
 
 import { BadRequestException, NotFoundException } from '@nestjs/common'
 import {
+  contentBeforePause,
   contentFromNewSchedule,
   contentFromVersionInput,
+  type DatedContent,
 } from './schedule-content'
 import { ScheduleType } from '../dto/schedule-input.dto'
 
@@ -191,5 +193,87 @@ describe('contentFromVersionInput (a later version)', () => {
     expect(() => contentFromVersionInput(schedule, workouts)).toThrow(
       new NotFoundException('Workout 99 not found in this program'),
     )
+  })
+})
+
+// A pause with an end (roadmap Phase 6.5): what comes back on the back-on
+// day.
+describe('contentBeforePause', () => {
+  const weekdays = (
+    effectiveFrom: string,
+    weekdays: number[],
+  ): DatedContent => ({
+    effectiveFrom,
+    type: 'weekdays',
+    timesPerWeek: null,
+    days: weekdays.map((weekday) => ({ weekday, workoutId: 101 })),
+    rotation: [],
+  })
+  const pause = (effectiveFrom: string): DatedContent => ({
+    effectiveFrom,
+    type: 'paused',
+    timesPerWeek: null,
+    days: [],
+    rotation: [],
+  })
+  const count = (effectiveFrom: string): DatedContent => ({
+    effectiveFrom,
+    type: 'times_per_week',
+    timesPerWeek: 3,
+    days: [],
+    rotation: [101, 102],
+  })
+
+  it('takes the version in force just before the pause — the latest one before it', () => {
+    // Listed out of date order on purpose: the rule sorts, it doesn't
+    // trust the order it's given.
+    const versions = [count('2026-10-05'), weekdays('2026-10-01', [1, 3, 5])]
+    expect(contentBeforePause(versions, '2026-10-12')).toStrictEqual({
+      type: 'times_per_week',
+      timesPerWeek: 3,
+      days: [],
+      rotation: [101, 102],
+    })
+  })
+
+  it('ignores a version starting on the pause day or later — the pause replaces it', () => {
+    const versions = [
+      weekdays('2026-10-01', [1, 3, 5]),
+      count('2026-10-12'),
+      count('2026-10-20'),
+    ]
+    expect(contentBeforePause(versions, '2026-10-12')?.type).toBe('weekdays')
+  })
+
+  it('skips a pause already in force: it resumes the schedule before THAT one', () => {
+    const versions = [weekdays('2026-10-01', [2, 4]), pause('2026-10-08')]
+    expect(contentBeforePause(versions, '2026-10-12')).toStrictEqual({
+      type: 'weekdays',
+      timesPerWeek: null,
+      days: [
+        { weekday: 2, workoutId: 101 },
+        { weekday: 4, workoutId: 101 },
+      ],
+      rotation: [],
+    })
+  })
+
+  it('answers null when there is nothing before the pause to come back to', () => {
+    expect(contentBeforePause([], '2026-10-12')).toBeNull()
+    expect(contentBeforePause([pause('2026-10-08')], '2026-10-12')).toBeNull()
+  })
+
+  it('gives copies: changing the result leaves the versions as they were', () => {
+    const source = weekdays('2026-10-01', [1])
+    const result = contentBeforePause([source], '2026-10-12')!
+    result.days[0].weekday = 7
+    result.days.push({ weekday: 3, workoutId: 102 })
+    expect(source.days).toEqual([{ weekday: 1, workoutId: 101 }])
+  })
+
+  it('copies a rotation too', () => {
+    const source = count('2026-10-01')
+    contentBeforePause([source], '2026-10-12')!.rotation.push(103)
+    expect(source.rotation).toEqual([101, 102])
   })
 })

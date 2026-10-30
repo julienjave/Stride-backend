@@ -63,6 +63,7 @@ import { AddAssignedProgramExerciseDto } from './dto/add-assigned-program-exerci
 import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-exercise.dto'
 import { ScheduleType } from './dto/schedule-input.dto'
 import {
+  contentBeforePause,
   contentFromNewSchedule,
   contentFromVersionInput,
   type ScheduleContent,
@@ -342,6 +343,32 @@ export function assertScheduleDayAllowed(
     throw new BadRequestException(
       "A schedule change can't apply to a day in the past",
     )
+  }
+}
+
+// A pause's "back on" day (roadmap Phase 6.5): AFTER the pause starts (on
+// the same day it would replace the pause itself — a pause of no days),
+// and on or before the program's last day (a version can't start after
+// the end; a pause running to the end needs no "back on" day at all — the
+// message says so). Not checked against "the past": it's later than the
+// pause, which assertScheduleDayAllowed has already kept from the past.
+export const RESUME_NOT_AFTER_PAUSE_MESSAGE =
+  'The back-on date must be after the day the pause starts'
+export const resumeAfterEndMessage = (endDate: string) =>
+  `The program ends on ${endDate}: to pause until its end, leave the back-on date empty`
+export const NOTHING_TO_RESUME_MESSAGE =
+  'There is no schedule before this pause to come back to'
+
+export function assertResumeDayAllowed(
+  resumeOn: string,
+  pauseFrom: string,
+  program: { endDate: string | null },
+) {
+  if (resumeOn <= pauseFrom) {
+    throw new BadRequestException(RESUME_NOT_AFTER_PAUSE_MESSAGE)
+  }
+  if (program.endDate !== null && resumeOn > program.endDate) {
+    throw new BadRequestException(resumeAfterEndMessage(program.endDate))
   }
 }
 
@@ -728,6 +755,13 @@ export class AssignedProgramsService {
         "A program can't start paused: choose its start date for when it begins",
       )
     }
+    // A pause WITH an end (roadmap Phase 6.5): the DTO allows `resumeOn`
+    // only on a pause; here, what needs the program. Checked BEFORE the
+    // transaction, like the day rule above: nothing to roll back.
+    const resumeOn = dto.resumeOn ?? null
+    if (resumeOn !== null) {
+      assertResumeDayAllowed(resumeOn, dto.effectiveFrom, program)
+    }
 
     try {
       await withRlsContext(this.db, currentUser, async (tx) => {
@@ -742,9 +776,21 @@ export class AssignedProgramsService {
         // replaced — after this transaction, the audit log is the only place
         // they still exist. (A DELETE … RETURNING would return the version
         // rows only; their children go by cascade.)
-        const replaced = (await readScheduleVersions(tx, [id])).filter(
+        const versions = await readScheduleVersions(tx, [id])
+        const replaced = versions.filter(
           (version) => version.effectiveFrom >= dto.effectiveFrom,
         )
+        // What comes back after a pause with an end: the schedule in force
+        // just before the pause — read from the versions as they are NOW,
+        // before the DELETE below (the earlier ones stay anyway; reading
+        // first just keeps one read for both uses).
+        const resumedContent =
+          resumeOn === null
+            ? null
+            : contentBeforePause(versions, dto.effectiveFrom)
+        if (resumeOn !== null && resumedContent === null) {
+          throw new BadRequestException(NOTHING_TO_RESUME_MESSAGE)
+        }
         await tx
           .delete(programSchedules)
           .where(
@@ -759,6 +805,25 @@ export class AssignedProgramsService {
           createdBy: currentUser.id,
           content,
         })
+        // The pause's end: a SECOND version, in the SAME transaction —
+        // both are written, or neither (the reason this is one route and
+        // not two requests from the screen: a failed second request would
+        // have left the program paused with no end). Its creator and its
+        // own day, like any version; the children's INSERT policy
+        // (migration 0029: only in the transaction that created their
+        // version) is satisfied for both.
+        const resumed =
+          resumeOn === null || resumedContent === null
+            ? null
+            : await this.insertScheduleVersion(tx, {
+                assignedProgramId: id,
+                effectiveFrom: resumeOn,
+                createdBy: currentUser.id,
+                content: resumedContent,
+              })
+        // ONE entry for the one action, the resumed version in it when
+        // there is one (`resumeOn` and `resumed` are absent otherwise — the
+        // shape of every earlier entry is unchanged).
         await this.auditService.logInTransaction(tx, {
           performedBy: currentUser.id,
           action: 'ASSIGNED_PROGRAM_SCHEDULE_SET',
@@ -768,6 +833,9 @@ export class AssignedProgramsService {
           details: {
             effectiveFrom: dto.effectiveFrom,
             added: versionForAudit(added),
+            ...(resumed === null
+              ? {}
+              : { resumeOn, resumed: versionForAudit(resumed) }),
             replaced: replaced.map(versionForAudit),
           },
         })

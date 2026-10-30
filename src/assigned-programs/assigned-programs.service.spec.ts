@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common'
 import {
   AssignedProgramsService,
+  assertResumeDayAllowed,
   assertScheduleDayAllowed,
   planRemoval,
 } from './assigned-programs.service'
@@ -4873,5 +4874,48 @@ describe('planRemoval', () => {
       outcome,
       sessionCount: sessions,
     })
+  })
+})
+
+// A pause's back-on day (roadmap Phase 6.5): after the pause starts, on or
+// before the program's last day.
+describe('assertResumeDayAllowed', () => {
+  const program = { endDate: '2026-12-31' }
+
+  it.each([
+    ['the day after the pause starts (a one-day pause)', '2026-10-10'],
+    ['weeks later', '2026-11-02'],
+    ["the program's last day", '2026-12-31'],
+  ])('allows %s', (_label, day) => {
+    expect(() =>
+      assertResumeDayAllowed(day, '2026-10-09', program),
+    ).not.toThrow()
+  })
+
+  it('allows any later day for an open-ended program', () => {
+    expect(() =>
+      assertResumeDayAllowed('2031-01-01', '2026-10-09', { endDate: null }),
+    ).not.toThrow()
+  })
+
+  it.each([
+    ['the day the pause starts (a pause of no days)', '2026-10-09'],
+    ['a day before the pause', '2026-10-08'],
+  ])('refuses %s', (_label, day) => {
+    expect(() => assertResumeDayAllowed(day, '2026-10-09', program)).toThrow(
+      new BadRequestException(
+        'The back-on date must be after the day the pause starts',
+      ),
+    )
+  })
+
+  it('refuses a day after the program ends, saying how to pause until its end', () => {
+    expect(() =>
+      assertResumeDayAllowed('2027-01-01', '2026-10-09', program),
+    ).toThrow(
+      new BadRequestException(
+        'The program ends on 2026-12-31: to pause until its end, leave the back-on date empty',
+      ),
+    )
   })
 })

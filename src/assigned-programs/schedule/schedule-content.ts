@@ -148,3 +148,45 @@ export function contentFromVersionInput(
   }
   return { type: 'paused', timesPerWeek: null, days: [], rotation: [] }
 }
+
+// --- RESUMING AFTER A PAUSE --------------------------------------------------------------------------------
+
+// A version as this rule needs it: when it starts, and what it says.
+export interface DatedContent extends ScheduleContent {
+  effectiveFrom: string
+}
+
+// What a pause WITH an end resumes (roadmap Phase 6.5, "a pause with an end
+// date"): the schedule that was in force just before the pause — the LAST
+// non-paused version starting before `pauseFrom`. "Before", strictly: a
+// version on pauseFrom itself is being replaced by the pause. Skipping
+// paused versions matters when a program is already paused and the pause
+// is moved or given an end — resuming "the pause before" would resume
+// nothing.
+//
+// Returns a COPY of its content (fresh arrays), never the version itself:
+// the result becomes a new version's rows, and the caller's list must not
+// change with it. null when there is none — impossible through the API (a
+// program's first version, on its start date, is never a pause, and a
+// pause can't start on the start date), so the service turns it into a
+// 400 rather than trusting that.
+export function contentBeforePause(
+  versions: readonly DatedContent[],
+  pauseFrom: string,
+): ScheduleContent | null {
+  const before = versions
+    .filter(
+      (version) =>
+        version.effectiveFrom < pauseFrom && version.type !== 'paused',
+    )
+    // Calendar dates as YYYY-MM-DD compare correctly as strings.
+    .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))
+    .at(-1)
+  if (!before) return null
+  return {
+    type: before.type,
+    timesPerWeek: before.timesPerWeek,
+    days: before.days.map((day) => ({ ...day })),
+    rotation: [...before.rotation],
+  }
+}
