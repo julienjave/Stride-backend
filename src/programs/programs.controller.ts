@@ -38,6 +38,7 @@ import { ReorderTemplateExercisesDto } from './dto/reorder-template-exercises.dt
 import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
 import { ReorderWorkoutsDto } from './dto/reorder-workouts.dto'
+import { CopyExercisesDto } from '../common/dto/copy-exercises.dto'
 import { SessionAuthGuard } from '../common/guards/session-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
@@ -78,6 +79,22 @@ export class ProgramsController {
     @Body() dto: AddTemplateExerciseDto,
   ) {
     return this.programsService.addExercise(id, user, dto)
+  }
+
+  // Several exercises (or a whole workout) copied into a workout, or a new
+  // one, in one request (roadmap Phase 6.5). The same roles as adding one:
+  // the template's owner, or an admin (the service checks which). An
+  // "action" path under the exercises — POST, because it creates rows.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.PRACTITIONER, UserRole.ADMIN)
+  @AuditedByService()
+  @Post(':id/exercises/copy')
+  copyExercises(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: CopyExercisesDto,
+  ) {
+    return this.programsService.copyExercises(id, user, dto)
   }
 
   // Practitioner-only, same as create() above — a duplicate IS a new

@@ -9,6 +9,7 @@ import {
 import {
   AssignedProgramsService,
   assertResumeDayAllowed,
+  sameCopySources,
   assertScheduleDayAllowed,
   planRemoval,
 } from './assigned-programs.service'
@@ -4917,5 +4918,33 @@ describe('assertResumeDayAllowed', () => {
         'The program ends on 2026-12-31: to pause until its end, leave the back-on date empty',
       ),
     )
+  })
+})
+
+// Roadmap Phase 6.5: copying exercises — did the sources stay the same
+// between the photo copy and the write?
+describe('sameCopySources', () => {
+  const a = { id: 1, mediaUrls: ['k1', 'k2'] }
+  const b = { id: 2, mediaUrls: [] }
+
+  it('is true for the same rows, in the same order, with the same photos', () => {
+    expect(sameCopySources([a, b], [{ ...a }, { ...b }])).toBe(true)
+  })
+
+  it.each([
+    ['a row gone', [a]],
+    ['another order', [b, a]],
+    ['a photo added', [{ ...a, mediaUrls: ['k1', 'k2', 'k3'] }, b]],
+    ['a photo removed', [{ ...a, mediaUrls: ['k1'] }, b]],
+    ['the photos reordered', [{ ...a, mediaUrls: ['k2', 'k1'] }, b]],
+    ['another photo in its place', [{ ...a, mediaUrls: ['k1', 'k9'] }, b]],
+  ])('is false with %s', (_label, now) => {
+    expect(sameCopySources([a, b], now)).toBe(false)
+  })
+  // Two rows with no photos: only the ids can tell them apart.
+  it('is false with other rows of identical photos', () => {
+    const c = { id: 3, mediaUrls: [] }
+    expect(sameCopySources([b, c], [c, b])).toBe(false)
+    expect(sameCopySources([b], [c])).toBe(false)
   })
 })

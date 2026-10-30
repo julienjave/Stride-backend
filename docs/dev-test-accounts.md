@@ -154,6 +154,16 @@ made, through the app's own code); the seed announces it just before.
   workouts** — *A · Mobility* and *B · Strength* — each exercise in one of
   them; the back template is a single workout, the shape every template had
   before workouts existed.
+- **Copying exercises** (as `alex@stride.test`): on the knee template — or
+  Pat's knee program — the copy icon on a workout's header opens **Copy
+  exercises from A · Mobility**: every exercise ticked, the next workout
+  chosen, or **A new workout** with an optional name. One request copies them
+  all, appended in the workout's order, with one audit entry (*Copied
+  exercises within a template / program*). On a program the copies are the
+  patient's own rows (tailored description, prescription, own photos copied
+  to new files). The back template has one workout: **Copy to a new
+  workout…** beside **Add a workout** duplicates it. Run `npm run seed:dev --
+  --reset` afterwards.
 - **Assigned programs**, one of each schedule type, each with a history of
   completed sessions (on past days, so their summaries have something to
   show — today's session is left for you):
@@ -199,8 +209,13 @@ made, through the app's own code); the seed announces it just before.
     one (pain 7 after, up 4) is a session to review, **already reviewed by
     Sam**: it is on **Blake's** To-do only, and its page shows Blake
     "Reviewed by Sam Okafor".
-  - No program is paused; to try a pause, add a schedule version of type
-    `paused` from today (and another one later to resume).
+  - No program is paused; to try a pause, open a program as its
+    practitioner (`alex@stride.test`, Pat's knee program) and choose
+    **Pause** in **Schedule & progress**. **Back on** is optional: with a
+    day, the schedule in force before the pause comes back on that day —
+    both written at once (`POST …/schedules { type: 'paused', effectiveFrom,
+    resumeOn }`), one entry in the audit log; without one, the pause stays
+    open until **Resume**.
   - Admins read **no program and no session** (`admin@stride.test` gets a
     403; the database hides them too). The audit log still shows who did
     what, to whom and when — without a program's or a session's clinical

@@ -131,6 +131,9 @@ export const AUDIT_ACTIONS = {
   TEMPLATE_WORKOUT_REMOVED: 'change',
   TEMPLATE_WORKOUTS_REORDERED: 'change',
   TEMPLATE_EXERCISE_ADDED: 'change',
+  // Several exercises copied into a workout (or a new one) at once —
+  // roadmap Phase 6.5: each copy whole, with the row it came from.
+  TEMPLATE_EXERCISES_COPIED: 'change',
   TEMPLATE_EXERCISE_UPDATED: 'change',
   TEMPLATE_EXERCISE_REMOVED: 'change',
   TEMPLATE_EXERCISES_REORDERED: 'change',
@@ -147,6 +150,9 @@ export const AUDIT_ACTIONS = {
   ASSIGNED_PROGRAM_WORKOUT_REMOVED: 'change',
   ASSIGNED_PROGRAM_WORKOUTS_REORDERED: 'change',
   ASSIGNED_PROGRAM_EXERCISE_ADDED: 'change',
+  // The program's twin of TEMPLATE_EXERCISES_COPIED (own photos' new keys
+  // included).
+  ASSIGNED_PROGRAM_EXERCISES_COPIED: 'change',
   ASSIGNED_PROGRAM_EXERCISE_UPDATED: 'change',
   ASSIGNED_PROGRAM_EXERCISE_REMOVED: 'change',
   ASSIGNED_PROGRAM_EXERCISE_RETIRED: 'change',

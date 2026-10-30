@@ -40,6 +40,8 @@ import { AddTemplateExerciseDto } from './dto/add-template-exercise.dto'
 import { UpdateTemplateExerciseDto } from './dto/update-template-exercise.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
+import { CopyExercisesDto } from '../common/dto/copy-exercises.dto'
+import { orderCopySources } from '../common/exercise-copy'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
 import {
@@ -201,6 +203,119 @@ export class ProgramsService {
     // final line), and gives the frontend everything it needs to
     // re-render the whole card list after adding one, not just the new
     // card in isolation.
+    return this.findOne(templateId)
+  }
+
+  // POST /programs/:id/exercises/copy (roadmap Phase 6.5) — several
+  // exercises, or a whole workout, copied into another workout (or a NEW
+  // one) in ONE request: one transaction, one audit entry. From the screen,
+  // five "Copy to…" clicks were five requests: a failure on the third left
+  // the workout half-copied, with nothing saying which ones made it.
+  //
+  // A template exercise row is a library exercise + a prescription, so a
+  // copy is a new row with the same exerciseId and the same prescription
+  // (sets, reps, duration, weight, notes) — independent from then on.
+  //
+  // The template is LOCKED first (lockTemplate), as for every workout
+  // change: the target workout can't be deleted, and two copies can't
+  // compute the same positions, while this one runs. Everything is read
+  // inside that lock.
+  async copyExercises(
+    templateId: number,
+    currentUser: CurrentUser,
+    dto: CopyExercisesDto,
+  ) {
+    const template = await this.findTemplateOrThrow(templateId)
+    this.assertCanModify(template, currentUser)
+
+    await withRlsContext(this.db, currentUser, async (tx) => {
+      await this.lockTemplate(tx, templateId)
+      const workouts = await this.findWorkouts(tx, templateId)
+      // Only THIS template's rows are read, so an id of another template
+      // simply isn't found — orderCopySources' 404.
+      const rows = await tx
+        .select()
+        .from(templateExercises)
+        .where(
+          and(
+            eq(templateExercises.templateId, templateId),
+            inArray(templateExercises.id, dto.exerciseIds),
+          ),
+        )
+      const sources = orderCopySources(
+        rows,
+        dto.exerciseIds,
+        workouts,
+        'template',
+      )
+
+      // The target: an existing workout of THIS template (404 otherwise),
+      // or a new one, added after the last — "Add a workout"'s rules (the
+      // limit, a blank name stored as none).
+      let createdWorkout: typeof templateWorkouts.$inferSelect | null = null
+      if (dto.targetWorkoutId === null) {
+        assertCanAddWorkout(workouts.length)
+        ;[createdWorkout] = await tx
+          .insert(templateWorkouts)
+          .values({
+            templateId,
+            name: normalizeWorkoutName(dto.newWorkoutName),
+            sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
+          })
+          .returning()
+      }
+      const targetWorkoutId =
+        createdWorkout?.id ??
+        resolveWorkoutId(dto.targetWorkoutId, workouts, 'template')
+
+      // Appended after the target's last exercise, in the sources' order.
+      // One INSERT per copy: a multi-row INSERT … RETURNING doesn't promise
+      // its rows come back in order, and the audit entry pairs each copy
+      // with its source.
+      const start = await this.nextExercisePosition(tx, targetWorkoutId)
+      const copies: {
+        from: number
+        exercise: ReturnType<typeof templateExerciseForAudit>
+      }[] = []
+      for (const [index, source] of sources.entries()) {
+        const [row] = await tx
+          .insert(templateExercises)
+          .values({
+            templateId,
+            workoutId: targetWorkoutId,
+            exerciseId: source.exerciseId,
+            sets: source.sets,
+            reps: source.reps,
+            durationInSeconds: source.durationInSeconds,
+            weight: source.weight,
+            weightUnit: source.weightUnit,
+            sortOrder: start + index,
+            notes: source.notes,
+          })
+          .returning()
+        copies.push({
+          from: source.id,
+          exercise: templateExerciseForAudit(row),
+        })
+      }
+
+      // ONE entry for the one action: where the copies went, the workout it
+      // created (absent otherwise), and each copy whole with the row it
+      // came from.
+      await this.auditService.logInTransaction(tx, {
+        performedBy: currentUser.id,
+        action: 'TEMPLATE_EXERCISES_COPIED',
+        entityType: 'program_templates',
+        entityId: templateId,
+        details: {
+          targetWorkoutId,
+          ...(createdWorkout
+            ? { createdWorkout: templateWorkoutForAudit(createdWorkout) }
+            : {}),
+          copies,
+        },
+      })
+    })
     return this.findOne(templateId)
   }
 

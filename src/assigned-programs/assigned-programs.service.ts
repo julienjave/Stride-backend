@@ -70,6 +70,8 @@ import {
 } from './schedule/schedule-content'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
 import { AddWorkoutDto } from './dto/add-workout.dto'
+import { CopyExercisesDto } from '../common/dto/copy-exercises.dto'
+import { orderCopySources } from '../common/exercise-copy'
 import { RenameWorkoutDto } from './dto/rename-workout.dto'
 import { UserRole } from '../users/dto/create-user.dto'
 import { withRlsContext } from '../database/rls-context'
@@ -253,6 +255,30 @@ function exerciseForAudit(row: typeof assignedProgramExercises.$inferSelect) {
     useLibraryImages: row.useLibraryImages,
     ownPhotos: row.mediaUrls,
   }
+}
+
+// A copy's sources changed between the photo copy and the write (roadmap
+// Phase 6.5): one was removed, or its own photos were changed, by a
+// colleague at that very moment. 409 — the request was fine, the state
+// moved; trying again copies what is there now.
+export const COPY_SOURCES_CHANGED_MESSAGE =
+  'These exercises changed while they were being copied. Reload the program and try again.'
+
+// Same rows, same order, same own photos — what step 3 of copyExercises
+// checks against step 1. Pure, so the rule is tested on plain values.
+export function sameCopySources(
+  before: readonly { id: number; mediaUrls: string[] }[],
+  now: readonly { id: number; mediaUrls: string[] }[],
+): boolean {
+  return (
+    before.length === now.length &&
+    before.every(
+      (row, index) =>
+        row.id === now[index].id &&
+        row.mediaUrls.length === now[index].mediaUrls.length &&
+        row.mediaUrls.every((key, at) => key === now[index].mediaUrls[at]),
+    )
+  )
 }
 
 // A retired exercise (removed from the program, kept for the sessions that
@@ -717,6 +743,149 @@ export class AssignedProgramsService {
     // inserted row — a screen writing that into its cache would have
     // replaced the whole program with one exercise).
     return this.findProgramWithExercises(assignedProgramId, currentUser)
+  }
+
+  // POST /assigned-programs/:id/exercises/copy (roadmap Phase 6.5) — several
+  // exercises, or a whole workout, copied into another workout of the
+  // program (or a NEW one) in ONE request: one transaction, one audit entry
+  // (the template's twin: ProgramsService.copyExercises).
+  //
+  // A program exercise is the patient's OWN copy (decisions §5): its
+  // description may have been edited for this patient, its prescription
+  // tailored, its photos chosen or uploaded. So a copy copies the ROW —
+  // never the library's current entry. (The old one-exercise "Copy to…" went
+  // through the add route, which reads the library: a library edit made
+  // since showed up in the copy — deferred-improvements.md, "A program's
+  // 'Copy to workout…' takes the library's current description". The screen
+  // now uses this route for one exercise too.)
+  //
+  // OWN PHOTOS are files, so copying them is a storage call — done BEFORE
+  // the transaction, as "Assign again" does (a network call inside a
+  // transaction would hold the program's lock while waiting on storage). In
+  // three steps:
+  //   1. read the sources (a short read-only transaction) and check them —
+  //      a wrong id is a 404 BEFORE any file is copied;
+  //   2. copy their own photos to new files of the patient (copyPhotos —
+  //      a failure on the 3rd file deletes the first two);
+  //   3. the write transaction, under the program's lock: read the sources
+  //      AGAIN, and refuse (409) if one was removed or its photos changed in
+  //      between — the copies would otherwise carry files that no longer
+  //      match their source. If anything in it fails, the copied files are
+  //      deleted (undoStoredOnFailure): nothing points at them.
+  // Retired exercises (removed, kept for the sessions that used them) are
+  // not copyable: the screen doesn't show them, and copying one would bring
+  // back something the practitioner removed — they read as "not found".
+  async copyExercises(
+    id: number,
+    currentUser: CurrentUser,
+    dto: CopyExercisesDto,
+  ) {
+    const program = await this.findProgramOrThrow(id, currentUser)
+    await this.assertCanManage(program.patientId, currentUser)
+    await this.assertProgramChangeable(program)
+
+    // 1. The sources, checked and in display order.
+    const planned = await withRlsContext(this.db, currentUser, async (tx) =>
+      orderCopySources(
+        await this.readCopySources(tx, id, dto.exerciseIds),
+        dto.exerciseIds,
+        await this.findWorkouts(tx, id),
+        'program',
+      ),
+    )
+
+    // 2. Their own photos, copied to new files (one list per source, in
+    // order; an exercise showing the library's photos has none to copy).
+    const photoKeys = await this.copyPhotos(
+      program.patientId,
+      planned.map((source) => source.mediaUrls),
+    )
+
+    // 3. The write.
+    await undoStoredOnFailure(this.storageService, photoKeys.flat(), () =>
+      withRlsContext(this.db, currentUser, async (tx) => {
+        await this.lockProgram(tx, id)
+        const workouts = await this.findWorkouts(tx, id)
+        const sources = orderCopySources(
+          await this.readCopySources(tx, id, dto.exerciseIds),
+          dto.exerciseIds,
+          workouts,
+          'program',
+        )
+        // The same rows, in the same order, with the same photos as in step
+        // 1 — or the files copied in step 2 aren't theirs any more.
+        if (!sameCopySources(planned, sources)) {
+          throw new ConflictException(COPY_SOURCES_CHANGED_MESSAGE)
+        }
+
+        let createdWorkout: typeof programWorkouts.$inferSelect | null = null
+        if (dto.targetWorkoutId === null) {
+          assertCanAddWorkout(workouts.length)
+          ;[createdWorkout] = await tx
+            .insert(programWorkouts)
+            .values({
+              assignedProgramId: id,
+              name: normalizeWorkoutName(dto.newWorkoutName),
+              sortOrder: Math.max(-1, ...workouts.map((w) => w.sortOrder)) + 1,
+            })
+            .returning()
+        }
+        const targetWorkoutId =
+          createdWorkout?.id ??
+          resolveWorkoutId(dto.targetWorkoutId, workouts, 'program')
+
+        const start = await this.nextExercisePosition(tx, targetWorkoutId)
+        const copies: {
+          from: number
+          exercise: ReturnType<typeof exerciseForAudit>
+        }[] = []
+        for (const [index, source] of sources.entries()) {
+          const [row] = await tx
+            .insert(assignedProgramExercises)
+            .values({
+              assignedProgramId: id,
+              workoutId: targetWorkoutId,
+              exerciseId: source.exerciseId,
+              // The patient's own description, as it is on this program.
+              name: source.name,
+              primaryMuscles: source.primaryMuscles,
+              secondaryMuscles: source.secondaryMuscles,
+              equipment: source.equipment,
+              instructions: source.instructions,
+              sets: source.sets,
+              reps: source.reps,
+              durationInSeconds: source.durationInSeconds,
+              weight: source.weight,
+              weightUnit: source.weightUnit,
+              sortOrder: start + index,
+              notes: source.notes,
+              // The photo choice, and the COPIES' keys — never the source's
+              // own files (removing a photo from one must not break the
+              // other).
+              useLibraryImages: source.useLibraryImages,
+              mediaUrls: photoKeys[index],
+            })
+            .returning()
+          copies.push({ from: source.id, exercise: exerciseForAudit(row) })
+        }
+
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'ASSIGNED_PROGRAM_EXERCISES_COPIED',
+          targetUserId: program.patientId,
+          entityType: 'assigned-programs',
+          entityId: id,
+          details: {
+            targetWorkoutId,
+            ...(createdWorkout
+              ? { createdWorkout: workoutForAudit(createdWorkout) }
+              : {}),
+            copies,
+          },
+        })
+      }),
+    )
+    return this.findProgramWithExercises(id, currentUser)
   }
 
   // POST /assigned-programs/:id/schedules — "from effectiveFrom on, the
@@ -2875,6 +3044,24 @@ export class AssignedProgramsService {
       )
     }
     return { ...row, days: content.days, rotation: content.rotation }
+  }
+
+  // The rows a copy may take: this program's, asked for, not retired.
+  private async readCopySources(
+    tx: DrizzleDb,
+    assignedProgramId: number,
+    rowIds: number[],
+  ) {
+    return tx
+      .select()
+      .from(assignedProgramExercises)
+      .where(
+        and(
+          eq(assignedProgramExercises.assignedProgramId, assignedProgramId),
+          inArray(assignedProgramExercises.id, rowIds),
+          isNull(assignedProgramExercises.retiredAt),
+        ),
+      )
   }
 
   // A program's workouts, in no particular order (orderWorkouts sorts).

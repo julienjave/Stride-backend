@@ -44,6 +44,7 @@ import { UpdateAssignedProgramExerciseDto } from './dto/update-assigned-program-
 import { ReorderAssignedProgramExercisesDto } from './dto/reorder-assigned-program-exercises.dto'
 import { ListAssignedProgramsQueryDto } from './dto/list-assigned-programs-query.dto'
 import { AddScheduleVersionDto } from './dto/add-schedule-version.dto'
+import { CopyExercisesDto } from '../common/dto/copy-exercises.dto'
 import {
   ProgramSummaryQueryDto,
   ScheduleSummaryQueryDto,
@@ -119,6 +120,21 @@ export class AssignedProgramsController {
     @Body() dto: AddAssignedProgramExerciseDto,
   ) {
     return this.assignedProgramsService.addExercise(id, user, dto)
+  }
+
+  // Several exercises (or a whole workout) copied as ROWS — the patient's
+  // own description, prescription and photos — into a workout of this
+  // program, or a new one (roadmap Phase 6.5). Practitioners only, like
+  // every change to a program; the service checks the care team.
+  @Roles(UserRole.PRACTITIONER)
+  @AuditedByService()
+  @Post(':id/exercises/copy')
+  copyExercises(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: CurrentUser,
+    @Body() dto: CopyExercisesDto,
+  ) {
+    return this.assignedProgramsService.copyExercises(id, user, dto)
   }
 
   // A new schedule version: "from effectiveFrom on, the schedule is …".

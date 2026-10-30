@@ -167,8 +167,11 @@ describe('audit vocabulary', () => {
       // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED and the
       // complaint review's three since 2026-10-28, the legal disclosure's
       // two the same day, the patient merge's three since 2026-10-29) — 116
-      // with MESSAGES_VIEWED (2026-10-30) —, 11 views, 9 sign-ins.
-      expect(changes).toHaveLength(116 - 11 - 9)
+      // with MESSAGES_VIEWED (2026-10-30), 118 with the two copies the same
+      // day —, 11 views, 9 sign-ins.
+      expect(changes).toHaveLength(118 - 11 - 9)
+      expect(changes).toContain('TEMPLATE_EXERCISES_COPIED')
+      expect(changes).toContain('ASSIGNED_PROGRAM_EXERCISES_COPIED')
       expect(changes).toContain('PATIENT_MERGE_NOTICE_REVIEWED')
       expect(changes).toContain('PATIENT_MERGED')
       expect(changes).toContain('PATIENT_MERGE_RECORDS_MOVED')
