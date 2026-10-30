@@ -451,6 +451,73 @@ describe('Exercises (e2e)', () => {
     expect(res.status).toBe(403)
   })
 
+  // --- The list's cover photo (GET /exercises — the thumbnails, Phase 7) ---
+
+  it('lists the FIRST photo as a cacheable cover, never the storage keys, and follows a reorder', async () => {
+    const name = `Cover Probe ${Date.now()}`
+    const created = await createExercise(practitionerA, name)
+    const id = created.body.id
+    const uploaded = await practitionerA
+      .post(`/exercises/${id}/images`)
+      .attach('files', fakeImage('cover-one'), {
+        filename: 'one.png',
+        contentType: 'image/png',
+      })
+      .attach('files', fakeImage('cover-two'), {
+        filename: 'two.png',
+        contentType: 'image/png',
+      })
+    expect(uploaded.status).toBe(201)
+    const [k1, k2] = uploaded.body.images.map(
+      (image: { objectKey: string }) => image.objectKey,
+    )
+
+    // As the patient: the list is open to every signed-in role.
+    const listed = await patient.get('/exercises').query({ search: name })
+    expect(listed.status).toBe(200)
+    const [row] = listed.body.data
+    expect(row.id).toBe(id)
+    expect(row).not.toHaveProperty('mediaUrls')
+    const cover = new URL(row.coverUrl)
+    expect(cover.pathname).toBe(`/stride/${k1}`)
+    // Signed at the start of an hour (minutes and seconds zero), for two
+    // hours — the backend's real clock, so only the shape can be checked
+    // here; the exact moments are unit-tested.
+    expect(cover.searchParams.get('X-Amz-Date')).toMatch(/^\d{8}T\d{2}0000Z$/)
+    expect(cover.searchParams.get('X-Amz-Expires')).toBe('7200')
+
+    // The URL really works against the storage server: the photo's bytes,
+    // with the Cache-Control the signature asked for (S3's
+    // response-cache-control override — a storage server that ignored it
+    // would fail HERE).
+    const served = await fetch(row.coverUrl)
+    expect(served.status).toBe(200)
+    expect(served.headers.get('cache-control')).toBe('private, max-age=3600')
+    expect(Buffer.from(await served.arrayBuffer())).toEqual(
+      fakeImage('cover-one'),
+    )
+
+    // Putting the second photo first makes it the cover.
+    const reordered = await practitionerA
+      .patch(`/exercises/${id}/images`)
+      .send({ order: [k2, k1] })
+    expect(reordered.status).toBe(200)
+    const relisted = await patient.get('/exercises').query({ search: name })
+    expect(new URL(relisted.body.data[0].coverUrl).pathname).toBe(
+      `/stride/${k2}`,
+    )
+  })
+
+  it('lists null as the cover of an exercise with no photo', async () => {
+    const name = `No Cover Probe ${Date.now()}`
+    await createExercise(practitionerA, name)
+
+    const listed = await patient.get('/exercises').query({ search: name })
+    expect(listed.status).toBe(200)
+    expect(listed.body.data).toHaveLength(1)
+    expect(listed.body.data[0].coverUrl).toBeNull()
+  })
+
   // --- Pagination (GET /exercises) ---
 
   // --- The description rules (2026-10-14) ---
@@ -637,6 +704,65 @@ describe('Exercises (e2e)', () => {
     it('rejects a page below 1', async () => {
       const res = await patient.get('/exercises').query({ page: 0 })
       expect(res.status).toBe(400)
+    })
+  })
+
+  // --- The list's order (GET /exercises — Phase 7) ---
+
+  describe('order', () => {
+    const stamp = Date.now()
+    const create = async (name: string) =>
+      (await createExercise(practitionerA, name)).body.id as number
+    const namesOn = async (search: string) =>
+      (await patient.get('/exercises').query({ search })).body.data.map(
+        (e: { name: string }) => e.name,
+      )
+
+    // Two cases in one list, so the test fails without lower() on EITHER
+    // collation:
+    //   - "b" before "C": the C collation (this sandbox's) sorts every
+    //     capital before every small letter — plain `name` would give
+    //     C, D, a, b, d;
+    //   - "D" before "d", created in that order: the same name once
+    //     lowered, so the id decides — en_US (the Docker image's) sorts a
+    //     small letter before its capital, so plain `name` would give "d"
+    //     first.
+    it('lists names A to Z whatever their case, equal names by creation', async () => {
+      const prefix = `Order ${stamp}`
+      for (const letter of ['b', 'D', 'a', 'd', 'C']) {
+        await create(`${prefix} ${letter}`)
+      }
+
+      expect(await namesOn(prefix)).toEqual([
+        `${prefix} a`,
+        `${prefix} b`,
+        `${prefix} C`,
+        `${prefix} D`,
+        `${prefix} d`,
+      ])
+    })
+
+    // The bug itself: page by page, every exercise once. Rows with the SAME
+    // name, and the first one edited — an UPDATE writes a new copy of the
+    // row at the end of the table, so the order on disk is no longer the
+    // order of creation. Only the id can tell the three apart.
+    it('pages through equal names one at a time, each exactly once, by id', async () => {
+      const name = `Same Name ${stamp}`
+      const ids = [await create(name), await create(name), await create(name)]
+      const edited = await practitionerA
+        .patch(`/exercises/${ids[0]}`)
+        .send({ instructions: ['Edited, so stored again'] })
+      expect(edited.status).toBe(200)
+
+      const seen: number[] = []
+      for (const page of [1, 2, 3]) {
+        const res = await patient
+          .get('/exercises')
+          .query({ search: name, page, limit: 1 })
+        expect(res.status).toBe(200)
+        seen.push(...res.body.data.map((e: { id: number }) => e.id))
+      }
+      expect(seen).toEqual(ids)
     })
   })
 

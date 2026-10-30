@@ -579,12 +579,23 @@ describe('ExercisesService.findAll', () => {
     query: { exercises: { findMany: jest.Mock } }
     select: jest.Mock
   }
+  // Answers a recognisable fake URL per key, so a test can see WHICH key
+  // was signed; the real signing is tested in storage.service.spec.ts.
+  let storageService: { getCacheablePresignedUrl: jest.Mock }
 
   beforeEach(async () => {
+    storageService = {
+      getCacheablePresignedUrl: jest.fn((key: string) =>
+        Promise.resolve(`signed:${key}`),
+      ),
+    }
     db = {
       query: {
         exercises: {
-          findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+          findMany: jest.fn().mockResolvedValue([
+            { id: 1, mediaUrls: [] },
+            { id: 2, mediaUrls: [] },
+          ]),
         },
       },
       select: jest.fn().mockReturnValue({
@@ -599,7 +610,7 @@ describe('ExercisesService.findAll', () => {
         ExercisesService,
         { provide: DRIZZLE, useValue: db },
         { provide: AuditService, useValue: audit },
-        { provide: StorageService, useValue: {} },
+        { provide: StorageService, useValue: storageService },
       ],
     }).compile()
 
@@ -613,8 +624,8 @@ describe('ExercisesService.findAll', () => {
       expect.objectContaining({ limit: 20, offset: 0 }),
     )
     expect(result.data).toEqual([
-      { id: 1, author: null },
-      { id: 2, author: null },
+      { id: 1, author: null, coverUrl: null },
+      { id: 2, author: null, coverUrl: null },
     ])
     expect(result.meta).toEqual({
       total: 42,
@@ -661,9 +672,9 @@ describe('ExercisesService.findAll', () => {
 
   it('attaches the correct author to each exercise, batching a single lookup for all creators on the page', async () => {
     db.query.exercises.findMany.mockResolvedValueOnce([
-      { id: 1, createdBy: 5 },
-      { id: 2, createdBy: 6 },
-      { id: 3, createdBy: null },
+      { id: 1, createdBy: 5, mediaUrls: [] },
+      { id: 2, createdBy: 6, mediaUrls: [] },
+      { id: 3, createdBy: null, mediaUrls: [] },
     ])
 
     // First call to db.select() is the total-count query (unchanged from
@@ -690,13 +701,61 @@ describe('ExercisesService.findAll', () => {
     const result = await exercisesService.findAll({})
 
     expect(result.data).toEqual([
-      { id: 1, createdBy: 5, author: { firstName: 'Amy', lastName: 'Lee' } },
-      { id: 2, createdBy: 6, author: { firstName: 'Bo', lastName: 'Ng' } },
-      { id: 3, createdBy: null, author: null },
+      {
+        id: 1,
+        createdBy: 5,
+        author: { firstName: 'Amy', lastName: 'Lee' },
+        coverUrl: null,
+      },
+      {
+        id: 2,
+        createdBy: 6,
+        author: { firstName: 'Bo', lastName: 'Ng' },
+        coverUrl: null,
+      },
+      { id: 3, createdBy: null, author: null, coverUrl: null },
     ])
     // Exactly two db.select calls (total + one BATCHED author lookup) —
     // not three, which would mean a separate query per creator instead
     // of the single inArray(...) lookup this is supposed to be.
     expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  // --- The thumbnail (Phase 7) ---
+
+  it('gives each row its FIRST photo as the cover, signed, and no storage keys', async () => {
+    db.query.exercises.findMany.mockResolvedValueOnce([
+      { id: 1, mediaUrls: ['exercises/1/0.jpg', 'exercises/1/1.jpg'] },
+      { id: 2, mediaUrls: [] },
+    ])
+
+    const result = await exercisesService.findAll({})
+
+    // toStrictEqual: `mediaUrls` must be ABSENT from each row, not merely
+    // undefined (toEqual would accept either).
+    expect(result.data).toStrictEqual([
+      { id: 1, author: null, coverUrl: 'signed:exercises/1/0.jpg' },
+      { id: 2, author: null, coverUrl: null },
+    ])
+    // Only the cover is signed — not the second photo, and nothing for a
+    // row without photos.
+    expect(storageService.getCacheablePresignedUrl).toHaveBeenCalledTimes(1)
+  })
+
+  it('signs every cover of a page with ONE moment', async () => {
+    db.query.exercises.findMany.mockResolvedValueOnce([
+      { id: 1, mediaUrls: ['exercises/1/0.jpg'] },
+      { id: 2, mediaUrls: ['exercises/2/0.jpg'] },
+    ])
+
+    await exercisesService.findAll({})
+
+    const [[, firstMoment], [, secondMoment]] = storageService
+      .getCacheablePresignedUrl.mock.calls as [string, Date][]
+    expect(firstMoment).toBeInstanceOf(Date)
+    // The same Date OBJECT: one `now` for the request, not one per row
+    // (two rows signed either side of the hour would get URLs of two
+    // different hours).
+    expect(secondMoment).toBe(firstMoment)
   })
 })

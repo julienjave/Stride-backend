@@ -24,7 +24,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, count, ilike, or, sql, inArray } from 'drizzle-orm'
+import { and, asc, eq, count, ilike, or, sql, inArray } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { exercises, users } from '../database/schema'
 import { CreateExerciseDto } from './dto/create-exercise.dto'
@@ -202,8 +202,35 @@ export class ExercisesService {
     // one before starting the other, since neither depends on the other's
     // result. The total is what lets a client compute totalPages/know
     // whether there's a next page at all, which the rows alone can't tell it.
+    //
+    // The ORDER (Phase 7, found with the thumbnails): without an ORDER BY,
+    // SQL promises NO order at all — Postgres hands rows back in whatever
+    // order is cheapest, usually where they sit on disk, which changes when
+    // a row is updated (an UPDATE writes a new copy of the row elsewhere).
+    // With LIMIT / OFFSET, each page is a SEPARATE query: if the order
+    // differs between the query for page 1 and the one for page 2, an
+    // exercise can be on both pages, and another on neither.
+    //   - lower(name): A to Z, ignoring upper / lower case. Text is compared
+    //     by the database's COLLATION — with the strict "C" collation every
+    //     capital comes before every small letter ("Zottman Curl" before
+    //     "ankle circles", a name a practitioner typed), with en_US case
+    //     mostly doesn't matter. lower() gives the same A-to-Z on both.
+    //     (Accents and punctuation still follow the collation.)
+    //   - id: the TIE-BREAK. Two names equal once lowered ("Heel Slides",
+    //     "heel slides") would otherwise have no defined order between
+    //     them; the id makes every position unique, so the order is the
+    //     same in every query — the rule the users list and the audit log
+    //     already follow.
+    // No index for it: the library is ~900 rows, which Postgres sorts in
+    // memory at once; an index on lower(name) would start to matter at tens
+    // of thousands of rows.
     const [rows, [{ total }]] = await Promise.all([
-      this.db.query.exercises.findMany({ where: whereClause, limit, offset }),
+      this.db.query.exercises.findMany({
+        where: whereClause,
+        orderBy: [asc(sql`lower(${exercises.name})`), asc(exercises.id)],
+        limit,
+        offset,
+      }),
       this.db.select({ total: count() }).from(exercises).where(whereClause),
     ])
 
@@ -246,14 +273,24 @@ export class ExercisesService {
       }
     }
 
-    return {
-      data: rows.map((row) => ({
-        ...row,
-        author:
+    // ONE moment for the whole page: every cover is signed for the same
+    // hour (getCacheablePresignedUrl), even if the request runs across the
+    // hour's last millisecond.
+    const now = new Date()
+    const data = await Promise.all(
+      rows.map((row) =>
+        this.toListItem(
+          row,
           row.createdBy != null
             ? (authorsById.get(row.createdBy) ?? null)
             : null,
-      })),
+          now,
+        ),
+      ),
+    )
+
+    return {
+      data,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     }
   }
@@ -488,6 +525,44 @@ export class ExercisesService {
   // to remove or reorder one). Renamed from mediaUrls to images, not
   // just changed in place, so any code still expecting the old
   // string[] shape fails to compile instead of silently misbehaving.
+  // One row of the LIST (GET /exercises): the exercise without its storage
+  // keys, plus the cover photo's URL for the card's thumbnail (Phase 7).
+  //
+  // - The cover is mediaUrls[0] — the first photo IS the cover (reordering
+  //   one to the front sets it; see reorderImages). Only that one is signed:
+  //   a card shows one picture, and the detail page signs the whole gallery
+  //   (withImages) when it's opened.
+  // - Signed with getCacheablePresignedUrl, not getPresignedUrl: the list is
+  //   fetched again and again, and only a URL that stays the same lets the
+  //   browser reuse the picture it already downloaded.
+  // - `mediaUrls` leaves the answer: raw keys say how storage is laid out,
+  //   and every other response stopped sending them (withImages, a
+  //   program's `images`). Taking it out of the object (rather than setting
+  //   it to undefined) means the key isn't in the JSON at all.
+  // - `null`, not a missing key, for "no photo": the card tests for it.
+  private async toListItem(
+    row: typeof exercises.$inferSelect,
+    author: { firstName: string; lastName: string } | null,
+    now: Date,
+  ) {
+    // A length check, not `mediaUrls[0] !== undefined`: this project's
+    // compiler settings type `mediaUrls[0]` as a plain `string` even when
+    // the array is empty (no `noUncheckedIndexedAccess`), so the test that
+    // the type system can see is the length.
+    const { mediaUrls, ...rest } = row
+    return {
+      ...rest,
+      author,
+      coverUrl:
+        mediaUrls.length > 0
+          ? await this.storageService.getCacheablePresignedUrl(
+              mediaUrls[0],
+              now,
+            )
+          : null,
+    }
+  }
+
   private async withImages(exercise: typeof exercises.$inferSelect) {
     const { mediaUrls, ...rest } = exercise
     const images = await Promise.all(

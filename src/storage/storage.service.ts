@@ -35,6 +35,7 @@ import {
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { cacheableSigning } from './cacheable-url'
 
 // One object as the storage server lists it (listObjects below).
 export interface StoredObject {
@@ -216,6 +217,30 @@ export class StorageService implements OnModuleInit {
       Key: objectKey,
     })
     return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
+  }
+
+  // A signed URL that stays THE SAME for the whole hour, so the browser can
+  // keep the file and reuse it (cacheable-url.ts explains the rule). For
+  // files many screens show again and again — the library's thumbnails.
+  // Not a replacement for getPresignedUrl: a URL that lives up to two hours
+  // is fine for the library's photos, which every signed-in user may see,
+  // and not what a patient's own files should get by default.
+  //
+  // `now` is a parameter so a request signs all its files with ONE moment
+  // (a page of 20 covers can't straddle two windows half-way), and so a
+  // test can pin it. Signing never contacts the storage server: the URL is
+  // computed here, from the credentials.
+  async getCacheablePresignedUrl(
+    objectKey: string,
+    now: Date = new Date(),
+  ): Promise<string> {
+    const { signingDate, expiresIn, cacheControl } = cacheableSigning(now)
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: objectKey,
+      ResponseCacheControl: cacheControl,
+    })
+    return getSignedUrl(this.client, command, { expiresIn, signingDate })
   }
 
   // Same as getPresignedUrl above, but safe to call with a possibly-absent

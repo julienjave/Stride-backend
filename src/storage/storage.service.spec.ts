@@ -257,3 +257,49 @@ describe('StorageService.listObjects', () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
 })
+
+// Signing is a pure computation (an HMAC over the request and the signing
+// date, with the credentials) — no storage server is contacted, so the REAL
+// method is tested here, with the real SDK, and the URLs read back.
+describe('StorageService.getCacheablePresignedUrl', () => {
+  const storageService = new StorageService()
+  const sign = (key: string, moment: string) =>
+    storageService.getCacheablePresignedUrl(key, new Date(moment))
+
+  it('gives the SAME URL, byte for byte, for any two moments of one hour', async () => {
+    const early = await sign('exercises/7/0.jpg', '2031-03-04T14:00:01.000Z')
+    const late = await sign('exercises/7/0.jpg', '2031-03-04T14:59:59.999Z')
+
+    expect(late).toBe(early)
+  })
+
+  it('gives a new URL in the next hour', async () => {
+    const before = await sign('exercises/7/0.jpg', '2031-03-04T14:59:59.999Z')
+    const after = await sign('exercises/7/0.jpg', '2031-03-04T15:00:00.000Z')
+
+    expect(after).not.toBe(before)
+  })
+
+  it('signs at the hour, for two hours, asking for a one-hour browser cache', async () => {
+    const url = new URL(
+      await sign('exercises/7/0.jpg', '2031-03-04T14:27:13.000Z'),
+    )
+
+    // The file's own address (path-style, the bucket first)...
+    expect(url.pathname).toBe('/stride/exercises/7/0.jpg')
+    // ...and the signature's parameters: SigV4's date format is
+    // YYYYMMDD'T'HHMMSS'Z', UTC.
+    expect(url.searchParams.get('X-Amz-Date')).toBe('20310304T140000Z')
+    expect(url.searchParams.get('X-Amz-Expires')).toBe('7200')
+    expect(url.searchParams.get('response-cache-control')).toBe(
+      'private, max-age=3600',
+    )
+  })
+
+  it('gives each file its own URL', async () => {
+    const first = await sign('exercises/7/0.jpg', '2031-03-04T14:10:00.000Z')
+    const second = await sign('exercises/7/1.jpg', '2031-03-04T14:10:00.000Z')
+
+    expect(second).not.toBe(first)
+  })
+})
