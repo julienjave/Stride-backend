@@ -253,6 +253,12 @@ made, through the app's own code); the seed announces it just before.
     brings it back for both).
   - Admins have **no messaging** — no route, no conversation, no message
     (`admin@stride.test` gets a 403; the database hides them too).
+  - **Opening a thread is recorded:** when a practitioner opens a patient's
+    conversation, the audit log gets **Viewed messages** about that patient
+    (`MESSAGES_VIEWED`, the ids of the messages shown, never their text — one
+    entry per page, "load earlier" included). Log in as `alex@stride.test`,
+    open **Messages → Pat Lee**, then as the admin look at **Audit log**,
+    **Kind: Views**. A patient reading their own messages isn't recorded.
   - To see a **read-only** conversation: as the admin, end Alex's place on
     Pat's care team (Admin → Users → Pat → Care team → End). Pat and Alex
     both still read their history; neither can write until Alex rejoins.

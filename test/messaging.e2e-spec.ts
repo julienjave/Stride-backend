@@ -782,6 +782,126 @@ describe('Messaging (e2e)', () => {
 
   // === 5. "READ" =============================================================
 
+  // Roadmap Phase 6.5, "Logging thread reads": someone else's read of a
+  // patient's messages is traced like every other clinical read.
+  describe('the audit trail of reading a thread', () => {
+    async function viewEntries(conversationId: number) {
+      return (await auditFor('conversations', conversationId)).filter(
+        (row) => row.action === 'MESSAGES_VIEWED',
+      )
+    }
+
+    it("records the practitioner's read: about the patient, with the ids shown", async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      const first = await send(patient.agent, id, 'My knee feels better')
+      const second = await send(practitionerA, id, 'Good to hear')
+
+      const res = await practitionerA.get(`/conversations/${id}/messages`)
+      expect(res.status).toBe(200)
+
+      expect(await viewEntries(id)).toStrictEqual([
+        {
+          action: 'MESSAGES_VIEWED',
+          performed_by: practitionerAId,
+          target_user_id: patient.id,
+          entity_type: 'conversations',
+          entity_id: id,
+          details: { messageIds: [first.id, second.id] },
+        },
+      ])
+    })
+
+    it('records one entry per page — each "load earlier" with its own ids', async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      const sent: number[] = []
+      for (const text of ['one', 'two', 'three']) {
+        sent.push((await send(patient.agent, id, text)).id)
+      }
+
+      await practitionerA.get(`/conversations/${id}/messages?limit=2`)
+      await practitionerA.get(
+        `/conversations/${id}/messages?limit=2&before=${sent[1]}`,
+      )
+
+      expect((await viewEntries(id)).map((row) => row.details)).toStrictEqual([
+        { messageIds: [sent[1], sent[2]] },
+        { messageIds: [sent[0]] },
+      ])
+    })
+
+    it('records nothing when the patient reads their own messages', async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      await send(practitionerA, id, 'Hello Pat')
+
+      expect(
+        (await patient.agent.get(`/conversations/${id}/messages`)).status,
+      ).toBe(200)
+      expect(await viewEntries(id)).toEqual([])
+    })
+
+    it('leaves deleted messages out, and records nothing when no text was shown', async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      // An empty thread first: nothing read, nothing recorded.
+      expect(
+        (await practitionerA.get(`/conversations/${id}/messages`)).status,
+      ).toBe(200)
+      expect(await viewEntries(id)).toEqual([])
+
+      const gone = await send(patient.agent, id, 'Sent by mistake')
+      expect(
+        (await patient.agent.delete(`/conversations/${id}/messages/${gone.id}`))
+          .status,
+      ).toBe(200)
+      // Only a deleted message: its text isn't served, so still no entry.
+      await practitionerA.get(`/conversations/${id}/messages`)
+      expect(await viewEntries(id)).toEqual([])
+
+      const kept = await send(patient.agent, id, 'The real question')
+      await practitionerA.get(`/conversations/${id}/messages`)
+      expect((await viewEntries(id)).map((row) => row.details)).toStrictEqual([
+        { messageIds: [kept.id] },
+      ])
+    })
+
+    it('records nothing for a refused read', async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      await send(patient.agent, id, 'Only for Alex')
+      // A practitioner outside the conversation: 404, nothing read.
+      expect((await outsider.get(`/conversations/${id}/messages`)).status).toBe(
+        404,
+      )
+      expect(await viewEntries(id)).toEqual([])
+    })
+
+    it('does not serve the messages when their entry cannot be written', async () => {
+      const patient = await newPatient()
+      const id = await start(practitionerA, patient.id)
+      await send(patient.agent, id, 'Private words')
+      await sessionPool.query(`
+        CREATE FUNCTION mv_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'audit insert refused (test)'; END $$;
+        CREATE TRIGGER mv_refuse BEFORE INSERT ON audit_logs
+          FOR EACH ROW WHEN (NEW.action = 'MESSAGES_VIEWED')
+          EXECUTE FUNCTION mv_refuse();
+      `)
+      try {
+        const res = await practitionerA.get(`/conversations/${id}/messages`)
+        expect(res.status).toBe(500)
+        expect(JSON.stringify(res.body)).not.toContain('Private words')
+      } finally {
+        await sessionPool.query(`
+          DROP TRIGGER mv_refuse ON audit_logs;
+          DROP FUNCTION mv_refuse();
+        `)
+      }
+    })
+  })
+
   describe('marking as read', () => {
     it("marks the other person's unread messages — not my own, not a deleted one — and answers which", async () => {
       const patient = await newPatient()

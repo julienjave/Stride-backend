@@ -512,7 +512,7 @@ describe('Audit log viewer (e2e)', () => {
 
     expect(res.status).toBe(200)
     const list = res.body as { action: string; kind: string }[]
-    expect(list).toHaveLength(115)
+    expect(list).toHaveLength(116)
     expect(list.map((item) => item.action)).toEqual(
       list.map((item) => item.action).sort(),
     )

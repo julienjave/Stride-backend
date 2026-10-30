@@ -51,6 +51,7 @@ import {
   isListed,
   participantSide,
   readOnlyReason,
+  shownMessageIds,
   takePage,
   toPublicMessage,
   type ConversationSummary,
@@ -363,19 +364,49 @@ export class MessagingService {
   // messages come with their text removed, for everyone (toPublicMessage —
   // before Phase 5 only the delete's own answer hid it, and the history
   // served it again to the recipient).
+  //
+  // AUDITED when someone else reads the patient's messages (roadmap Phase
+  // 6.5, "Logging thread reads"; the audit review's rule for clinical
+  // reads, decisions §10): a practitioner opening the thread writes ONE
+  // MESSAGES_VIEWED entry per request — about the patient, naming the
+  // conversation and the messages whose text was served. Until now only
+  // "Mark as read" left a trace, and only for messages that were unread:
+  // scrolling back through months of history left none.
+  //   - WRITTEN BEFORE THE ANSWER, and awaited: if the entry can't be
+  //     written, the request fails (a 500) and the messages are never
+  //     served — a read without its trace is exactly what HIPAA's audit
+  //     controls forbid. The same rule as programs, sessions and medical
+  //     files.
+  //   - On its own connection (logReads uses `this.db`), AFTER the read's
+  //     transaction: a read changes nothing, so there is no change for the
+  //     entry to commit "with"; what matters is the order — entry, then
+  //     answer.
+  //   - The PATIENT's own reads aren't recorded: logReads drops an entry
+  //     whose target is its author (decisions §10 — "others' reads").
+  //   - Each "load earlier" page is its own request, so its own entry with
+  //     its own ids: the trail says how far back someone read.
+  //   - Not logged: the conversation LIST's one-line previews (an entry per
+  //     patient every time the inbox refreshes would drown the log — chosen
+  //     2026-10-29), and messages pushed live by the socket while the thread
+  //     is open (an event the server sends, not a request; the thread page
+  //     loaded through this route when it opened, which is logged).
   async getMessages(
     conversationId: number,
     currentUser: CurrentUser,
     page: { before?: number; limit?: number } = {},
   ): Promise<{ messages: PublicMessage[]; hasMore: boolean }> {
     const limit = page.limit ?? MESSAGE_PAGE_SIZE
-    return withRlsContext(this.db, currentUser, async (tx) => {
+    // Set inside the transaction, read after it: the conversation's patient
+    // is who the audit entry is about.
+    let patientId = 0
+    const served = await withRlsContext(this.db, currentUser, async (tx) => {
       const conversation = await this.loadConversation(
         tx,
         conversationId,
         currentUser,
       )
       requireSide(conversation, currentUser)
+      patientId = conversation.patientId
       const rows = await tx
         .select()
         .from(messages)
@@ -394,6 +425,21 @@ export class MessagingService {
         .limit(limit + 1)
       return takePage(rows.map(toPublicMessage), limit)
     })
+
+    const messageIds = shownMessageIds(served.messages)
+    if (messageIds.length > 0) {
+      await this.auditService.logReads([
+        {
+          performedBy: currentUser.id,
+          action: 'MESSAGES_VIEWED',
+          targetUserId: patientId,
+          entityType: 'conversations',
+          entityId: conversationId,
+          details: { messageIds },
+        },
+      ])
+    }
+    return served
   }
 
   // --- PATCH /conversations/:id/read ---

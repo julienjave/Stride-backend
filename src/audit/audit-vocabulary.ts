@@ -187,6 +187,10 @@ export const AUDIT_ACTIONS = {
   CONVERSATION_READ: 'change',
   CONVERSATION_ARCHIVED: 'change',
   CONVERSATION_UNARCHIVED: 'change',
+  // Someone else read the patient's messages — a practitioner opening the
+  // thread (roadmap Phase 6.5): the conversation and the ids of the
+  // messages whose text was served, never the text.
+  MESSAGES_VIEWED: 'view',
 
   // Medical files (entry ids only — never the notes)
   MEDICAL_FILE_ENTRY_CREATED: 'change',

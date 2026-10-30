@@ -270,6 +270,19 @@ export function takePage<T>(
   return { messages: newestFirst.slice(0, limit).reverse(), hasMore }
 }
 
+// The messages whose TEXT a page actually showed — what a MESSAGES_VIEWED
+// audit entry lists (roadmap Phase 6.5, "Logging thread reads"). A deleted
+// message is served without its text (`messageBody: null`, toPublicMessage):
+// its reader learned that something was sent and then removed, not what it
+// said — nothing of the patient's words was read, so it isn't listed. An
+// empty result means the request read no clinical text at all, and writes
+// no entry (as an empty program list writes none).
+export function shownMessageIds(page: readonly PublicMessage[]): number[] {
+  return page
+    .filter((message) => message.messageBody !== null)
+    .map((message) => message.id)
+}
+
 // --- THE LIST ----------------------------------------------------------------------------------------------
 
 // What the list shows: conversations with at least one message. A

@@ -26,6 +26,7 @@ import {
   otherParticipantId,
   participantSide,
   readOnlyReason,
+  shownMessageIds,
   takePage,
   toPublicMessage,
   type ConversationSummary,
@@ -160,6 +161,43 @@ describe('deleteRefusal', () => {
     expect(deleteRefusal(readAndOld, 3, afterMs(DELETE_WINDOW_MS + 1))).toBe(
       'read',
     )
+  })
+})
+
+// Roadmap Phase 6.5, "Logging thread reads": what a MESSAGES_VIEWED entry
+// lists.
+describe('shownMessageIds', () => {
+  const served = (id: number, messageBody: string | null) => ({
+    id,
+    conversationId: 1,
+    senderId: 6,
+    messageBody,
+    sentAt: at('2031-03-04T10:00:00Z'),
+    readAt: null,
+    deletedAt: messageBody === null ? at('2031-03-04T10:05:00Z') : null,
+  })
+
+  it('lists the messages whose text was served, in page order', () => {
+    expect(
+      shownMessageIds([served(4, 'hello'), served(7, 'how is the knee?')]),
+    ).toEqual([4, 7])
+  })
+
+  it('leaves out a deleted message — no text of it was read', () => {
+    expect(
+      shownMessageIds([served(4, 'hello'), served(5, null), served(7, 'ok')]),
+    ).toEqual([4, 7])
+  })
+
+  // An empty string is text (the API refuses blank messages, so it can't
+  // be stored — but the rule is "null = deleted", not "falsy").
+  it('keeps a message whose text is an empty string', () => {
+    expect(shownMessageIds([served(4, '')])).toEqual([4])
+  })
+
+  it('is empty for an empty page, or one of deleted messages only', () => {
+    expect(shownMessageIds([])).toEqual([])
+    expect(shownMessageIds([served(5, null)])).toEqual([])
   })
 })
 

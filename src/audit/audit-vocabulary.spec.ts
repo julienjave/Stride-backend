@@ -138,6 +138,7 @@ describe('audit vocabulary', () => {
         'PROGRAM_CLOSING_PREVIEWED',
         'SESSION_VIEWED',
         'ALERTS_VIEWED',
+        'MESSAGES_VIEWED',
         'MEDICAL_FILE_VIEWED',
         'MEDICAL_FILE_ENTRY_VIEWED',
         'RECORDS_EXPORTED',
@@ -165,9 +166,9 @@ describe('audit vocabulary', () => {
       // STEP_UP_FAILED since 2026-10-24, RECORDS_EXPORTED and the emailed
       // link's two since 2026-10-26, CARE_TEAM_JOIN_REVIEWED and the
       // complaint review's three since 2026-10-28, the legal disclosure's
-      // two the same day, the patient merge's three since 2026-10-29) — 115
-      // —, 10 views, 9 sign-ins.
-      expect(changes).toHaveLength(115 - 10 - 9)
+      // two the same day, the patient merge's three since 2026-10-29) — 116
+      // with MESSAGES_VIEWED (2026-10-30) —, 11 views, 9 sign-ins.
+      expect(changes).toHaveLength(116 - 11 - 9)
       expect(changes).toContain('PATIENT_MERGE_NOTICE_REVIEWED')
       expect(changes).toContain('PATIENT_MERGED')
       expect(changes).toContain('PATIENT_MERGE_RECORDS_MOVED')
