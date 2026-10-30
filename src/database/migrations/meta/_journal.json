@@ -519,6 +519,20 @@
       "when": 1793293770797,
       "tag": "0073_care_team_and_end_date_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1793361013578,
+      "tag": "0074_message_email_notices",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1793361031463,
+      "tag": "0075_claim_message_notices",
+      "breakpoints": true
     }
   ]
 }

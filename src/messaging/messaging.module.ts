@@ -24,16 +24,20 @@ import { MessagingGateway } from './messaging.gateway'
 import { MessagingEventsModule } from './messaging-events.module'
 import { UsersModule } from '../users/users.module'
 import { StorageModule } from '../storage/storage.module'
+import { EmailModule } from '../email/email.module'
+import { MessageNoticesService } from './message-notices.service'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 // StorageModule: the conversation list signs the other person's photo URL.
 // MessagingEventsModule: the service emits, the gateway attaches its server
 // (one shared instance — messaging-events.module.ts).
+// EmailModule: the new-message emails (MessageNoticesService, roadmap Phase
+// 6.5) — exported so main.ts can start its timer.
 @Module({
-  imports: [UsersModule, StorageModule, MessagingEventsModule],
+  imports: [UsersModule, StorageModule, MessagingEventsModule, EmailModule],
   controllers: [MessagingController],
-  providers: [MessagingService, MessagingGateway],
-  exports: [MessagingService],
+  providers: [MessagingService, MessagingGateway, MessageNoticesService],
+  exports: [MessagingService, MessageNoticesService],
 })
 export class MessagingModule {}

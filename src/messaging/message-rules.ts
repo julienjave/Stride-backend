@@ -217,6 +217,77 @@ export function archiveColumn(
     : 'patientArchivedAt'
 }
 
+// The column saying I was EMAILED about this conversation's unread messages
+// (roadmap Phase 6.5) — cleared when I read them, so the next new message
+// may email me again.
+export function notifiedColumn(
+  side: Side,
+): 'practitionerNotifiedAt' | 'patientNotifiedAt' {
+  return side === 'practitioner'
+    ? 'practitionerNotifiedAt'
+    : 'patientNotifiedAt'
+}
+
+// --- NEW-MESSAGE EMAILS (roadmap Phase 6.5) ------------------------------------------------------------------
+
+// How long a message waits, unread, before its recipient is emailed: the
+// sender's delete window (DELETE_WINDOW_MS, 15 minutes). Not a coincidence —
+// a message deleted within its window never sends an email about something
+// that's no longer there; and someone who reads within a quarter of an hour
+// (in the app at the time, or soon after) isn't emailed at all.
+export const NOTICE_DELAY_MINUTES = DELETE_WINDOW_MS / 60_000
+
+// One row of claim_message_notices() (migration 0075): a side of a
+// conversation now due, as the database answers it (snake_case). A `type`,
+// not an `interface`: drizzle's execute<T>() wants a record type, and an
+// interface never fits Record<string, unknown> (TS2344).
+export type ClaimedNoticeRow = {
+  conversation_id: number
+  recipient_id: number
+  recipient_side: Side
+  recipient_email: string
+  recipient_first_name: string
+  sender_first_name: string
+  sender_last_name: string
+}
+
+// One email: a recipient, in one side (the link goes to that side's
+// Messages), and who wrote — each person once, in the order claimed.
+export interface MessageNotice {
+  recipientId: number
+  side: Side
+  to: string
+  firstName: string
+  senders: string[]
+}
+
+// The claimed rows, grouped: ONE email per recipient AND side per sweep,
+// however many conversations are due ("Pat Lee and Jo Novak sent you
+// messages"). By side too: Morgan, practitioner AND patient, gets her
+// patients' messages as a practitioner and her own practitioner's as a
+// patient — two places to look, so two links. A name appears once even if
+// two conversations share it (it can't today — one conversation per pair —
+// but the rule shouldn't depend on that).
+export function groupNotices(
+  rows: readonly ClaimedNoticeRow[],
+): MessageNotice[] {
+  const byKey = new Map<string, MessageNotice>()
+  for (const row of rows) {
+    const key = `${row.recipient_id}:${row.recipient_side}`
+    const notice = byKey.get(key) ?? {
+      recipientId: row.recipient_id,
+      side: row.recipient_side,
+      to: row.recipient_email,
+      firstName: row.recipient_first_name,
+      senders: [],
+    }
+    const sender = `${row.sender_first_name} ${row.sender_last_name}`
+    if (!notice.senders.includes(sender)) notice.senders.push(sender)
+    byKey.set(key, notice)
+  }
+  return [...byKey.values()]
+}
+
 // --- MESSAGES ----------------------------------------------------------------------------------------------
 
 export function toPublicMessage(message: MessageRow): PublicMessage {

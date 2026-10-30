@@ -419,6 +419,82 @@ describe('EmailService', () => {
     })
   })
 
+  // Roadmap Phase 6.5: "you have a new message" — who wrote, never what.
+  describe('sendNewMessagesNotice', () => {
+    it("names the one sender, links to the side's Messages, and says the text is never included", async () => {
+      await service.sendNewMessagesNotice({
+        to: 'pat@example.com',
+        firstName: 'Pat',
+        side: 'patient',
+        senders: ['Alex Chen'],
+      })
+
+      expect(send).toHaveBeenCalledTimes(1)
+      const email = send.mock.calls[0][0]
+      expect(email.to).toBe('pat@example.com')
+      expect(email.subject).toBe('Alex Chen sent you a message on Stride')
+      expect(email.text).toBe(
+        [
+          'Hello Pat,',
+          '',
+          'Alex Chen sent you a message on Stride.',
+          '',
+          'Sign in to read it: https://app.stride.test/patient/messages',
+          'For your privacy, messages are never included in emails.',
+          '',
+          'You can turn these emails off in Stride: Settings (the gear at the top), "Email me about new messages".',
+        ].join('\n'),
+      )
+      expect(email.html).toContain(
+        '<a href="https://app.stride.test/patient/messages">Sign in to read it</a>',
+      )
+    })
+
+    it("lists several senders in one email, with a general subject, and the practitioner side's link", async () => {
+      await service.sendNewMessagesNotice({
+        to: 'alex@example.com',
+        firstName: 'Alex',
+        side: 'practitioner',
+        senders: ['Pat Lee', 'Jo Novak', 'Robin Silva'],
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.subject).toBe('You have new messages on Stride')
+      expect(email.text).toContain(
+        'Pat Lee, Jo Novak and Robin Silva sent you messages on Stride.',
+      )
+      expect(email.text).toContain(
+        'https://app.stride.test/practitioner/messages',
+      )
+    })
+
+    it('joins two senders with "and"', async () => {
+      await service.sendNewMessagesNotice({
+        to: 'alex@example.com',
+        firstName: 'Alex',
+        side: 'practitioner',
+        senders: ['Pat Lee', 'Jo Novak'],
+      })
+      expect(send.mock.calls[0][0].text).toContain(
+        'Pat Lee and Jo Novak sent you messages on Stride.',
+      )
+    })
+
+    it('escapes the names in the HTML', async () => {
+      await service.sendNewMessagesNotice({
+        to: 'pat@example.com',
+        firstName: '<b>Pat</b>',
+        side: 'patient',
+        senders: ['<i>Alex</i> Chen'],
+      })
+      const email = send.mock.calls[0][0]
+      expect(email.html).toContain('Hello &lt;b&gt;Pat&lt;/b&gt;,')
+      expect(email.html).toContain(
+        '&lt;i&gt;Alex&lt;/i&gt; Chen sent you a message',
+      )
+      expect(email.html).not.toContain('<i>Alex</i>')
+    })
+  })
+
   describe('sendPasswordResetEmail', () => {
     it('sends one email to the user, from EMAIL_FROM, with the reset subject', async () => {
       await service.sendPasswordResetEmail('user@example.com', 'abc123')

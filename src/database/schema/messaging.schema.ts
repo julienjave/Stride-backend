@@ -47,6 +47,18 @@ export const conversations = pgTable(
       withTimezone: true,
     }),
     patientArchivedAt: timestamp('patient_archived_at', { withTimezone: true }),
+    // When each side was last EMAILED about this conversation's unread
+    // messages (roadmap Phase 6.5, "new-message emails"); NULL = not since
+    // they last read it. The sweep emails a side only while this is NULL,
+    // and sets it in the same statement that claims the work — so a person
+    // gets ONE email per conversation, however many messages pile up, until
+    // they read it: reading (PATCH …/read) puts it back to NULL. Only the
+    // claim function (SECURITY DEFINER, migration 0075) may SET it; the
+    // app's role may only clear it — guard_conversation_update says so.
+    practitionerNotifiedAt: timestamp('practitioner_notified_at', {
+      withTimezone: true,
+    }),
+    patientNotifiedAt: timestamp('patient_notified_at', { withTimezone: true }),
     // When the conversation was started (Phase 5). The list sorts by the
     // latest message; a conversation started but still empty needs a moment
     // of its own. Existing rows get the moment the migration runs — their

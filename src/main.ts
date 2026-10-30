@@ -34,6 +34,7 @@ import { validateEnv } from './config/validate-env'
 import { corsOptions } from './config/cors-options'
 import { getPoolConfig } from './config/pool-config'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
+import { MessageNoticesService } from './messaging/message-notices.service'
 
 // --- MAIN LOGIC ---------------------------------------------------------------------------------------------
 
@@ -176,6 +177,12 @@ async function bootstrap() {
   // === START APP ================================================================
 
   await app.listen(process.env.PORT ?? 3000)
+
+  // The new-message emails' sweep (roadmap Phase 6.5): started HERE, once
+  // the server serves requests — never by the module, so the e2e suites,
+  // the seed and the scripts (which build the same modules) send nothing on
+  // a timer. See MessageNoticesService.
+  app.get(MessageNoticesService).start()
 }
 
 // `void`: says "this promise is deliberately not awaited" (the top level of

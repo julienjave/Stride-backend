@@ -23,6 +23,10 @@ import {
   compareByActivity,
   deleteRefusal,
   isListed,
+  NOTICE_DELAY_MINUTES,
+  groupNotices,
+  notifiedColumn,
+  type ClaimedNoticeRow,
   otherParticipantId,
   participantSide,
   readOnlyReason,
@@ -325,5 +329,75 @@ describe('messages', () => {
     expect(MESSAGE_TOO_LONG_MESSAGE).toBe(
       'A message can be at most 5000 characters',
     )
+  })
+})
+
+// Roadmap Phase 6.5: the new-message emails.
+describe('the new-message emails', () => {
+  it('waits exactly the delete window: 15 minutes', () => {
+    expect(NOTICE_DELAY_MINUTES).toBe(15)
+    expect(NOTICE_DELAY_MINUTES * 60_000).toBe(DELETE_WINDOW_MS)
+  })
+
+  it("clears the reader's own side's marker", () => {
+    expect(notifiedColumn('practitioner')).toBe('practitionerNotifiedAt')
+    expect(notifiedColumn('patient')).toBe('patientNotifiedAt')
+  })
+
+  const row = (
+    conversation: number,
+    recipient: number,
+    side: 'practitioner' | 'patient',
+    sender: string,
+  ): ClaimedNoticeRow => ({
+    conversation_id: conversation,
+    recipient_id: recipient,
+    recipient_side: side,
+    recipient_email: `user${recipient}@example.com`,
+    recipient_first_name: `First${recipient}`,
+    sender_first_name: sender.split(' ')[0],
+    sender_last_name: sender.split(' ')[1],
+  })
+
+  it('makes ONE email per person and side, listing each sender once, in order', () => {
+    expect(
+      groupNotices([
+        row(1, 3, 'practitioner', 'Pat Lee'),
+        row(2, 3, 'practitioner', 'Jo Novak'),
+        row(5, 3, 'practitioner', 'Pat Lee'),
+        row(1, 6, 'patient', 'Alex Chen'),
+      ]),
+    ).toStrictEqual([
+      {
+        recipientId: 3,
+        side: 'practitioner',
+        to: 'user3@example.com',
+        firstName: 'First3',
+        senders: ['Pat Lee', 'Jo Novak'],
+      },
+      {
+        recipientId: 6,
+        side: 'patient',
+        to: 'user6@example.com',
+        firstName: 'First6',
+        senders: ['Alex Chen'],
+      },
+    ])
+  })
+
+  // Morgan, practitioner AND patient: two places to look, so two emails.
+  it('keeps the two sides of one person apart', () => {
+    const notices = groupNotices([
+      row(1, 2, 'practitioner', 'Pat Lee'),
+      row(9, 2, 'patient', 'Alex Chen'),
+    ])
+    expect(notices.map((n) => [n.recipientId, n.side, n.senders])).toEqual([
+      [2, 'practitioner', ['Pat Lee']],
+      [2, 'patient', ['Alex Chen']],
+    ])
+  })
+
+  it('makes no email from no row', () => {
+    expect(groupNotices([])).toEqual([])
   })
 })

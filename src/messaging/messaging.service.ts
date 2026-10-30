@@ -24,7 +24,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, count, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm'
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  sql,
+} from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { conversations, messages, users } from '../database/schema'
 import { withRlsContext } from '../database/rls-context'
@@ -49,6 +60,7 @@ import {
   compareByActivity,
   deleteRefusal,
   isListed,
+  notifiedColumn,
   participantSide,
   readOnlyReason,
   shownMessageIds,
@@ -468,7 +480,7 @@ export class MessagingService {
           conversationId,
           currentUser,
         )
-        requireSide(conversation, currentUser)
+        const side = requireSide(conversation, currentUser)
         const read = await tx
           .update(messages)
           .set({ readAt: sql`now()` })
@@ -492,6 +504,20 @@ export class MessagingService {
         const messageIds = read.map((m) => m.id).sort((a, b) => a - b)
         // Every row of one UPDATE got the same now() (the transaction's).
         const readAt = read[0].readAt
+        // Read: the next new message may email me again (roadmap Phase 6.5).
+        // My OWN side's marker, only when it is set — no write otherwise.
+        // Clearing is the one change to it the app's role may make
+        // (guard_conversation_update, migration 0075).
+        const mine = notifiedColumn(side)
+        await tx
+          .update(conversations)
+          .set({ [mine]: null })
+          .where(
+            and(
+              eq(conversations.id, conversationId),
+              isNotNull(conversations[mine]),
+            ),
+          )
         await this.auditService.logInTransaction(tx, {
           performedBy: currentUser.id,
           action: 'CONVERSATION_READ',

@@ -86,6 +86,17 @@ export interface MfaNoticeEmail {
   firstName: string
 }
 
+// New messages wait for this person (roadmap Phase 6.5): who wrote, and in
+// which of their roles (the link goes to that side's Messages). The shape of
+// MessageNotice (messaging/message-rules.ts), restated here so the email
+// module depends on no messaging type.
+export interface NewMessagesNoticeEmail {
+  to: string
+  firstName: string
+  side: 'practitioner' | 'patient'
+  senders: string[]
+}
+
 // A recovery code was used (pass 2): how many are left, so the person knows
 // when to ask for new ones.
 export interface RecoveryCodeUsedNoticeEmail {
@@ -490,6 +501,41 @@ export class EmailService {
     })
   }
 
+  // "Alex Chen sent you a message on Stride" (roadmap Phase 6.5) — WHO
+  // wrote, never WHAT: an email can be read by whoever sees the inbox, and
+  // passes through servers Stride doesn't control; the message itself is
+  // clinical content and stays behind the sign-in. The email says so, so
+  // nobody wonders where the text went. The name is in it (the person's
+  // choice, 2026-10-29): "a practitioner wrote" would make every email look
+  // the same, and the recipient already knows who treats them.
+  async sendNewMessagesNotice(email: NewMessagesNoticeEmail): Promise<void> {
+    const messagesUrl = `${frontendUrl()}/${email.side}/messages`
+    const who = namesInWords(email.senders)
+    const sentence =
+      email.senders.length === 1
+        ? `${who} sent you a message on Stride.`
+        : `${who} sent you messages on Stride.`
+    await this.transport.send({
+      from: senderAddress(),
+      to: email.to,
+      subject: newMessagesSubject(email.senders),
+      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
+             <p>${escapeHtml(sentence)}</p>
+             <p><a href="${escapeHtml(messagesUrl)}">Sign in to read it</a>. For your privacy, messages are never included in emails.</p>
+             <p>${escapeHtml(NEW_MESSAGES_SETTING_HINT)}</p>`,
+      text: [
+        `Hello ${email.firstName},`,
+        '',
+        sentence,
+        '',
+        `Sign in to read it: ${messagesUrl}`,
+        'For your privacy, messages are never included in emails.',
+        '',
+        NEW_MESSAGES_SETTING_HINT,
+      ].join('\n'),
+    })
+  }
+
   // The link to a copy of the patient's record. The record itself is never
   // in the email (an inbox is not a safe place for a health record, and a
   // forwarded email takes everything with it): the link leads to a page
@@ -524,6 +570,24 @@ export class EmailService {
       ].join('\n'),
     })
   }
+}
+
+// --- NEW-MESSAGE NOTICES (roadmap Phase 6.5) ------------------------------------------------------------------
+
+// The other half of the setting's promise: where to turn these off.
+export const NEW_MESSAGES_SETTING_HINT =
+  'You can turn these emails off in Stride: Settings (the gear at the top), "Email me about new messages".'
+
+export function newMessagesSubject(senders: readonly string[]): string {
+  return senders.length === 1
+    ? `${senders[0]} sent you a message on Stride`
+    : 'You have new messages on Stride'
+}
+
+// "Pat Lee", "Pat Lee and Jo Novak", "A, B and C".
+function namesInWords(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
 // --- HELPERS -----------------------------------------------------------------------------------------------

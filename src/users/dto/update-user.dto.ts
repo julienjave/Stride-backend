@@ -26,6 +26,7 @@ import {
   IsArray,
   ArrayMaxSize,
   IsDateString,
+  IsBoolean,
   IsIn,
   ValidateIf,
 } from 'class-validator'
@@ -178,4 +179,11 @@ export class UpdateUserDto {
   @ValidateIf(isPresent)
   @IsIn(WEIGHT_UNITS)
   preferredWeightUnit?: WeightUnit
+
+  // "Email me about new messages" (roadmap Phase 6.5). NOT NULL too, so the
+  // same pairing (null is refused, not "cleared"); self-only, like the
+  // weight unit — UsersService.update() checks who is asking.
+  @ValidateIf(isPresent)
+  @IsBoolean()
+  messageEmailNotices?: boolean
 }

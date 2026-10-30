@@ -126,6 +126,15 @@ export const users = pgTable(
     preferredWeightUnit: weightUnitEnum('preferred_weight_unit')
       .notNull()
       .default('kg'),
+    // "Email me when I have a new message" (roadmap Phase 6.5). A
+    // practitioner or patient who isn't in the app learns of a waiting
+    // message by email — never its text, only that it's there. ON by
+    // default: without it, a patient who doesn't open the app today misses
+    // their practitioner's message entirely, which is the gap this closes.
+    // Personal, like the weight unit: only the person changes it.
+    messageEmailNotices: boolean('message_email_notices')
+      .notNull()
+      .default(true),
   },
   (table) => ({
     // The database's half of normalizeEmail(): the stored email equals

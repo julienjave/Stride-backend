@@ -862,6 +862,13 @@ export class UsersService {
         'Only the user themselves can change their weight unit preference',
       )
     }
+    // The new-message emails' setting (roadmap Phase 6.5): the same reason —
+    // it decides what reaches THIS person's inbox; nobody else's business.
+    if (dto.messageEmailNotices !== undefined && currentUser.id !== id) {
+      throw new ForbiddenException(
+        'Only the user themselves can change their message email setting',
+      )
+    }
 
     // licenseNumber is a professional credential: set or verified by an
     // admin, never self-edited (decided in design decisions §4). This is a

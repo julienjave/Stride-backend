@@ -122,6 +122,16 @@ async function run() {
         `GRANT EXECUTE ON FUNCTION merge_patients(integer, integer) TO ${POSTGRES_APP_USER}`,
       )
     }
+    // The same for claim_message_notices() (migration 0075, the new-message
+    // emails' sweep — roadmap Phase 6.5).
+    const { rows: noticeFunction } = await pool.query<{ present: boolean }>(
+      `SELECT to_regprocedure('claim_message_notices(integer)') IS NOT NULL AS present`,
+    )
+    if (noticeFunction[0]?.present) {
+      await pool.query(
+        `GRANT EXECUTE ON FUNCTION claim_message_notices(integer) TO ${POSTGRES_APP_USER}`,
+      )
+    }
 
     console.log('')
     console.log(`Done. Role "${POSTGRES_APP_USER}" is ready:`)
@@ -131,6 +141,7 @@ async function run() {
     console.log('  - USAGE, SELECT on all existing sequences in public')
     console.log('  - Default privileges set so future tables/sequences are granted automatically')
     console.log('  - EXECUTE on merge_patients(), when it exists')
+    console.log('  - EXECUTE on claim_message_notices(), when it exists')
   } finally {
     await pool.end()
   }

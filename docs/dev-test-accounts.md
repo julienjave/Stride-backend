@@ -274,6 +274,15 @@ made, through the app's own code); the seed announces it just before.
     entry per page, "load earlier" included). Log in as `alex@stride.test`,
     open **Messages → Pat Lee**, then as the admin look at **Audit log**,
     **Kind: Views**. A patient reading their own messages isn't recorded.
+  - **"You have a new message" emails:** a message left unread for 15
+    minutes (the sender's delete window) emails its recipient — who wrote,
+    never the text — once per conversation until it's read. The running
+    backend checks every minute, so right after `seed:dev` the seeded unread
+    messages produce two emails in Mailpit within a minute or so: **Pat**
+    (from Alex) and **Sam** (from Jo). Reading the thread lets the next new
+    message email again. Each person turns them off in **Settings** (the gear)
+    → **Email me about new messages**. (The e2e suites and the seed never send
+    them: only the running server starts the check.)
   - To see a **read-only** conversation: as the admin, end Alex's place on
     Pat's care team (Admin → Users → Pat → Care team → End). Pat and Alex
     both still read their history; neither can write until Alex rejoins.
