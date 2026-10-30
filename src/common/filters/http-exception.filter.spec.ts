@@ -15,7 +15,12 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { ArgumentsHost, Logger, NotFoundException } from '@nestjs/common'
+import {
+  ArgumentsHost,
+  ConflictException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common'
 import { DrizzleQueryError } from 'drizzle-orm'
 import {
   CLOSED_PROGRAM_MESSAGE,
@@ -29,19 +34,35 @@ import { ONE_SESSION_A_DAY_MESSAGE } from '../../sessions/session-rules'
 // guard, 0033; the blank-title CHECKs, 0035; the end-date and care-team
 // guards, 0073) and that the rest is unchanged. A fake ArgumentsHost hands it a request and a response whose
 // status() and json() calls are recorded.
+const REQUEST_ID = '0b9e6c1e-4c3a-4f7e-9d2a-5f1e8c7b6a50'
+// A v4 UUID, as randomUUID() makes them.
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
 describe('HttpExceptionFilter', () => {
-  function run(exception: unknown) {
-    // Typed mocks: what the filter passes to status() and json().
+  // `request`: what the fake request holds besides its method — by default
+  // a request the logger has already given its id (REQUEST_ID).
+  function run(
+    exception: unknown,
+    request: Record<string, unknown> = { url: '/sessions', id: REQUEST_ID },
+  ) {
+    // Typed mocks: what the filter passes to status(), json() and
+    // setHeader().
     const json = jest.fn<void, [Record<string, unknown>]>()
     const status = jest.fn<{ json: typeof json }, [number]>(() => ({ json }))
+    const setHeader = jest.fn<void, [string, string]>()
     const host = {
       switchToHttp: () => ({
-        getResponse: () => ({ status }),
-        getRequest: () => ({ method: 'POST', url: '/sessions' }),
+        getResponse: () => ({ status, setHeader, headersSent: false }),
+        getRequest: () => ({ method: 'POST', ...request }),
       }),
     } as unknown as ArgumentsHost
     new HttpExceptionFilter().catch(exception, host)
-    return { status: status.mock.calls[0][0], body: json.mock.calls[0][0] }
+    return {
+      status: status.mock.calls[0][0],
+      body: json.mock.calls[0][0],
+      setHeader,
+    }
   }
 
   // node-postgres's error, wrapped by Drizzle as it reaches the filter.
@@ -62,6 +83,7 @@ describe('HttpExceptionFilter', () => {
       message: [CLOSED_PROGRAM_MESSAGE],
       error: 'ConflictException',
       path: '/sessions',
+      requestId: REQUEST_ID,
     })
   })
 
@@ -124,6 +146,7 @@ describe('HttpExceptionFilter', () => {
       error: 'BadRequestException',
       timestamp: 'any',
       path: '/sessions',
+      requestId: REQUEST_ID,
     })
   })
 
@@ -176,6 +199,7 @@ describe('HttpExceptionFilter', () => {
       error,
       timestamp: 'any',
       path: '/sessions',
+      requestId: REQUEST_ID,
     })
   })
 
@@ -205,6 +229,7 @@ describe('HttpExceptionFilter', () => {
       error,
       timestamp: 'any',
       path: '/sessions',
+      requestId: REQUEST_ID,
     })
   })
 
@@ -252,7 +277,10 @@ describe('HttpExceptionFilter', () => {
       const error = databaseError('23502', 'sessions_status_not_null')
       run(error)
       expect(logged.mock.calls).toStrictEqual([
-        [{ err: error }, 'Unhandled exception on POST /sessions'],
+        [
+          { err: error, requestId: REQUEST_ID },
+          'Unhandled exception on POST /sessions',
+        ],
       ])
       // The object passed is the one that carries Postgres's reason.
       const passed = (logged.mock.calls[0][0] as { err: Error }).err
@@ -264,7 +292,27 @@ describe('HttpExceptionFilter', () => {
     it('writes something thrown that is not an Error into the message', () => {
       run('not an error')
       expect(logged.mock.calls).toStrictEqual([
-        ['Unhandled exception on POST /sessions: not an error'],
+        [
+          { requestId: REQUEST_ID },
+          'Unhandled exception on POST /sessions: not an error',
+        ],
+      ])
+    })
+
+    // The URL's query string is where search terms are (a patient's name
+    // in `?search=`): the line names the PATH only. originalUrl is preferred
+    // — Express's `url` is relative inside a mounted router.
+    it('names the path, never the query string', () => {
+      run(new Error('boom'), {
+        url: '/users?search=Jane%20Doe',
+        originalUrl: '/admin/users?search=Jane%20Doe#top',
+        id: REQUEST_ID,
+      })
+      expect(logged.mock.calls).toStrictEqual([
+        [
+          { err: expect.any(Error) as Error, requestId: REQUEST_ID },
+          'Unhandled exception on POST /admin/users',
+        ],
       ])
     })
 
@@ -272,6 +320,34 @@ describe('HttpExceptionFilter', () => {
       run(new NotFoundException('Nope'))
       expect(logged).not.toHaveBeenCalled()
     })
+  })
+
+  // The reference a person can quote (decisions §32): the request's id in
+  // every error body — the one the logger gave the request.
+  it("answers the request's id in the body, after the extra fields", () => {
+    const { body, setHeader } = run(
+      new ConflictException({
+        message: 'Taken',
+        requestId: 'chosen-by-the-exception',
+      }),
+    )
+    expect(body.requestId).toBe(REQUEST_ID)
+    // Already given (and put in the header) by the logger: not set again.
+    expect(setHeader).not.toHaveBeenCalled()
+  })
+
+  // An error raised before the request logger ran — the body parser
+  // refusing a body that isn't JSON — has no id yet: the filter makes one,
+  // and puts it in the header too, so every error answer has its reference.
+  it('makes the id when the request has none, in the header and the body', () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { body, setHeader } = run(new NotFoundException('Nope'), {
+      url: '/sessions',
+    })
+    expect(body.requestId).toMatch(UUID)
+    expect(setHeader.mock.calls).toStrictEqual([
+      ['X-Request-Id', body.requestId],
+    ])
   })
 
   it('passes HTTP exceptions through unchanged', () => {

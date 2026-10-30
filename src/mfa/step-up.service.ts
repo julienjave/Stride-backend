@@ -376,7 +376,7 @@ export class StepUpService {
         return { account, remaining: recoveryCodesLeft }
       })
       if (outcome === null) return
-      this.sendRecoveryCodeNotice(outcome.account, outcome.remaining)
+      this.sendRecoveryCodeNotice(actor.id, outcome.account, outcome.remaining)
     } catch (error: unknown) {
       this.logger.error(
         `Failed to spend a second factor again after a rolled-back change (user ${actor.id}): ${errorMessage(error)}`,
@@ -464,7 +464,7 @@ export class StepUpService {
       })
       .catch((error: unknown) =>
         this.logger.error(
-          `Failed to send the step-up sign-out notice to ${outcome.email}: ${errorMessage(error)}`,
+          `Failed to send the step-up sign-out notice to user ${actor.id}: ${errorMessage(error)}`,
         ),
       )
     return true
@@ -494,13 +494,17 @@ export class StepUpService {
       details: { remaining: use.remaining },
     })
     return {
-      afterCommit: () => this.sendRecoveryCodeNotice(account, use.remaining),
+      afterCommit: () =>
+        this.sendRecoveryCodeNotice(userId, account, use.remaining),
     }
   }
 
   // "A recovery code was used — N left". Fire-and-forget: the use IS done
   // whatever the mail server does; a failure is logged with its reason.
+  // Logged by the account's id, never its address (decisions §32: the logs
+  // leave the server).
   private sendRecoveryCodeNotice(
+    userId: number,
     account: { email: string; firstName: string },
     remaining: number,
   ): void {
@@ -512,7 +516,7 @@ export class StepUpService {
       })
       .catch((error: unknown) =>
         this.logger.error(
-          `Failed to send the recovery-code notice to ${account.email}: ${errorMessage(error)}`,
+          `Failed to send the recovery-code notice to user ${userId}: ${errorMessage(error)}`,
         ),
       )
   }

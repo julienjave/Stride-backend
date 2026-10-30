@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { Test, TestingModule } from '@nestjs/testing'
-import { INestApplication, ValidationPipe } from '@nestjs/common'
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common'
 import request from 'supertest'
 import session from 'express-session'
 import passport from 'passport'
@@ -1362,6 +1362,36 @@ describe('Two-factor sign-in (e2e)', () => {
       expect((await signIn(agent(), pat.email)).body).toMatchObject({
         email: pat.email,
       })
+    })
+
+    // The notice is fire-and-forget: a failed one is LOGGED — by the
+    // account's id, never its address (decisions §32: the logs leave the
+    // server), and the account reset, not the admin who did it.
+    it("logs a failed notice by the reset account's id", async () => {
+      const ana = await newAdmin()
+      const pat = await newPerson()
+      await turnOn(pat)
+      const logged = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined)
+      try {
+        outbox.failNext()
+        const res = await reset(ana.signedIn, pat.id, {
+          currentPassword: 'password123',
+        })
+        expect(res.status).toBe(204)
+        await new Promise((resolve) => setImmediate(resolve))
+        const lines = logged.mock.calls.map((call) => String(call[0]))
+        expect(lines).toStrictEqual([
+          expect.stringMatching(
+            new RegExp(
+              `^Failed to send the two-factor reset notice to user ${pat.id}: `,
+            ),
+          ) as string,
+        ])
+      } finally {
+        logged.mockRestore()
+      }
     })
 
     it('refuses when two-factor is off, and for an account that does not exist', async () => {

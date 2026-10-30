@@ -58,13 +58,16 @@ export class ResendTransport implements EmailTransport {
     if (error) {
       // Turned into a real exception so this transport keeps the
       // interface's promise: resolve means accepted, reject means not.
+      // Without the address (decisions §32): the caller logs this message
+      // with the account's id.
       throw new Error(
-        `Resend rejected the email to ${email.to}: ${error.name} — ${error.message}`,
+        `Resend rejected the email: ${error.name} — ${error.message}`,
       )
     }
 
     // Resend's email id is what ties this log line to the delivery status
-    // in Resend's dashboard, if a recipient says they never got it.
-    this.logger.log(`Email sent to ${email.to} (Resend id: ${data?.id})`)
+    // in Resend's dashboard, if a recipient says they never got it — so the
+    // address itself needn't be in the log (decisions §32).
+    this.logger.log(`Email sent (Resend id: ${data?.id})`)
   }
 }

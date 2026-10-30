@@ -19,6 +19,7 @@
 
 import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface'
 import { getAllowedOrigins } from './allowed-origins'
+import { REQUEST_ID_HEADER } from '../observability/request-id'
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
 
@@ -34,8 +35,15 @@ import { getAllowedOrigins } from './allowed-origins'
 //     which the page saves the download under (decisions §20, pass 3);
 //   - Retry-After: how long a 429 asks to wait (the throttler sets it);
 //     the frontend's client reads it into `retryAfterSeconds` — which,
-//     until this was added, always came out undefined in the browser.
-export const EXPOSED_HEADERS = ['Content-Disposition', 'Retry-After']
+//     until this was added, always came out undefined in the browser;
+//   - X-Request-Id: the request's reference (observability/request-id.ts,
+//     decisions §32) — the frontend keeps it on a failed request's error, to
+//     show and to report.
+export const EXPOSED_HEADERS = [
+  'Content-Disposition',
+  'Retry-After',
+  REQUEST_ID_HEADER,
+]
 
 // --- FUNCTION ----------------------------------------------------------------------------------------------
 

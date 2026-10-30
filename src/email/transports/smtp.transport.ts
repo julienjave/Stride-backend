@@ -42,7 +42,11 @@ export type SmtpMailer = Pick<Transporter, 'sendMail'>
 // Unlike Resend's SDK (which RESOLVES with an error object — see
 // ResendTransport), nodemailer's sendMail() REJECTS on failure: server
 // unreachable, connection refused, address rejected… So this class has
-// no error to translate; it only adds who the email was for.
+// no error to translate; it only says which step failed.
+//
+// Never the recipient's address, in a log line OR an error message (decisions
+// §32: the logs leave the server, and an error's message ends up in one —
+// the callers log `errorMessage(error)` with the account's id).
 export class SmtpTransport implements EmailTransport {
   private readonly logger = new Logger(SmtpTransport.name)
 
@@ -62,22 +66,19 @@ export class SmtpTransport implements EmailTransport {
       })
       // messageId: the Message-ID header the message was sent with — the
       // same id the receiving server and Mailpit show, so a log line can be
-      // matched to the email. Logged WITHOUT the body: it holds live links.
-      this.logger.log(
-        `Email sent to ${email.to} (SMTP message id: ${info.messageId})`,
-      )
+      // matched to the email. Logged WITHOUT the body (it holds live links)
+      // and without the address (the id finds it in the mail server's own
+      // records, which may hold it).
+      this.logger.log(`Email sent (SMTP message id: ${info.messageId})`)
     } catch (error) {
       // The reason goes INTO the message, so whoever logs this error's
       // message shows why ("connect ECONNREFUSED 127.0.0.1:1025": Mailpit
       // isn't running) — see errorMessage(). `cause` still keeps the
       // original error (with nodemailer's `code`) attached, for anything
       // that reads it.
-      throw new Error(
-        `SMTP delivery of the email to ${email.to} failed: ${errorMessage(error)}`,
-        {
-          cause: error,
-        },
-      )
+      throw new Error(`SMTP delivery failed: ${errorMessage(error)}`, {
+        cause: error,
+      })
     }
   }
 }

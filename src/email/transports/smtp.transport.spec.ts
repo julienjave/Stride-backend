@@ -15,6 +15,7 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
+import { Logger } from '@nestjs/common'
 import type { OutgoingEmail } from '../email-transport'
 import { SmtpTransport, type SmtpMailer } from './smtp.transport'
 
@@ -51,6 +52,24 @@ describe('SmtpTransport', () => {
     })
   })
 
+  // What the success line says: the message id — the address never
+  // (decisions §32: the logs leave the server).
+  it('logs the message id, not the address', async () => {
+    const logged = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined)
+    const sendMail = jest
+      .fn()
+      .mockResolvedValue({ messageId: '<m1@stride.test>' })
+
+    await new SmtpTransport(stubMailer(sendMail)).send(email)
+
+    expect(logged.mock.calls).toStrictEqual([
+      ['Email sent (SMTP message id: <m1@stride.test>)'],
+    ])
+    logged.mockRestore()
+  })
+
   it('resolves when the server accepts the email', async () => {
     const sendMail = jest
       .fn()
@@ -63,9 +82,11 @@ describe('SmtpTransport', () => {
 
   // The case a caller relies on: a failure must REJECT (EmailService's
   // callers turn that into emailSent: false, or a logged error), and say
-  // which email and why — the reason is what tells a developer that
-  // Mailpit isn't running.
-  it('rejects when delivery fails, naming the recipient and the reason, and keeps the original error', async () => {
+  // why — the reason is what tells a developer that Mailpit isn't running.
+  // Not the address: the callers log this message, with the account's id
+  // (decisions §32). The WHOLE message is compared (toThrow with a string
+  // only asks for part of it).
+  it('rejects when delivery fails, with the reason but not the recipient, and keeps the original error', async () => {
     const original = Object.assign(
       new Error('connect ECONNREFUSED 127.0.0.1:1025'),
       {
@@ -76,8 +97,9 @@ describe('SmtpTransport', () => {
 
     const failure = new SmtpTransport(stubMailer(sendMail)).send(email)
 
-    await expect(failure).rejects.toThrow(
-      'SMTP delivery of the email to someone@example.com failed: connect ECONNREFUSED 127.0.0.1:1025',
+    await expect(failure).rejects.toHaveProperty(
+      'message',
+      'SMTP delivery failed: connect ECONNREFUSED 127.0.0.1:1025',
     )
     await expect(failure).rejects.toMatchObject({ cause: original })
   })
@@ -87,8 +109,9 @@ describe('SmtpTransport', () => {
 
     await expect(
       new SmtpTransport(stubMailer(sendMail)).send(email),
-    ).rejects.toThrow(
-      'SMTP delivery of the email to someone@example.com failed: greeting never received',
+    ).rejects.toHaveProperty(
+      'message',
+      'SMTP delivery failed: greeting never received',
     )
   })
 })

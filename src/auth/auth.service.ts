@@ -439,7 +439,7 @@ export class AuthService {
       // logger would drop — see errorMessage()).
       .catch((err) =>
         this.logger.error(
-          `Failed to send password reset email to ${user.email}: ${errorMessage(err)}`,
+          `Failed to send password reset email to user ${user.id}: ${errorMessage(err)}`,
         ),
       )
   }

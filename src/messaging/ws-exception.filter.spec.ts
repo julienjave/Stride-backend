@@ -24,6 +24,10 @@ import { WsHttpExceptionFilter } from './ws-exception.filter'
 // (client, data, ack, pattern) — and records what reaches the ack and what
 // the client is emitted. The live behaviour (a real socket.io-client) is in
 // test/messaging-gateway.e2e-spec.ts.
+// A v4 UUID, as randomUUID() makes them.
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
 describe('WsHttpExceptionFilter', () => {
   function run(exception: unknown, withAck: boolean) {
     // Typed mocks: what the filter passes to the ack and to emit().
@@ -91,23 +95,51 @@ describe('WsHttpExceptionFilter', () => {
 
   // A bug: a generic 500 to the client — never the error's own text, which
   // could name tables or paths — and the real error in the log.
+  //
+  // And a reference (decisions §32): the 500 carries a `requestId`, and the
+  // log line carries the SAME one — what a person quotes leads to the line.
+  // A fresh id per failure: two failures are two references.
   it('answers a bug with a generic 500 and logs the real error', () => {
     const logged = jest
       .spyOn(Logger.prototype, 'error')
       .mockImplementation(() => undefined)
-    const { ack } = run(
-      new Error('relation "secret_table" does not exist'),
-      true,
-    )
-    expect(ack.mock.calls[0][0]).toStrictEqual({
+    const error = new Error('relation "secret_table" does not exist')
+    const { ack } = run(error, true)
+    const answer = ack.mock.calls[0][0] as { requestId: string }
+    expect(answer.requestId).toMatch(UUID)
+    expect(answer).toStrictEqual({
       ok: false,
       status: 500,
       message: ['Internal server error'],
+      requestId: answer.requestId,
     })
-    expect(logged).toHaveBeenCalledTimes(1)
-    expect(logged.mock.calls[0][1]).toBe(
-      'Unhandled exception on event sendMessage',
-    )
+    expect(logged.mock.calls).toStrictEqual([
+      [
+        { err: error, requestId: answer.requestId },
+        'Unhandled exception on event sendMessage',
+      ],
+    ])
+
+    const second = run(error, true).ack.mock.calls[0][0] as {
+      requestId: string
+    }
+    expect(second.requestId).toMatch(UUID)
+    expect(second.requestId).not.toBe(answer.requestId)
+    logged.mockRestore()
+  })
+
+  it('logs something thrown that is not an Error as text, with the reference', () => {
+    const logged = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined)
+    const { ack } = run('not an error', true)
+    const answer = ack.mock.calls[0][0] as { requestId: string }
+    expect(logged.mock.calls).toStrictEqual([
+      [
+        { requestId: answer.requestId },
+        'Unhandled exception on event sendMessage: not an error',
+      ],
+    ])
     logged.mockRestore()
   })
 })

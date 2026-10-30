@@ -59,8 +59,9 @@ describe('corsOptions', () => {
 
   // The point of the change (decisions §20, pass 3): without these two in
   // Access-Control-Expose-Headers, the page's `headers.get('Content-
-  // Disposition')` answers null, and a 429's Retry-After too.
-  it('lets an allowed frontend read the file name and Retry-After', async () => {
+  // Disposition')` answers null, and a 429's Retry-After too. The request
+  // id joined them in decisions §32 (the reference an error screen shows).
+  it('lets an allowed frontend read the file name, Retry-After and the request id', async () => {
     const response = await request(server())
       .get('/file')
       .set('Origin', 'http://staging.test')
@@ -70,7 +71,7 @@ describe('corsOptions', () => {
     )
     expect(response.headers['access-control-allow-credentials']).toBe('true')
     expect(response.headers['access-control-expose-headers']).toBe(
-      'Content-Disposition,Retry-After',
+      'Content-Disposition,Retry-After,X-Request-Id',
     )
   })
 

@@ -244,7 +244,7 @@ export class MfaService {
     for (const sessionId of outcome.endedSessionIds) {
       this.messagingEvents.disconnectSession(sessionId)
     }
-    this.notify('enabled notice', outcome.email, () =>
+    this.notify('enabled notice', currentUser.id, () =>
       this.emailService.sendMfaEnabledNotice({
         to: outcome.email,
         firstName: outcome.firstName,
@@ -356,7 +356,7 @@ export class MfaService {
     }).catch(attempt.failed)
 
     outcome.stepUp.afterCommit()
-    this.notify('disabled notice', outcome.email, () =>
+    this.notify('disabled notice', currentUser.id, () =>
       this.emailService.sendMfaDisabledNotice({
         to: outcome.email,
         firstName: outcome.firstName,
@@ -430,7 +430,7 @@ export class MfaService {
       this.messagingEvents.disconnectSession(ended)
     }
     outcome.stepUp.afterCommit()
-    this.notify('reset notice', outcome.email, () =>
+    this.notify('reset notice', targetId, () =>
       this.emailService.sendMfaResetNotice({
         to: outcome.email,
         firstName: outcome.firstName,
@@ -512,11 +512,16 @@ export class MfaService {
 
   // Fire-and-forget after the commit: the change IS made whatever the mail
   // server does; a failure is logged with its reason (errorMessage — the
-  // logger would drop a second argument).
-  private notify(what: string, to: string, send: () => Promise<void>): void {
+  // logger would drop a second argument) and the account's id — never its
+  // address (decisions §32: the logs leave the server).
+  private notify(
+    what: string,
+    userId: number,
+    send: () => Promise<void>,
+  ): void {
     send().catch((error: unknown) =>
       this.logger.error(
-        `Failed to send the two-factor ${what} to ${to}: ${errorMessage(error)}`,
+        `Failed to send the two-factor ${what} to user ${userId}: ${errorMessage(error)}`,
       ),
     )
   }

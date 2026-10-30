@@ -17,6 +17,7 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto'
 import { Catch, ArgumentsHost, HttpException, Logger } from '@nestjs/common'
 import { BaseWsExceptionFilter, WsException } from '@nestjs/websockets'
 import { translateDatabaseRefusal } from '../common/filters/http-exception.filter'
@@ -28,9 +29,16 @@ import { translateDatabaseRefusal } from '../common/filters/http-exception.filte
 // (`socket.emit('sendMessage', data, (answer) => …)`). One shape for success
 // and failure, so the client always learns how ITS event ended:
 //   { ok: true, data }                       — data: what REST would answer;
-//   { ok: false, status, message: string[] } — the REST status and message.
+//   { ok: false, status, message: string[] } — the REST status and message;
+//                                              a 500 also has `requestId`.
+//
+// `requestId` (decisions §32): an event on an open socket is not an HTTP
+// request — no request logger, no X-Request-Id — so an unexpected failure
+// gets its OWN id here, logged with the error and answered to the client:
+// the same "Reference" a failed REST request gives, leading to the same line.
 export type WsAnswer<T> =
-  { ok: true; data: T } | { ok: false; status: number; message: string[] }
+  | { ok: true; data: T }
+  | { ok: false; status: number; message: string[]; requestId?: string }
 
 // --- FILTER ------------------------------------------------------------------------------------------------
 
@@ -84,13 +92,15 @@ export class WsHttpExceptionFilter extends BaseWsExceptionFilter {
     // as the REST filter does.
     if (typeof ack === 'function') {
       const pattern = String(host.getArgByIndex(3))
+      const requestId = randomUUID()
       if (caught instanceof Error) {
         this.log.error(
-          { err: caught },
+          { err: caught, requestId },
           `Unhandled exception on event ${pattern}`,
         )
       } else {
         this.log.error(
+          { requestId },
           `Unhandled exception on event ${pattern}: ${String(caught)}`,
         )
       }
@@ -98,6 +108,7 @@ export class WsHttpExceptionFilter extends BaseWsExceptionFilter {
         ok: false,
         status: 500,
         message: ['Internal server error'],
+        requestId,
       }
       return (ack as (answer: WsAnswer<never>) => void)(answer)
     }

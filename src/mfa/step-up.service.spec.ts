@@ -378,7 +378,7 @@ describe('StepUpAttempt.confirm', () => {
     expect(() => receipt.afterCommit()).not.toThrow()
     await new Promise((resolve) => setImmediate(resolve))
     expect(log.mock.calls).toStrictEqual([
-      ['Failed to send the recovery-code notice to pat@example.com: smtp down'],
+      ['Failed to send the recovery-code notice to user 7: smtp down'],
     ])
   })
 })
@@ -547,9 +547,7 @@ describe('StepUpAttempt.failed — a failed step-up', () => {
     ).rejects.toBeInstanceOf(UnauthorizedException)
     await new Promise((resolve) => setImmediate(resolve))
     expect(log.mock.calls).toStrictEqual([
-      [
-        'Failed to send the step-up sign-out notice to pat@example.com: smtp down',
-      ],
+      ['Failed to send the step-up sign-out notice to user 7: smtp down'],
     ])
   })
 })

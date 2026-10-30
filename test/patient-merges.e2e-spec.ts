@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { Test, TestingModule } from '@nestjs/testing'
-import { INestApplication, ValidationPipe } from '@nestjs/common'
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common'
 import request from 'supertest'
 import session from 'express-session'
 import passport from 'passport'
@@ -1148,5 +1148,32 @@ describe('Patient merges (e2e)', () => {
         [NOT_A_MERGE_NOTICE_MESSAGE],
       ])
     })
+  })
+
+  // The survivor's notice is best effort: a failed one is LOGGED — by the
+  // SURVIVOR's id (the account told), never an address (decisions §32: the
+  // logs leave the server). The merge itself is done.
+  it("logs a failed notice by the survivor's id", async () => {
+    const kept = await newPatient('Unsent')
+    const dup = await newPatient('Unsent')
+    const logged = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined)
+    try {
+      outbox.failNext()
+      const res = await merge(dup.id, kept.id)
+      expect(res.status).toBe(200)
+      await new Promise((resolve) => setImmediate(resolve))
+      const lines = logged.mock.calls.map((call) => String(call[0]))
+      expect(lines).toStrictEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^Failed to send the accounts-combined notice to user ${kept.id}: `,
+          ),
+        ) as string,
+      ])
+    } finally {
+      logged.mockRestore()
+    }
   })
 })

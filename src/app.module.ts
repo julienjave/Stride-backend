@@ -46,39 +46,16 @@ import { ComplaintReviewsModule } from './complaint-reviews/complaint-reviews.mo
 import { LegalDisclosuresModule } from './legal-disclosures/legal-disclosures.module'
 import { PatientMergesModule } from './patient-merges/patient-merges.module'
 import { throttlerOptions } from './config/rate-limits'
+import { pinoHttpOptions } from './observability/logger-options'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
 @Module({
   imports: [
-    LoggerModule.forRoot({
-      pinoHttp: {
-        level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-        // pino-pretty is only for LOCAL readability — in production, real
-        // JSON output is what a log aggregator (or `docker logs` piped
-        // into one) actually needs to search/filter on.
-        transport:
-          process.env.NODE_ENV === 'production'
-            ? undefined
-            : { target: 'pino-pretty' },
-        // Explicit, not optional: an unredacted HTTP request logger would
-        // otherwise happily log a raw session cookie (a live, usable
-        // credential) or a plaintext password on every login/register
-        // request. This is the same "never let sensitive fields leak"
-        // discipline applied everywhere else in this app (passwordHash and
-        // mfaSecret both stripped before any response), extended to logs.
-        redact: {
-          paths: [
-            'req.headers.cookie',
-            'req.headers.authorization',
-            'res.headers["set-cookie"]',
-            'req.body.password',
-            'req.body.newPassword',
-          ],
-          censor: '[REDACTED]',
-        },
-      },
-    }),
+    // The request logger: random request ids, and lines that never name or
+    // locate a patient (decisions §32) — every setting and why in
+    // observability/logger-options.ts.
+    LoggerModule.forRoot({ pinoHttp: pinoHttpOptions() }),
     // The limits (60 a minute per route and IP) and the RATE_LIMITS switch
     // live in config/rate-limits.ts. forRootAsync: the factory runs when the
     // module is BUILT, so an e2e file that sets RATE_LIMITS first decides.

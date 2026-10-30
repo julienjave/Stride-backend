@@ -281,11 +281,11 @@ export class EmailChangeService {
 
     // After the commit — never a link to a request that was rolled back.
     if (taken) {
-      this.sendAfterCommit('address-taken notice', newEmail, () =>
+      this.sendAfterCommit('address-taken notice', 'new', currentUser.id, () =>
         this.emailService.sendEmailChangeAddressTaken(newEmail),
       )
     } else {
-      this.sendAfterCommit('confirmation link', newEmail, () =>
+      this.sendAfterCommit('confirmation link', 'new', currentUser.id, () =>
         this.emailService.sendEmailChangeConfirmation({
           to: newEmail,
           firstName: user.firstName,
@@ -294,13 +294,17 @@ export class EmailChangeService {
         }),
       )
     }
-    this.sendAfterCommit('change-requested notice', user.email, () =>
-      this.emailService.sendEmailChangeRequestedNotice({
-        to: user.email,
-        firstName: user.firstName,
-        maskedNewEmail: maskEmail(newEmail),
-        rawCancelToken: cancelToken,
-      }),
+    this.sendAfterCommit(
+      'change-requested notice',
+      'current',
+      currentUser.id,
+      () =>
+        this.emailService.sendEmailChangeRequestedNotice({
+          to: user.email,
+          firstName: user.firstName,
+          maskedNewEmail: maskEmail(newEmail),
+          rawCancelToken: cancelToken,
+        }),
     )
 
     return pending
@@ -440,6 +444,7 @@ export class EmailChangeService {
           },
         })
         return {
+          userId: request.userId,
           oldEmail: account.email,
           newEmail: request.newEmail,
           firstName: account.firstName,
@@ -462,7 +467,7 @@ export class EmailChangeService {
     for (const sessionId of outcome.endedSessionIds) {
       this.messagingEvents.disconnectSession(sessionId)
     }
-    this.sendAfterCommit('email-changed notice', outcome.oldEmail, () =>
+    this.sendAfterCommit('email-changed notice', 'old', outcome.userId, () =>
       this.emailService.sendEmailChangedNotice({
         to: outcome.oldEmail,
         firstName: outcome.firstName,
@@ -526,15 +531,20 @@ export class EmailChangeService {
 
   // Fire-and-forget: the request has succeeded whatever the mail server
   // does. A failure is logged with its reason (errorMessage — the logger
-  // would drop a second argument), never with a token.
+  // would drop a second argument), never with a token — and never with the
+  // address itself (decisions §32: the logs leave the server). Which of the
+  // account's addresses it went to (the new one, the current one, the old
+  // one after a change) and the account's id say as much to whoever debugs
+  // it, without naming anyone.
   private sendAfterCommit(
     what: string,
-    to: string,
+    address: 'new' | 'current' | 'old',
+    userId: number,
     send: () => Promise<void>,
   ): void {
     send().catch((error: unknown) =>
       this.logger.error(
-        `Failed to send the ${what} to ${to}: ${errorMessage(error)}`,
+        `Failed to send the ${what} to the ${address} address of user ${userId}: ${errorMessage(error)}`,
       ),
     )
   }

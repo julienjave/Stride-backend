@@ -225,7 +225,7 @@ export class PasswordChangeService {
       })
       .catch((error: unknown) =>
         this.logger.error(
-          `Failed to send the password-changed notice to ${outcome.email}: ${errorMessage(error)}`,
+          `Failed to send the password-changed notice to user ${currentUser.id}: ${errorMessage(error)}`,
         ),
       )
   }

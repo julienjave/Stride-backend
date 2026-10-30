@@ -60,6 +60,8 @@ import {
   MESSAGE_NOT_DELETABLE_MESSAGE,
   MESSAGE_TOO_LONG_MESSAGE,
 } from '../../messaging/message-rules'
+import { pathOnly } from '../../observability/log-scrub'
+import { assignRequestId } from '../../observability/request-id'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -192,6 +194,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp()
     const response = ctx.getResponse<Response>()
     const request = ctx.getRequest<Request>()
+    // The request's id (observability/request-id.ts): normally made by the
+    // request logger already; made here for an error raised before it ran (a
+    // body that isn't JSON). It goes in the body below and in the log line,
+    // so the reference a person quotes from an error screen finds this line.
+    const requestId = assignRequestId(request, response)
 
     const isHttpException = exception instanceof HttpException
     const status = isHttpException
@@ -236,14 +243,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
       // object first argument into the log line's fields, and the next
       // argument into its message. Something thrown that isn't an Error
       // (a string, an object) has no stack to give: it's logged as text.
+      //
+      // What the line may say (decisions §32 — logs leave the server): the
+      // PATH, not the URL (a query string is where search terms are), and the
+      // request id. The error object itself is written through the logger's
+      // allow-list (observability/log-scrub.ts: no query values, no
+      // Postgres `detail`).
+      const where = `${request.method} ${pathOnly(request.originalUrl ?? request.url)}`
       if (exception instanceof Error) {
         this.logger.error(
-          { err: exception },
-          `Unhandled exception on ${request.method} ${request.url}`,
+          { err: exception, requestId },
+          `Unhandled exception on ${where}`,
         )
       } else {
         this.logger.error(
-          `Unhandled exception on ${request.method} ${request.url}: ${String(exception)}`,
+          { requestId },
+          `Unhandled exception on ${where}: ${String(exception)}`,
         )
       }
     }
@@ -257,6 +272,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       ...extra,
       path: request.url,
+      // Last, like `path`, so an exception's extra fields can't replace it.
+      requestId,
     })
   }
 }

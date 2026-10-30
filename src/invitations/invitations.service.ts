@@ -359,7 +359,7 @@ export class InvitationsService {
       // The reason in the text, not as a second argument (which the
       // logger would drop — see errorMessage()).
       this.logger.error(
-        `Failed to send the invitation email to ${account.email}: ${errorMessage(error)}`,
+        `Failed to send the invitation email to user ${account.id}: ${errorMessage(error)}`,
       )
       return false
     }
@@ -380,7 +380,7 @@ export class InvitationsService {
       )
     } catch (error) {
       this.logger.error(
-        `The invitation email to ${account.email} was sent, but recording that failed: ${errorMessage(error)}`,
+        `The invitation email to user ${account.id} was sent, but recording that failed: ${errorMessage(error)}`,
       )
     }
     return true

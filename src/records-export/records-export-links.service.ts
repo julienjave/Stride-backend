@@ -545,7 +545,7 @@ export class RecordsExportLinksService {
       })
     } catch (error) {
       this.logger.error(
-        `Failed to send the records export link to ${patient.email}: ${errorMessage(error)}`,
+        `Failed to send the records export link to user ${patient.id}: ${errorMessage(error)}`,
       )
       return false
     }
@@ -563,7 +563,7 @@ export class RecordsExportLinksService {
       )
     } catch (error) {
       this.logger.error(
-        `The records export link to ${patient.email} was sent, but recording that failed: ${errorMessage(error)}`,
+        `The records export link to user ${patient.id} was sent, but recording that failed: ${errorMessage(error)}`,
       )
     }
     return true

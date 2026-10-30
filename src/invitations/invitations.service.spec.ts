@@ -357,7 +357,7 @@ describe('InvitationsService', () => {
       // The reason is part of the logged TEXT, as the only argument: a
       // second argument would be dropped by the logger (errorMessage()).
       expect(errorLog).toHaveBeenCalledWith(
-        'Failed to send the invitation email to jane@example.com: down',
+        'Failed to send the invitation email to user 42: down',
       )
       // Nothing recorded: email_sent_at stays NULL, which is what tells
       // the account's page the email never left.
@@ -396,7 +396,7 @@ describe('InvitationsService', () => {
         true,
       )
       expect(errorLog).toHaveBeenCalledWith(
-        'The invitation email to jane@example.com was sent, but recording that failed: connection terminated',
+        'The invitation email to user 42 was sent, but recording that failed: connection terminated',
       )
     })
   })

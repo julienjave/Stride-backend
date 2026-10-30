@@ -319,8 +319,9 @@ describe('Possible duplicate patients (e2e)', () => {
       const text = JSON.stringify(res.body)
       expect(text).not.toContain('Léa')
       expect(text).not.toContain('Harbour')
-      // No other field than these (the filter's own three included): no
-      // id or match list can ride along.
+      // No other field than these (the filter's own four included —
+      // `requestId` is the REQUEST's reference, decisions §32, nothing about
+      // the match): no id or match list can ride along.
       expect(Object.keys(bodyOf<object>(res)).sort()).toEqual([
         'elsewhere',
         'error',
@@ -328,6 +329,7 @@ describe('Possible duplicate patients (e2e)', () => {
         'message',
         'path',
         'reason',
+        'requestId',
         'statusCode',
         'timestamp',
       ])

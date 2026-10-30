@@ -258,7 +258,7 @@ export class PatientMergesService {
       })
       .catch((error: unknown) =>
         this.logger.error(
-          `Failed to send the accounts-combined notice to ${outcome.email}: ${errorMessage(error)}`,
+          `Failed to send the accounts-combined notice to user ${survivorId}: ${errorMessage(error)}`,
         ),
       )
 

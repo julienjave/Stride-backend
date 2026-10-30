@@ -15,6 +15,7 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
+import { Logger } from '@nestjs/common'
 import type { OutgoingEmail } from '../email-transport'
 import { ResendTransport, type ResendEmailsClient } from './resend.transport'
 
@@ -52,6 +53,19 @@ describe('ResendTransport', () => {
     })
   })
 
+  // The success line: Resend's id, never the address (decisions §32).
+  it("logs Resend's id, not the address", async () => {
+    const logged = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined)
+    const { client } = stubClient({ data: { id: 'em_1' }, error: null })
+
+    await new ResendTransport(client).send(email)
+
+    expect(logged.mock.calls).toStrictEqual([['Email sent (Resend id: em_1)']])
+    logged.mockRestore()
+  })
+
   it('resolves when Resend accepts the email', async () => {
     const { client } = stubClient({ data: { id: 'em_1' }, error: null })
 
@@ -62,8 +76,9 @@ describe('ResendTransport', () => {
 
   // The case this class exists to get right: Resend's SDK RESOLVES with an
   // error object instead of throwing. Treating that as success would make
-  // every rejected email look delivered.
-  it('rejects when Resend returns an error, with the recipient and the reason', async () => {
+  // every rejected email look delivered. The reason, not the recipient: the
+  // caller logs this message with the account's id (decisions §32).
+  it('rejects when Resend returns an error, with the reason but not the recipient', async () => {
     const { client } = stubClient({
       data: null,
       error: {
@@ -74,7 +89,9 @@ describe('ResendTransport', () => {
     })
 
     await expect(new ResendTransport(client).send(email)).rejects.toThrow(
-      'Resend rejected the email to someone@example.com: validation_error — Invalid `to` field.',
+      new Error(
+        'Resend rejected the email: validation_error — Invalid `to` field.',
+      ),
     )
   })
 

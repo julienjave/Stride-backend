@@ -706,7 +706,7 @@ describe('AuthService.forgotPassword', () => {
     await new Promise((resolve) => setImmediate(resolve))
 
     expect(errorLog).toHaveBeenCalledWith(
-      'Failed to send password reset email to jane@example.com: connect ECONNREFUSED 127.0.0.1:1025',
+      'Failed to send password reset email to user 1: connect ECONNREFUSED 127.0.0.1:1025',
     )
     errorLog.mockRestore()
   })
