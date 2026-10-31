@@ -173,7 +173,14 @@ describe('Monitoring tunnel (e2e)', () => {
         },
       ],
       extra: { note: 'My knee still hurts' },
-      tags: { requestId: 'r-1', patient: 'Pat Lee' },
+      // What the browser sends for a crash (pass 3): where, the page's path,
+      // its short reference.
+      tags: {
+        where: 'route-error',
+        route: '/patients/7?search=Jane',
+        reference: '7f3a1c2e',
+        patient: 'Pat Lee',
+      },
     }
     return [
       JSON.stringify({
@@ -220,7 +227,11 @@ describe('Monitoring tunnel (e2e)', () => {
           data: { from: '/patients', to: '/patients/7' },
         },
       ],
-      tags: { requestId: 'r-1' },
+      tags: {
+        where: 'route-error',
+        route: '/patients/7',
+        reference: '7f3a1c2e',
+      },
     })
     expect(received[0].body).not.toMatch(
       /jane|Jane|Pat Lee|knee|Mozilla|203\.0|"999"/,

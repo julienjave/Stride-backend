@@ -279,6 +279,39 @@ describe('scrubEvent', () => {
   })
 })
 
+describe('scrubEvent — the reference tag', () => {
+  // The short reference on an error screen (8 hex characters: request-id.ts
+  // for a server's error, the browser's own for a crash). Its shape is
+  // known, so the tag is kept only in that shape — a page writing a name
+  // into it loses the tag.
+  it('keeps a reference of the right shape, as it is', () => {
+    const scrubbed = scrubEvent({
+      tags: { reference: '7f3a1c2e' },
+    } as unknown as ErrorEvent)
+    expect(scrubbed.tags).toStrictEqual({ reference: '7f3a1c2e' })
+  })
+
+  it.each([
+    ['a name', 'Jane Doe'],
+    ['too long', '7f3a1c2e9'],
+    ['too short', '7f3a1c2'],
+    ['capitals', '7F3A1C2E'],
+    ['not hex', '7f3a1c2g'],
+  ])('drops one that is %s', (_, reference) => {
+    const scrubbed = scrubEvent({
+      tags: { reference, where: 'route-error' },
+    } as unknown as ErrorEvent)
+    expect(scrubbed.tags).toStrictEqual({ where: 'route-error' })
+  })
+
+  it('drops one that is not text', () => {
+    const scrubbed = scrubEvent({
+      tags: { reference: 12345678 },
+    } as unknown as ErrorEvent)
+    expect(scrubbed).not.toHaveProperty('tags')
+  })
+})
+
 describe('scrubBreadcrumb', () => {
   it('drops console lines and clicks or typing (their text is what is on screen)', () => {
     expect(

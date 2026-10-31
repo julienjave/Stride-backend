@@ -47,14 +47,19 @@ import { pathOnly, scrubText } from './log-scrub'
 //   request      method + PATH (no query, headers, cookies, body, IP)
 //   user         { id } only — and for the browser's reports, the id of the
 //                SESSION that sent it, not one the page claims
-//   tags         requestId, where and route (scrubbed, path only), nothing
-//                else
+//   tags         requestId, where and route (scrubbed, path only), and
+//                reference — only if it is 8 hex characters, its shape —,
+//                nothing else
 //   contexts     runtime / os / browser name + version, the trace ids
 //   breadcrumbs  see scrubBreadcrumb
 // Dropped: extra, modules, server_name, request headers / cookies / data /
 // query_string / env, user email / username / ip_address, every other context.
 
-const KEPT_TAGS = ['requestId', 'where', 'route'] as const
+const KEPT_TAGS = ['requestId', 'where', 'route', 'reference'] as const
+// The short reference shown on an error screen (request-id.ts, referenceOf;
+// the browser makes one for a crash): its shape is known, so anything else
+// in that tag is dropped rather than scrubbed.
+const REFERENCE_SHAPE = /^[0-9a-f]{8}$/
 const KEPT_CONTEXTS = ['runtime', 'os', 'browser'] as const
 const MAX_TEXT = 1_000
 const MAX_BREADCRUMBS = 50
@@ -204,11 +209,16 @@ function keptTags(tags: Event['tags']): Event['tags'] | undefined {
   const kept: NonNullable<Event['tags']> = {}
   for (const key of KEPT_TAGS) {
     const value = tags[key]
+    if (value === undefined || value === null) continue
+    if (key === 'reference') {
+      if (typeof value === 'string' && REFERENCE_SHAPE.test(value)) {
+        kept[key] = value
+      }
+      continue
+    }
     // pathOnly too: a route is "GET /users/7" — a query must never ride
     // along, whoever wrote the tag (the browser's included).
-    if (value !== undefined && value !== null) {
-      kept[key] = text(pathOnly(String(value)))
-    }
+    kept[key] = text(pathOnly(String(value)))
   }
   return Object.keys(kept).length > 0 ? kept : undefined
 }

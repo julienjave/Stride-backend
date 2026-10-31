@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { assignRequestId, requestIdOf } from './request-id'
+import { assignRequestId, referenceOf, requestIdOf } from './request-id'
 
 // A v4 UUID, as randomUUID() makes them.
 const UUID =
@@ -88,5 +88,13 @@ describe('requestIdOf', () => {
   it('ignores anything else', () => {
     expect(requestIdOf(fakeExchange({ id: 3 }).req)).toBeUndefined()
     expect(requestIdOf(fakeExchange().req)).toBeUndefined()
+  })
+})
+
+describe('referenceOf', () => {
+  // What an error screen shows: the first 8 characters, the part before the
+  // first dash of a UUID.
+  it('is the id shortened to 8 characters', () => {
+    expect(referenceOf('7f3a1c2e-9b4d-4e1f-8a2b-3c4d5e6f7a8b')).toBe('7f3a1c2e')
   })
 })

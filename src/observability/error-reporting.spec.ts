@@ -74,7 +74,6 @@ describe('errorReportingOptions', () => {
     ).map((integration) => integration.name)
     expect(names).toStrictEqual([
       'EventFilters',
-      'Dedupe',
       'FunctionToString',
       'LinkedErrors',
       'OnUncaughtException',
@@ -146,7 +145,7 @@ describe('reporting, through the real SDK', () => {
     reportError(databaseFailure(), {
       where: 'http',
       route: 'POST /conversations/3/messages',
-      requestId: 'r-42',
+      requestId: '7f3a1c2e-9b4d-4e1f-8a2b-3c4d5e6f7a8b',
       userId: 7,
     })
     await Sentry.flush(2_000)
@@ -157,7 +156,10 @@ describe('reporting, through the real SDK', () => {
     expect(event.tags).toStrictEqual({
       where: 'http',
       route: 'POST /conversations/3/messages',
-      requestId: 'r-42',
+      requestId: '7f3a1c2e-9b4d-4e1f-8a2b-3c4d5e6f7a8b',
+      // The short form an error screen shows ("Reference: 7f3a1c2e."),
+      // searchable in GlitchTip as it is.
+      reference: '7f3a1c2e',
     })
     expect(event.user).toStrictEqual({ id: '7' })
     // The cause chain (linkedErrors) is there — Postgres's error first, then
@@ -179,6 +181,32 @@ describe('reporting, through the real SDK', () => {
     // Local variables: nowhere, not even in the source part.
     expect(envelopes[0]).not.toContain('"vars"')
     expect(envelopes[0]).toContain('"context_line"')
+  })
+
+  // The app retries a 5xx twice, and the screen shows the LAST request's
+  // reference: each failed request must arrive as its own report, even when
+  // they failed the same way (no Dedupe — pass 3's live check).
+  it('sends every request that failed the same way, each with its reference', async () => {
+    for (const requestId of [
+      '11111111-9b4d-4e1f-8a2b-3c4d5e6f7a8b',
+      '22222222-9b4d-4e1f-8a2b-3c4d5e6f7a8b',
+      '33333333-9b4d-4e1f-8a2b-3c4d5e6f7a8b',
+    ]) {
+      reportError(databaseFailure(), { where: 'http', requestId })
+    }
+    await Sentry.flush(2_000)
+    const references = envelopes.map(
+      (envelope) =>
+        (JSON.parse(envelope.split('\n')[2]) as Sentry.ErrorEvent).tags
+          ?.reference,
+    )
+    // All three — in any order: the SDK reads each frame's source lines
+    // asynchronously, so one can overtake another.
+    expect(references.sort()).toStrictEqual([
+      '11111111',
+      '22222222',
+      '33333333',
+    ])
   })
 
   it('has no user or request id when none is given', async () => {

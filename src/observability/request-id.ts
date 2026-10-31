@@ -64,3 +64,21 @@ export function assignRequestId(
 export function requestIdOf(req: IncomingMessage): string | undefined {
   return typeof req.id === 'string' ? req.id : undefined
 }
+
+// --- THE REFERENCE A PERSON QUOTES ---------------------------------------------------------------------
+
+// What an error screen shows (decisions §32, pass 3 — the person's choice):
+// the id's first 8 characters, "Reference: 7f3a1c2e." — short enough to read
+// out over the phone. 8 hex characters are 32 bits: two requests of the same
+// day sharing one is very unlikely, and the reference only has to find a
+// request among the few around the time the person reported it.
+//
+// Where it leads: the error report carries it as its own tag, `reference`
+// (GlitchTip searches a tag by its exact value — reportError adds it); the
+// log lines carry the full id, which a search by its first 8 characters
+// finds. The browser shortens the same way (api/apiErrors.ts).
+export const REFERENCE_LENGTH = 8
+
+export function referenceOf(requestId: string): string {
+  return requestId.slice(0, REFERENCE_LENGTH)
+}

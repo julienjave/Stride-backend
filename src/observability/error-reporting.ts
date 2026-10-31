@@ -20,6 +20,7 @@
 import * as Sentry from '@sentry/nestjs'
 import type { ErrorReportingConfig } from './error-reporting-config'
 import { scrubEvent } from './report-scrub'
+import { referenceOf } from './request-id'
 
 // --- THE SDK'S SETTINGS ------------------------------------------------------------------------------------
 
@@ -68,7 +69,7 @@ export function errorReportingOptions(
 
     // The integrations, CHOSEN — `defaultIntegrations: false` turns off the
     // SDK's ~20 defaults, and this list says which come back:
-    //   eventFilters, dedupe        drop known noise and repeated events
+    //   eventFilters                drop known noise
     //   functionToString            readable function names
     //   linkedErrors                Error.cause chains (Drizzle → Postgres)
     //   onUncaughtException         a crash is reported before the process
@@ -79,7 +80,12 @@ export function errorReportingOptions(
     //                               an unhandled rejection: a behaviour change
     //                               hidden in a monitoring setting.)
     //   contextLines, nodeContext   the source lines; Node / OS versions
-    // Left out: console, http, node-fetch (breadcrumbs of every log and
+    // Left out: dedupe — it drops an event equal to the one before, and two
+    // requests failing the same way ARE two events: the app retries a 5xx
+    // twice, so the screen shows the THIRD request's reference, which must
+    // find its report (found in pass 3's live check — only the first of the
+    // three arrived; GlitchTip groups them into one issue anyway);
+    // console, http, node-fetch (breadcrumbs of every log and
     // outgoing call — the request id ties a report to its log lines instead),
     // requestData (it reads the request from the http integration's scope,
     // which isn't installed — the filter names the route itself, `route`),
@@ -88,7 +94,6 @@ export function errorReportingOptions(
     defaultIntegrations: false,
     integrations: [
       Sentry.eventFiltersIntegration(),
-      Sentry.dedupeIntegration(),
       Sentry.functionToStringIntegration(),
       Sentry.linkedErrorsIntegration(),
       Sentry.onUncaughtExceptionIntegration(),
@@ -122,14 +127,20 @@ export interface ReportContext {
 }
 
 // The ONE way the app reports an error (the SDK's own handlers report
-// crashes). When reporting is off — no DSN, as in every test — the SDK isn't
+// crashes). With a request id comes its short form too, the `reference` tag
+// — what the person read on their screen, searchable as it is. When reporting is off — no DSN, as in every test — the SDK isn't
 // initialised and this does nothing.
 export function reportError(error: unknown, context: ReportContext): void {
   Sentry.captureException(error, {
     tags: {
       where: context.where,
       ...(context.route ? { route: context.route } : {}),
-      ...(context.requestId ? { requestId: context.requestId } : {}),
+      ...(context.requestId
+        ? {
+            requestId: context.requestId,
+            reference: referenceOf(context.requestId),
+          }
+        : {}),
     },
     ...(context.userId !== undefined
       ? { user: { id: String(context.userId) } }
