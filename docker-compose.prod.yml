@@ -150,6 +150,69 @@ services:
     profiles: ["tools"]
     command: ["npx", "ts-node", "scripts/seed-exercises.ts"]
 
+  # === Error tracking (decisions §32) ===
+  # GlitchTip (Sentry's protocol, self-hosted) and its OWN Postgres: Stride's
+  # database never shares a server, settings or load with it. Nothing here
+  # is on the internet:
+  #   - the app's reports go to `glitchtip:8000` on this compose network;
+  #   - the browser's reports go to the app (POST /monitoring), which checks,
+  #     scrubs and forwards them here;
+  #   - the web interface is bound to 127.0.0.1 — open it through an SSH
+  #     tunnel (`ssh -L 8000:127.0.0.1:8000 <droplet>`, then
+  #     http://localhost:8000), like the RustFS console.
+  # About 0.5 GB of RAM with the settings below; add swap on a 2 GB droplet.
+  glitchtip-db:
+    image: postgres:18
+    container_name: stride-glitchtip-db
+    restart: unless-stopped
+    # GlitchTip partitions its event tables; the default lock table is too
+    # small for that (GlitchTip's install guide). This server only.
+    command: -c max_locks_per_transaction=512
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: ${GLITCHTIP_DB_PASSWORD:?GLITCHTIP_DB_PASSWORD must be set in .env}
+      POSTGRES_DB: glitchtip
+    logging: *default-logging
+    volumes:
+      - glitchtip_pgdata:/var/lib/postgresql
+
+  glitchtip:
+    # Pin the exact version once the first deployment runs (the major tag is
+    # GlitchTip's own default).
+    image: glitchtip/glitchtip:6
+    container_name: stride-glitchtip
+    restart: unless-stopped
+    depends_on:
+      - glitchtip-db
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_DB_PASSWORD}@glitchtip-db:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?GLITCHTIP_SECRET_KEY must be set in .env}
+      # The address its own pages and emails use — through the SSH tunnel.
+      GLITCHTIP_DOMAIN: http://localhost:8000
+      DEFAULT_FROM_EMAIL: ${GLITCHTIP_FROM_EMAIL:-glitchtip@localhost}
+      # Alert emails: set EMAIL_URL to an SMTP URL to receive them; until
+      # then they're written to its log.
+      EMAIL_URL: ${GLITCHTIP_EMAIL_URL:-consolemail://}
+      # One process (web + worker), Postgres as the queue and cache: no
+      # Valkey container.
+      SERVER_ROLE: all_in_one
+      VALKEY_URL: ""
+      # Accounts are created by hand (`docker compose -f
+      # docker-compose.prod.yml exec glitchtip ./manage.py createsuperuser`):
+      # nobody signs up.
+      ENABLE_USER_REGISTRATION: "False"
+      GLITCHTIP_ENABLE_LOGS: "False"
+      GLITCHTIP_ENABLE_UPTIME: "False"
+      ENABLE_ADMIN: "False"
+      ENABLE_OPENAPI: "False"
+      GLITCHTIP_ENABLE_MCP: "False"
+      GLITCHTIP_ENABLE_DUCKDB: "False"
+    logging: *default-logging
+    volumes:
+      - glitchtip_uploads:/code/uploads
+
   caddy:
     image: caddy:2
     container_name: stride-caddy
@@ -173,3 +236,5 @@ volumes:
   rustfs_data:
   caddy_data:
   caddy_config:
+  glitchtip_pgdata:
+  glitchtip_uploads:

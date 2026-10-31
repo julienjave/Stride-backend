@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto'
 import { Catch, ArgumentsHost, HttpException, Logger } from '@nestjs/common'
 import { BaseWsExceptionFilter, WsException } from '@nestjs/websockets'
 import { translateDatabaseRefusal } from '../common/filters/http-exception.filter'
+import { reportError } from '../observability/error-reporting'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -39,6 +40,14 @@ import { translateDatabaseRefusal } from '../common/filters/http-exception.filte
 export type WsAnswer<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; message: string[]; requestId?: string }
+
+// The account behind a socket, by id: `socket.data.user`, set by the
+// gateway once the handshake's session is read — or undefined.
+function socketUserId(client: unknown): number | undefined {
+  const user = (client as { data?: { user?: { id?: unknown } } } | undefined)
+    ?.data?.user
+  return typeof user?.id === 'number' ? user.id : undefined
+}
 
 // --- FILTER ------------------------------------------------------------------------------------------------
 
@@ -104,6 +113,15 @@ export class WsHttpExceptionFilter extends BaseWsExceptionFilter {
           `Unhandled exception on event ${pattern}: ${String(caught)}`,
         )
       }
+      // To GlitchTip too, with the same reference (decisions §32). The
+      // socket's user is set at its handshake (MessagingGateway puts it in
+      // `socket.data.user`).
+      reportError(caught, {
+        where: 'websocket',
+        route: pattern,
+        requestId,
+        userId: socketUserId(host.getArgByIndex(0)),
+      })
       const answer: WsAnswer<never> = {
         ok: false,
         status: 500,

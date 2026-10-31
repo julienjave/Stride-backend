@@ -21,6 +21,7 @@ import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from './schema'
 import { getAppDatabaseUrl } from '../config/database-url'
 import { getPoolConfig } from '../config/pool-config'
+import { survivePoolErrors } from './pool-errors'
 
 export const DRIZZLE = Symbol('DRIZZLE')
 // A separate token for the raw pool — exists specifically so something can
@@ -38,10 +39,15 @@ export const pgPoolProvider = {
     // policies have no effect on a superuser or table-owning connection,
     // so this is the connection every future policy will actually depend
     // on; behavior is unchanged for now since no policies exist yet.
-    new Pool({
-      connectionString: getAppDatabaseUrl(),
-      ...getPoolConfig('app'),
-    }),
+    // survivePoolErrors: a closed idle connection must not crash the process
+    // (pool-errors.ts).
+    survivePoolErrors(
+      new Pool({
+        connectionString: getAppDatabaseUrl(),
+        ...getPoolConfig('app'),
+      }),
+      'app',
+    ),
 }
 
 export const drizzleProvider = {

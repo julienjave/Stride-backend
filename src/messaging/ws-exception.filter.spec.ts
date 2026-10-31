@@ -18,6 +18,7 @@
 import { ArgumentsHost, ForbiddenException, Logger } from '@nestjs/common'
 import { DrizzleQueryError } from 'drizzle-orm'
 import { WsHttpExceptionFilter } from './ws-exception.filter'
+import * as errorReporting from '../observability/error-reporting'
 
 // The WebSocket filter's four paths: a refusal or a bug, with or without an
 // acknowledgement. A fake host gives the filter Nest's handler arguments —
@@ -29,11 +30,15 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 describe('WsHttpExceptionFilter', () => {
-  function run(exception: unknown, withAck: boolean) {
+  function run(exception: unknown, withAck: boolean, userId?: number) {
     // Typed mocks: what the filter passes to the ack and to emit().
     const ack = jest.fn<void, [unknown]>()
     const emit = jest.fn<void, [string, unknown]>()
-    const client = { emit }
+    // The gateway keeps the socket's account in `data.user`.
+    const client = {
+      emit,
+      data: userId === undefined ? {} : { user: { id: userId } },
+    }
     const args = [
       client,
       { conversationId: 7 },
@@ -126,6 +131,41 @@ describe('WsHttpExceptionFilter', () => {
     expect(second.requestId).toMatch(UUID)
     expect(second.requestId).not.toBe(answer.requestId)
     logged.mockRestore()
+  })
+
+  // To GlitchTip too, with the same reference and the socket's account; a
+  // refusal is an answer, not reported.
+  it('reports a bug with its reference and the user — not a refusal', () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
+    const reported = jest
+      .spyOn(errorReporting, 'reportError')
+      .mockImplementation(() => undefined)
+    const error = new Error('boom')
+    const { ack } = run(error, true, 9)
+    run(new ForbiddenException('Not yours'), true, 9)
+    run('thrown text', true)
+    const answer = ack.mock.calls[0][0] as { requestId: string }
+    expect(reported.mock.calls).toStrictEqual([
+      [
+        error,
+        {
+          where: 'websocket',
+          route: 'sendMessage',
+          requestId: answer.requestId,
+          userId: 9,
+        },
+      ],
+      [
+        'thrown text',
+        {
+          where: 'websocket',
+          route: 'sendMessage',
+          requestId: expect.any(String) as string,
+          userId: undefined,
+        },
+      ],
+    ])
+    jest.restoreAllMocks()
   })
 
   it('logs something thrown that is not an Error as text, with the reference', () => {

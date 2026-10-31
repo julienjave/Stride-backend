@@ -168,8 +168,9 @@ describe('audit tags on every route that can change data', () => {
     expect(problems(routes)).toEqual([])
   })
 
-  // The two ways a mutating route can say "this changes nothing" are listed
-  // here, so a reviewer sees them in one place.
+  // The routes that say "this changes nothing" are listed here, so a
+  // reviewer sees them in one place. (POST /monitoring, decisions §32: it
+  // passes a browser's error report on to GlitchTip.)
   it('lists the routes that change nothing, each with its reason', () => {
     const routes = mutatingRoutes(appControllers())
     expect(
@@ -177,7 +178,11 @@ describe('audit tags on every route that can change data', () => {
         .filter((r) => r.notAuditedReason !== undefined)
         .map((r) => r.route)
         .sort(),
-    ).toEqual(['POST /auth/reset-password/check', 'POST /invitations/lookup'])
+    ).toEqual([
+      'POST /auth/reset-password/check',
+      'POST /invitations/lookup',
+      'POST /monitoring',
+    ])
   })
 
   // The checker itself, on controllers made for the test: it must SEE an

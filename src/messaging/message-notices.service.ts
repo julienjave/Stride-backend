@@ -27,6 +27,7 @@ import { sql } from 'drizzle-orm'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { EmailService } from '../email/email.service'
 import { errorMessage } from '../common/error-message'
+import { reportError } from '../observability/error-reporting'
 import {
   NOTICE_DELAY_MINUTES,
   groupNotices,
@@ -99,6 +100,9 @@ export class MessageNoticesService implements OnApplicationShutdown {
       // A failed sweep (the database briefly unreachable) must not stop the
       // timer or crash the server: logged, and the next minute tries again.
       this.logger.error({ err: error }, 'The new-message email sweep failed')
+      // Reported too: nobody is looking at a page when a background job
+      // fails, so nothing else would surface it (decisions §32).
+      reportError(error, { where: 'message-notices-sweep' })
     } finally {
       this.running = false
     }

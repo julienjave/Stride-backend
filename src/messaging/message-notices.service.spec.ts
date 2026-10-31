@@ -19,6 +19,7 @@ import { MessageNoticesService } from './message-notices.service'
 import type { ClaimedNoticeRow } from './message-rules'
 import type { DrizzleDb } from '../database/drizzle.provider'
 import type { EmailService } from '../email/email.service'
+import * as errorReporting from '../observability/error-reporting'
 
 // Roadmap Phase 6.5: the sweep around claim_message_notices(). The claim's
 // rules are the database's (test/message-notices.e2e-spec.ts); this checks
@@ -125,13 +126,23 @@ describe('MessageNoticesService timer', () => {
     service.onApplicationShutdown()
   })
 
-  it('survives a failed sweep: the next tick runs', async () => {
+  // And reports it (decisions §32): a background job's failure is seen by
+  // no page, so nothing else would surface it.
+  it('survives a failed sweep, reporting it: the next tick runs', async () => {
     const { service, execute } = build()
-    execute.mockRejectedValueOnce(new Error('database unreachable'))
+    const failure = new Error('database unreachable')
+    execute.mockRejectedValueOnce(failure)
     jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined)
+    const reported = jest
+      .spyOn(errorReporting, 'reportError')
+      .mockImplementation(() => undefined)
     service.start(1000)
     await jest.advanceTimersByTimeAsync(2000)
     expect(execute).toHaveBeenCalledTimes(2)
+    expect(reported.mock.calls).toStrictEqual([
+      [failure, { where: 'message-notices-sweep' }],
+    ])
+    reported.mockRestore()
     service.onApplicationShutdown()
   })
 })

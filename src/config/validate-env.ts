@@ -17,6 +17,7 @@
 
 import { getEmailTransportKind } from '../email/email-transport.config'
 import { rateLimitsEnabled } from './rate-limits'
+import { errorReportingConfig } from '../observability/error-reporting-config'
 
 // Called as the very first thing bootstrap() does, before NestFactory.create()
 // even runs — nothing about this app should construct a single module if a
@@ -61,6 +62,11 @@ export function validateEnv(): void {
   // factory for the e2e tests (built without main.ts) — the same split as
   // the email transport above.
   rateLimitsEnabled()
+
+  // SENTRY_DSN / SENTRY_BROWSER_DSN, when set, must be real DSNs — a typo
+  // would otherwise lose every report without a word. (Unset = reporting
+  // off: fine.)
+  errorReportingConfig()
 
   // Same reasoning, applied to MFA secret encryption — validated for both
   // presence AND correct shape (64 hex characters = 32 bytes = AES-256's

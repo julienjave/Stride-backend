@@ -62,6 +62,7 @@ import {
 } from '../../messaging/message-rules'
 import { pathOnly } from '../../observability/log-scrub'
 import { assignRequestId } from '../../observability/request-id'
+import { reportError } from '../../observability/error-reporting'
 
 // The closed-program guard's refusal (migration 0031) — reached only when
 // the service's own check (assertProgramOpen) didn't catch it first: a
@@ -179,6 +180,12 @@ export function translateDatabaseRefusal(caught: unknown): unknown {
   return caught
 }
 
+// The signed-in account's id (passport's session), or undefined.
+function signedInUserId(request: Request): number | undefined {
+  const user: { id?: unknown } | undefined = request.user
+  return typeof user?.id === 'number' ? user.id : undefined
+}
+
 // --- FILTER ------------------------------------------------------------------------------------------------
 
 // @Catch() with no argument catches EVERYTHING — both Nest's own
@@ -261,6 +268,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
           `Unhandled exception on ${where}: ${String(exception)}`,
         )
       }
+      // And to GlitchTip (decisions §32), tagged with the same request id —
+      // the report, the log line and the person's "Reference" all name it.
+      // Only here: an HttpException is an ANSWER (a 404, a 409), not a bug.
+      // `exception`, not `caught`: a database refusal the filter translated
+      // into a 409 never reaches this branch.
+      reportError(exception, {
+        where: 'http',
+        route: where,
+        requestId,
+        userId: signedInUserId(request),
+      })
     }
 
     const messages = Array.isArray(message) ? message : [message]

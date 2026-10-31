@@ -52,7 +52,70 @@ services:
     ports:
       - "1025:1025" # SMTP — where the app sends
       - "8025:8025" # web inbox — where you read
- 
+
+  # === Error tracking (decisions §32) — OPTIONAL in development ===
+  # GlitchTip, an open-source error tracker that speaks Sentry's protocol,
+  # with its OWN Postgres (Stride's database never shares a server, settings
+  # or load with it). Started only on request — it costs ~0.5 GB of RAM:
+  #
+  #   docker compose --profile errors up -d
+  #
+  # Then open http://localhost:8000, create the first account
+  # (`docker compose exec glitchtip ./manage.py createsuperuser`), an
+  # organization and two projects — "stride-api" (Node) and "stride-web"
+  # (React) — and copy their DSNs into .env as SENTRY_DSN and
+  # SENTRY_BROWSER_DSN. Without them the app reports nothing (the default).
+  glitchtip-db:
+    image: postgres:18
+    container_name: stride-glitchtip-db
+    restart: unless-stopped
+    profiles: ["errors"]
+    # GlitchTip partitions its event tables; Postgres's default lock table is
+    # too small for that (GlitchTip's own install guide sets this). It
+    # applies to this server only — another reason for a server of its own.
+    command: -c max_locks_per_transaction=512
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip}
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip_pgdata:/var/lib/postgresql
+
+  glitchtip:
+    # GlitchTip's own install guide uses the major tag; pin the exact
+    # version you pulled once it runs (see deferred-improvements.md, like
+    # Mailpit's).
+    image: glitchtip/glitchtip:6
+    container_name: stride-glitchtip
+    restart: unless-stopped
+    profiles: ["errors"]
+    depends_on:
+      - glitchtip-db
+    ports:
+      - "8000:8000" # the web interface AND where the SDKs send
+    environment:
+      DATABASE_URL: postgres://glitchtip:${GLITCHTIP_DB_PASSWORD:-glitchtip}@glitchtip-db:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-dev-only-not-a-secret-change-me}
+      GLITCHTIP_DOMAIN: http://localhost:8000
+      DEFAULT_FROM_EMAIL: glitchtip@stride.test
+      # Its alert emails land in Mailpit, like the app's.
+      EMAIL_URL: smtp://mailpit:1025
+      # The small set-up: web and worker in ONE process, and Postgres for the
+      # task queue and cache — no Valkey / Redis container.
+      SERVER_ROLE: all_in_one
+      VALKEY_URL: ""
+      # Errors only: logs go to Better Stack, uptime is watched from outside.
+      GLITCHTIP_ENABLE_LOGS: "False"
+      GLITCHTIP_ENABLE_UPTIME: "False"
+      ENABLE_ADMIN: "False"
+      ENABLE_OPENAPI: "False"
+      GLITCHTIP_ENABLE_MCP: "False"
+      GLITCHTIP_ENABLE_DUCKDB: "False"
+    volumes:
+      - glitchtip_uploads:/code/uploads
+
 volumes:
   pgdata:
   rustfs_data:
+  glitchtip_pgdata:
+  glitchtip_uploads:

@@ -17,6 +17,11 @@
 
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
+// FIRST, before Nest or any module of the app: error reporting starts here,
+// so an error while the rest loads is reported too (observability/
+// instrument.ts says why, and why only main.ts imports it). It loads
+// dotenv itself.
+import './observability/instrument'
 import 'dotenv/config'
 import { NestFactory } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
@@ -33,6 +38,7 @@ import { getDatabaseUrl } from './config/database-url'
 import { validateEnv } from './config/validate-env'
 import { corsOptions } from './config/cors-options'
 import { getPoolConfig } from './config/pool-config'
+import { survivePoolErrors } from './database/pool-errors'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
 import { MessageNoticesService } from './messaging/message-notices.service'
 
@@ -117,10 +123,15 @@ async function bootstrap() {
   // --- SESSION ---
   // A SEPARATE pool from Drizzle's own — connect-pg-simple manages its own
   // "session" table directly with raw SQL, entirely outside Drizzle's schema/migration system.
-  const sessionPool = new Pool({
-    connectionString: getDatabaseUrl(),
-    ...getPoolConfig('session'),
-  })
+  // survivePoolErrors: a closed idle connection (Postgres restarting) must
+  // not crash the process — database/pool-errors.ts.
+  const sessionPool = survivePoolErrors(
+    new Pool({
+      connectionString: getDatabaseUrl(),
+      ...getPoolConfig('session'),
+    }),
+    'session',
+  )
   const PgSessionStore = connectPgSimple(session)
 
   // Named, rather than passed inline to app.use() — this exact same

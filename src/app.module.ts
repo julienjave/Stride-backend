@@ -47,6 +47,7 @@ import { LegalDisclosuresModule } from './legal-disclosures/legal-disclosures.mo
 import { PatientMergesModule } from './patient-merges/patient-merges.module'
 import { throttlerOptions } from './config/rate-limits'
 import { pinoHttpOptions } from './observability/logger-options'
+import { ObservabilityModule } from './observability/observability.module'
 
 // --- MODULE ------------------------------------------------------------------------------------------------
 
@@ -83,6 +84,7 @@ import { pinoHttpOptions } from './observability/logger-options'
     ComplaintReviewsModule,
     LegalDisclosuresModule,
     PatientMergesModule,
+    ObservabilityModule,
   ],
   providers: [
     // Applying ThrottlerGuard globally here — every route in the app gets the

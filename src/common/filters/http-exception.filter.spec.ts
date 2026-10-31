@@ -28,6 +28,7 @@ import {
   RETIRED_EXERCISE_MESSAGE,
 } from './http-exception.filter'
 import { ONE_SESSION_A_DAY_MESSAGE } from '../../sessions/session-rules'
+import * as errorReporting from '../../observability/error-reporting'
 
 // The filter shapes every error response. Here: the database errors it
 // translates (the closed-program guard, migration 0031; the retired-exercise
@@ -314,6 +315,50 @@ describe('HttpExceptionFilter', () => {
           'Unhandled exception on POST /admin/users',
         ],
       ])
+    })
+
+    // And to GlitchTip (decisions §32): the error itself, with the request's
+    // id — the reference the person sees — and the signed-in account's id.
+    it('reports it with the request id and the user', () => {
+      const reported = jest
+        .spyOn(errorReporting, 'reportError')
+        .mockImplementation(() => undefined)
+      const error = new Error('boom')
+      run(error, { url: '/sessions', id: REQUEST_ID, user: { id: 7 } })
+      run('not an error', { url: '/sessions', id: REQUEST_ID })
+      expect(reported.mock.calls).toStrictEqual([
+        [
+          error,
+          {
+            where: 'http',
+            route: 'POST /sessions',
+            requestId: REQUEST_ID,
+            userId: 7,
+          },
+        ],
+        [
+          'not an error',
+          {
+            where: 'http',
+            route: 'POST /sessions',
+            requestId: REQUEST_ID,
+            userId: undefined,
+          },
+        ],
+      ])
+      reported.mockRestore()
+    })
+
+    // An answer (a 404) or a database refusal turned into a 409 is not a
+    // bug: nothing reported.
+    it('reports nothing for an HTTP exception or a translated refusal', () => {
+      const reported = jest
+        .spyOn(errorReporting, 'reportError')
+        .mockImplementation(() => undefined)
+      run(new NotFoundException('Nope'))
+      run(databaseError('23514', 'assigned_program_closed'))
+      expect(reported).not.toHaveBeenCalled()
+      reported.mockRestore()
     })
 
     it('logs nothing for an HTTP exception (an expected answer)', () => {
