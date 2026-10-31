@@ -314,6 +314,21 @@ describe('Records export (e2e)', () => {
     })
     const later = await addEntry(pat.id, { plan: 'Review in two weeks.' })
     const knee = await programWithSessions(pat, 'Knee Rehab', 'Easy today 😊')
+    // Range of motion (Phase 7): measured at the visit of the last note.
+    const rom = await practitioner.post('/range-of-motion').send({
+      patientId: pat.id,
+      measuredOn: today,
+      medicalFileEntryId: later.id,
+      measurements: [
+        {
+          movement: 'knee_flexion',
+          side: 'right',
+          mode: 'active',
+          degrees: 95,
+        },
+      ],
+    })
+    expect(rom.status).toBe(201)
 
     // Someone else's record, in the same clinic, by the same practitioner.
     const jo = await newPatient('Jo')
@@ -344,7 +359,11 @@ describe('Records export (e2e)', () => {
         'Review in two weeks.',
         'Knee Rehab',
         'Knee Rehab: a good day',
+        'Range of motion',
       ]),
+    )
+    expect(text.join('\n')).toContain(
+      'Knee flexion, right, active: 95° (typical 135°)',
     )
     // The patient's emoji, drawn in the emoji font: a piece of its own.
     expect(text.join('\n')).toContain('Easy today ')
@@ -364,6 +383,7 @@ describe('Records export (e2e)', () => {
           timeZone: 'America/Montreal',
           // Newest first, as the file is read.
           medicalFileEntryIds: [later.id, correction.id, original.id],
+          romAssessmentIds: [rom.body.id],
           programIds: [knee.programId],
           sessionIds: knee.sessionIds,
         },
@@ -505,6 +525,7 @@ describe('Records export (e2e)', () => {
         // Robin's own name — not the first patient's in the table.
         'Robin Export',
         'Your medical file has no entries.',
+        'No range of motion has been recorded.',
         'You have no exercise programs.',
       ]),
     )
@@ -513,6 +534,7 @@ describe('Records export (e2e)', () => {
       // No zone sent: UTC, and the copy says so.
       timeZone: 'UTC',
       medicalFileEntryIds: [],
+      romAssessmentIds: [],
       programIds: [],
       sessionIds: [],
     })

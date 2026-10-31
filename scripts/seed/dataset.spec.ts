@@ -35,6 +35,12 @@ import {
   MEDICAL_FILE_SECTION_MAX_LENGTH,
 } from '../../src/database/schema/medical-files.schema'
 import { SOAP_SECTIONS } from '../../src/medical-files/medical-file-rules'
+import { ROM_NOTE_MAX_LENGTH } from '../../src/database/schema/range-of-motion.schema'
+import {
+  LOWEST_DEGREES,
+  SIDED_MOVEMENTS,
+  highestDegrees,
+} from '../../src/range-of-motion/movement-catalogue'
 import {
   normaliseRecoveryCode,
   RECOVERY_CODE_COUNT,
@@ -51,6 +57,7 @@ import {
   DEMO_PASSWORD,
   DEMO_RECOVERY_CODES,
   MEDICAL_FILES,
+  ROM_ASSESSMENTS,
   TEMPLATES,
   type AccountKey,
   type PatientAccount,
@@ -806,5 +813,71 @@ describe('docs/dev-test-accounts.md', () => {
     const documented = doc.match(/`[a-z.]+@stride\.test`/g) ?? []
     const seeded = new Set(ACCOUNTS.map((a) => `\`${a.email}\``))
     expect(documented.filter((email) => !seeded.has(email))).toEqual([])
+  })
+})
+
+// The seeded range of motion (Phase 7): what the seed and the database
+// (0076's CHECKs and keys, 0077's triggers — which hold for the owner too)
+// require of it, checked before anything is written.
+describe('the seeded range of motion', () => {
+  const careTeamOf = (key: AccountKey) => {
+    const patient = byKey.get(key)
+    return patient?.kind === 'patient' ? currentCareTeam(patient) : []
+  }
+
+  it("has unique keys, each author on the patient's care team, each note the patient's", () => {
+    const keys = ROM_ASSESSMENTS.map((a) => a.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    for (const assessment of ROM_ASSESSMENTS) {
+      expect(careTeamOf(assessment.patient)).toContain(assessment.author)
+      if (assessment.note !== undefined) {
+        expect(
+          MEDICAL_FILES.find((entry) => entry.key === assessment.note)?.patient,
+        ).toBe(assessment.patient)
+      }
+    }
+  })
+
+  it('writes only measurements the database accepts — each once, recorded on or after its day', () => {
+    for (const assessment of ROM_ASSESSMENTS) {
+      expect(assessment.measurements.length).toBeGreaterThan(0)
+      expect(assessment.recordedDaysAgo).toBeGreaterThanOrEqual(1)
+      expect(assessment.measuredDaysAgo).toBeGreaterThanOrEqual(
+        assessment.recordedDaysAgo,
+      )
+      expect(assessment.at).toMatch(/^([01]\d|2[0-3]):[0-5]\d$/)
+      const kinds = assessment.measurements.map(
+        (m) => `${m.movement}/${m.side ?? '-'}/${m.mode}`,
+      )
+      expect(new Set(kinds).size).toBe(kinds.length)
+      for (const m of assessment.measurements) {
+        expect(m.side !== undefined).toBe(SIDED_MOVEMENTS.includes(m.movement))
+        expect(Number.isInteger(m.degrees)).toBe(true)
+        expect(m.degrees).toBeGreaterThanOrEqual(LOWEST_DEGREES)
+        expect(m.degrees).toBeLessThanOrEqual(highestDegrees(m.movement))
+        if (m.note !== undefined) {
+          expect(m.note).toMatch(/\S/)
+          expect(m.note.length).toBeLessThanOrEqual(ROM_NOTE_MAX_LENGTH)
+        }
+      }
+    }
+  })
+
+  it('amends only an earlier assessment of the same patient, once each, with a reason', () => {
+    const amended = new Set<string>()
+    ROM_ASSESSMENTS.forEach((assessment, index) => {
+      if (!assessment.amends) return
+      const original = ROM_ASSESSMENTS.slice(0, index).find(
+        (a) => a.key === assessment.amends?.key,
+      )
+      expect(original?.patient).toBe(assessment.patient)
+      expect(amended.has(assessment.amends.key)).toBe(false)
+      amended.add(assessment.amends.key)
+      expect(assessment.amends.reason).toMatch(/\S/)
+      expect(assessment.amends.reason.length).toBeLessThanOrEqual(
+        AMENDMENT_REASON_MAX_LENGTH,
+      )
+    })
+    expect(amended.size).toBe(1)
   })
 })

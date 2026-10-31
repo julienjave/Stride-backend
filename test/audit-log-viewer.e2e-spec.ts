@@ -512,7 +512,8 @@ describe('Audit log viewer (e2e)', () => {
 
     expect(res.status).toBe(200)
     const list = res.body as { action: string; kind: string }[]
-    expect(list).toHaveLength(118)
+    // 122 since range of motion's four (2026-10-31).
+    expect(list).toHaveLength(122)
     expect(list.map((item) => item.action)).toEqual(
       list.map((item) => item.action).sort(),
     )
@@ -522,6 +523,7 @@ describe('Audit log viewer (e2e)', () => {
     ])
     expect(list).toContainEqual({ action: 'LOGOUT', kind: 'sign_in' })
     expect(list).toContainEqual({ action: 'CONVERSATION_READ', kind: 'change' })
+    expect(list).toContainEqual({ action: 'ROM_VIEWED', kind: 'view' })
   })
 
   it('keeps the action list from anyone but an admin', async () => {

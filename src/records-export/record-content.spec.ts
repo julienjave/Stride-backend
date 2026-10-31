@@ -21,7 +21,9 @@ import {
   disclosureStampText,
   doseText,
   durationText,
+  groupIntoAssessments,
   groupIntoNotes,
+  measurementLine,
   momentText,
   sessionOutcome,
   workoutLabel,
@@ -34,6 +36,10 @@ import {
   type SessionExerciseRecord,
 } from './record-content'
 import type { MedicalFileEntry } from '../medical-files/medical-files.service'
+import type {
+  RomAssessment,
+  RomMeasurement,
+} from '../range-of-motion/range-of-motion.service'
 
 // --- FIXTURES ----------------------------------------------------------------------------------------------
 
@@ -62,6 +68,46 @@ function entry(
     ...overrides,
   }
 }
+
+// An assessment MEASURED on one day, RECORDED at a moment (often later).
+function assessment(
+  id: number,
+  measuredOn: string,
+  createdAt: string,
+  overrides: Partial<RomAssessment> = {},
+): RomAssessment {
+  return {
+    id,
+    patientId: 7,
+    measuredOn,
+    createdAt: new Date(createdAt),
+    author: { id: 3, firstName: 'Alex', lastName: 'Chen' },
+    medicalFileEntryId: null,
+    amendsId: null,
+    amendmentReason: null,
+    amendedById: null,
+    measurements: [measurement()],
+    ...overrides,
+  }
+}
+
+function measurement(overrides: Partial<RomMeasurement> = {}): RomMeasurement {
+  return {
+    id: 1,
+    movement: 'knee_flexion',
+    side: 'right',
+    mode: 'active',
+    degrees: 95,
+    note: null,
+    ...overrides,
+  }
+}
+
+// The range of motion part's opening sentence, in every copy.
+const ROM_INTRO =
+  'How far your joints moved when your care team measured them, in degrees. ' +
+  'The typical value is a textbook guide, not a target: people differ, and ' +
+  'your other side is often the better comparison.'
 
 function exercise(
   overrides: Partial<PrescribedExercise> = {},
@@ -135,6 +181,7 @@ function record(overrides: Partial<RecordData> = {}): RecordData {
       dateOfBirth: '1988-04-12',
     },
     medicalFile: [],
+    rangeOfMotion: [],
     programs: [],
     // 23:30 UTC: already the 15th in Paris, still the 14th in Montreal.
     madeAt: new Date('2031-03-14T23:30:00Z'),
@@ -358,10 +405,11 @@ describe('buildRecordDocument', () => {
         kind: 'paragraph',
         text:
           'This is a copy of your record as Stride held it when it was made: ' +
-          'the notes your care team wrote in your medical file, your exercise ' +
-          'programs, and the sessions you did, stopped or skipped. Nothing in ' +
-          'a medical file is ever changed or removed — a correction is a new ' +
-          'entry, and the version it replaced is shown under it.',
+          'the notes your care team wrote in your medical file, the range of ' +
+          'motion they measured, your exercise programs, and the sessions you ' +
+          'did, stopped or skipped. Nothing in a medical file is ever changed ' +
+          'or removed — a correction is a new entry, and the version it ' +
+          'replaced is shown under it.',
         muted: false,
       },
       {
@@ -459,7 +507,7 @@ describe('buildRecordDocument', () => {
     })
   })
 
-  it('says so when the file and the programs are empty', () => {
+  it('says so when the file, the range of motion and the programs are empty', () => {
     const { blocks } = buildRecordDocument(record(), PARIS)
 
     expect(blocks.slice(3)).toStrictEqual([
@@ -467,6 +515,13 @@ describe('buildRecordDocument', () => {
       {
         kind: 'paragraph',
         text: 'Your medical file has no entries.',
+        muted: true,
+      },
+      { kind: 'heading', level: 1, text: 'Range of motion' },
+      { kind: 'paragraph', text: ROM_INTRO, muted: false },
+      {
+        kind: 'paragraph',
+        text: 'No range of motion has been recorded.',
         muted: true,
       },
       { kind: 'heading', level: 1, text: 'Exercise programs and sessions' },
@@ -504,7 +559,7 @@ describe('buildRecordDocument', () => {
     )
 
     expect(
-      partBetween(blocks, 'Medical file', 'Exercise programs and sessions'),
+      partBetween(blocks, 'Medical file', 'Range of motion'),
     ).toStrictEqual([
       { kind: 'heading', level: 1, text: 'Medical file' },
       {
@@ -1026,13 +1081,20 @@ describe('buildRecordDocument — a disclosed copy', () => {
 
   it('prints only the parts included, each saying when the period held none', () => {
     const fileAndMessages = disclose(record())
+    // Range of motion comes with the medical file (its objective findings).
     expect(headings(fileAndMessages.blocks, 1)).toEqual([
       'Medical file',
+      'Range of motion',
       'Messages',
     ])
     expect(fileAndMessages.blocks).toContainEqual({
       kind: 'paragraph',
       text: 'No medical file entries in this period.',
+      muted: true,
+    })
+    expect(fileAndMessages.blocks).toContainEqual({
+      kind: 'paragraph',
+      text: 'No range of motion measured in this period.',
       muted: true,
     })
     expect(fileAndMessages.blocks).toContainEqual({
@@ -1233,5 +1295,218 @@ describe('buildRecordDocument — a disclosed copy', () => {
         ),
       ).toContain(`to ${'O'.repeat(60)} under`)
     })
+  })
+})
+
+// --- RANGE OF MOTION ---------------------------------------------------------------------------------------
+
+describe('measurementLine', () => {
+  it.each<[string, Partial<RomMeasurement>, string]>([
+    [
+      'a limb movement, with its typical value',
+      {},
+      'Knee flexion, right, active: 95° (typical 135°)',
+    ],
+    // Negative is real data: 10° short of straight. Typical 0°: straight.
+    [
+      'a negative value, passive, with its note',
+      {
+        movement: 'knee_extension',
+        side: 'left',
+        mode: 'passive',
+        degrees: -10,
+        note: 'pain at end range',
+      },
+      'Knee extension, left, passive: -10° (typical 0°) — pain at end range',
+    ],
+    [
+      'a movement with no side',
+      { movement: 'cervical_flexion', side: null, degrees: 40 },
+      'Neck flexion, active: 40° (typical 45°)',
+    ],
+  ])('writes %s', (_label, fields, text) => {
+    expect(measurementLine(measurement(fields))).toBe(text)
+  })
+})
+
+describe('groupIntoAssessments', () => {
+  // The day MEASURED orders them, not the moment recorded: 1 was measured
+  // earlier but typed in later — the two orders disagree on purpose.
+  it('orders by the day measured, then the newest recorded', () => {
+    const typedLate = assessment(1, '2031-03-10', '2031-03-20T09:00:00Z')
+    const sameDayLater = assessment(2, '2031-03-12', '2031-03-12T18:00:00Z')
+    const sameDayEarlier = assessment(3, '2031-03-12', '2031-03-12T09:00:00Z')
+
+    expect(
+      groupIntoAssessments([typedLate, sameDayEarlier, sameDayLater]).map(
+        (group) => group.latest.id,
+      ),
+    ).toEqual([2, 3, 1])
+  })
+
+  it('puts an assessment’s earlier version under its correction', () => {
+    const original = assessment(5, '2031-03-04', '2031-03-04T10:00:00Z', {
+      amendedById: 6,
+    })
+    const correction = assessment(6, '2031-03-04', '2031-03-06T10:00:00Z', {
+      amendsId: 5,
+      amendmentReason: 'Misread',
+    })
+
+    expect(groupIntoAssessments([correction, original])).toStrictEqual([
+      { latest: correction, earlier: [original] },
+    ])
+  })
+})
+
+describe('buildRecordDocument — range of motion', () => {
+  // Note 4 is in the copy; an assessment linked to note 99 isn't (a
+  // disclosed copy whose period left it out) — both wordings at once.
+  const note = entry(4, '2031-03-04T09:00:00Z', {
+    entryType: 'initial_assessment',
+  })
+  const original = assessment(5, '2031-03-04', '2031-03-04T10:00:00Z', {
+    medicalFileEntryId: 4,
+    amendedById: 6,
+    measurements: [measurement({ degrees: 59 })],
+  })
+  const correction = assessment(6, '2031-03-04', '2031-03-06T10:00:00Z', {
+    author: { id: 4, firstName: 'Sam', lastName: 'Diaz' },
+    medicalFileEntryId: 4,
+    amendsId: 5,
+    amendmentReason: 'Right knee flexion was misread.',
+    measurements: [
+      measurement({ id: 2, degrees: 95 }),
+      measurement({ id: 3, side: 'left', degrees: 130 }),
+    ],
+  })
+  const later = assessment(7, '2031-03-10', '2031-03-10T15:00:00Z', {
+    medicalFileEntryId: 99,
+    measurements: [
+      measurement({
+        id: 4,
+        movement: 'knee_extension',
+        degrees: -5,
+        note: 'swollen',
+      }),
+    ],
+  })
+
+  it('writes each assessment, newest measured first, with its versions and note', () => {
+    const { blocks } = buildRecordDocument(
+      record({
+        medicalFile: [note],
+        rangeOfMotion: [later, correction, original],
+      }),
+      PARIS,
+    )
+
+    expect(
+      partBetween(blocks, 'Range of motion', 'Exercise programs and sessions'),
+    ).toStrictEqual([
+      { kind: 'heading', level: 1, text: 'Range of motion' },
+      { kind: 'paragraph', text: ROM_INTRO, muted: false },
+      { kind: 'heading', level: 2, text: 'Range of motion · March 10, 2031' },
+      {
+        kind: 'fields',
+        rows: [
+          ['Measured by', 'Alex Chen'],
+          ['Measured on', 'March 10, 2031'],
+          ['Recorded on', 'March 10, 2031 at 4:00 PM'],
+          ['Visit note', 'A note not included in this copy'],
+        ],
+      },
+      {
+        kind: 'list',
+        items: ['Knee extension, right, active: -5° (typical 0°) — swollen'],
+      },
+      { kind: 'heading', level: 2, text: 'Range of motion · March 4, 2031' },
+      {
+        kind: 'fields',
+        rows: [
+          ['Measured by', 'Sam Diaz'],
+          ['Measured on', 'March 4, 2031'],
+          ['Recorded on', 'March 6, 2031 at 11:00 AM'],
+          ['Visit note', 'Initial assessment of March 4, 2031'],
+          ['Reason for the correction', 'Right knee flexion was misread.'],
+        ],
+      },
+      {
+        kind: 'list',
+        items: [
+          'Knee flexion, right, active: 95° (typical 135°)',
+          'Knee flexion, left, active: 130° (typical 135°)',
+        ],
+      },
+      {
+        kind: 'heading',
+        level: 3,
+        text: 'Earlier version, replaced on March 6, 2031',
+      },
+      {
+        kind: 'fields',
+        rows: [
+          ['Measured by', 'Alex Chen'],
+          ['Measured on', 'March 4, 2031'],
+          ['Recorded on', 'March 4, 2031 at 11:00 AM'],
+          ['Visit note', 'Initial assessment of March 4, 2031'],
+        ],
+      },
+      {
+        kind: 'list',
+        items: ['Knee flexion, right, active: 59° (typical 135°)'],
+      },
+    ])
+  })
+
+  // In a disclosed copy, a latest version here may have been corrected after
+  // the period — said, as for a note. (In the patient's own copy every
+  // version is present, so the latest never has an amendment.)
+  it('says when the latest version in a disclosed copy was corrected later', () => {
+    const disclosed = buildRecordDocument(
+      record({
+        rangeOfMotion: [original],
+      }),
+      PARIS,
+      {
+        kind: 'disclosure',
+        disclosure: {
+          disclosureId: 4,
+          madeBy: 'Avery Admin',
+          recipientName: 'Jane Roe',
+          recipientOrganisation: null,
+          legalBasis: 'subpoena',
+          basisExplanation: null,
+          orderReference: null,
+          receivedOn: '2031-03-01',
+          parts: ['medical_file'],
+          period: { from: '2031-03-01', to: '2031-03-05' },
+        },
+      },
+    )
+
+    expect(
+      partBetween(disclosed.blocks, 'Range of motion · March 4, 2031'),
+    ).toStrictEqual([
+      { kind: 'heading', level: 2, text: 'Range of motion · March 4, 2031' },
+      {
+        kind: 'fields',
+        rows: [
+          ['Measured by', 'Alex Chen'],
+          ['Measured on', 'March 4, 2031'],
+          ['Recorded on', 'March 4, 2031 at 11:00 AM'],
+          ['Visit note', 'A note not included in this copy'],
+        ],
+      },
+      {
+        kind: 'list',
+        items: ['Knee flexion, right, active: 59° (typical 135°)'],
+      },
+      {
+        kind: 'paragraph',
+        text: 'These measurements were corrected later, after the period this copy covers.',
+        muted: true,
+      },
+    ])
   })
 })

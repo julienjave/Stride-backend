@@ -24,6 +24,8 @@
 // PURE, like record-content.ts: plain data in, plain data out, tested without
 // a database. Each part is filtered by ITS OWN date (the person's choice):
 //   - a medical file entry by the day it was written;
+//   - a range-of-motion assessment (part of the medical file) by the day it
+//     was MEASURED — the clinical day the order asks about;
 //   - a session by its day;
 //   - a message by the day it was sent;
 //   - a program if its dates overlap the period.
@@ -64,6 +66,13 @@ export function scopeRecord(
     // (the document says when a version here was corrected later).
     medicalFile: parts.has('medical_file')
       ? record.medicalFile.filter((entry) => inPeriod(entry.createdAt))
+      : [],
+    // Each version on its own, as a note's — by its measured day, already a
+    // calendar day (no zone to read it in).
+    rangeOfMotion: parts.has('medical_file')
+      ? record.rangeOfMotion.filter((assessment) =>
+          dayInPeriod(assessment.measuredOn, scope.period),
+        )
       : [],
     programs: scopePrograms(
       record.programs,

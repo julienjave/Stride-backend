@@ -25,6 +25,11 @@
 // to a stranger.
 
 import type { SeedHistory, SeedScores } from './session-history'
+import type {
+  RomMode,
+  RomMovement,
+  RomSide,
+} from '../../src/range-of-motion/movement-catalogue'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -942,5 +947,163 @@ export const MEDICAL_FILES: SeedMedicalEntry[] = [
     entryType: 'progress_note',
     subjective: 'Pain 5/10 after sessions, mostly when going downhill.',
     plan: 'Review the second block after its first week.',
+  },
+]
+
+// --- RANGE OF MOTION (Phase 7) -----------------------------------------------------------------------------
+
+// One measurement of a seeded assessment — the API's shape.
+export interface SeedRomMeasurement {
+  movement: RomMovement
+  side?: RomSide
+  mode: RomMode
+  degrees: number
+  note?: string
+}
+
+// One range-of-motion assessment. Written as the database OWNER with a past
+// moment, like the medical file (0077's clock trigger exempts the owner) —
+// and, like every writer, with its measurements in ONE transaction: the
+// "at least one measurement" check (0077) runs at commit for the owner too.
+export interface SeedRomAssessment {
+  key: string
+  patient: AccountKey
+  // On the patient's care team (the API would refuse anyone else).
+  author: AccountKey
+  // The clinical day: this many days before the seed's day…
+  measuredDaysAgo: number
+  // …and when it was typed in: this many days ago, at this UTC time — the
+  // same day or LATER (the CHECK rom_assessments_measured_by_recording).
+  recordedDaysAgo: number
+  at: string
+  // The medical file entry of the same visit (a MEDICAL_FILES key).
+  note?: string
+  // An amendment: the key of the EARLIER assessment it corrects, and why.
+  amends?: { key: string; reason: string }
+  measurements: SeedRomMeasurement[]
+}
+
+// Pat's right knee, as the notes tell it (MEDICAL_FILES): 110° of flexion at
+// the first visit, 120° at the review — the left knee, measured too, is the
+// comparison. Three visits make a trend a chart can show; the review's
+// assessment has a typing mistake corrected the same morning (an
+// amendment); the latest was taken at Friday's visit and typed in the next
+// day, with no note (the link is optional). Jo's back shows the movements
+// measured without a side.
+export const ROM_ASSESSMENTS: SeedRomAssessment[] = [
+  {
+    key: 'pat-rom-initial',
+    patient: 'pat',
+    author: 'alex',
+    measuredDaysAgo: 21,
+    recordedDaysAgo: 21,
+    at: '09:20',
+    note: 'pat-initial',
+    measurements: [
+      { movement: 'knee_flexion', side: 'right', mode: 'active', degrees: 110 },
+      {
+        movement: 'knee_flexion',
+        side: 'right',
+        mode: 'passive',
+        degrees: 118,
+        note: 'pain at end range',
+      },
+      { movement: 'knee_extension', side: 'right', mode: 'active', degrees: 0 },
+      { movement: 'knee_flexion', side: 'left', mode: 'active', degrees: 138 },
+      { movement: 'knee_extension', side: 'left', mode: 'active', degrees: 0 },
+    ],
+  },
+  {
+    // 102° typed for 120°…
+    key: 'pat-rom-review',
+    patient: 'pat',
+    author: 'alex',
+    measuredDaysAgo: 11,
+    recordedDaysAgo: 11,
+    at: '09:40',
+    note: 'pat-review-corrected',
+    measurements: [
+      { movement: 'knee_flexion', side: 'right', mode: 'active', degrees: 102 },
+      {
+        movement: 'knee_flexion',
+        side: 'right',
+        mode: 'passive',
+        degrees: 126,
+      },
+      { movement: 'knee_flexion', side: 'left', mode: 'active', degrees: 138 },
+    ],
+  },
+  {
+    // …corrected by an amendment: a complete new version.
+    key: 'pat-rom-review-corrected',
+    patient: 'pat',
+    author: 'alex',
+    measuredDaysAgo: 11,
+    recordedDaysAgo: 11,
+    at: '11:20',
+    note: 'pat-review-corrected',
+    amends: {
+      key: 'pat-rom-review',
+      reason: 'Right knee flexion was typed as 102°; it measured 120°.',
+    },
+    measurements: [
+      { movement: 'knee_flexion', side: 'right', mode: 'active', degrees: 120 },
+      {
+        movement: 'knee_flexion',
+        side: 'right',
+        mode: 'passive',
+        degrees: 126,
+      },
+      { movement: 'knee_flexion', side: 'left', mode: 'active', degrees: 138 },
+    ],
+  },
+  {
+    key: 'pat-rom-friday',
+    patient: 'pat',
+    author: 'alex',
+    measuredDaysAgo: 4,
+    recordedDaysAgo: 3,
+    at: '08:15',
+    measurements: [
+      { movement: 'knee_flexion', side: 'right', mode: 'active', degrees: 126 },
+      {
+        movement: 'knee_flexion',
+        side: 'right',
+        mode: 'passive',
+        degrees: 131,
+      },
+      { movement: 'knee_extension', side: 'right', mode: 'active', degrees: 0 },
+      { movement: 'knee_flexion', side: 'left', mode: 'active', degrees: 139 },
+    ],
+  },
+  {
+    key: 'jo-rom-initial',
+    patient: 'jo',
+    author: 'sam',
+    measuredDaysAgo: 17,
+    recordedDaysAgo: 17,
+    at: '14:20',
+    note: 'jo-initial',
+    measurements: [
+      {
+        movement: 'thoracolumbar_flexion',
+        mode: 'active',
+        degrees: 50,
+        note: 'fingertips to mid-shin',
+      },
+      { movement: 'thoracolumbar_extension', mode: 'active', degrees: 15 },
+      {
+        movement: 'thoracolumbar_lateral_flexion',
+        side: 'left',
+        mode: 'active',
+        degrees: 25,
+      },
+      {
+        movement: 'thoracolumbar_lateral_flexion',
+        side: 'right',
+        mode: 'active',
+        degrees: 30,
+      },
+    ],
   },
 ]

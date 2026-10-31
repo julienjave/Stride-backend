@@ -204,6 +204,13 @@ export const AUDIT_ACTIONS = {
   MEDICAL_FILE_VIEWED: 'view',
   MEDICAL_FILE_ENTRY_VIEWED: 'view',
 
+  // Range of motion (Phase 7): an assessment recorded or amended, the
+  // record read (assessment ids only — never a measurement's value).
+  ROM_ASSESSMENT_RECORDED: 'change',
+  ROM_ASSESSMENT_AMENDED: 'change',
+  ROM_VIEWED: 'view',
+  ROM_ASSESSMENT_VIEWED: 'view',
+
   // The records export (decisions §20): a copy of the patient's record —
   // medical file, programs, sessions — handed to the patient as a PDF. A
   // READ of clinical data (every row in it was read to write it), so a
@@ -276,6 +283,7 @@ export const AUDIT_AREAS = {
   conversations: 'Messages',
   messages: 'Messages',
   medical_files: 'Medical files',
+  rom_assessments: 'Range of motion',
   // No table of that name: an export is a document made on request, never
   // stored. The entry is about the patient (target_user_id), with no
   // entity id.
@@ -331,6 +339,9 @@ export const CLINICAL_AREAS = {
   conversations: true,
   messages: true,
   medical_files: true,
+  // The day a patient was measured, which note it belongs with — clinical,
+  // like a medical file entry's type and date.
+  rom_assessments: true,
   // The ids of every note, program and session handed out: which records a
   // patient HAS is clinical information too.
   records_exports: true,

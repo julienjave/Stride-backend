@@ -183,6 +183,25 @@ export const MEDICAL_FILES_AMENDS_SAME_PATIENT_FK =
   'medical_files_amends_same_patient_fk'
 export const MEDICAL_FILES_ONE_AMENDMENT_PER_ENTRY =
   'medical_files_one_amendment_per_entry'
+// Range of motion (Phase 7, migrations 0076 / 0077) — the same amendment chain
+// as medical files (composite foreign key, not-self CHECK, one amendment
+// each), plus the link to a note of the same patient, "not measured after the
+// day it was recorded", and one value per movement, side and mode.
+// RangeOfMotionService turns each into its answer (400 / 409). The side,
+// degrees and note CHECKs and the "at least one measurement" trigger are not
+// translated: the DTO refuses those first, so meeting one is a bug (a 500).
+export const ROM_ASSESSMENTS_AMENDS_SAME_PATIENT_FK =
+  'rom_assessments_amends_same_patient_fk'
+export const ROM_ASSESSMENTS_NOT_SELF_AMENDING =
+  'rom_assessments_not_self_amending'
+export const ROM_ASSESSMENTS_ONE_AMENDMENT =
+  'rom_assessments_one_amendment_per_assessment'
+export const ROM_ASSESSMENTS_NOTE_SAME_PATIENT_FK =
+  'rom_assessments_note_same_patient_fk'
+export const ROM_ASSESSMENTS_MEASURED_BY_RECORDING =
+  'rom_assessments_measured_by_recording'
+export const ROM_MEASUREMENTS_ONE_VALUE_PER_KIND =
+  'rom_measurements_one_value_per_kind'
 // Emails (Phase 6, "Change email", pass 1 — migration 0052). The UNIQUE
 // constraint on users.email (drizzle's name, migration 0000) — case-
 // insensitive in effect since every email is stored normalised: two requests

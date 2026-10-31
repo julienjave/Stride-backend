@@ -23,6 +23,7 @@ import type {
   RecordSession,
 } from './record-content'
 import type { MedicalFileEntry } from '../medical-files/medical-files.service'
+import type { RomAssessment } from '../range-of-motion/range-of-motion.service'
 import type { DisclosurePart } from '../legal-disclosures/legal-disclosure-rules'
 
 // --- FIXTURES ----------------------------------------------------------------------------------------------
@@ -54,6 +55,27 @@ function entry(id: number, createdAt: string): MedicalFileEntry {
     amendsId: null,
     amendmentReason: null,
     amendedById: null,
+  }
+}
+
+// An assessment MEASURED on one day and RECORDED at another moment — the
+// two dates the scope must not confuse.
+function assessment(
+  id: number,
+  measuredOn: string,
+  createdAt: string,
+): RomAssessment {
+  return {
+    id,
+    patientId: 7,
+    measuredOn,
+    createdAt: new Date(createdAt),
+    author: { id: 3, firstName: 'Alex', lastName: 'Chen' },
+    medicalFileEntryId: null,
+    amendsId: null,
+    amendmentReason: null,
+    amendedById: null,
+    measurements: [],
   }
 }
 
@@ -117,6 +139,7 @@ function record(overrides: Partial<RecordData> = {}): RecordData {
       dateOfBirth: '1988-04-12',
     },
     medicalFile: [],
+    rangeOfMotion: [],
     programs: [],
     madeAt: new Date('2031-05-14T12:00:00Z'),
     ...overrides,
@@ -165,6 +188,35 @@ describe('scopeRecord', () => {
     expect(
       ids(scopeRecord(record({ medicalFile: file }), scope, PARIS).medicalFile),
     ).toEqual([2, 3])
+  })
+
+  // Part of the medical file, by the day MEASURED — a calendar day, the same
+  // in every zone. Each fixture's recorded moment is on the OTHER side of the
+  // period's edge, so a scope reading createdAt instead keeps the wrong ones.
+  it('keeps the range of motion measured in the period, with the medical file', () => {
+    const rom = [
+      assessment(1, '2031-03-31', '2031-04-02T12:00:00Z'),
+      assessment(2, '2031-04-01', '2031-03-25T12:00:00Z'),
+      assessment(3, '2031-04-30', '2031-05-03T12:00:00Z'),
+      assessment(4, '2031-05-01', '2031-04-29T12:00:00Z'),
+    ]
+    const scope = { parts: ALL, period: APRIL }
+    for (const zone of [MONTREAL, PARIS]) {
+      expect(
+        ids(
+          scopeRecord(record({ rangeOfMotion: rom }), scope, zone)
+            .rangeOfMotion,
+        ),
+      ).toEqual([2, 3])
+    }
+    // Without the medical file, none — whatever the period holds.
+    expect(
+      scopeRecord(
+        record({ rangeOfMotion: rom }),
+        { parts: ['programs', 'sessions', 'messages'], period: APRIL },
+        PARIS,
+      ).rangeOfMotion,
+    ).toEqual([])
   })
 
   it('leaves out every part not chosen', () => {

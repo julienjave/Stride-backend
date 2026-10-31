@@ -50,6 +50,7 @@ describe('audit vocabulary', () => {
     it('names each stored entity type, both spellings included', () => {
       expect(areaOf('assigned-programs')).toBe('Programs')
       expect(areaOf('medical_files')).toBe('Medical files')
+      expect(areaOf('rom_assessments')).toBe('Range of motion')
       expect(areaOf('alerts')).toBe('For review')
       expect(areaOf('session_reviews')).toBe('For review')
       expect(areaOf('program_alert_reviews')).toBe('For review')
@@ -110,6 +111,9 @@ describe('audit vocabulary', () => {
         'conversations',
         'messages',
         'medical_files',
+        // Range of motion (2026-10-31): the day a patient was measured and
+        // which note it belongs with.
+        'rom_assessments',
         'records_exports',
         // The ids of every program, session, file and message a merge moved.
         'patient_merge_records',
@@ -141,6 +145,8 @@ describe('audit vocabulary', () => {
         'MESSAGES_VIEWED',
         'MEDICAL_FILE_VIEWED',
         'MEDICAL_FILE_ENTRY_VIEWED',
+        'ROM_VIEWED',
+        'ROM_ASSESSMENT_VIEWED',
         'RECORDS_EXPORTED',
       ])
     })
@@ -168,8 +174,11 @@ describe('audit vocabulary', () => {
       // complaint review's three since 2026-10-28, the legal disclosure's
       // two the same day, the patient merge's three since 2026-10-29) — 116
       // with MESSAGES_VIEWED (2026-10-30), 118 with the two copies the same
-      // day —, 11 views, 9 sign-ins.
-      expect(changes).toHaveLength(118 - 11 - 9)
+      // day —, 122 with range of motion's four (2026-10-31: two changes, two
+      // views) —, 13 views, 9 sign-ins.
+      expect(changes).toHaveLength(122 - 13 - 9)
+      expect(changes).toContain('ROM_ASSESSMENT_RECORDED')
+      expect(changes).toContain('ROM_ASSESSMENT_AMENDED')
       expect(changes).toContain('TEMPLATE_EXERCISES_COPIED')
       expect(changes).toContain('ASSIGNED_PROGRAM_EXERCISES_COPIED')
       expect(changes).toContain('PATIENT_MERGE_NOTICE_REVIEWED')

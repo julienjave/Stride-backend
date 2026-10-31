@@ -254,6 +254,8 @@ describe('Patient merges (e2e)', () => {
     let sessionId: number
     let entryId: number
     let amendmentId: number
+    let assessmentId: number
+    let assessmentAmendmentId: number
     let survivorConversation: number
     let duplicateConversation: number
     let fromAlex: number
@@ -306,6 +308,43 @@ describe('Patient merges (e2e)', () => {
       })
       expect(amendment.status).toBe(201)
       amendmentId = amendment.body.id
+
+      // Range of motion (0077): an assessment LINKED to the note's first
+      // version, and its correction linked to the same note — the move must
+      // carry the note and both assessments in one statement, or the
+      // composite keys (note, patient) and (amends, patient) break.
+      const assessment = await alex.post('/range-of-motion').send({
+        patientId: duplicate.id,
+        measuredOn: today,
+        medicalFileEntryId: entryId,
+        measurements: [
+          {
+            movement: 'knee_flexion',
+            side: 'right',
+            mode: 'active',
+            degrees: 90,
+          },
+        ],
+      })
+      expect(assessment.status).toBe(201)
+      assessmentId = assessment.body.id
+      const assessmentAmendment = await alex.post('/range-of-motion').send({
+        patientId: duplicate.id,
+        measuredOn: today,
+        medicalFileEntryId: entryId,
+        amendsId: assessmentId,
+        amendmentReason: 'Misread',
+        measurements: [
+          {
+            movement: 'knee_flexion',
+            side: 'right',
+            mode: 'active',
+            degrees: 95,
+          },
+        ],
+      })
+      expect(assessmentAmendment.status).toBe(201)
+      assessmentAmendmentId = assessmentAmendment.body.id
 
       survivorConversation = await startConversation(survivor.id)
       duplicateConversation = await startConversation(duplicate.id)
@@ -363,6 +402,44 @@ describe('Patient merges (e2e)', () => {
       expect(
         (programs.body as { id: number }[]).map((program) => program.id),
       ).toContain(programId)
+    })
+
+    it('moves the range of motion with its note — link, chain and values intact', async () => {
+      const owners = await ownerRows<{
+        id: number
+        patient_id: number
+        medical_file_entry_id: number
+        amends_id: number | null
+        degrees: number[]
+      }>(
+        `SELECT a.id, a.patient_id, a.medical_file_entry_id, a.amends_id,
+                array_agg(m.degrees ORDER BY m.id) AS degrees
+         FROM rom_assessments a JOIN rom_measurements m ON m.assessment_id = a.id
+         WHERE a.id = ANY($1) GROUP BY a.id ORDER BY a.id`,
+        [[assessmentId, assessmentAmendmentId]],
+      )
+      expect(owners).toStrictEqual([
+        {
+          id: assessmentId,
+          patient_id: survivor.id,
+          medical_file_entry_id: entryId,
+          amends_id: null,
+          degrees: [90],
+        },
+        {
+          id: assessmentAmendmentId,
+          patient_id: survivor.id,
+          medical_file_entry_id: entryId,
+          amends_id: assessmentId,
+          degrees: [95],
+        },
+      ])
+      // …and the survivor reads them as their own.
+      const rom = await survivor.agent.get('/range-of-motion')
+      expect(rom.status).toBe(200)
+      expect((rom.body as { id: number }[]).map((one) => one.id)).toStrictEqual(
+        [assessmentAmendmentId, assessmentId],
+      )
     })
 
     it('combines the two threads with Alex into one, in date order, sent by the survivor', async () => {
@@ -436,6 +513,7 @@ describe('Patient merges (e2e)', () => {
         assignedProgramIds: [programId],
         sessionIds: [sessionId],
         medicalFileIds: [entryId, amendmentId],
+        romAssessmentIds: [assessmentId, assessmentAmendmentId],
         movedConversationIds: [],
         combinedConversations: [
           {

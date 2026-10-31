@@ -106,6 +106,9 @@ export interface MergeSummary {
   assignedProgramIds: number[]
   sessionIds: number[]
   medicalFileIds: number[]
+  // Range-of-motion assessments (Phase 7, migration 0077) — moved in the
+  // medical file's statement; their measurements go with them.
+  romAssessmentIds: number[]
   movedConversationIds: number[]
   combinedConversations: { from: number; into: number; messageIds: number[] }[]
   movedCareTeamLinkIds: number[]
@@ -127,8 +130,8 @@ export interface MergeSummary {
 //     one was still active, the care-team links, record-access grants,
 //     clinics, invitations and export links involved, the profile fields
 //     filled, and how many sign-in sessions ended;
-//   - `records`: which programs, sessions, medical files, conversations and
-//     messages moved — which records a patient HAS is clinical information.
+//   - `records`: which programs, sessions, medical files, range-of-motion
+//     assessments, conversations and messages moved — which records a patient HAS is clinical information.
 // Every key of the summary lands in exactly one of the two (a test checks
 // it), so nothing the merge did goes unrecorded.
 export function mergeAuditDetails(
@@ -142,6 +145,7 @@ export function mergeAuditDetails(
     assignedProgramIds,
     sessionIds,
     medicalFileIds,
+    romAssessmentIds,
     movedConversationIds,
     combinedConversations,
     ...account
@@ -155,6 +159,7 @@ export function mergeAuditDetails(
       assignedProgramIds,
       sessionIds,
       medicalFileIds,
+      romAssessmentIds,
       movedConversationIds,
       combinedConversations,
     },

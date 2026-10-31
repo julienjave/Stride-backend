@@ -88,6 +88,7 @@ import {
   DEMO_PASSWORD,
   DEMO_RECOVERY_CODES,
   MEDICAL_FILES,
+  ROM_ASSESSMENTS,
   TEMPLATES,
   type AccountKey,
   type ClinicKey,
@@ -810,6 +811,72 @@ async function run(): Promise<void> {
         ],
       )
       medicalFileIds.set(entry.key, rows[0].id)
+    }
+
+    // --- 7b. Range of motion (Phase 7) ---
+    // As the OWNER with past moments, like the medical file — and each
+    // assessment with its measurements in ONE transaction of its own: 0077's
+    // "at least one measurement" check runs at COMMIT, for the owner too (a
+    // pool's query() commits each statement alone, so a client is taken for
+    // the BEGIN … COMMIT). In the dataset's order, so an amendment comes after
+    // the assessment it corrects.
+    const romAssessmentIds = new Map<string, number>()
+    for (const assessment of ROM_ASSESSMENTS) {
+      const amendsId = assessment.amends
+        ? romAssessmentIds.get(assessment.amends.key)
+        : undefined
+      const noteId = assessment.note
+        ? medicalFileIds.get(assessment.note)
+        : undefined
+      if (
+        (assessment.amends && amendsId === undefined) ||
+        (assessment.note && noteId === undefined)
+      ) {
+        throw new Error(
+          `Range-of-motion assessment ${assessment.key} names an assessment or a note that isn't seeded before it`,
+        )
+      }
+      const client = await owner.connect()
+      try {
+        await client.query('BEGIN')
+        const { rows } = await client.query<{ id: number }>(
+          `INSERT INTO rom_assessments
+             (patient_id, created_by, created_at, measured_on, medical_file_entry_id, amends_id, amendment_reason)
+           VALUES ($1, $2, ($3::date + $4::time) AT TIME ZONE 'UTC', $5, $6, $7, $8)
+           RETURNING id`,
+          [
+            idOf(assessment.patient),
+            idOf(assessment.author),
+            addDays(today, -assessment.recordedDaysAgo),
+            assessment.at,
+            addDays(today, -assessment.measuredDaysAgo),
+            noteId ?? null,
+            amendsId ?? null,
+            assessment.amends?.reason ?? null,
+          ],
+        )
+        for (const m of assessment.measurements) {
+          await client.query(
+            `INSERT INTO rom_measurements (assessment_id, movement, side, mode, degrees, note)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              rows[0].id,
+              m.movement,
+              m.side ?? null,
+              m.mode,
+              m.degrees,
+              m.note ?? null,
+            ],
+          )
+        }
+        await client.query('COMMIT')
+        romAssessmentIds.set(assessment.key, rows[0].id)
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
     }
 
     // --- 8. Two-factor sign-in (decisions §14) ---

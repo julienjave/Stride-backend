@@ -29,6 +29,14 @@
 
 import type { MedicalFileEntry } from '../medical-files/medical-files.service'
 import type { MedicalFileEntryType } from '../medical-files/medical-file-rules'
+import type {
+  RomAssessment,
+  RomMeasurement,
+} from '../range-of-motion/range-of-motion.service'
+import {
+  ROM_MOVEMENT_DETAILS,
+  measurementLabel,
+} from '../range-of-motion/movement-catalogue'
 import type { WeightUnit } from '../database/schema/weight-unit.schema'
 import type { LegalBasis } from '../database/schema/legal-disclosures.schema'
 import {
@@ -162,6 +170,10 @@ export interface RecordData {
   patient: RecordPatient
   // Newest first, as loadMedicalFileEntries answers.
   medicalFile: MedicalFileEntry[]
+  // Range-of-motion assessments (Phase 7) — newest first by the day measured,
+  // as loadRomAssessments answers. Part of the medical file in a disclosure
+  // (record-scope.ts).
+  rangeOfMotion: RomAssessment[]
   // Newest first (by first day).
   programs: RecordProgram[]
   // Loaded only for a legal disclosure that includes messages; absent, the
@@ -382,44 +394,57 @@ export function workoutLabel(position: number, name: string | null): string {
 
 // --- THE MEDICAL FILE --------------------------------------------------------------------------------------
 
-// One note: its latest version first, then the versions it replaced, newest
-// to oldest — the same grouping as My records (frontend
-// medicalFileRules.ts, groupIntoNotes).
-export interface NoteVersions {
-  latest: MedicalFileEntry
-  earlier: MedicalFileEntry[]
+// One record kept in versions — a note, a range-of-motion assessment: its
+// latest version first, then the versions it replaced, newest to oldest —
+// the same grouping as My records (frontend medicalFileRules.ts,
+// groupIntoNotes).
+export interface Versions<T> {
+  latest: T
+  earlier: T[]
+}
+export type NoteVersions = Versions<MedicalFileEntry>
+
+// What grouping needs of a record: its id, what it corrects, what corrects it.
+interface Versioned {
+  id: number
+  amendsId: number | null
+  amendedById: number | null
 }
 
-// Notes in the order of their latest version (newest first). An entry is
-// the LATEST of its note when nothing amends it (amendedById null); its
-// earlier versions are found by following amendsId back. The walk stops at
-// a missing link, or at an entry already placed — so data that broke the
-// rules (a loop) can't hang the export or show an entry twice.
+// Records in the order of their latest version (`newerFirst`, a sort
+// comparator). A record is the LATEST of its chain when nothing amends it
+// (amendedById null); its earlier versions are found by following amendsId
+// back. The walk stops at a missing link, or at a record already placed — so
+// data that broke the rules (a loop) can't hang the export or show a record
+// twice.
 //
-// Nothing is left out: an entry reached by no walk (amended by an entry not
-// in the list — impossible under row security, as an amendment always
-// belongs to the same patient) is shown as a note of its own rather than
-// dropped from a copy that must be complete.
-export function groupIntoNotes(entries: MedicalFileEntry[]): NoteVersions[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]))
+// Nothing is left out: a record reached by no walk (amended by one not in
+// the list — impossible under row security, as an amendment always belongs
+// to the same patient) is shown on its own rather than dropped from a copy
+// that must be complete.
+//
+// Generic since range of motion (2026-10-31): the medical file's walk,
+// unchanged, for any record amended the same way. `T extends Versioned`: any
+// type with those three fields — the walk reads nothing else.
+export function groupVersions<T extends Versioned>(
+  records: T[],
+  newerFirst: (a: T, b: T) => number,
+): Versions<T>[] {
+  const byId = new Map(records.map((record) => [record.id, record]))
   const placed = new Set<number>()
-  const notes: NoteVersions[] = []
-  for (const entry of entries) {
-    if (entry.amendedById !== null) continue
-    notes.push({ latest: entry, earlier: earlierVersions(entry) })
+  const groups: Versions<T>[] = []
+  for (const record of records) {
+    if (record.amendedById !== null) continue
+    groups.push({ latest: record, earlier: earlierVersions(record) })
   }
-  for (const entry of entries) {
-    if (!placed.has(entry.id)) notes.push({ latest: entry, earlier: [] })
+  for (const record of records) {
+    if (!placed.has(record.id)) groups.push({ latest: record, earlier: [] })
   }
-  return notes.sort(
-    (a, b) =>
-      b.latest.createdAt.getTime() - a.latest.createdAt.getTime() ||
-      b.latest.id - a.latest.id,
-  )
+  return groups.sort((a, b) => newerFirst(a.latest, b.latest))
 
-  function earlierVersions(latest: MedicalFileEntry): MedicalFileEntry[] {
+  function earlierVersions(latest: T): T[] {
     placed.add(latest.id)
-    const earlier: MedicalFileEntry[] = []
+    const earlier: T[] = []
     let previous = versionBefore(latest)
     while (previous && !placed.has(previous.id)) {
       placed.add(previous.id)
@@ -429,9 +454,17 @@ export function groupIntoNotes(entries: MedicalFileEntry[]): NoteVersions[] {
     return earlier
   }
 
-  function versionBefore(entry: MedicalFileEntry) {
-    return entry.amendsId === null ? undefined : byId.get(entry.amendsId)
+  function versionBefore(record: T) {
+    return record.amendsId === null ? undefined : byId.get(record.amendsId)
   }
+}
+
+// Notes, newest written first (the id breaks a tie of one instant).
+export function groupIntoNotes(entries: MedicalFileEntry[]): NoteVersions[] {
+  return groupVersions(
+    entries,
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id,
+  )
 }
 
 function noteBlocks(note: NoteVersions, timeZone: string): RecordBlock[] {
@@ -490,6 +523,133 @@ function versionBlocks(
     if (text !== null) {
       blocks.push({ kind: 'text', label: SECTION_LABELS[section], text })
     }
+  }
+  return blocks
+}
+
+// --- RANGE OF MOTION ---------------------------------------------------------------------------------------
+
+// Assessments, newest MEASURED first (a clinician reads a record by the day
+// things happened), then newest recorded, then id — loadRomAssessments'
+// order, applied to each chain's latest version.
+export function groupIntoAssessments(
+  assessments: RomAssessment[],
+): Versions<RomAssessment>[] {
+  return groupVersions(
+    assessments,
+    (a, b) =>
+      b.measuredOn.localeCompare(a.measuredOn) ||
+      b.createdAt.getTime() - a.createdAt.getTime() ||
+      b.id - a.id,
+  )
+}
+
+// "Knee flexion, right, active: 95° (typical 135°) — pain at end range". A
+// value is written as it was measured, sign included ("-5°": 5° short of
+// straight). The typical value beside it, every time: a number of degrees
+// means little to a reader who doesn't know what the joint usually reaches.
+// An ASCII hyphen for the sign: it is in every font the PDF embeds.
+export function measurementLine(measurement: RomMeasurement): string {
+  const { movement, side, mode, degrees, note } = measurement
+  const typical = ROM_MOVEMENT_DETAILS[movement].typicalDegrees
+  const line = `${measurementLabel(movement, side, mode)}: ${degrees}° (typical ${typical}°)`
+  return note === null ? line : `${line} — ${note}`
+}
+
+// One assessment: its latest version, then each version it replaced (the
+// notes' layout — noteBlocks). `notes`: the medical file entries in this
+// copy, to name a linked note by its type and day.
+function assessmentBlocks(
+  assessment: Versions<RomAssessment>,
+  notes: MedicalFileEntry[],
+  timeZone: string,
+): RecordBlock[] {
+  const { latest, earlier } = assessment
+  const blocks: RecordBlock[] = [
+    {
+      kind: 'heading',
+      level: 2,
+      text: `Range of motion · ${dayText(latest.measuredOn)}`,
+    },
+    ...assessmentVersionBlocks(latest, notes, timeZone),
+  ]
+  // As for a note: corrected after the period a disclosed copy covers.
+  if (latest.amendedById !== null) {
+    blocks.push({
+      kind: 'paragraph',
+      text: 'These measurements were corrected later, after the period this copy covers.',
+      muted: true,
+    })
+  }
+  earlier.forEach((version, index) => {
+    const replacedBy = index === 0 ? latest : earlier[index - 1]
+    blocks.push(
+      {
+        kind: 'heading',
+        level: 3,
+        text: `Earlier version, replaced on ${momentDayText(replacedBy.createdAt, timeZone)}`,
+      },
+      ...assessmentVersionBlocks(version, notes, timeZone),
+    )
+  })
+  return blocks
+}
+
+function assessmentVersionBlocks(
+  version: RomAssessment,
+  notes: MedicalFileEntry[],
+  timeZone: string,
+): RecordBlock[] {
+  const rows: [string, string][] = [
+    ['Measured by', `${version.author.firstName} ${version.author.lastName}`],
+    ['Measured on', dayText(version.measuredOn)],
+    ['Recorded on', momentText(version.createdAt, timeZone)],
+  ]
+  if (version.medicalFileEntryId !== null) {
+    rows.push(['Visit note', linkedNoteText(version.medicalFileEntryId)])
+  }
+  if (version.amendsId !== null) {
+    rows.push(['Reason for the correction', version.amendmentReason ?? ''])
+  }
+  return [
+    { kind: 'fields', rows },
+    { kind: 'list', items: version.measurements.map(measurementLine) },
+  ]
+
+  // "Progress note of March 4, 2031" — the version linked when the
+  // assessment was recorded (the reader finds that note by its day; if it was
+  // corrected since, its correction is printed with it). A disclosed copy
+  // may not hold it (written outside the period): said, not hidden.
+  function linkedNoteText(entryId: number): string {
+    const note = notes.find((entry) => entry.id === entryId)
+    return note === undefined
+      ? 'A note not included in this copy'
+      : `${ENTRY_TYPE_LABELS[note.entryType]} of ${momentDayText(note.createdAt, timeZone)}`
+  }
+}
+
+// The part's words, the same in every copy; the empty sentence differs.
+const RANGE_OF_MOTION_HEADING = 'Range of motion'
+const RANGE_OF_MOTION_INTRO =
+  'How far your joints moved when your care team measured them, in degrees. ' +
+  'The typical value is a textbook guide, not a target: people differ, and ' +
+  'your other side is often the better comparison.'
+
+function rangeOfMotionBlocks(
+  record: RecordData,
+  emptyText: string,
+  timeZone: string,
+): RecordBlock[] {
+  const blocks: RecordBlock[] = [
+    { kind: 'heading', level: 1, text: RANGE_OF_MOTION_HEADING },
+    { kind: 'paragraph', text: RANGE_OF_MOTION_INTRO, muted: false },
+  ]
+  const assessments = groupIntoAssessments(record.rangeOfMotion)
+  if (assessments.length === 0) {
+    blocks.push({ kind: 'paragraph', text: emptyText, muted: true })
+  }
+  for (const assessment of assessments) {
+    blocks.push(...assessmentBlocks(assessment, record.medicalFile, timeZone))
   }
   return blocks
 }
@@ -717,10 +877,11 @@ export function buildRecordDocument(
       kind: 'paragraph',
       text:
         'This is a copy of your record as Stride held it when it was made: ' +
-        'the notes your care team wrote in your medical file, your exercise ' +
-        'programs, and the sessions you did, stopped or skipped. Nothing in ' +
-        'a medical file is ever changed or removed — a correction is a new ' +
-        'entry, and the version it replaced is shown under it.',
+        'the notes your care team wrote in your medical file, the range of ' +
+        'motion they measured, your exercise programs, and the sessions you ' +
+        'did, stopped or skipped. Nothing in a medical file is ever changed ' +
+        'or removed — a correction is a new entry, and the version it ' +
+        'replaced is shown under it.',
       muted: false,
     },
     {
@@ -740,6 +901,14 @@ export function buildRecordDocument(
     })
   }
   for (const note of notes) blocks.push(...noteBlocks(note, timeZone))
+
+  blocks.push(
+    ...rangeOfMotionBlocks(
+      record,
+      'No range of motion has been recorded.',
+      timeZone,
+    ),
+  )
 
   blocks.push({
     kind: 'heading',
@@ -935,6 +1104,15 @@ function disclosedDocument(
       })
     }
     for (const note of notes) blocks.push(...noteBlocks(note, timeZone))
+    // Range of motion is part of the medical file (the clinician's objective
+    // findings) — disclosed with it, in its own part, by the day measured.
+    blocks.push(
+      ...rangeOfMotionBlocks(
+        record,
+        'No range of motion measured in this period.',
+        timeZone,
+      ),
+    )
   }
 
   const prescription = parts.has('programs')

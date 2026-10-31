@@ -447,6 +447,7 @@ describe('Complaint reviews (e2e)', () => {
             reviewId: review.id,
             timeZone: 'America/Toronto',
             medicalFileEntryIds: [patient.entryId],
+            romAssessmentIds: [],
             programIds: [],
             sessionIds: [],
           },

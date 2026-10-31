@@ -25,8 +25,8 @@
 // is being copied; if they ever named someone else's, the policies would
 // still hand back nothing.
 //
-// Seven queries, whatever the size of the record (never one per program or
-// per session): each reads every row of its table for the whole record, and
+// Nine queries, whatever the size of the record (never one per program or
+// per session; two of them the range of motion's, since Phase 7): each reads every row of its table for the whole record, and
 // the rows are grouped here, in memory. Two more when asked (decisions §25,
 // pass 3): the conversations and their messages (a legal disclosure that
 // includes them), and the accounting of disclosures (the patient's own copy).
@@ -46,11 +46,13 @@ import {
   messages,
   patientProfiles,
   programWorkouts,
+  romAssessments,
   sessionExercises,
   sessions,
   users,
 } from '../database/schema'
 import { loadMedicalFileEntries } from '../medical-files/medical-files.service'
+import { loadRomAssessments } from '../range-of-motion/range-of-motion.service'
 import { partsFromFlags } from '../legal-disclosures/legal-disclosure-rules'
 import type {
   PrescribedExercise,
@@ -110,11 +112,17 @@ export async function loadRecord(
     tx,
     eq(medicalFiles.patientId, patientId),
   )
+  // The screens' own query (two of them), as for the file.
+  const rangeOfMotion = await loadRomAssessments(
+    tx,
+    eq(romAssessments.patientId, patientId),
+  )
   const programs = await loadPrograms(tx, patientId)
 
   return {
     patient,
     medicalFile,
+    rangeOfMotion,
     programs,
     ...(options.messages
       ? { conversations: await loadConversations(tx, patientId) }

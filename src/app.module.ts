@@ -39,6 +39,7 @@ import { MessagingModule } from './messaging/messaging.module'
 import { AuditModule } from './audit/audit.module'
 import { HttpExceptionFilter } from './common/filters/http-exception.filter'
 import { MedicalFilesModule } from './medical-files/medical-files.module'
+import { RangeOfMotionModule } from './range-of-motion/range-of-motion.module'
 import { HealthModule } from './health/health.module'
 import { AdminMetricsModule } from './admin-metrics/admin-metrics.module'
 import { RecordsExportModule } from './records-export/records-export.module'
@@ -78,6 +79,7 @@ import { ObservabilityModule } from './observability/observability.module'
     MessagingModule,
     AuditModule,
     MedicalFilesModule,
+    RangeOfMotionModule,
     HealthModule,
     AdminMetricsModule,
     RecordsExportModule,

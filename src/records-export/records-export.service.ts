@@ -152,6 +152,9 @@ export class RecordsExportService {
         ...sourceDetails(source),
         timeZone,
         medicalFileEntryIds: record.medicalFile.map((entry) => entry.id),
+        romAssessmentIds: record.rangeOfMotion.map(
+          (assessment) => assessment.id,
+        ),
         programIds: record.programs.map((program) => program.id),
         sessionIds: record.programs.flatMap((program) =>
           program.sessions.map((session) => session.id),

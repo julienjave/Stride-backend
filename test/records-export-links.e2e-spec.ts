@@ -548,6 +548,7 @@ describe('Records export links (e2e)', () => {
         linkId,
         timeZone: 'Europe/Paris',
         medicalFileEntryIds: [note.body.id],
+        romAssessmentIds: [],
         programIds: [],
         sessionIds: [],
       },

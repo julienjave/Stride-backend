@@ -24,10 +24,10 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import {
-  AMENDMENT_REASON_MAX_LENGTH,
   MEDICAL_FILE_SECTION_MAX_LENGTH,
   medicalFileEntryTypeEnum,
 } from '../database/schema/medical-files.schema'
+import { amendmentReasonMessages } from '../common/validators/amendment-reason'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -67,11 +67,17 @@ export const sectionTooLongMessage = (section: SoapSection) =>
 export const NO_SECTION_MESSAGE =
   'An entry needs at least one section: Subjective, Objective, Assessment or Plan'
 
+// The amendment reason's four sentences (the rule is shared with
+// range-of-motion assessments — common/validators/amendment-reason.ts).
+export const MEDICAL_FILE_AMENDMENT_REASON_MESSAGES =
+  amendmentReasonMessages('an entry')
 export const REASON_WITHOUT_AMENDMENT_MESSAGE =
-  'Only an amendment (an entry with amendsId) has an amendment reason'
-export const AMENDMENT_NEEDS_REASON_MESSAGE = 'An amendment needs a reason'
-export const BLANK_REASON_MESSAGE = "The amendment reason can't be blank"
-export const REASON_TOO_LONG_MESSAGE = `The amendment reason can be at most ${AMENDMENT_REASON_MAX_LENGTH} characters`
+  MEDICAL_FILE_AMENDMENT_REASON_MESSAGES.withoutAmendment
+export const AMENDMENT_NEEDS_REASON_MESSAGE =
+  MEDICAL_FILE_AMENDMENT_REASON_MESSAGES.needsReason
+export const BLANK_REASON_MESSAGE = MEDICAL_FILE_AMENDMENT_REASON_MESSAGES.blank
+export const REASON_TOO_LONG_MESSAGE =
+  MEDICAL_FILE_AMENDMENT_REASON_MESSAGES.tooLong
 
 // A practitioner writing to the file of a patient who isn't on their care
 // team — the INSERT policy's refusal (42501), the only reason left once the

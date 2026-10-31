@@ -307,6 +307,22 @@ made, through the app's own code); the seed announces it just before.
     `MEDICAL_FILE_VIEWED` (the list, with the entries shown) and
     `MEDICAL_FILE_ENTRY_VIEWED` (one entry) — including a patient reading
     their own.
+- **Range of motion** (`GET /range-of-motion`; the screens come with its pass
+  2): what a practitioner MEASURED, in degrees — a joint, a direction, a side,
+  active or passive (`GET /range-of-motion/movements` lists the 33 movements
+  with their typical values). Recorded as an **assessment** (one visit's
+  measurements, optionally linked to that visit's note); never edited or
+  deleted — a correction is an **amendment**, like a note's.
+  - **Pat** (by Alex): the right knee's flexion over three visits — 110° at
+    the first (linked to the initial assessment), 120° at the review (typed as
+    **102°** first and **amended** the same morning), 126° four days ago
+    (typed in the next day, no note). The left knee is measured too: the
+    comparison.
+  - **Jo** (by Sam): the trunk at the first visit — flexion and extension
+    have no side; side bending has one.
+  - Admins read none (403; the database hides the rows). Every read is in the
+    audit log (`ROM_VIEWED`, `ROM_ASSESSMENT_VIEWED`), and the records copy's
+    PDF has a **Range of motion** part.
 
 ## Possible duplicate patients
 

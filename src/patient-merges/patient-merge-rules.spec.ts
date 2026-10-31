@@ -117,6 +117,7 @@ describe('mergeAuditDetails', () => {
     assignedProgramIds: [10],
     sessionIds: [20, 21],
     medicalFileIds: [30],
+    romAssessmentIds: [35],
     movedConversationIds: [40],
     combinedConversations: [{ from: 41, into: 42, messageIds: [50, 51] }],
     movedCareTeamLinkIds: [60],
@@ -158,6 +159,7 @@ describe('mergeAuditDetails', () => {
       assignedProgramIds: [10],
       sessionIds: [20, 21],
       medicalFileIds: [30],
+      romAssessmentIds: [35],
       movedConversationIds: [40],
       combinedConversations: [{ from: 41, into: 42, messageIds: [50, 51] }],
     })
