@@ -23,7 +23,16 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   storage:
-    image: rustfs/rustfs:latest
+    # Pinned to the exact image the project was tested with: a TAG for the
+    # reader (the version, from the image's own "release" label) and a
+    # DIGEST — a hash of the image's contents — for Docker. A tag is a label
+    # its publisher can move to another image (`latest` moves on every
+    # release); a digest names one image forever, so every machine, the CI
+    # runner and the reviewers run the same bytes. With both written, Docker
+    # pulls by the digest. To upgrade: pull the new version, run the suites,
+    # then write its tag and digest here (`docker image inspect <image>
+    # --format '{{index .RepoDigests 0}}'`).
+    image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
     container_name: stride-storage
     restart: unless-stopped
     ports:
@@ -46,7 +55,10 @@ services:
   # No volume on purpose: the inbox is scratch space, emptied when the
   # container is recreated (it also keeps only the newest 500 messages).
   mailpit:
-    image: axllent/mailpit:latest
+    # Pinned like `storage` above (tag for the reader, digest for Docker).
+    # The image carries no version label: the version is Mailpit's own
+    # answer, `curl -s http://localhost:8025/api/v1/info`.
+    image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
     container_name: stride-mailpit
     restart: unless-stopped
     ports:

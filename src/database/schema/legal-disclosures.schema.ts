@@ -149,14 +149,19 @@ export const legalDisclosures = pgTable(
     // "This patient's disclosures": the admin's list, the patient's
     // accounting, the care team's notices.
     patientIdIdx: index('legal_disclosures_patient_id_idx').on(table.patientId),
+    // Every "not blank" CHECK in this file is the DTO's own `\S` test: at
+    // least one character that isn't white space (spaces, tabs, line breaks
+    // — btrim, used until migration 0078, removed only spaces;
+    // programs.schema.ts's title CHECK has the one caveat about rarer
+    // Unicode spaces).
     recipientNameNotBlank: check(
       'legal_disclosures_recipient_name_not_blank',
-      sql`btrim(${table.recipientName}) <> ''`,
+      sql`${table.recipientName} ~ '\\S'`,
     ),
     // An empty organisation is "none": stored as NULL, never as ''.
     recipientOrganisationNotBlank: check(
       'legal_disclosures_recipient_organisation_not_blank',
-      sql`${table.recipientOrganisation} IS NULL OR btrim(${table.recipientOrganisation}) <> ''`,
+      sql`${table.recipientOrganisation} IS NULL OR ${table.recipientOrganisation} ~ '\\S'`,
     ),
   }),
 )
@@ -199,7 +204,7 @@ export const legalDisclosureDetails = pgTable(
     ),
     explanationNotBlank: check(
       'legal_disclosure_details_explanation_not_blank',
-      sql`${table.basisExplanation} IS NULL OR (btrim(${table.basisExplanation}) <> '' AND char_length(${table.basisExplanation}) <= ${sql.raw(String(LEGAL_DISCLOSURE_EXPLANATION_MAX))})`,
+      sql`${table.basisExplanation} IS NULL OR (${table.basisExplanation} ~ '\\S' AND char_length(${table.basisExplanation}) <= ${sql.raw(String(LEGAL_DISCLOSURE_EXPLANATION_MAX))})`,
     ),
     somePart: check(
       'legal_disclosure_details_some_part',
@@ -238,11 +243,11 @@ export const legalDisclosureOrders = pgTable(
   (table) => ({
     referenceNotBlank: check(
       'legal_disclosure_orders_reference_not_blank',
-      sql`${table.orderReference} IS NULL OR btrim(${table.orderReference}) <> ''`,
+      sql`${table.orderReference} IS NULL OR ${table.orderReference} ~ '\\S'`,
     ),
     statementNotBlank: check(
       'legal_disclosure_orders_statement_not_blank',
-      sql`${table.withholdingStatement} IS NULL OR (btrim(${table.withholdingStatement}) <> '' AND char_length(${table.withholdingStatement}) <= ${sql.raw(String(LEGAL_DISCLOSURE_STATEMENT_MAX))})`,
+      sql`${table.withholdingStatement} IS NULL OR (${table.withholdingStatement} ~ '\\S' AND char_length(${table.withholdingStatement}) <= ${sql.raw(String(LEGAL_DISCLOSURE_STATEMENT_MAX))})`,
     ),
   }),
 )

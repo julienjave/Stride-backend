@@ -12,6 +12,7 @@ import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
 import { pdfPages, pdfText } from './support/pdf-text'
+import { asOwner, BLANK_VALUES } from './support/as-owner'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { ONLY_THE_OPENER_MESSAGE } from '../src/complaint-reviews/complaint-reviews.service'
@@ -1037,6 +1038,34 @@ describe('Complaint reviews (e2e)', () => {
       //   - an admin, who SEES every review: only the care-team condition
       //     stops them.
       expect(await run(asAdmin, seen(adminId))).toStrictEqual(refusedByPolicy)
+    })
+  })
+
+  // The database's half of the DTO's `\S` rule (migration 0078): as the
+  // owner — who bypasses row security, never a CHECK — a reason or a case
+  // reference with nothing visible is refused, and the same text with real
+  // words between the spaces is accepted (the neighbour, so the test can't
+  // pass on a CHECK that refuses everything). Each try is rolled back.
+  describe('the not-blank CHECKs (as the owner)', () => {
+    let reviewId: number
+    beforeAll(async () => {
+      reviewId = (await openReview((await newPatient('Blank')).id)).id
+    })
+
+    it.each([
+      ['reason', 'complaint_review_reasons_reason_not_blank'],
+      ['case_reference', 'complaint_review_reasons_case_reference_not_blank'],
+    ])('refuses a blank %s', async (column, constraint) => {
+      const update = `UPDATE complaint_review_reasons SET ${column} = $2 WHERE review_id = $1`
+      for (const value of BLANK_VALUES) {
+        expect(await asOwner(sessionPool, update, [reviewId, value])).toEqual({
+          code: '23514',
+          constraint,
+        })
+      }
+      expect(
+        await asOwner(sessionPool, update, [reviewId, ' \tCase 42\n']),
+      ).toEqual({ rowCount: 1 })
     })
   })
 })

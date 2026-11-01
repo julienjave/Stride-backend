@@ -136,14 +136,18 @@ export const complaintReviewReasons = pgTable(
     }),
   },
   (table) => ({
+    // "Not blank" is the DTO's own `\S` test: at least one character that
+    // isn't white space (spaces, tabs, line breaks — btrim, used until
+    // migration 0078, removed only spaces; programs.schema.ts's title CHECK
+    // has the one caveat about rarer Unicode spaces).
     reasonNotBlank: check(
       'complaint_review_reasons_reason_not_blank',
-      sql`btrim(${table.reason}) <> '' AND char_length(${table.reason}) <= ${sql.raw(String(COMPLAINT_REVIEW_REASON_MAX))}`,
+      sql`${table.reason} ~ '\\S' AND char_length(${table.reason}) <= ${sql.raw(String(COMPLAINT_REVIEW_REASON_MAX))}`,
     ),
     // An empty reference is "none": stored as NULL, never as ''.
     caseReferenceNotBlank: check(
       'complaint_review_reasons_case_reference_not_blank',
-      sql`${table.caseReference} IS NULL OR btrim(${table.caseReference}) <> ''`,
+      sql`${table.caseReference} IS NULL OR ${table.caseReference} ~ '\\S'`,
     ),
   }),
 )

@@ -547,6 +547,13 @@
       "when": 1793468554669,
       "tag": "0077_range_of_motion_rules_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1793539872518,
+      "tag": "0078_not_blank_any_whitespace",
+      "breakpoints": true
     }
   ]
 }

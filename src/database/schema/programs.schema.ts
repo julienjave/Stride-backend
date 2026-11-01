@@ -63,16 +63,21 @@ export const programTemplates = pgTable(
   },
   (table) => ({
     // A title must hold something visible — the database's half of the DTOs'
-    // IsTitle() rule (common/validators/title.ts), as the workouts' names
-    // have *_name_not_blank. btrim() removes spaces at both ends; a title
-    // made only of spaces becomes '', of length 0. (btrim's default is the
-    // space character only: a title of tabs alone would pass HERE — the
-    // DTOs, whose \S covers every whitespace, refuse it first. Same choice
-    // as the workouts' CHECKs.) Added by migration 0035, which renamed the
-    // existing blank titles first ("Untitled template").
+    // IsTitle() rule (common/validators/title.ts): at least one character
+    // that isn't white space, the same `\S` test as the DTOs, so a title of
+    // spaces, tabs or line breaks is refused by both. (Until migration 0078
+    // this was length(btrim(title)) > 0 — btrim removes only the SPACE
+    // character, so a title of a tab alone passed here.) One caveat, the
+    // same for every `~ '\S'` CHECK in the schema: Postgres decides what
+    // counts as white space from the database's character type (lc_ctype),
+    // JavaScript from Unicode's list — they agree on every ASCII white space
+    // (space, tab, line breaks, form feed), and may differ on rarer ones such
+    // as the no-break space U+00A0, which the DTOs refuse first anyway.
+    // Added by migration 0035, which renamed the existing blank titles first
+    // ("Untitled template").
     titleNotBlank: check(
       'program_templates_title_not_blank',
-      sql`length(btrim(${table.title})) > 0`,
+      sql`${table.title} ~ '\\S'`,
     ),
   }),
 )
@@ -110,9 +115,12 @@ export const templateWorkouts = pgTable(
     templateIdIdx: index('template_workouts_template_id_idx').on(
       table.templateId,
     ),
+    // No name is NULL, never '' or white space alone (the service's
+    // normalizeWorkoutName trims, and turns blank into NULL) — the same
+    // `\S` test as the titles' CHECK above (migration 0078).
     nameNotBlank: check(
       'template_workouts_name_not_blank',
-      sql`${table.name} IS NULL OR length(btrim(${table.name})) > 0`,
+      sql`${table.name} IS NULL OR ${table.name} ~ '\\S'`,
     ),
     // (id, template_id) is unique anyway — id alone already is — but a
     // foreign key can only point at columns that a unique constraint
@@ -261,11 +269,11 @@ export const assignedPrograms = pgTable(
       sql`${table.basedOnProgramId} IS NULL OR ${table.basedOnProgramId} <> ${table.id}`,
     ),
     // A title must hold something visible — see program_templates' CHECK
-    // above (migration 0035; existing blank titles became "Untitled
-    // program").
+    // above (migration 0035, existing blank titles became "Untitled
+    // program"; the `\S` test since 0078).
     titleNotBlank: check(
       'assigned_programs_title_not_blank',
-      sql`length(btrim(${table.title})) > 0`,
+      sql`${table.title} ~ '\\S'`,
     ),
     // 1 to 28 days (LATE_MAKE_UP_DAYS_MAX — written out here: a CHECK is
     // DDL, and an interpolated value would become a query parameter). Zero
@@ -301,9 +309,10 @@ export const programWorkouts = pgTable(
     assignedProgramIdIdx: index('program_workouts_assigned_program_id_idx').on(
       table.assignedProgramId,
     ),
+    // As template_workouts' CHECK above.
     nameNotBlank: check(
       'program_workouts_name_not_blank',
-      sql`${table.name} IS NULL OR length(btrim(${table.name})) > 0`,
+      sql`${table.name} IS NULL OR ${table.name} ~ '\\S'`,
     ),
     // The target of the composite foreign keys from
     // assigned_program_exercises and sessions — see templateWorkouts.

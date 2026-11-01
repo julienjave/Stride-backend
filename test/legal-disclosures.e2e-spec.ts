@@ -12,6 +12,7 @@ import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
 import { pdfPages, pdfText } from './support/pdf-text'
+import { asOwner, BLANK_VALUES } from './support/as-owner'
 import { getDatabaseUrl } from '../src/config/database-url'
 import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { NOT_A_DISCLOSURE_NOTICE_MESSAGE } from '../src/alerts/legal-disclosure-notices.service'
@@ -1320,6 +1321,86 @@ describe('Legal disclosures (e2e)', () => {
       expect(
         await run(asAdmin, sql`SELECT id FROM legal_disclosure_notice_reviews`),
       ).toStrictEqual({ rows: [] })
+    })
+  })
+
+  // The database's half of the DTO's `\S` rules (migration 0078), for the
+  // five texts of a disclosure: as the owner — who bypasses row security,
+  // never a CHECK — a text with nothing visible is refused, and the same
+  // text with real words between the spaces is accepted (the neighbour, so
+  // the test can't pass on a CHECK that refuses everything). Each try is
+  // rolled back.
+  describe('the not-blank CHECKs (as the owner)', () => {
+    let disclosureId: number
+    beforeAll(async () => {
+      disclosureId = (await makeDisclosure((await newPatient('Blank')).id)).id
+    })
+
+    it.each([
+      [
+        'legal_disclosures',
+        'recipient_name',
+        'id',
+        'legal_disclosures_recipient_name_not_blank',
+      ],
+      [
+        'legal_disclosures',
+        'recipient_organisation',
+        'id',
+        'legal_disclosures_recipient_organisation_not_blank',
+      ],
+      [
+        'legal_disclosure_orders',
+        'order_reference',
+        'disclosure_id',
+        'legal_disclosure_orders_reference_not_blank',
+      ],
+      // %s.%s names the test from the first two values: table.column.
+    ])('refuses a blank %s.%s', async (table, column, key, constraint) => {
+      const update = `UPDATE ${table} SET ${column} = $2 WHERE ${key} = $1`
+      for (const value of BLANK_VALUES) {
+        expect(
+          await asOwner(sessionPool, update, [disclosureId, value]),
+        ).toEqual({ code: '23514', constraint })
+      }
+      expect(
+        await asOwner(sessionPool, update, [disclosureId, ' \tJane Roe\n']),
+      ).toEqual({ rowCount: 1 })
+    })
+
+    // The explanation exists only with the basis "other" (another CHECK,
+    // explanation_with_other): the basis is set in the same UPDATE, so the
+    // only rule a blank value can break is the not-blank one.
+    it('refuses a blank basis_explanation', async () => {
+      const update = `UPDATE legal_disclosure_details SET legal_basis = 'other', basis_explanation = $2 WHERE disclosure_id = $1`
+      for (const value of BLANK_VALUES) {
+        expect(
+          await asOwner(sessionPool, update, [disclosureId, value]),
+        ).toEqual({
+          code: '23514',
+          constraint: 'legal_disclosure_details_explanation_not_blank',
+        })
+      }
+      expect(
+        await asOwner(sessionPool, update, [disclosureId, ' A statute\n']),
+      ).toEqual({ rowCount: 1 })
+    })
+
+    // The statement is free of other rules on this table (the hold's date
+    // is compared by the INSERT policy, which an UPDATE by the owner skips).
+    it('refuses a blank withholding_statement', async () => {
+      const update = `UPDATE legal_disclosure_orders SET withholding_statement = $2 WHERE disclosure_id = $1`
+      for (const value of BLANK_VALUES) {
+        expect(
+          await asOwner(sessionPool, update, [disclosureId, value]),
+        ).toEqual({
+          code: '23514',
+          constraint: 'legal_disclosure_orders_statement_not_blank',
+        })
+      }
+      expect(
+        await asOwner(sessionPool, update, [disclosureId, ' Hold it\n']),
+      ).toEqual({ rowCount: 1 })
     })
   })
 })

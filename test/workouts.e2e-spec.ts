@@ -32,6 +32,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { BLANK_VALUES } from './support/as-owner'
 import { addDays, utcToday } from '../src/common/calendar-date'
 
 // Workouts (decisions §5, "Settled 2026-10-10", point 1): a template — and
@@ -1392,9 +1393,16 @@ describe('Workouts (e2e)', () => {
         table === 'template_workouts'
           ? template.workouts[0].id
           : program.workouts[0].id
-      expect(
-        await asOwner(`UPDATE ${table} SET name = '   ' WHERE id = $1`, [id]),
-      ).toEqual({ code: '23514', constraint })
+      // Every value with nothing visible — a tab and a line break included,
+      // which the old btrim() rule let through (migration 0078).
+      for (const name of BLANK_VALUES) {
+        expect(
+          await asOwner(`UPDATE ${table} SET name = $2 WHERE id = $1`, [
+            id,
+            name,
+          ]),
+        ).toEqual({ code: '23514', constraint })
+      }
     })
   })
 

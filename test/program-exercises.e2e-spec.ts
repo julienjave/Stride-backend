@@ -32,6 +32,7 @@ import { DRIZZLE, DrizzleDb } from '../src/database/drizzle.provider'
 import { EMAIL_TRANSPORT } from '../src/email/email-transport'
 import { InMemoryEmailTransport } from './support/in-memory-email-transport'
 import { activateAccount } from './support/accounts'
+import { BLANK_VALUES } from './support/as-owner'
 import { addDays, utcToday } from '../src/common/calendar-date'
 
 // Tailoring an assigned program's exercises — the backend of step 3b-0
@@ -1457,15 +1458,17 @@ describe('Program exercises (e2e)', () => {
       })
     })
 
-    // The title CHECKs (migration 0035): nothing visible = refused, on
-    // both tables, whoever writes — the owner included, who bypasses row
-    // security and the closed-program guard but never a CHECK.
+    // The title CHECKs (migration 0035, the `\S` test since 0078): nothing
+    // visible = refused, on both tables, whoever writes — the owner
+    // included, who bypasses row security and the closed-program guard but
+    // never a CHECK. BLANK_VALUES holds a tab and a line break: the old
+    // btrim() rule let those through.
     it.each([
       ['program_templates', 'program_templates_title_not_blank'],
       ['assigned_programs', 'assigned_programs_title_not_blank'],
     ])('refuses a blank title in %s (CHECK)', async (table, constraint) => {
       const id = table === 'program_templates' ? templateId : program.id
-      for (const title of ['', '   ']) {
+      for (const title of BLANK_VALUES) {
         expect(
           await asOwner(`UPDATE ${table} SET title = $2 WHERE id = $1`, [
             id,

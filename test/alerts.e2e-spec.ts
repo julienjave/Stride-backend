@@ -1069,14 +1069,20 @@ describe('Alerts and session reviews (e2e)', () => {
       const patientId = await newPatient('Reminder')
       const program = await newProgram(patientId, 8)
       await reviewProgram(practitionerA, program.id)
+      // The app's rule is a fixed 14 × 24 = 336 hours. The intervals are
+      // written in HOURS on purpose: Postgres subtracts an interval's "days"
+      // as CALENDAR days in the session's time zone, so with a 25-hour day
+      // (the clocks going back) in the last two weeks, '13 days 23 hours'
+      // lands exactly 336 hours back — and the alert, rightly, comes back
+      // a minute early. Hours are always 60 minutes, in every zone.
       await sessionPool.query(
-        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '13 days 23 hours'
+        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '335 hours'
          WHERE assigned_program_id = $1`,
         [program.id],
       )
       expect(await kindsFor(practitionerA, program.id)).toEqual([])
       await sessionPool.query(
-        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '14 days 1 minute'
+        `UPDATE program_alert_reviews SET reviewed_at = now() - interval '336 hours 1 minute'
          WHERE assigned_program_id = $1`,
         [program.id],
       )

@@ -266,7 +266,7 @@ describe('HttpExceptionFilter', () => {
   // database error, Postgres's own reason. (Logged as a stack STRING, the
   // cause was lost: "Failed query: update …", and no why.)
   describe('logging an unexpected error', () => {
-    let logged: jest.SpyInstance
+    let logged: jest.SpiedFunction<Logger['error']>
     beforeEach(() => {
       logged = jest
         .spyOn(Logger.prototype, 'error')
