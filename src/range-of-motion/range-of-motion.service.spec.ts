@@ -20,7 +20,8 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common'
-import { translateInsertError } from './range-of-motion.service'
+import { UserRole } from '../users/dto/create-user.dto'
+import { isOthersRead, translateInsertError } from './range-of-motion.service'
 
 // A Postgres error as drizzle throws it: the driver's error in `cause`.
 function pgError(code: string, constraint?: string) {
@@ -108,5 +109,19 @@ describe('translateInsertError', () => {
     ['a plain error', new Error('connection lost')],
   ])('passes %s on unchanged', (_name, error) => {
     expect(translateInsertError(error)).toBe(error)
+  })
+})
+
+describe('isOthersRead', () => {
+  // Only someone else's read is recorded (2026-11-01): the patient's own is
+  // not — whatever role the reader acts in.
+  it('is false for the patient reading their own record', () => {
+    expect(isOthersRead({ id: 6, activeRole: UserRole.PATIENT }, 6)).toBe(false)
+  })
+
+  it('is true for anyone else', () => {
+    expect(isOthersRead({ id: 3, activeRole: UserRole.PRACTITIONER }, 6)).toBe(
+      true,
+    )
   })
 })

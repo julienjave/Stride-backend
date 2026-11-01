@@ -217,13 +217,15 @@ export class RangeOfMotionService {
         tx,
         eq(romAssessments.patientId, targetPatientId),
       )
-      await this.auditService.logInTransaction(tx, {
-        performedBy: currentUser.id,
-        action: 'ROM_VIEWED',
-        targetUserId: targetPatientId,
-        entityType: 'rom_assessments',
-        details: { assessmentIds: assessments.map((one) => one.id) },
-      })
+      if (isOthersRead(currentUser, targetPatientId)) {
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'ROM_VIEWED',
+          targetUserId: targetPatientId,
+          entityType: 'rom_assessments',
+          details: { assessmentIds: assessments.map((one) => one.id) },
+        })
+      }
       return assessments
     })
   }
@@ -241,13 +243,15 @@ export class RangeOfMotionService {
       if (!assessment) {
         throw new NotFoundException(assessmentNotFoundMessage(id))
       }
-      await this.auditService.logInTransaction(tx, {
-        performedBy: currentUser.id,
-        action: 'ROM_ASSESSMENT_VIEWED',
-        targetUserId: assessment.patientId,
-        entityType: 'rom_assessments',
-        entityId: assessment.id,
-      })
+      if (isOthersRead(currentUser, assessment.patientId)) {
+        await this.auditService.logInTransaction(tx, {
+          performedBy: currentUser.id,
+          action: 'ROM_ASSESSMENT_VIEWED',
+          targetUserId: assessment.patientId,
+          entityType: 'rom_assessments',
+          entityId: assessment.id,
+        })
+      }
       return assessment
     })
   }
@@ -394,4 +398,19 @@ export function translateInsertError(error: unknown): unknown {
     return new BadRequestException(DUPLICATE_MEASUREMENT_MESSAGE)
   }
   return error
+}
+
+// Whether a read is SOMEONE ELSE's — the only reads the audit log records
+// (decided 2026-11-01, the patient home's range-of-motion trend: the app's
+// rule for programs, sessions and messages — AuditService.logReads drops a
+// patient's own reads the same way). A patient opening their own home or My
+// records leaves no entry; a practitioner's read always does. The entry is
+// still written INSIDE the read's transaction (logInTransaction): no answer
+// without its trace. (The medical file keeps its own rule: every read, the
+// patient's included.)
+export function isOthersRead(
+  currentUser: CurrentUser,
+  patientId: number,
+): boolean {
+  return currentUser.id !== patientId
 }

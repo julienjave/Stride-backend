@@ -1393,7 +1393,7 @@ describe('RangeOfMotion (e2e)', () => {
       expect(await auditAbout(patient.id)).toStrictEqual([])
     })
 
-    it('records each read — the patient’s own included: the list with its ids, and one assessment', async () => {
+    it('records each read by someone else: the list with its ids, and one assessment', async () => {
       const patient = await newPatient()
       const older = await addAssessment(practitionerA, patient.id, {
         measuredOn: addDays(today, -2),
@@ -1402,7 +1402,7 @@ describe('RangeOfMotion (e2e)', () => {
       await practitionerA
         .get('/range-of-motion')
         .query({ patientId: patient.id })
-      await patient.agent.get(`/range-of-motion/${older}`)
+      await practitionerA.get(`/range-of-motion/${older}`)
 
       const reads = (await auditAbout(patient.id)).slice(2)
       expect(reads).toStrictEqual([
@@ -1416,13 +1416,29 @@ describe('RangeOfMotion (e2e)', () => {
         },
         {
           action: 'ROM_ASSESSMENT_VIEWED',
-          performed_by: patient.id,
+          performed_by: practitionerAId,
           target_user_id: patient.id,
           entity_type: 'rom_assessments',
           entity_id: older,
           details: null,
         },
       ])
+    })
+
+    // Decided 2026-11-01 (the patient home's trend reads the record on every
+    // visit): the patient's OWN reads leave no entry — the rule of programs,
+    // sessions and messages. Both routes, answered in full all the same.
+    it('records none of the patient’s own reads', async () => {
+      const patient = await newPatient()
+      const id = await addAssessment(practitionerA, patient.id)
+      const list = await patient.agent.get('/range-of-motion')
+      const one = await patient.agent.get(`/range-of-motion/${id}`)
+      expect(list.status).toBe(200)
+      expect(list.body).toHaveLength(1)
+      expect(one.status).toBe(200)
+      expect(
+        (await auditAbout(patient.id)).map((entry) => entry.action),
+      ).toEqual(['ROM_ASSESSMENT_RECORDED'])
     })
 
     it('records no read that was refused, and none for the catalogue', async () => {
