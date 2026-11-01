@@ -638,12 +638,14 @@ describe('Exercises (e2e)', () => {
     const probeName = (i: number) => `Pagination Probe ${stamp} ${i}`
     const TOTAL = 23
 
+    // One after another, not Promise.all: 23 requests at the same moment
+    // were reset (ECONNRESET) in some environments — a red run that says
+    // nothing about pagination. Sequential costs about a second, and the
+    // probes' order no longer depends on which request the server saw first.
     beforeAll(async () => {
-      await Promise.all(
-        Array.from({ length: TOTAL }, (_, i) =>
-          createExercise(practitionerA, probeName(i)),
-        ),
-      )
+      for (let i = 0; i < TOTAL; i++) {
+        await createExercise(practitionerA, probeName(i))
+      }
     })
 
     it('defaults to page 1 with a limit of 20 and reports accurate pagination metadata', async () => {
