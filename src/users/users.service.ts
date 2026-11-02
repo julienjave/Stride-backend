@@ -162,6 +162,24 @@ function possibleDuplicatesDetail(matches: PossibleDuplicate[]): {
     : {}
 }
 
+// The account's fields that are WRITTEN by a PATCH but kept OUT of its audit
+// entry (decisions §43). The "Easier-to-read font" only changes how the app
+// looks to its owner: it says nothing about their care, their access or their
+// identity, so an admin reading the trail has no reason to see it — data
+// minimisation, the same reason the setting is left out of every answer about
+// someone else (toPublic(), decisions §41). A Set: the question asked of it is
+// "is this field one of them?", one lookup per changed field.
+const UNAUDITED_ACCOUNT_FIELDS: ReadonlySet<string> = new Set(['readableFont'])
+
+// The part of an edit's before → after that goes into its audit entry.
+function auditedChanges<T>(changes: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(changes).filter(
+      ([field]) => !UNAUDITED_ACCOUNT_FIELDS.has(field),
+    ),
+  )
+}
+
 // What POST /users adds to the created user: its first invitation, and
 // whether the email went out (false → the screen offers to send it again).
 export interface CreatedUserInvitation {
@@ -986,14 +1004,23 @@ export class UsersService {
           // birth and address are personal health information under HIPAA;
           // they belong in the trail of WHO changed them — the audit log is
           // readable by admins only (audit_logs_select).
-          await this.auditService.logInTransaction(tx, {
-            performedBy: currentUser.id,
-            action: 'USER_UPDATED',
-            targetUserId: id,
-            entityType: 'users',
-            entityId: id,
-            details: { changes },
-          })
+          //
+          // Minus the fields that don't belong in the trail (the font —
+          // decisions §43): the UPDATE above still ran on the FULL diff, the
+          // entry names only the rest, and a PATCH that changed nothing else
+          // writes no entry at all (an empty `changes` would record an edit
+          // that, as far as the trail is concerned, never happened).
+          const audited = auditedChanges(changes)
+          if (Object.keys(audited).length > 0) {
+            await this.auditService.logInTransaction(tx, {
+              performedBy: currentUser.id,
+              action: 'USER_UPDATED',
+              targetUserId: id,
+              entityType: 'users',
+              entityId: id,
+              details: { changes: audited },
+            })
+          }
         }
 
         const updated = await tx.query.users.findFirst({

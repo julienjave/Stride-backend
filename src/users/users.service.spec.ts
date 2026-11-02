@@ -1732,6 +1732,65 @@ describe('UsersService.update', () => {
     expect(result).toHaveProperty('readableFont', true)
   })
 
+  // Decisions §43: the font is WRITTEN but not AUDITED. Both tests lock a
+  // row whose setting is really off (false), so the diff sees a real change.
+  function mockFontTransaction() {
+    const { tx, set } = accountTx({
+      locked: { id: 1, firstName: 'Prac', readableFont: false },
+      roles: [UserRole.PRACTITIONER],
+      practitioner: [
+        { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
+        { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
+      ],
+    })
+    db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
+    return { tx, set }
+  }
+
+  it('writes a font-only change and leaves no audit entry', async () => {
+    mockPractitionerTarget()
+    const { set } = mockFontTransaction()
+
+    await usersService.update(
+      1,
+      { readableFont: true },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    // The change is stored — the write's condition is the FULL diff…
+    expect(set.mock.calls).toEqual([[{ readableFont: true }]])
+    // …the trail's is the diff without the font: nothing left, no entry.
+    expect(audit.logInTransaction).not.toHaveBeenCalled()
+  })
+
+  it('names only the other fields when the font changes with them', async () => {
+    mockPractitionerTarget()
+    const { tx, set } = mockFontTransaction()
+
+    await usersService.update(
+      1,
+      { readableFont: true, firstName: 'Pracky' },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    // One UPDATE carrying both…
+    expect(set.mock.calls).toEqual([
+      [{ readableFont: true, firstName: 'Pracky' }],
+    ])
+    // …and one entry, in the same transaction, naming only the name.
+    expect(audit.logInTransaction).toHaveBeenCalledTimes(1)
+    const [entryTx, entry] = audit.logInTransaction.mock.calls[0]
+    expect(entryTx).toBe(tx)
+    expect(entry).toEqual({
+      performedBy: 1,
+      action: 'USER_UPDATED',
+      targetUserId: 1,
+      entityType: 'users',
+      entityId: 1,
+      details: { changes: { firstName: { from: 'Prac', to: 'Pracky' } } },
+    })
+  })
+
   // Decisions §41: the font setting is the owner's only. An admin editing
   // someone else's account gets the public shape back — without it.
   it("answers an admin's edit of someone else without their font setting", async () => {

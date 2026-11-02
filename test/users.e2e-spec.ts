@@ -1049,23 +1049,27 @@ describe('Users (e2e)', () => {
       expect(res.status).toBe(400)
     })
 
-    it('lets a user turn it on, records it once, and every sign-in answer carries it', async () => {
+    it('lets a user turn it on, leaves no audit entry, and every sign-in answer carries it', async () => {
+      // Every entry about this account so far — compared after the PATCH:
+      // not "no entry mentions the font" (an entry with empty `changes`
+      // would pass that), but "no entry at all was added" (decisions §43).
+      const entriesAboutPatient2 = async () =>
+        (
+          await sessionPool.query<{ count: string }>(
+            `SELECT count(*) FROM audit_logs WHERE target_user_id = $1`,
+            [patient2Id],
+          )
+        ).rows[0].count
+      const before = await entriesAboutPatient2()
+
       const res = await patient2
         .patch(`/users/${patient2Id}`)
         .send({ readableFont: true })
       expect(res.status).toBe(200)
       expect(res.body.readableFont).toBe(true)
 
-      // The account's own audit trail, like any change to the account.
-      const entries = await sessionPool.query<{ details: unknown }>(
-        `SELECT details FROM audit_logs
-          WHERE action = 'USER_UPDATED' AND target_user_id = $1
-            AND details->'changes' ? 'readableFont'`,
-        [patient2Id],
-      )
-      expect(entries.rows.map((row) => row.details)).toEqual([
-        { changes: { readableFont: { from: false, to: true } } },
-      ])
+      // How the app looks to its owner isn't the trail's business.
+      expect(await entriesAboutPatient2()).toBe(before)
 
       expect((await patient2.get('/auth/me')).body.readableFont).toBe(true)
 
