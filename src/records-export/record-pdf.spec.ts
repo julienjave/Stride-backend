@@ -19,7 +19,9 @@ import PDFDocument from 'pdfkit'
 import { loadFonts, renderRecordPdf } from './record-pdf'
 import type { RecordBlock, RecordDocument } from './record-content'
 import {
+  pdfFilledRects,
   pdfFilledShapes,
+  pdfImages,
   pdfInfo,
   pdfPages,
   pdfPieces,
@@ -132,6 +134,127 @@ describe('renderRecordPdf', () => {
       ['Medical file', 'A note.', 'Health record of Pat · Page 2 of 3'],
       ['Exercise programs and sessions', 'Health record of Pat · Page 3 of 3'],
     ])
+  })
+
+  // The brand (decisions §42): the logo as a letterhead on the FIRST page
+  // only — the others name the patient and the page in their footer.
+  it('puts the logo above the title on the first page, and only there', async () => {
+    const pdf = await render([
+      paragraph('Details.'),
+      { kind: 'heading', level: 1, text: 'Medical file' },
+    ])
+
+    const images = pdfImages(pdf)
+    expect(images.map((page) => page.length)).toEqual([1, 0])
+    const [logo] = images[0]
+    // At the top-left corner of the text area (one-inch margins), half an
+    // inch high, its width following the picture's proportions.
+    expect(logo).toMatchObject({ x: 72, y: 72, height: 36 })
+    expect(logo.width / logo.height).toBeCloseTo(
+      logo.pixelWidth / logo.pixelHeight,
+      2,
+    )
+    // The title starts below it (pieces measure from the page's BOTTOM).
+    const title = piece(pdfPieces(pdf)[0], 'Your health record')
+    expect(792 - title.y).toBeGreaterThan(logo.y + logo.height)
+  })
+
+  // Pixels over the inches it's drawn: what decides whether a printed logo
+  // looks sharp. 300 dots per inch is the usual mark for print.
+  it('draws a logo sharp enough to print', async () => {
+    const [[logo]] = pdfImages(await render([]))
+
+    expect(logo.pixelHeight / (logo.height / 72)).toBeGreaterThanOrEqual(300)
+  })
+
+  it('draws the title and every heading in teal, everything else in ink', async () => {
+    const pdf = await render([
+      { kind: 'fields', rows: [['Name', 'Pat Lee']] },
+      { kind: 'heading', level: 1, text: 'Medical file' },
+      { kind: 'heading', level: 2, text: 'Progress note' },
+      { kind: 'heading', level: 3, text: 'A section' },
+      { kind: 'heading', level: 4, text: 'A workout' },
+      paragraph('Body text.'),
+    ])
+
+    const fills = Object.fromEntries(
+      pdfPieces(pdf)
+        .flat()
+        .map((item) => [item.text, item.fill]),
+    )
+    const TEAL = '#297573'
+    expect(fills).toMatchObject({
+      'Your health record': TEAL,
+      'Medical file': TEAL,
+      'Progress note': TEAL,
+      'A section': TEAL,
+      'A workout': TEAL,
+      'Name: ': '#111111',
+      'Pat Lee': '#111111',
+      'Body text.': '#111111',
+    })
+  })
+
+  // Coral is the accent only: a short bar under each PART's heading (the
+  // app marks its current section the same way), never a word.
+  it("marks each part's heading — and nothing else — with a short coral bar", async () => {
+    const pdf = await render([
+      paragraph('Details.'),
+      { kind: 'heading', level: 1, text: 'Medical file' },
+      { kind: 'heading', level: 2, text: 'Progress note' },
+      paragraph('A note.'),
+      { kind: 'heading', level: 1, text: 'Range of motion' },
+    ])
+
+    const rects = pdfFilledRects(pdf)
+    expect(rects.map((page) => page.length)).toEqual([0, 1, 1])
+    for (const page of [1, 2]) {
+      expect(rects[page][0]).toMatchObject({
+        x: 72,
+        width: 24,
+        height: 3,
+        fill: '#da7350',
+      })
+    }
+    // Under the heading's line, above what follows (top-down: the bar's y
+    // against 792 − a piece's baseline).
+    const [bar] = rects[1]
+    const pieces = pdfPieces(pdf)[1]
+    expect(792 - piece(pieces, 'Medical file').y).toBeLessThan(bar.y)
+    expect(792 - piece(pieces, 'Progress note').y).toBeGreaterThan(
+      bar.y + bar.height,
+    )
+  })
+
+  // The bar sits in the space a heading already had below it: drawn on top
+  // of that space, it pushed the last line of a full page onto a page of its
+  // own (Pat's record went from 8 pages to 9). So a part's first line must
+  // start where the code before the bar put it — the heading's line, then
+  // `moveDown(0.3)` — within a point.
+  it('keeps the space under a part heading as it was, within a point', async () => {
+    const pieces = pdfPieces(
+      await render([
+        paragraph('Details.'),
+        { kind: 'heading', level: 1, text: 'Medical file' },
+        paragraph('A note.'),
+      ]),
+    )[1]
+    // Baseline to baseline, as drawn now.
+    const drawn = piece(pieces, 'Medical file').y - piece(pieces, 'A note.').y
+
+    // As the old code drew it. pdfkit's cursor is a line's TOP; its
+    // baseline is the font's ascent below that. So baseline to baseline =
+    // the cursor's move (one 15 pt line + 0.3 of one) + the note's ascent −
+    // the heading's ascent.
+    const fonts = loadFonts()
+    const doc = new PDFDocument()
+    doc.registerFont('bold', fonts.bold.data)
+    const line = doc.font('bold').fontSize(15).currentLineHeight(true)
+    const ascent = (font: 'body' | 'bold', size: number) =>
+      (fonts[font].font.ascent / fonts[font].font.unitsPerEm) * size
+    const before = line * 1.3 + ascent('body', 10) - ascent('bold', 15)
+
+    expect(Math.abs(drawn - before)).toBeLessThan(1)
   })
 
   // The footers are written last, once the count is known — and inside the

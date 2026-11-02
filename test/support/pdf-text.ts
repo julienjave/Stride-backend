@@ -49,6 +49,32 @@ export interface PdfPiece {
   text: string
   x: number
   y: number
+  // The fill colour it was drawn in, as "#rrggbb" (the branded PDF —
+  // decisions §42 — draws headings in teal). Black until a colour is set.
+  fill: string
+}
+
+// A filled rectangle (`x y w h re` then `f`) — the coral mark under a part's
+// heading. In pdfkit's own coordinates: from the page's TOP (pdfkit flips the
+// page once, so its shapes are written top-down), unlike a text piece's y.
+export interface PdfRect {
+  x: number
+  y: number
+  width: number
+  height: number
+  fill: string
+}
+
+// An image drawn on a page: where and how big (in points, from the page's
+// top-left, like PdfRect), and its own size in pixels — which says how sharp
+// it prints (pixels ÷ inches drawn = dots per inch).
+export interface PdfImage {
+  x: number
+  y: number
+  width: number
+  height: number
+  pixelWidth: number
+  pixelHeight: number
 }
 
 // The text pieces of each page, page by page, in drawing order.
@@ -65,6 +91,67 @@ export function pdfPieces(pdf: Buffer): PdfPiece[][] {
 // How many shapes each page FILLS (`f`, pdfkit's fill instruction — text
 // is drawn by other ones). In the export, the only ones are the dots of the
 // lists.
+// Every filled rectangle, page by page.
+export function pdfFilledRects(pdf: Buffer): PdfRect[][] {
+  return pageContents(pdf).map(({ stream }) => {
+    const rects: PdfRect[] = []
+    let fill = '#000000'
+    let pending: Omit<PdfRect, 'fill'> | undefined
+    // In order: a rectangle is filled by the `f` after it, in the colour set
+    // last before that `f` (pdfkit sets it between the two).
+    for (const match of stream.matchAll(
+      /^([\d.-]+) ([\d.-]+) ([\d.-]+) ([\d.-]+) re$|^([\d.]+) ([\d.]+) ([\d.]+) scn$|^f$/gm,
+    )) {
+      if (match[1] !== undefined) {
+        pending = {
+          x: Number(match[1]),
+          y: Number(match[2]),
+          width: Number(match[3]),
+          height: Number(match[4]),
+        }
+      } else if (match[5] !== undefined) {
+        fill = toHex(match[5], match[6], match[7])
+      } else if (pending) {
+        rects.push({ ...pending, fill })
+        pending = undefined
+      }
+    }
+    return rects
+  })
+}
+
+// Every image drawn, page by page: `a 0 0 -d e f cm` then `/I1 Do` — the
+// matrix stretches the 1 × 1 image square to a × d points at (e, f), drawn
+// upwards from f (the minus), so its top is f − d.
+export function pdfImages(pdf: Buffer): PdfImage[][] {
+  const file = pdf.toString('latin1')
+  return pageContents(pdf).map(({ stream, page }) =>
+    [
+      ...stream.matchAll(
+        /^([\d.]+) 0 0 -([\d.]+) ([\d.-]+) ([\d.-]+) cm\n\/(I\d+) Do$/gm,
+      ),
+    ].map((match) => {
+      const ref = new RegExp(`\\/${match[5]} (\\d+) 0 R`).exec(page)
+      if (!ref) throw new Error(`No ${match[5]} in the page's resources`)
+      const body = new RegExp(`\\n${ref[1]} 0 obj\\n<<([\\s\\S]*?)>>`).exec(
+        file,
+      )
+      if (!body) throw new Error(`No image object ${ref[1]}`)
+      const size = (key: string) =>
+        Number(new RegExp(`\\/${key} (\\d+)`).exec(body[1])?.[1])
+      const height = Number(match[2])
+      return {
+        x: Number(match[3]),
+        y: Number(match[4]) - height,
+        width: Number(match[1]),
+        height,
+        pixelWidth: size('Width'),
+        pixelHeight: size('Height'),
+      }
+    }),
+  )
+}
+
 export function pdfFilledShapes(pdf: Buffer): number[] {
   return pageContents(pdf).map(
     ({ stream }) => stream.match(/^f$/gm)?.length ?? 0,
@@ -72,9 +159,12 @@ export function pdfFilledShapes(pdf: Buffer): number[] {
 }
 
 // Each page's drawing instructions, and the glyph tables of the fonts.
-function pageContents(
-  pdf: Buffer,
-): { stream: string; fonts: Map<string, Map<number, string>> }[] {
+function pageContents(pdf: Buffer): {
+  stream: string
+  fonts: Map<string, Map<number, string>>
+  // The page object and its resources (which name the images it draws).
+  page: string
+}[] {
   // latin1 maps every byte to one character and back: the file's structure
   // is ASCII, and binary font data passes through untouched.
   const file = pdf.toString('latin1')
@@ -100,9 +190,15 @@ function pageContents(
   const kids = /\/Type \/Pages\n\/Count \d+\n\/Kids \[([^\]]*)\]/.exec(file)
   if (!kids) throw new Error('No page tree in the PDF')
   return [...kids[1].matchAll(/(\d+) 0 R/g)].map((page) => {
-    const contents = /\/Contents (\d+) 0 R/.exec(object(page[1]))
+    const body = object(page[1])
+    const contents = /\/Contents (\d+) 0 R/.exec(body)
     if (!contents) throw new Error(`Page ${page[1]} has no contents`)
-    return { stream: object(contents[1]), fonts }
+    const resources = /\/Resources (\d+) 0 R/.exec(body)
+    return {
+      stream: object(contents[1]),
+      fonts,
+      page: resources ? `${body}\n${object(resources[1])}` : body,
+    }
   })
 }
 
@@ -153,9 +249,14 @@ function pageText(
   let font: Map<number, string> | undefined
   let x = 0
   let y = 0
+  let fill = '#000000'
   for (const match of stream.matchAll(
-    /1 0 0 1 ([\d.-]+) ([\d.-]+) Tm|\/(F\d+) [\d.]+ Tf|\[(.*?)\] TJ/g,
+    /1 0 0 1 ([\d.-]+) ([\d.-]+) Tm|\/(F\d+) [\d.]+ Tf|\[(.*?)\] TJ|^([\d.]+) ([\d.]+) ([\d.]+) scn$/gm,
   )) {
+    if (match[5] !== undefined) {
+      fill = toHex(match[5], match[6], match[7])
+      continue
+    }
     if (match[1] !== undefined) {
       x = Number(match[1])
       y = Number(match[2])
@@ -172,9 +273,21 @@ function pageText(
         piece += font.get(parseInt(hex[1].slice(at, at + 4), 16)) ?? '�'
       }
     }
-    pieces.push({ text: piece, x, y })
+    pieces.push({ text: piece, x, y, fill })
   }
   return pieces
+}
+
+// pdfkit writes a fill colour as three numbers from 0 to 1 (`0.16 0.46 0.45
+// scn`, after `/DeviceRGB cs`) — back to the "#rrggbb" it was given.
+function toHex(...channels: string[]): string {
+  return `#${channels
+    .map((c) =>
+      Math.round(Number(c) * 255)
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
 }
 
 // pdfkit's ToUnicode CMap: one or more `<first> <last> [<u1> <u2> …]`

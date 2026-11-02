@@ -74,6 +74,36 @@ const SIZES = {
 const INK = '#111111'
 const MUTED = '#555555'
 
+// The brand (decisions §39 palette A; §42 for the PDF). Written as hex — the
+// light theme's values, since paper is white — the same as the emails'
+// (email/email-palette.ts):
+//   - TEAL, the app's primary, for the title and every heading: 5.3:1 on
+//     white, so a 10 pt bold heading still reads — and printed in black and
+//     white it comes out a dark grey, never washed out;
+//   - CORAL, the logo's accent, ONLY as a short mark under each part's
+//     heading (the app's navigation marks its current section the same way).
+//     3.1:1 on white: enough for a mark (WCAG asks 3:1 of a graphic), never
+//     enough for text — so it never carries a word.
+const TEAL = '#297573'
+const CORAL = '#da7350'
+
+// The coral mark under a part's heading, in points. It sits IN the space
+// the heading already had below it (`moveDown(0.3)` at 15 pt ≈ 6 points):
+// 2 + 3 + 2 = 7. Adding it on top of that space instead pushed the last line
+// of a full page onto a page of its own (seen in Pat's record: 8 → 9 pages).
+const MARK = { width: 24, height: 3, gap: 2 } as const
+
+// The logo, on the FIRST page only, above the title — a letterhead (the other
+// pages already name the patient and the page in their footer). The light
+// lockup (stride-light.svg) as a PNG rendered at 365 × 150 px and drawn
+// 36 points (half an inch) high: 150 px over half an inch is 300 dots per
+// inch, what a printer needs to draw curves sharp. pdfkit embeds PNGs
+// itself (no image library), keeping their transparency.
+const LOGO_FILE = join(__dirname, 'images', 'stride-logo.png')
+const LOGO_HEIGHT = 36
+// The space between the logo and the title.
+const LOGO_GAP = 18
+
 // A heading needs room for itself AND what usually follows it: one alone
 // at the foot of a page, its content on the next, reads as a mistake. In
 // points (about 14 per line of body text): a note's heading keeps its
@@ -123,7 +153,8 @@ export function renderRecordPdf(document: RecordDocument): Promise<Buffer> {
     const runsOf = fontRunner(fonts)
     const write = textWriter(doc, runsOf)
 
-    doc.fontSize(SIZES.title).fillColor(INK)
+    drawLogo(doc)
+    doc.fontSize(SIZES.title).fillColor(TEAL)
     write(document.title, BOLD)
     doc.moveDown(0.6)
     for (const block of document.blocks) drawBlock(doc, write, block)
@@ -226,9 +257,10 @@ function drawBlock(
       if (block.level === 1) doc.addPage()
       else keepRoom(doc, KEEP_WITH_NEXT[block.level])
       doc.moveDown(block.level === 1 ? 0 : 0.6)
-      doc.fontSize(size).fillColor(INK)
+      doc.fontSize(size).fillColor(TEAL)
       write(block.text, BOLD)
-      doc.moveDown(0.3)
+      if (block.level === 1) drawPartMark(doc)
+      else doc.moveDown(0.3)
       return
     }
     case 'fields':
@@ -287,6 +319,28 @@ function drawList(
     write(item, BODY)
   }
   doc.x = left
+}
+
+// The coral mark under a part's heading: a short filled bar at the margin,
+// just below the heading's line, then the cursor moved past it so the next
+// text doesn't touch it. A shape, not text — `rect` draws at the position it
+// is given and doesn't move the cursor, so this function moves it.
+function drawPartMark(doc: PDFKit.PDFDocument): void {
+  const top = doc.y + MARK.gap
+  doc.rect(doc.page.margins.left, top, MARK.width, MARK.height).fill(CORAL)
+  doc.y = top + MARK.height + MARK.gap
+}
+
+// The logo at the top-left corner of the first page's text area, then the
+// cursor placed under it for the title. Read from disk per document, like the
+// fonts (13 kB). Only the height is given: pdfkit scales the width to keep
+// the picture's proportions.
+function drawLogo(doc: PDFKit.PDFDocument): void {
+  const top = doc.page.margins.top
+  doc.image(readFileSync(LOGO_FILE), doc.page.margins.left, top, {
+    height: LOGO_HEIGHT,
+  })
+  doc.y = top + LOGO_HEIGHT + LOGO_GAP
 }
 
 // A new page when less than `height` points are left above the bottom
