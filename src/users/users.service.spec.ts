@@ -1645,6 +1645,7 @@ describe('UsersService.update', () => {
         firstName: 'Prac',
         lastName: 'Titioner',
         preferredWeightUnit: 'lbs',
+        readableFont: true,
       },
       practitioner: [
         { userId: 1, licenseNumber: 'PT-1', specialties: [], bio: null },
@@ -1720,13 +1721,31 @@ describe('UsersService.update', () => {
     mockPractitionerTarget()
     const set = mockUsersOnlyTransaction()
 
-    await usersService.update(
+    const result = await usersService.update(
       1,
       { readableFont: true },
       { id: 1, activeRole: UserRole.PRACTITIONER },
     )
 
     expect(set.mock.calls).toEqual([[{ readableFont: true }]])
+    // Their own edit answers with their own setting (toSelf — §41).
+    expect(result).toHaveProperty('readableFont', true)
+  })
+
+  // Decisions §41: the font setting is the owner's only. An admin editing
+  // someone else's account gets the public shape back — without it.
+  it("answers an admin's edit of someone else without their font setting", async () => {
+    mockPractitionerTarget()
+    mockUsersOnlyTransaction()
+
+    const result = await usersService.update(
+      1,
+      { firstName: 'Prac' },
+      { id: 9, activeRole: UserRole.ADMIN },
+    )
+
+    expect(result).not.toHaveProperty('readableFont')
+    expect(result.firstName).toBe('Prac')
   })
 })
 
@@ -2420,6 +2439,18 @@ describe('UsersService.toPublic', () => {
     )
   })
 
+  // Decisions §41: the font setting is the person's own — not a secret, but
+  // nobody else's screen uses it, so it doesn't leave the server about them.
+  it('drops the font setting too', async () => {
+    const result = await usersService.toPublic({
+      id: 5,
+      readableFont: true,
+      avatarPath: null,
+    } as RawUserRow)
+
+    expect(result).not.toHaveProperty('readableFont')
+  })
+
   it('returns avatarUrl: null for a user with no photo', async () => {
     storageService.getPresignedUrlOrNull.mockResolvedValue(null)
 
@@ -2433,6 +2464,59 @@ describe('UsersService.toPublic', () => {
       null,
       60 * 60 * 24,
     )
+  })
+})
+
+// The owner's own shape (decisions §41): toPublic() — every strip, the
+// avatar conversion — plus the settings only they may read.
+describe('UsersService.toSelf', () => {
+  let usersService: UsersService
+
+  beforeEach(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: DRIZZLE, useValue: {} },
+        {
+          provide: StorageService,
+          useValue: {
+            getPresignedUrlOrNull: jest
+              .fn()
+              .mockResolvedValue('https://storage.example.com/signed/a.png'),
+          },
+        },
+        { provide: AuditService, useValue: {} },
+        { provide: CareTeamService, useValue: careTeamStub() },
+        { provide: InvitationsService, useValue: invitationsStub() },
+      ],
+    }).compile()
+    usersService = moduleRef.get(UsersService)
+  })
+
+  it("keeps the owner's font setting, and still strips the private fields", async () => {
+    const result = await usersService.toSelf({
+      id: 5,
+      passwordHash: 'bcrypt-hash',
+      mfaSecret: 'iv:authTag:ciphertext',
+      avatarPath: 'avatars/5/1.png',
+      readableFont: true,
+    } as RawUserRow)
+
+    expect(result).toEqual({
+      id: 5,
+      readableFont: true,
+      avatarUrl: 'https://storage.example.com/signed/a.png',
+    })
+  })
+
+  it('keeps it when off, too — false is an answer, not a missing one', async () => {
+    const result = await usersService.toSelf({
+      id: 5,
+      avatarPath: null,
+      readableFont: false,
+    } as RawUserRow)
+
+    expect(result).toHaveProperty('readableFont', false)
   })
 })
 

@@ -53,6 +53,16 @@ export class ResendTransport implements EmailTransport {
       subject: email.subject,
       html: email.html,
       text: email.text,
+      // Inline images (the logo — decisions §41): Resend sends an
+      // attachment as INLINE when it has a `contentId`, which the HTML then
+      // references as `cid:<contentId>`. A Buffer is accepted as is (the
+      // SDK base64-encodes it for the JSON request).
+      attachments: (email.inlineImages ?? []).map((image) => ({
+        contentId: image.contentId,
+        filename: image.filename,
+        contentType: image.contentType,
+        content: image.content,
+      })),
     })
 
     if (error) {

@@ -5,10 +5,10 @@ import { UserRole } from '../../users/dto/create-user.dto'
 
 describe('SessionSerializer.deserializeUser', () => {
   let serializer: SessionSerializer
-  let usersService: { findOne: jest.Mock }
+  let usersService: { findSelf: jest.Mock }
 
   beforeEach(async () => {
-    usersService = { findOne: jest.fn() }
+    usersService = { findSelf: jest.fn() }
     const moduleRef = await Test.createTestingModule({
       providers: [
         SessionSerializer,
@@ -40,7 +40,7 @@ describe('SessionSerializer.deserializeUser', () => {
   }
 
   it('rejects deserialization for a deactivated account', async () => {
-    usersService.findOne.mockResolvedValue({
+    usersService.findSelf.mockResolvedValue({
       id: 1,
       isActive: false,
       roles: [UserRole.PATIENT],
@@ -58,7 +58,7 @@ describe('SessionSerializer.deserializeUser', () => {
   // (still isActive, just no longer holding the role stored in THIS
   // session) should be rejected the same way.
   it("rejects deserialization when the session's stored role is no longer held", async () => {
-    usersService.findOne.mockResolvedValue({
+    usersService.findSelf.mockResolvedValue({
       id: 1,
       isActive: true,
       roles: [UserRole.PATIENT],
@@ -73,7 +73,7 @@ describe('SessionSerializer.deserializeUser', () => {
   })
 
   it('succeeds for an active account that still holds the stored role', async () => {
-    usersService.findOne.mockResolvedValue({
+    usersService.findSelf.mockResolvedValue({
       id: 1,
       email: 'jane@example.com',
       isActive: true,
@@ -94,8 +94,8 @@ describe('SessionSerializer.deserializeUser', () => {
     })
   })
 
-  it('propagates a real error from findOne as an error, not a rejection', async () => {
-    usersService.findOne.mockRejectedValue(new Error('DB unreachable'))
+  it('propagates a real error from findSelf as an error, not a rejection', async () => {
+    usersService.findSelf.mockRejectedValue(new Error('DB unreachable'))
 
     await expect(
       deserialize({ id: 1, activeRole: UserRole.PATIENT }),

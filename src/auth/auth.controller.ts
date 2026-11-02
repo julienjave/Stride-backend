@@ -157,7 +157,7 @@ export class AuthController {
 
     delete req.session.mfaPending
 
-    const user = await this.usersService.findOne(pending.userId)
+    const user = await this.usersService.findSelf(pending.userId)
     const authenticatedUser = { ...user, activeRole: pending.activeRole }
 
     return new Promise((resolve, reject) => {

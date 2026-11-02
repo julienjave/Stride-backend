@@ -24,14 +24,14 @@ import type { UserRole } from '../../users/dto/create-user.dto'
 // The exact shape Passport attaches to req.user on every authenticated
 // request (HTTP) or socket.data.user (WebSocket) — traced from
 // SessionSerializer.deserializeUser(), which reloads the user fresh via
-// UsersService.findOne() on every request and merges in the session's
-// activeRole. Matches UsersService.findOne()'s return shape (every users
+// UsersService.findSelf() on every request and merges in the session's
+// activeRole. Matches UsersService.findSelf()'s return shape (every users
 // column except the server-internal ones toPublic() strips — passwordHash,
 // mfaSecret, mfaLastUsedStep, passwordResetTokenHash and
 // passwordResetTokenExpiresAt — with avatarPath swapped for a presigned
-// avatarUrl, plus roles, plus the role-named profile objects
-// UsersService.attachProfile() conditionally attaches) with activeRole added
-// on top.
+// avatarUrl, plus the owner-only settings toSelf() puts back, plus roles,
+// plus the role-named profile objects UsersService.attachProfile()
+// conditionally attaches) with activeRole added on top.
 export interface CurrentUser {
   id: number
   email: string
@@ -44,7 +44,8 @@ export interface CurrentUser {
   createdAt: Date
   mfaEnabled: boolean
   // "Easier-to-read font" (decisions §39) — the frontend applies it as soon
-  // as it knows who is signed in.
+  // as it knows who is signed in. Owner-only (§41): present here because
+  // this is the signed-in person; absent from every answer about others.
   readableFont: boolean
   roles: string[]
   activeRole: UserRole

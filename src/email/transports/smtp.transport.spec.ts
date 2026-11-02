@@ -49,7 +49,42 @@ describe('SmtpTransport', () => {
       subject: email.subject,
       html: email.html,
       text: email.text,
+      attachments: [],
     })
+  })
+
+  // Branded emails (decisions §41): the logo travels as an INLINE part —
+  // nodemailer's `cid`, which the HTML's `cid:` reference resolves to.
+  it('passes inline images as attachments with their content id', async () => {
+    const sendMail = jest
+      .fn()
+      .mockResolvedValue({ messageId: '<m1@stride.test>' })
+    const content = Buffer.from('png bytes')
+
+    await new SmtpTransport(stubMailer(sendMail)).send({
+      ...email,
+      inlineImages: [
+        {
+          contentId: 'stride-logo-light',
+          filename: 'stride.png',
+          contentType: 'image/png',
+          content,
+        },
+      ],
+    })
+
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          {
+            cid: 'stride-logo-light',
+            filename: 'stride.png',
+            contentType: 'image/png',
+            content,
+          },
+        ],
+      }),
+    )
   })
 
   // What the success line says: the message id — the address never

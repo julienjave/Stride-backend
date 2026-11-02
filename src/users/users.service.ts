@@ -798,6 +798,16 @@ export class UsersService {
     return this.attachProfile({ ...(await this.toPublic(user)), roles }, roles)
   }
 
+  // findOne() as the account's OWNER sees it: with the settings only they
+  // may read (toSelf()). For building the signed-in user — req.user
+  // (SessionSerializer), socket.data.user (MessagingGateway), the MFA
+  // sign-in's answer — never for answering about someone else.
+  async findSelf(id: number) {
+    const user = await this.findRawOrThrow(id)
+    const roles = await this.getRolesForUser(id)
+    return this.attachProfile({ ...(await this.toSelf(user)), roles }, roles)
+  }
+
   // INTERNAL USE ONLY — the one method in this service that does NOT strip
   // passwordHash. Never call this from a controller; it exists purely for
   // AuthService to compare a login attempt's password against the real hash.
@@ -990,11 +1000,15 @@ export class UsersService {
           where: eq(users.id, id),
         })
         const roles = await this.getRolesForUser(id, tx)
-        return this.attachProfile(
-          { ...(await this.toPublic(updated!)), roles },
-          roles,
-          tx,
-        )
+        // Editing your own account answers with your own settings (the
+        // Settings menu's font switch reads it back); an admin editing
+        // someone else gets the public shape, like every other answer
+        // about another person.
+        const shaped =
+          currentUser.id === id
+            ? await this.toSelf(updated!)
+            : await this.toPublic(updated!)
+        return this.attachProfile({ ...shaped, roles }, roles, tx)
       }),
     )
   }
@@ -1406,9 +1420,13 @@ export class UsersService {
   //    client), mfaLastUsedStep (when the account last used a two-factor
   //    code — a sign-in time, useful to no screen), stepUpFailures (how
   //    many step-ups in a row failed — a security counter, not a screen's
-  //    business) and
+  //    business),
   //    passwordResetTokenHash/passwordResetTokenExpiresAt (they reveal
-  //    whether a password reset is pending, and when it expires).
+  //    whether a password reset is pending, and when it expires) and
+  //    readableFont — not a secret, but the person's own setting, and one
+  //    that hints at how they read: no one else's screen needs it
+  //    (decisions §41; data minimisation — send each reader only what
+  //    their screen uses). toSelf() below adds it back for its owner.
   // 2. Swap avatarPath (the internal RustFS object key) for avatarUrl, a
   //    presigned URL a browser can load directly — the same conversion
   //    ClinicsService.withLogoUrl() does for logoPath. The key itself is
@@ -1439,6 +1457,7 @@ export class UsersService {
       passwordResetTokenHash,
       passwordResetTokenExpiresAt,
       avatarPath,
+      readableFont,
       ...publicUser
     } = user
     const avatarUrl = await this.storageService.getPresignedUrlOrNull(
@@ -1446,6 +1465,16 @@ export class UsersService {
       AVATAR_URL_EXPIRY_SECONDS,
     )
     return { ...publicUser, avatarUrl }
+  }
+
+  // toPublic() plus the settings only the account's owner may read — today
+  // the "Easier-to-read font" (decisions §39 pass 3, §41). The one other
+  // funnel, used ONLY where the answer is about the person asking: the
+  // signed-in user (findSelf(), login, registering a clinic) and their own
+  // PATCH. Built ON toPublic(), so every strip and the avatar conversion
+  // still happen in one place; this only puts one field back.
+  async toSelf(user: typeof users.$inferSelect) {
+    return { ...(await this.toPublic(user)), readableFont: user.readableFont }
   }
 
   // licenseNumber/specialties, dateOfBirth, and position are written to

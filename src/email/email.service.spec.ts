@@ -16,12 +16,30 @@
 // -----------------------------------------------------------------------------------------------------------
 
 import { Test } from '@nestjs/testing'
+import { LOGO_DARK_CID, LOGO_LIGHT_CID } from './email-layout'
 import { EMAIL_TRANSPORT, type OutgoingEmail } from './email-transport'
 import {
   AUTHENTICATOR_LABEL_NOTE,
   EmailService,
   describeWhere,
 } from './email.service'
+
+// --- HELPERS -----------------------------------------------------------------------------------------------
+
+// Branded emails (decisions §41): the HTML is drawn by email-layout.ts, with
+// a style on every element. These two read it the way a person sees it —
+// each paragraph's content, each link's address and words — so the tests
+// in this file check WHAT an email says, whatever the styling; the layout's
+// own spec checks how it looks. `s`: a paragraph may span lines.
+function paragraphsOf(html: string): string[] {
+  return [...html.matchAll(/<p\b[^>]*>(.*?)<\/p>/gs)].map((m) => m[1])
+}
+
+function linksOf(html: string): { href: string; label: string }[] {
+  return [...html.matchAll(/<a\b[^>]*\bhref="([^"]*)"[^>]*>(.*?)<\/a>/gs)].map(
+    (m) => ({ href: m[1], label: m[2] }),
+  )
+}
 
 describe('EmailService', () => {
   let service: EmailService
@@ -141,7 +159,7 @@ describe('EmailService', () => {
           "If this wasn't you, contact your clinic straight away.",
         ].join('\n'),
       )
-      expect(email.html).toContain(`<p>${AUTHENTICATOR_LABEL_NOTE}</p>`)
+      expect(paragraphsOf(email.html)).toContain(AUTHENTICATOR_LABEL_NOTE)
       expect(email.html.indexOf(AUTHENTICATOR_LABEL_NOTE)).toBeLessThan(
         email.html.indexOf("If this wasn't you"),
       )
@@ -445,9 +463,14 @@ describe('EmailService', () => {
           'You can turn these emails off in Stride: Settings (the gear at the top), "Email me about new messages".',
         ].join('\n'),
       )
-      expect(email.html).toContain(
-        '<a href="https://app.stride.test/patient/messages">Sign in to read it</a>',
-      )
+      // In the HTML, the link is the layout's button, named for what it
+      // opens (no sentence around it to say "it").
+      expect(linksOf(email.html)).toEqual([
+        {
+          href: 'https://app.stride.test/patient/messages',
+          label: 'Read the message',
+        },
+      ])
     })
 
     it("lists several senders in one email, with a general subject, and the practitioner side's link", async () => {
@@ -465,6 +488,12 @@ describe('EmailService', () => {
       expect(email.text).toContain(
         'https://app.stride.test/practitioner/messages',
       )
+      expect(linksOf(email.html)).toEqual([
+        {
+          href: 'https://app.stride.test/practitioner/messages',
+          label: 'Read the messages',
+        },
+      ])
     })
 
     it('joins two senders with "and"', async () => {
@@ -635,7 +664,9 @@ describe('EmailService', () => {
         'Your health record from Stride',
       ])
       const url = 'https://app.stride.test/records-download?token=tok456'
-      expect(email.html).toContain(`<a href="${url}">Download your record</a>`)
+      expect(linksOf(email.html)).toEqual([
+        { href: url, label: 'Download your record' },
+      ])
       expect(email.text).toContain(`Download your record: ${url}`)
       for (const body of [email.html, email.text]) {
         expect(body).toContain('Hello Pat,')
@@ -653,7 +684,7 @@ describe('EmailService', () => {
       await service.sendRecordsExportLinkEmail({ ...link, canSignIn: true })
 
       const email = send.mock.calls[0][0]
-      expect(email.html).toContain(`<p>${IN_APP}</p>`)
+      expect(paragraphsOf(email.html)).toContain(IN_APP)
       expect(email.text).toContain(
         `wrong dates of birth it stops working.\n\n${IN_APP}\n\nIf you didn't ask`,
       )
@@ -677,6 +708,114 @@ describe('EmailService', () => {
         'delivery failed',
       )
     })
+  })
+
+  // Every email goes through the layout (decisions §41) — and so must carry
+  // the two logo images its HTML points at: a `cid:` with no matching part
+  // in the message is a broken image. One call per email, so a method that
+  // ever bypassed deliver() would fail here.
+  describe('the branded layout', () => {
+    const notice = { to: 'pat@example.com', firstName: 'Pat' }
+    const sends: [string, (s: EmailService) => Promise<void>][] = [
+      [
+        'password reset',
+        (s) => s.sendPasswordResetEmail('pat@example.com', 't'),
+      ],
+      [
+        'invitation',
+        (s) =>
+          s.sendInvitationEmail({
+            ...notice,
+            rawToken: 't',
+            invitedByName: 'Alex Chen',
+            clinicNames: [],
+            validForDays: 7,
+          }),
+      ],
+      [
+        'email change confirmation',
+        (s) =>
+          s.sendEmailChangeConfirmation({
+            ...notice,
+            rawToken: 't',
+            validForHours: 24,
+          }),
+      ],
+      [
+        'address taken',
+        (s) => s.sendEmailChangeAddressTaken('pat@example.com'),
+      ],
+      [
+        'email change requested',
+        (s) =>
+          s.sendEmailChangeRequestedNotice({
+            ...notice,
+            maskedNewEmail: 'p***@example.com',
+            rawCancelToken: 't',
+          }),
+      ],
+      [
+        'email changed',
+        (s) =>
+          s.sendEmailChangedNotice({
+            ...notice,
+            maskedNewEmail: 'p***@example.com',
+            twoFactorOn: false,
+          }),
+      ],
+      ['password changed', (s) => s.sendPasswordChangedNotice(notice)],
+      ['two-factor on', (s) => s.sendMfaEnabledNotice(notice)],
+      ['two-factor off', (s) => s.sendMfaDisabledNotice(notice)],
+      [
+        'recovery code used',
+        (s) => s.sendRecoveryCodeUsedNotice({ ...notice, remaining: 3 }),
+      ],
+      ['two-factor reset', (s) => s.sendMfaResetNotice(notice)],
+      ['accounts combined', (s) => s.sendPatientMergedNotice(notice)],
+      ['step-up sign-out', (s) => s.sendStepUpSignOutNotice(notice)],
+      [
+        'new messages',
+        (s) =>
+          s.sendNewMessagesNotice({
+            ...notice,
+            side: 'patient',
+            senders: ['Alex Chen'],
+          }),
+      ],
+      [
+        'records link',
+        (s) =>
+          s.sendRecordsExportLinkEmail({
+            ...notice,
+            rawToken: 't',
+            validForHours: 72,
+            dateOfBirthAttempts: 5,
+            canSignIn: true,
+          }),
+      ],
+    ]
+
+    it('covers all fifteen emails', () => {
+      expect(sends).toHaveLength(15)
+    })
+
+    it.each(sends)(
+      'the %s email carries both logo images, and its subject as the title',
+      async (_name, sendIt) => {
+        await sendIt(service)
+
+        const email = send.mock.calls[0][0]
+        expect(email.inlineImages?.map((i) => i.contentId)).toEqual([
+          LOGO_LIGHT_CID,
+          LOGO_DARK_CID,
+        ])
+        expect(email.html).toContain(`src="cid:${LOGO_LIGHT_CID}"`)
+        expect(email.html).toContain(`src="cid:${LOGO_DARK_CID}"`)
+        expect(email.html).toContain(
+          `<title>${email.subject.replace(/'/g, '&#39;')}</title>`,
+        )
+      },
+    )
   })
 })
 

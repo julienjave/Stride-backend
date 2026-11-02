@@ -346,8 +346,10 @@ describe('Records export links (e2e)', () => {
     expect(email.text).toContain(
       'You can also download a copy at any time, without asking, from My records once you sign in to Stride.',
     )
-    expect(email.html).toContain(
-      '<p>You can also download a copy at any time, without asking, from My records once you sign in to Stride.</p>',
+    // A paragraph of its own, whatever the layout's styling (decisions §41:
+    // every <p> carries its style inline, so the tag's attributes vary).
+    expect(email.html).toMatch(
+      /<p\b[^>]*>You can also download a copy at any time, without asking, from My records once you sign in to Stride\.<\/p>/,
     )
     expect((await entries(ivy.id))[0].details).toMatchObject({
       patientActive: true,

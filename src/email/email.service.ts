@@ -18,8 +18,9 @@
 // --- IMPORTS -----------------------------------------------------------------------------------------------
 
 import { Inject, Injectable } from '@nestjs/common'
+import { type EmailContent, link, renderEmail } from './email-layout'
 import { EMAIL_TRANSPORT, type EmailTransport } from './email-transport'
-import { escapeHtml } from './escape-html'
+import { markup } from './safe-html'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -133,6 +134,17 @@ export const AUTHENTICATOR_LABEL_NOTE =
 // link inside — and hands the finished email to whichever transport
 // EmailModule chose (see email-transport.ts). Nothing in here knows
 // whether the email goes to Resend, the console, or a test's outbox.
+//
+// HOW each email LOOKS is email-layout.ts's job (branded emails, decisions
+// §41): a method here gives the layout its paragraphs — built with markup``,
+// which escapes every value a person typed (safe-html.ts) — and, when the
+// email exists to send someone somewhere, its main link as the button.
+// A link that is only an escape hatch ("if this wasn't you, reset your
+// password") stays a link in its sentence: a large teal "Reset your
+// password" on a routine notice would invite people to reset for nothing.
+//
+// The plain-text bodies are unchanged by the layout: they are what an app
+// set to plain text shows, and what the e2e tests follow links from.
 @Injectable()
 export class EmailService {
   // @Inject(EMAIL_TRANSPORT) is needed because the parameter's type is an
@@ -151,23 +163,28 @@ export class EmailService {
     rawToken: string,
   ): Promise<void> {
     const resetUrl = `${frontendUrl()}/reset-password?token=${rawToken}`
+    const subject = 'Reset your Stride password'
 
-    await this.transport.send({
-      from: senderAddress(),
-      to: toEmail,
-      subject: 'Reset your Stride password',
-      html: `<p>Someone requested a password reset for this account.</p>
-             <p><a href="${resetUrl}">Reset your password</a> — this link expires in 1 hour.</p>
-             <p>If you didn't request this, you can safely ignore this email.</p>`,
-      text: [
+    await this.deliver(
+      toEmail,
+      subject,
+      {
+        intro: [markup`Someone requested a password reset for this account.`],
+        action: { label: 'Reset your password', url: resetUrl },
+        outro: [
+          markup`This link expires in 1 hour.`,
+          markup`If you didn't request this, you can safely ignore this email.`,
+        ],
+      },
+      [
         'Someone requested a password reset for this account.',
         '',
         `Reset your password: ${resetUrl}`,
         'This link expires in 1 hour.',
         '',
         "If you didn't request this, you can safely ignore this email.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // Rejects if the transport couldn't send; InvitationsService reports that
@@ -178,23 +195,29 @@ export class EmailService {
     const where = describeWhere(invitation.clinicNames)
     const validity = `${invitation.validForDays} days`
 
-    await this.transport.send({
-      from: senderAddress(),
-      to: invitation.to,
+    await this.deliver(
+      invitation.to,
       // A fixed subject, with no names in it: a mail header is not HTML,
       // and keeping user-typed text out of headers removes a whole class
       // of problems (line breaks, encodings) rather than handling each.
-      subject: "You're invited to Stride",
-      // Every value a person typed goes through escapeHtml() — see its
-      // comment. The URL too: it's built from FRONTEND_URL, configuration
-      // rather than user input, but it sits inside an attribute and
-      // escaping it costs nothing.
-      html: `<p>Hello ${escapeHtml(invitation.firstName)},</p>
-             <p>${escapeHtml(invitation.invitedByName)} invited you to join ${escapeHtml(where)}.</p>
-             <p><a href="${escapeHtml(acceptUrl)}">Choose your password</a> to activate your account — this link expires in ${validity}.</p>
-             <p>If it has expired, ask your clinic to send you a new one. If you weren't expecting this invitation, you can ignore this email.</p>`,
+      "You're invited to Stride",
+      {
+        // Every value a person typed (the names, the clinics) is escaped by
+        // markup`` — see safe-html.ts. The URL too, by the layout: it's built
+        // from FRONTEND_URL, configuration rather than user input, but it
+        // sits inside an attribute and escaping it costs nothing.
+        intro: [
+          markup`Hello ${invitation.firstName},`,
+          markup`${invitation.invitedByName} invited you to join ${where}. Choose your password to activate your account.`,
+        ],
+        action: { label: 'Choose your password', url: acceptUrl },
+        outro: [
+          markup`This link expires in ${validity}. If it has expired, ask your clinic to send you a new one.`,
+          markup`If you weren't expecting this invitation, you can ignore this email.`,
+        ],
+      },
       // The text body needs no escaping: plain text is never interpreted.
-      text: [
+      [
         `Hello ${invitation.firstName},`,
         '',
         `${invitation.invitedByName} invited you to join ${where}.`,
@@ -204,8 +227,8 @@ export class EmailService {
         '',
         'If it has expired, ask your clinic to send you a new one.',
         "If you weren't expecting this invitation, you can ignore this email.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // To the NEW address: the link that makes the change. Rejects if the
@@ -217,15 +240,21 @@ export class EmailService {
   ): Promise<void> {
     const confirmUrl = `${frontendUrl()}/confirm-email?token=${email.rawToken}`
     const validity = `${email.validForHours} hours`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Confirm your new email address for Stride',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>You asked to use this address to sign in to Stride.</p>
-             <p><a href="${escapeHtml(confirmUrl)}">Confirm this address</a> — this link expires in ${validity}. Until then, your account keeps its current address.</p>
-             <p>If you didn't ask for this, you can ignore this email: nothing changes.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Confirm your new email address for Stride',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`You asked to use this address to sign in to Stride.`,
+        ],
+        action: { label: 'Confirm this address', url: confirmUrl },
+        outro: [
+          markup`This link expires in ${validity}. Until then, your account keeps its current address.`,
+          markup`If you didn't ask for this, you can ignore this email: nothing changes.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'You asked to use this address to sign in to Stride.',
@@ -234,8 +263,8 @@ export class EmailService {
         `This link expires in ${validity}. Until then, your account keeps its current address.`,
         '',
         "If you didn't ask for this, you can ignore this email: nothing changes.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // To the NEW address when it already belongs to an account (decisions
@@ -243,45 +272,52 @@ export class EmailService {
   // either way, and only whoever reads THIS inbox learns the address is
   // taken. No name, no link — the email says nothing about either account.
   async sendEmailChangeAddressTaken(to: string): Promise<void> {
-    await this.transport.send({
-      from: senderAddress(),
+    await this.deliver(
       to,
-      subject: 'This address already has a Stride account',
-      html: `<p>Someone asked to use this address to sign in to Stride, but it already belongs to a Stride account, so it can't be used for another one.</p>
-             <p>If it was you, sign in with this address instead — or use "Forgot your password?" on the sign-in page.</p>
-             <p>If it wasn't you, you can ignore this email: nothing changes.</p>`,
-      text: [
+      'This address already has a Stride account',
+      {
+        intro: [
+          markup`Someone asked to use this address to sign in to Stride, but it already belongs to a Stride account, so it can't be used for another one.`,
+          markup`If it was you, sign in with this address instead — or use "Forgot your password?" on the sign-in page.`,
+          markup`If it wasn't you, you can ignore this email: nothing changes.`,
+        ],
+      },
+      [
         "Someone asked to use this address to sign in to Stride, but it already belongs to a Stride account, so it can't be used for another one.",
         '',
         'If it was you, sign in with this address instead — or use "Forgot your password?" on the sign-in page.',
         '',
         "If it wasn't you, you can ignore this email: nothing changes.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // To the OLD address when a change is asked for: what is about to happen,
   // and the link that stops it. The address the change goes to is masked.
+  // The cancel link stays in its sentence: it is for "this wasn't you" only.
   async sendEmailChangeRequestedNotice(
     email: EmailChangeRequestedNoticeEmail,
   ): Promise<void> {
     const cancelUrl = `${frontendUrl()}/cancel-email-change?token=${email.rawCancelToken}`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'A change of your Stride sign-in email was requested',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Someone signed in to your Stride account asked to change its sign-in email to ${escapeHtml(email.maskedNewEmail)}. Nothing changes until that address confirms it.</p>
-             <p>If this wasn't you, <a href="${escapeHtml(cancelUrl)}">cancel the change</a>, then reset your password from the sign-in page — someone may know it.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'A change of your Stride sign-in email was requested',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Someone signed in to your Stride account asked to change its sign-in email to ${email.maskedNewEmail}. Nothing changes until that address confirms it.`,
+          markup`If this wasn't you, ${link(cancelUrl, 'cancel the change')}, then reset your password from the sign-in page — someone may know it.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         `Someone signed in to your Stride account asked to change its sign-in email to ${email.maskedNewEmail}. Nothing changes until that address confirms it.`,
         '',
         `If this wasn't you, cancel the change: ${cancelUrl}`,
         'Then reset your password from the sign-in page — someone may know it.',
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // To the OLD address once the change is made: the last email it receives
@@ -292,26 +328,26 @@ export class EmailService {
   // rather than label accounts by something else). The codes don't depend on
   // the label: nothing stops working.
   async sendEmailChangedNotice(email: EmailChangedNoticeEmail): Promise<void> {
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Your Stride sign-in email was changed',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Your Stride account now signs in with ${escapeHtml(email.maskedNewEmail)}, and was signed out on your other devices. This address will no longer receive emails about it.</p>${
-               email.twoFactorOn
-                 ? `\n             <p>${AUTHENTICATOR_LABEL_NOTE}</p>`
-                 : ''
-             }
-             <p>If this wasn't you, contact your clinic straight away.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Your Stride sign-in email was changed',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Your Stride account now signs in with ${email.maskedNewEmail}, and was signed out on your other devices. This address will no longer receive emails about it.`,
+          ...(email.twoFactorOn ? [markup`${AUTHENTICATOR_LABEL_NOTE}`] : []),
+          markup`If this wasn't you, contact your clinic straight away.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         `Your Stride account now signs in with ${email.maskedNewEmail}, and was signed out on your other devices. This address will no longer receive emails about it.`,
         ...(email.twoFactorOn ? ['', AUTHENTICATOR_LABEL_NOTE] : []),
         '',
         "If this wasn't you, contact your clinic straight away.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // To the account after its password was changed from the profile: if it
@@ -325,22 +361,25 @@ export class EmailService {
     email: PasswordChangedNoticeEmail,
   ): Promise<void> {
     const forgotUrl = `${frontendUrl()}/forgot-password`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Your Stride password was changed',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>The password of your Stride account was just changed, and your account was signed out on your other devices.</p>
-             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then tell your clinic.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Your Stride password was changed',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`The password of your Stride account was just changed, and your account was signed out on your other devices.`,
+          markup`If this was you, there is nothing else to do. If it wasn't, ${link(forgotUrl, 'reset your password')} straight away, then tell your clinic.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'The password of your Stride account was just changed, and your account was signed out on your other devices.',
         '',
         "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
         forgotUrl,
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // Two-factor sign-in was turned ON. Who would do that without the owner?
@@ -350,21 +389,24 @@ export class EmailService {
   // not a reset link: a new password doesn't remove someone else's second
   // factor.
   async sendMfaEnabledNotice(email: MfaNoticeEmail): Promise<void> {
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Two-factor sign-in is on for your Stride account',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Two-factor sign-in was just turned on for your Stride account: signing in now asks for a code from your authenticator app. Your account was signed out on your other devices.</p>
-             <p>If this was you, there is nothing else to do. If it wasn't, contact your clinic straight away.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Two-factor sign-in is on for your Stride account',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Two-factor sign-in was just turned on for your Stride account: signing in now asks for a code from your authenticator app. Your account was signed out on your other devices.`,
+          markup`If this was you, there is nothing else to do. If it wasn't, contact your clinic straight away.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'Two-factor sign-in was just turned on for your Stride account: signing in now asks for a code from your authenticator app. Your account was signed out on your other devices.',
         '',
         "If this was you, there is nothing else to do. If it wasn't, contact your clinic straight away.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // Two-factor sign-in was turned OFF — which needs the password AND a code,
@@ -372,22 +414,25 @@ export class EmailService {
   // reset page, as for the password notice), then tell the clinic.
   async sendMfaDisabledNotice(email: MfaNoticeEmail): Promise<void> {
     const forgotUrl = `${frontendUrl()}/forgot-password`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Two-factor sign-in is off for your Stride account',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Two-factor sign-in was just turned off for your Stride account: signing in now asks for your password only.</p>
-             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then tell your clinic.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Two-factor sign-in is off for your Stride account',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Two-factor sign-in was just turned off for your Stride account: signing in now asks for your password only.`,
+          markup`If this was you, there is nothing else to do. If it wasn't, ${link(forgotUrl, 'reset your password')} straight away, then tell your clinic.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'Two-factor sign-in was just turned off for your Stride account: signing in now asks for your password only.',
         '',
         "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then tell your clinic:",
         forgotUrl,
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // A recovery code was used — to sign in, or to confirm a change. The codes
@@ -403,22 +448,25 @@ export class EmailService {
         : email.remaining === 1
           ? 'You have 1 recovery code left.'
           : `You have ${email.remaining} recovery codes left.`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'A recovery code was used on your Stride account',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>One of your two-factor recovery codes was just used on your Stride account. ${escapeHtml(left)}</p>
-             <p>If this was you, there is nothing else to do. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away, then contact your clinic.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'A recovery code was used on your Stride account',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`One of your two-factor recovery codes was just used on your Stride account. ${left}`,
+          markup`If this was you, there is nothing else to do. If it wasn't, ${link(forgotUrl, 'reset your password')} straight away, then contact your clinic.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         `One of your two-factor recovery codes was just used on your Stride account. ${left}`,
         '',
         "If this was you, there is nothing else to do. If it wasn't, reset your password straight away, then contact your clinic:",
         forgotUrl,
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // An admin turned two-factor sign-in OFF for this account (the person
@@ -426,21 +474,24 @@ export class EmailService {
   // put their own phone on it). Every session was ended: signing in again
   // asks the password only — and the profile can set MFA up again.
   async sendMfaResetNotice(email: MfaNoticeEmail): Promise<void> {
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Two-factor sign-in was turned off for your Stride account',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>An administrator of your clinic turned off two-factor sign-in for your Stride account, and your account was signed out everywhere. Signing in now asks for your password only; you can set two-factor sign-in up again from your profile.</p>
-             <p>If you didn't ask for this, contact your clinic straight away.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Two-factor sign-in was turned off for your Stride account',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`An administrator of your clinic turned off two-factor sign-in for your Stride account, and your account was signed out everywhere. Signing in now asks for your password only; you can set two-factor sign-in up again from your profile.`,
+          markup`If you didn't ask for this, contact your clinic straight away.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'An administrator of your clinic turned off two-factor sign-in for your Stride account, and your account was signed out everywhere. Signing in now asks for your password only; you can set two-factor sign-in up again from your profile.',
         '',
         "If you didn't ask for this, contact your clinic straight away.",
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // Two accounts of this patient were merged into this one (decisions §27,
@@ -452,15 +503,21 @@ export class EmailService {
   // happened, where to sign in, and who to ask.
   async sendPatientMergedNotice(email: MfaNoticeEmail): Promise<void> {
     const signInUrl = `${frontendUrl()}/login`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Your Stride accounts were combined',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Your clinic found a second Stride account in your name and combined it with this one, so your programs, sessions, messages and records are now all in one place.</p>
-             <p><a href="${escapeHtml(signInUrl)}">Sign in</a> with this email address from now on. The other account can no longer be used.</p>
-             <p>If you think this is a mistake, contact your clinic straight away.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Your Stride accounts were combined',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Your clinic found a second Stride account in your name and combined it with this one, so your programs, sessions, messages and records are now all in one place.`,
+          markup`Sign in with this email address from now on. The other account can no longer be used.`,
+        ],
+        action: { label: 'Sign in', url: signInUrl },
+        outro: [
+          markup`If you think this is a mistake, contact your clinic straight away.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'Your clinic found a second Stride account in your name and combined it with this one, so your programs, sessions, messages and records are now all in one place.',
@@ -469,8 +526,8 @@ export class EmailService {
         'The other account can no longer be used.',
         '',
         'If you think this is a mistake, contact your clinic straight away.',
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // A session of this account was signed out after 5 failed step-ups in a
@@ -483,22 +540,25 @@ export class EmailService {
   // EVERY session, the thief's included (AuthService.resetPassword).
   async sendStepUpSignOutNotice(email: MfaNoticeEmail): Promise<void> {
     const forgotUrl = `${frontendUrl()}/forgot-password`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Your Stride account was signed out on one device',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Someone signed in to your Stride account entered a wrong password or code 5 times in a row while confirming a change, so that device was signed out. Nothing was changed.</p>
-             <p>If this was you, sign in again. If it wasn't, <a href="${escapeHtml(forgotUrl)}">reset your password</a> straight away — it signs your account out everywhere — then tell your clinic.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Your Stride account was signed out on one device',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Someone signed in to your Stride account entered a wrong password or code 5 times in a row while confirming a change, so that device was signed out. Nothing was changed.`,
+          markup`If this was you, sign in again. If it wasn't, ${link(forgotUrl, 'reset your password')} straight away — it signs your account out everywhere — then tell your clinic.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'Someone signed in to your Stride account entered a wrong password or code 5 times in a row while confirming a change, so that device was signed out. Nothing was changed.',
         '',
         "If this was you, sign in again. If it wasn't, reset your password straight away — it signs your account out everywhere — then tell your clinic:",
         forgotUrl,
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // "Alex Chen sent you a message on Stride" (roadmap Phase 6.5) — WHO
@@ -511,19 +571,28 @@ export class EmailService {
   async sendNewMessagesNotice(email: NewMessagesNoticeEmail): Promise<void> {
     const messagesUrl = `${frontendUrl()}/${email.side}/messages`
     const who = namesInWords(email.senders)
-    const sentence =
-      email.senders.length === 1
-        ? `${who} sent you a message on Stride.`
-        : `${who} sent you messages on Stride.`
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: newMessagesSubject(email.senders),
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>${escapeHtml(sentence)}</p>
-             <p><a href="${escapeHtml(messagesUrl)}">Sign in to read it</a>. For your privacy, messages are never included in emails.</p>
-             <p>${escapeHtml(NEW_MESSAGES_SETTING_HINT)}</p>`,
-      text: [
+    const one = email.senders.length === 1
+    const sentence = one
+      ? `${who} sent you a message on Stride.`
+      : `${who} sent you messages on Stride.`
+    await this.deliver(
+      email.to,
+      newMessagesSubject(email.senders),
+      {
+        intro: [markup`Hello ${email.firstName},`, markup`${sentence}`],
+        // The button's label: what it opens. (The text part says "Sign in to
+        // read it" — a sentence ending in its link; a button has no sentence
+        // around it, so it names its destination instead.)
+        action: {
+          label: one ? 'Read the message' : 'Read the messages',
+          url: messagesUrl,
+        },
+        outro: [
+          markup`For your privacy, messages are never included in emails.`,
+          markup`${NEW_MESSAGES_SETTING_HINT}`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         sentence,
@@ -532,8 +601,8 @@ export class EmailService {
         'For your privacy, messages are never included in emails.',
         '',
         NEW_MESSAGES_SETTING_HINT,
-      ].join('\n'),
-    })
+      ],
+    )
   }
 
   // The link to a copy of the patient's record. The record itself is never
@@ -548,16 +617,22 @@ export class EmailService {
     const validity = `${email.validForHours} hours`
     const inApp =
       'You can also download a copy at any time, without asking, from My records once you sign in to Stride.'
-    await this.transport.send({
-      from: senderAddress(),
-      to: email.to,
-      subject: 'Your health record from Stride',
-      html: `<p>Hello ${escapeHtml(email.firstName)},</p>
-             <p>Your clinic sent you a link to download a copy of your health record: your medical file, your exercise programs and your sessions.</p>
-             <p><a href="${escapeHtml(downloadUrl)}">Download your record</a>. You'll be asked for your date of birth. The link works once and expires in ${validity}; after ${email.dateOfBirthAttempts} wrong dates of birth it stops working.</p>
-             ${email.canSignIn ? `<p>${inApp}</p>` : ''}
-             <p>If you didn't ask for your record, tell your clinic.</p>`,
-      text: [
+    await this.deliver(
+      email.to,
+      'Your health record from Stride',
+      {
+        intro: [
+          markup`Hello ${email.firstName},`,
+          markup`Your clinic sent you a link to download a copy of your health record: your medical file, your exercise programs and your sessions.`,
+        ],
+        action: { label: 'Download your record', url: downloadUrl },
+        outro: [
+          markup`You'll be asked for your date of birth. The link works once and expires in ${validity}; after ${email.dateOfBirthAttempts} wrong dates of birth it stops working.`,
+          ...(email.canSignIn ? [markup`${inApp}`] : []),
+          markup`If you didn't ask for your record, tell your clinic.`,
+        ],
+      },
+      [
         `Hello ${email.firstName},`,
         '',
         'Your clinic sent you a link to download a copy of your health record: your medical file, your exercise programs and your sessions.',
@@ -567,7 +642,32 @@ export class EmailService {
         ...(email.canSignIn ? ['', inApp] : []),
         '',
         "If you didn't ask for your record, tell your clinic.",
-      ].join('\n'),
+      ],
+    )
+  }
+
+  // The one place an email is assembled and sent: the layout draws the HTML
+  // (and returns the logo images it refers to), the text lines are joined,
+  // and both go to the transport together. Every method above ends here, so
+  // none of them can forget the images — an HTML body whose `cid:` points at
+  // nothing shows a broken image.
+  private async deliver(
+    to: string,
+    subject: string,
+    content: Omit<EmailContent, 'title'>,
+    textLines: readonly string[],
+  ): Promise<void> {
+    const { html: htmlBody, inlineImages } = renderEmail({
+      ...content,
+      title: subject,
+    })
+    await this.transport.send({
+      from: senderAddress(),
+      to,
+      subject,
+      html: htmlBody,
+      text: textLines.join('\n'),
+      inlineImages,
     })
   }
 }

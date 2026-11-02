@@ -146,7 +146,9 @@ export class MessagingGateway implements OnGatewayInit {
         }
 
         try {
-          const user = await this.usersService.findOne(sessionData.id)
+          // findSelf: the same shape as req.user (SessionSerializer), so
+          // socket.data.user matches the CurrentUser type it is read as.
+          const user = await this.usersService.findSelf(sessionData.id)
           if (!user.roles.includes(sessionData.activeRole)) {
             return next(new Error('Unauthorized'))
           }

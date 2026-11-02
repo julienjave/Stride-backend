@@ -50,7 +50,40 @@ describe('ResendTransport', () => {
       subject: email.subject,
       html: email.html,
       text: email.text,
+      attachments: [],
     })
+  })
+
+  // Branded emails (decisions §41): Resend sends an attachment INLINE when
+  // it has a `contentId` — the name the HTML's `cid:` points at.
+  it('passes inline images as attachments with their content id', async () => {
+    const { client, send } = stubClient({ data: { id: 'em_1' }, error: null })
+    const content = Buffer.from('png bytes')
+
+    await new ResendTransport(client).send({
+      ...email,
+      inlineImages: [
+        {
+          contentId: 'stride-logo-light',
+          filename: 'stride.png',
+          contentType: 'image/png',
+          content,
+        },
+      ],
+    })
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          {
+            contentId: 'stride-logo-light',
+            filename: 'stride.png',
+            contentType: 'image/png',
+            content,
+          },
+        ],
+      }),
+    )
   })
 
   // The success line: Resend's id, never the address (decisions §32).

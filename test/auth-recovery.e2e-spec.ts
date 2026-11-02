@@ -303,6 +303,10 @@ describe('Auth — MFA and password recovery (e2e)', () => {
     expect(verifyRes.body.patientProfile).toEqual({
       dateOfBirth: '1990-01-01',
     })
+    // …and the other direction (decisions §41): this answer IS the person
+    // signing in, so it carries their own font setting — the frontend
+    // applies it from this answer, before /auth/me.
+    expect(verifyRes.body).toHaveProperty('readableFont', false)
 
     // The SAME agent/session that was MFA-pending a moment ago is now fully
     // authenticated — no separate login round trip was needed.
@@ -323,6 +327,7 @@ describe('Auth — MFA and password recovery (e2e)', () => {
       .post('/auth/switch-role')
       .send({ role: 'patient' })
     expect(switchRes.status).toBe(201)
+    expect(switchRes.body).toHaveProperty('readableFont', false)
     expect(switchRes.body).not.toHaveProperty('mfaSecret')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenHash')
     expect(switchRes.body).not.toHaveProperty('passwordResetTokenExpiresAt')

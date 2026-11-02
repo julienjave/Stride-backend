@@ -62,7 +62,9 @@ export class SessionSerializer extends PassportSerializer {
     done: (err: Error | null, user?: unknown) => void,
   ) {
     try {
-      const user = await this.usersService.findOne(sessionData.id)
+      // findSelf, not findOne: req.user IS the person asking, so it carries
+      // the settings only they may read (UsersService.toSelf()).
+      const user = await this.usersService.findSelf(sessionData.id)
       if (!user.isActive) {
         return done(null, false)
       }

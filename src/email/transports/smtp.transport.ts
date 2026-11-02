@@ -63,6 +63,17 @@ export class SmtpTransport implements EmailTransport {
         subject: email.subject,
         html: email.html,
         text: email.text,
+        // Inline images (the logo — decisions §41): an attachment WITH a
+        // `cid` is what nodemailer sends as an inline part, wrapping the HTML
+        // and its images in a multipart/related section so the HTML's
+        // `cid:` references resolve within the message. Without `cid` it
+        // would be an ordinary attachment, listed under the email.
+        attachments: (email.inlineImages ?? []).map((image) => ({
+          cid: image.contentId,
+          filename: image.filename,
+          contentType: image.contentType,
+          content: image.content,
+        })),
       })
       // messageId: the Message-ID header the message was sent with — the
       // same id the receiving server and Mailpit show, so a log line can be

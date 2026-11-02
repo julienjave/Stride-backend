@@ -1081,6 +1081,36 @@ describe('Users (e2e)', () => {
       expect(login.status).toBe(201)
       expect(login.body.readableFont).toBe(true)
     })
+
+    // Decisions §41: the setting is the person's own. patient2's is ON by
+    // now (the test above), so a leak would show a real value. Every answer
+    // ABOUT patient2 to someone else — one user, the list, an admin's edit —
+    // must leave it out; patient2's own answers keep it (above).
+    it('never shows the setting to anyone else', async () => {
+      const one = await admin.get(`/users/${patient2Id}`)
+      expect(one.status).toBe(200)
+      expect(one.body).not.toHaveProperty('readableFont')
+
+      // The whole list (GET /users answers an array of every account).
+      const list = await admin.get('/users')
+      expect(list.status).toBe(200)
+      const row = (list.body as Record<string, unknown>[]).find(
+        (u) => u.id === patient2Id,
+      )
+      expect(row).toBeDefined()
+      expect(row).not.toHaveProperty('readableFont')
+
+      // An admin's edit answers with the public shape. The same first name
+      // is sent back, so nothing about patient2 actually changes.
+      const edit = await admin
+        .patch(`/users/${patient2Id}`)
+        .send({ firstName: one.body.firstName as string })
+      expect(edit.status).toBe(200)
+      expect(edit.body).not.toHaveProperty('readableFont')
+
+      // …and the owner still has it.
+      expect((await patient2.get('/auth/me')).body.readableFont).toBe(true)
+    })
   })
 
   // Avatars (POST/DELETE /users/:id/avatar). These go all the way to the

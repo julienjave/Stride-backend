@@ -26,6 +26,26 @@
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
+// An image that travels INSIDE the email (branded emails, decisions §41 —
+// the logo). The HTML points at it with `<img src="cid:<contentId>">`: "cid"
+// is the MIME standard's Content-ID, the name a part of the same message is
+// known by. So the email app shows it from the message itself — no remote
+// fetch, so nothing to block behind "load images", and no request that would
+// tell a server when the email was opened.
+//
+// Not a vendor's shape: each transport translates it into its own (nodemailer
+// calls the id `cid`, Resend calls it `contentId`), the same way they
+// translate the rest of OutgoingEmail.
+export interface InlineImage {
+  // The name the HTML refers to: `cid:stride-logo-light`. Unique within one
+  // email.
+  contentId: string
+  // Shown if an app lists the part as an attachment after all.
+  filename: string
+  contentType: 'image/png'
+  content: Buffer
+}
+
 // A fully built email, ready to hand over. Both an HTML and a plain-text
 // body: mail clients that can't (or are set not to) render HTML show the
 // text part, spam filters treat HTML-only mail as more suspicious, and the
@@ -36,6 +56,11 @@ export interface OutgoingEmail {
   subject: string
   html: string
   text: string
+  // The images the HTML shows by `cid:`. Optional: an email with none is
+  // still an email (the transports' own specs send plain ones), and a
+  // transport that can't carry them (the console one) simply ignores them —
+  // the text part has no images anyway.
+  inlineImages?: readonly InlineImage[]
 }
 
 // Resolves once the email has been accepted for delivery; REJECTS if it

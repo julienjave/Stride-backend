@@ -50,6 +50,19 @@ function fakeToPublic(user: {
   })
 }
 
+// A stand-in for UsersService.toSelf() (decisions §41): fakeToPublic() — so
+// the private fields are still really stripped — plus the owner-only
+// setting put back. Login and registering a clinic answer about the person
+// asking, so they go through toSelf(); if either fell back to toPublic(),
+// readableFont would vanish from the answer and the test below would fail.
+async function fakeToSelf(user: {
+  avatarPath?: string | null
+  readableFont?: unknown
+  [field: string]: unknown
+}) {
+  return { ...(await fakeToPublic(user)), readableFont: user.readableFont }
+}
+
 // AuditService since the audit review (slice 1b): a change of data writes its
 // entry through logInTransaction, in the change's own transaction; the
 // sign-in events (which change no data) through log(), awaited.
@@ -66,7 +79,7 @@ describe('AuthService.validateUser', () => {
     findByEmailWithHash: jest.Mock
     getRolesForUser: jest.Mock
     attachProfile: jest.Mock
-    toPublic: jest.Mock
+    toSelf: jest.Mock
   }
   let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
@@ -79,7 +92,7 @@ describe('AuthService.validateUser', () => {
       // tests in this block don't care; the dedicated test below overrides
       // this to assert the real behavior.
       attachProfile: jest.fn().mockImplementation((user: unknown) => user),
-      toPublic: jest.fn().mockImplementation(fakeToPublic),
+      toSelf: jest.fn().mockImplementation(fakeToSelf),
     }
     // AuthService now calls auditService.log() from inside validateUser()
     // itself (LOGIN_SUCCESS/LOGIN_FAILURE) — this mock needs a real, callable
@@ -242,6 +255,27 @@ describe('AuthService.validateUser', () => {
     )
   })
 
+  // Decisions §41: the font setting is the owner's only — and a login's
+  // answer IS the owner, so it keeps it (the frontend applies it before the
+  // first screen draws).
+  it("answers with the person's own font setting", async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'jane@example.com',
+      passwordHash: await bcrypt.hash('password123', 10),
+      isActive: true,
+      readableFont: true,
+    })
+    usersService.getRolesForUser.mockResolvedValue(['practitioner'])
+
+    const result = await authService.validateUser(
+      'jane@example.com',
+      'password123',
+    )
+
+    expect(result?.readableFont).toBe(true)
+  })
+
   // Regression coverage for the actual gap this fix closes: validateUser()
   // (POST /auth/login) builds its own response by hand rather than going
   // through UsersService.findOne()/create(), so it needed its own explicit
@@ -303,7 +337,7 @@ describe('AuthService.registerClinic', () => {
     }
     transaction: jest.Mock
   }
-  let usersService: { attachProfile: jest.Mock; toPublic: jest.Mock }
+  let usersService: { attachProfile: jest.Mock; toSelf: jest.Mock }
   let auditService: { log: jest.Mock; logInTransaction: jest.Mock }
 
   beforeEach(async () => {
@@ -325,7 +359,7 @@ describe('AuthService.registerClinic', () => {
     // overrides it to assert the real behavior and the tx it's called with.
     usersService = {
       attachProfile: jest.fn().mockImplementation((user: unknown) => user),
-      toPublic: jest.fn().mockImplementation(fakeToPublic),
+      toSelf: jest.fn().mockImplementation(fakeToSelf),
     }
     auditService = auditStub()
 

@@ -4,7 +4,7 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": ["records-export/fonts/*"],
+    "assets": ["records-export/fonts/*", "email/images/*"],
     "watchAssets": true,
     "plugins": ["@nestjs/swagger"]
   }

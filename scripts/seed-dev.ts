@@ -233,7 +233,7 @@ async function run(): Promise<void> {
       key: AccountKey,
       activeRole: UserRole,
     ): Promise<CurrentUser> => ({
-      ...(await users.findOne(idOf(key))),
+      ...(await users.findSelf(idOf(key))),
       activeRole,
     })
 

@@ -184,7 +184,9 @@ export class AuthService {
         // every time a private column is added; this file used to keep
         // exactly such a copy, and it's how avatarPath would have leaked
         // raw from this route once toPublic() started converting it.
-        const publicUser = await this.usersService.toPublic(user)
+        // toSelf (toPublic + the owner's own settings): this answer is the
+        // new admin's own account, signed in by the controller.
+        const publicUser = await this.usersService.toSelf(user)
         const roles = [UserRole.ADMIN]
         // adminProfiles.position was inserted two statements above, inside
         // this same still-open transaction — attachProfile needs tx, not
@@ -342,7 +344,10 @@ export class AuthService {
     // (This used to be a hand-copied strip list, which once fell behind
     // toPublic() — passwordResetTokenHash/ExpiresAt leaked from login for
     // a while. Sharing the one function removes that whole class of bug.)
-    const publicUser = await this.usersService.toPublic(user)
+    // toSelf: the answer to a login is the person's own account — with the
+    // settings only they may read (the font, applied before the first
+    // screen draws).
+    const publicUser = await this.usersService.toSelf(user)
     const withProfile = await this.usersService.attachProfile(publicUser, roles)
     return { ...withProfile, roles, activeRole }
   }
