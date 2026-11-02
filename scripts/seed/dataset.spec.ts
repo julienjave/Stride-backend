@@ -45,6 +45,7 @@ import {
   normaliseRecoveryCode,
   RECOVERY_CODE_COUNT,
 } from '../../src/mfa/recovery-codes'
+import { DEMO_CARD_ACCOUNTS } from '../../src/demo/demo-accounts'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -880,4 +881,37 @@ describe('the seeded range of motion', () => {
     })
     expect(amended.size).toBe(1)
   })
+})
+
+// The demo's sign-in card (decisions §46) lists four accounts by address and
+// role, and a "Use" button signs straight in with the shared password. So
+// each must be SEEDED, with exactly that one role (a second role would make
+// the sign-in ask which — Morgan is left off the card for that reason), with
+// a password (the founder, or an accepted invitation), active, and with
+// two-factor on exactly when the card says so.
+describe('the demo card accounts', () => {
+  const roleOf = (account: (typeof ACCOUNTS)[number]) =>
+    account.kind === 'founder'
+      ? ['admin']
+      : account.kind === 'practitioner'
+        ? account.alsoAdmin
+          ? ['practitioner', 'admin']
+          : ['practitioner']
+        : ['patient']
+
+  it.each(DEMO_CARD_ACCOUNTS.map((card) => [card.email, card]))(
+    '%s is seeded as the card says, ready to sign in',
+    (_email, card) => {
+      const seeded = ACCOUNTS.find((account) => account.email === card.email)
+      expect(seeded).toBeDefined()
+      expect(roleOf(seeded!)).toEqual([card.role])
+      if (seeded!.kind !== 'founder') {
+        expect(seeded!.invitation).toBe('accepted')
+      }
+      expect(seeded!.kind === 'patient' && seeded!.deactivated).toBeFalsy()
+      expect(seeded!.kind === 'patient' && seeded!.twoFactor === true).toBe(
+        card.twoFactor,
+      )
+    },
+  )
 })

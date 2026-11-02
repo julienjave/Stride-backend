@@ -40,6 +40,7 @@ import {
 } from './email-change.service'
 import { RequestEmailChangeDto } from './dto/request-email-change.dto'
 import { EmailChangeTokenDto } from './dto/email-change-token.dto'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -74,6 +75,8 @@ export class EmailChangeController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('email')
   @Post()
   async request(
     @CurrentUser() user: CurrentUser,

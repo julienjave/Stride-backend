@@ -50,6 +50,14 @@ function paragraph(text: string): RecordBlock {
   return { kind: 'paragraph', text, muted: false }
 }
 
+// The time limit of the tests that render a WHOLE PDF once per page height
+// (21 renders each, ~150 ms a render — pdfkit embedding the fonts' glyphs).
+// Alone they take ~4.5 s, against Jest's default of 5 s per test: on a busy
+// machine, with the other spec files running in parallel workers, one went
+// over (2026-11-02). They are slow on purpose — every height a page can be
+// filled to — so they get a limit of their own, not fewer heights.
+const EVERY_HEIGHT_TIMEOUT_MS = 30_000
+
 describe('renderRecordPdf', () => {
   it('makes a PDF titled for a reader', async () => {
     const pdf = await renderRecordPdf(documentOf([]))
@@ -325,6 +333,7 @@ describe('renderRecordPdf', () => {
         expect([filler, page?.includes('Outcome: ')]).toEqual([filler, true])
       }
     },
+    EVERY_HEIGHT_TIMEOUT_MS,
   )
 
   // --- Emoji: the fallback font (font-runs.ts) ---
@@ -447,23 +456,27 @@ describe('renderRecordPdf', () => {
   // An item's dot is drawn before its text: without room for the first
   // line, the dot would stay at the foot of a page and the text start the
   // next. Tried at every height, as for the headings.
-  it('keeps a list item’s dot on its text’s page', async () => {
-    for (let filler = 25; filler <= 45; filler++) {
-      const pdf = await render([
-        ...Array.from({ length: filler }, (_, i) => paragraph(`Line ${i}`)),
-        { kind: 'list', items: ['The item'] },
-      ])
-      const page = pdfPages(pdf).findIndex((texts) =>
-        texts.includes('The item'),
-      )
-      const dots = pdfFilledShapes(pdf)
-      expect([filler, dots[page], dots.reduce((a, b) => a + b, 0)]).toEqual([
-        filler,
-        1,
-        1,
-      ])
-    }
-  })
+  it(
+    'keeps a list item’s dot on its text’s page',
+    async () => {
+      for (let filler = 25; filler <= 45; filler++) {
+        const pdf = await render([
+          ...Array.from({ length: filler }, (_, i) => paragraph(`Line ${i}`)),
+          { kind: 'list', items: ['The item'] },
+        ])
+        const page = pdfPages(pdf).findIndex((texts) =>
+          texts.includes('The item'),
+        )
+        const dots = pdfFilledShapes(pdf)
+        expect([filler, dots[page], dots.reduce((a, b) => a + b, 0)]).toEqual([
+          filler,
+          1,
+          1,
+        ])
+      }
+    },
+    EVERY_HEIGHT_TIMEOUT_MS,
+  )
 
   // One line, whatever its length: a long name runs past the margin rather
   // than wrapping into the page's edge.

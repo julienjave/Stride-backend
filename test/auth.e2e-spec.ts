@@ -126,7 +126,8 @@ describe('Auth (e2e)', () => {
     // "after" half is a test below.
     const before = await request(app.getHttpServer()).get('/auth/setup-status')
     expect(before.status).toBe(200)
-    expect(before.body).toEqual({ setupComplete: false })
+    // `demo: null`: DEMO_MODE is absent here — off, the default (§46).
+    expect(before.body).toEqual({ setupComplete: false, demo: null })
 
     adminAgent = admin()
     const stamp = Date.now()
@@ -212,7 +213,7 @@ describe('Auth (e2e)', () => {
     const res = await request(app.getHttpServer()).get('/auth/setup-status')
 
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ setupComplete: true })
+    expect(res.body).toEqual({ setupComplete: true, demo: null })
   })
 
   // registerClinic()'s clinicAddressLine1 (and friends) are fields on the

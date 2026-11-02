@@ -34,6 +34,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { PasswordChangeService } from './password-change.service'
 import { ChangePasswordDto } from './dto/change-password.dto'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -55,6 +56,8 @@ export class PasswordChangeController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('password')
   @Post()
   @HttpCode(HttpStatus.NO_CONTENT)
   async change(

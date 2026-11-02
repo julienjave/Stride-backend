@@ -17,6 +17,7 @@
 
 import { getEmailTransportKind } from '../email/email-transport.config'
 import { rateLimitsEnabled } from './rate-limits'
+import { demoModeEnabled, demoTexts } from './demo-mode'
 import { errorReportingConfig } from '../observability/error-reporting-config'
 
 // Called as the very first thing bootstrap() does, before NestFactory.create()
@@ -67,6 +68,10 @@ export function validateEnv(): void {
   // would otherwise lose every report without a word. (Unset = reporting
   // off: fine.)
   errorReportingConfig()
+  // Demo mode (decisions §46): the switch and its two texts, refused at start
+  // when malformed rather than on the first sign-in page that reads them.
+  demoModeEnabled()
+  demoTexts()
 
   // Same reasoning, applied to MFA secret encryption — validated for both
   // presence AND correct shape (64 hex characters = 32 bytes = AES-256's

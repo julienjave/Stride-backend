@@ -135,31 +135,15 @@ export type SeedAccount = FounderAccount | PractitionerAccount | PatientAccount
 
 // --- CONSTANTS ---------------------------------------------------------------------------------------------
 
-// One password for every account that has one. Published on purpose: this
-// is demo data for reviewers, never real accounts.
-export const DEMO_PASSWORD = 'password123'
-
-// The two-factor account's authenticator key and recovery codes — published
-// for the same reason (docs/dev-test-accounts.md): a reviewer adds the key
-// to an authenticator app by hand, or signs in with a code from the list.
-// The app itself never makes a key or a code like these (it draws them at
-// random); the seed puts them in place after turning two-factor on the real
-// way. Base32 (A–Z, 2–7), 32 symbols = 160 bits, the size the app draws.
-export const DEMO_MFA_SECRET = 'STRIDEDEMOTWOFACTORSTRIDEDEMOTWO'
-// The app's shape (src/mfa/recovery-codes.ts): 10 codes, 5 + 5 symbols of
-// its alphabet (no 0 / o, 1 / l / i). Easy to type, on purpose.
-export const DEMO_RECOVERY_CODES = [
-  'strde-22222',
-  'strde-33333',
-  'strde-44444',
-  'strde-55555',
-  'strde-66666',
-  'strde-77777',
-  'strde-88888',
-  'strde-99999',
-  'strde-aaaaa',
-  'strde-bbbbb',
-]
+// The published demo data — the shared password, the two-factor key and
+// recovery codes — lives in src/demo/demo-accounts.ts since 2026-11-02 (the
+// running app's demo card publishes them too: decisions §46). Re-exported
+// here so the seed and its spec keep importing them from the dataset.
+export {
+  DEMO_MFA_SECRET,
+  DEMO_PASSWORD,
+  DEMO_RECOVERY_CODES,
+} from '../../src/demo/demo-accounts'
 
 export const CLINICS: SeedClinic[] = [
   {

@@ -47,6 +47,7 @@ import {
   type PatientMergeAnswer,
   type PatientMergeRecord,
 } from './patient-merges.service'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -65,6 +66,8 @@ export class PatientMergesController {
   // "signed out after 5 failures in a row".
   @AuditedByService()
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('merge', 'param')
   @Post(':id/merge')
   @HttpCode(HttpStatus.OK)
   merge(

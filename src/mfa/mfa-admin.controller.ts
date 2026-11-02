@@ -39,6 +39,7 @@ import { AuditedByService } from '../common/decorators/audited-by-service.decora
 import { UserRole } from '../users/dto/create-user.dto'
 import { MfaService } from './mfa.service'
 import { ResetMfaDto } from './dto/reset-mfa.dto'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -59,6 +60,8 @@ export class MfaAdminController {
   @Roles(UserRole.ADMIN)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('two_factor', 'param')
   @Post(':id/mfa/reset')
   @HttpCode(HttpStatus.NO_CONTENT)
   async reset(

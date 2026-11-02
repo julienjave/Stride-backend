@@ -36,6 +36,9 @@ describe('validateEnv — error reporting', () => {
     }
     delete process.env.SENTRY_DSN
     delete process.env.SENTRY_BROWSER_DSN
+    delete process.env.DEMO_MODE
+    delete process.env.DEMO_RESET_SCHEDULE
+    delete process.env.DEMO_GUIDE_URL
   })
   afterAll(() => {
     process.env = saved
@@ -52,5 +55,48 @@ describe('validateEnv — error reporting', () => {
     expect(() => validateEnv()).toThrow(
       new Error("SENTRY_BROWSER_DSN must end with the project's numeric id"),
     )
+  })
+})
+
+// Demo mode (decisions §46): a malformed switch or text stops the app at
+// start, naming the setting — not the first sign-in page that reads it.
+describe('validateEnv — demo mode', () => {
+  const saved = { ...process.env }
+  beforeEach(() => {
+    process.env = {
+      ...saved,
+      SESSION_SECRET: 'a'.repeat(64),
+      MFA_ENCRYPTION_KEY: 'b'.repeat(64),
+      POSTGRES_APP_USER: 'stride_app',
+      POSTGRES_APP_PASSWORD: 'x',
+      EMAIL_TRANSPORT: 'log',
+      NODE_ENV: 'test',
+      RATE_LIMITS: 'on',
+    }
+    delete process.env.SENTRY_DSN
+    delete process.env.SENTRY_BROWSER_DSN
+    delete process.env.DEMO_MODE
+    delete process.env.DEMO_RESET_SCHEDULE
+    delete process.env.DEMO_GUIDE_URL
+  })
+  afterAll(() => {
+    process.env = saved
+  })
+
+  it('passes with demo mode absent, or on with valid texts', () => {
+    expect(() => validateEnv()).not.toThrow()
+    process.env.DEMO_MODE = 'on'
+    process.env.DEMO_GUIDE_URL = 'https://example.com/guide'
+    expect(() => validateEnv()).not.toThrow()
+  })
+
+  it('refuses a malformed switch at boot', () => {
+    process.env.DEMO_MODE = 'true'
+    expect(() => validateEnv()).toThrow(/DEMO_MODE must be one of: on, off/)
+  })
+
+  it('refuses a guide address that is not https at boot', () => {
+    process.env.DEMO_GUIDE_URL = 'javascript:alert(1)'
+    expect(() => validateEnv()).toThrow(/DEMO_GUIDE_URL must be an https/)
   })
 })

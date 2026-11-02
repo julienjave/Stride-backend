@@ -46,6 +46,7 @@ import { Roles } from '../common/decorators/roles.decorator'
 import { CurrentUser } from '../common/decorators/current-user.decorator'
 import { AuditedByService } from '../common/decorators/audited-by-service.decorator'
 import { imageUploadOptions } from '../common/config/image-upload.config'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -211,6 +212,8 @@ export class UsersController {
   // Self (any role deactivating their own account), a practitioner
   // deactivating one of their own patients, or an admin acting on anyone.
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('deactivate', 'param')
   @Delete(':id')
   async remove(
     @Param('id', ParseIntPipe) id: number,

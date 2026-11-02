@@ -38,6 +38,7 @@ import { SetupMfaDto } from './dto/setup-mfa.dto'
 import { EnableMfaDto } from './dto/enable-mfa.dto'
 import { DisableMfaDto } from './dto/disable-mfa.dto'
 import { RegenerateRecoveryCodesDto } from './dto/regenerate-recovery-codes.dto'
+import { DemoLocked } from '../demo/demo-lock.guard'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -62,6 +63,8 @@ export class MfaController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('two_factor')
   @Post('setup')
   setup(
     @CurrentUser() user: CurrentUser,
@@ -77,6 +80,8 @@ export class MfaController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('two_factor')
   @Post('enable')
   @HttpCode(HttpStatus.OK)
   enable(
@@ -90,6 +95,8 @@ export class MfaController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('two_factor')
   @Post('disable')
   @HttpCode(HttpStatus.NO_CONTENT)
   async disable(
@@ -119,6 +126,8 @@ export class MfaController {
   @UseGuards(SessionAuthGuard)
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @AuditedByService()
+  // The demo's shared accounts are refused (decisions §46).
+  @DemoLocked('two_factor')
   @Post('recovery-codes')
   regenerateRecoveryCodes(
     @CurrentUser() user: CurrentUser,

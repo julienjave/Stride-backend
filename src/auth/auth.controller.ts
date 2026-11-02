@@ -49,6 +49,7 @@ import { MfaCodeDto } from './dto/mfa-code.dto'
 import { AuditService } from '../audit/audit.service'
 import { MessagingEvents } from '../messaging/messaging-events'
 import { MfaService } from '../mfa/mfa.service'
+import { demoInfo, type DemoInfo } from '../demo/demo-info'
 
 // --- CONTROLLER --------------------------------------------------------------------------------------------
 
@@ -307,9 +308,20 @@ export class AuthController {
   // one bit — whether Stride has been set up — which POST
   // /auth/register-clinic already reveals to anyone (it answers 403 once it
   // has). One small read; the global rate limit is enough.
+  //
+  // `demo` (decisions §46): the sign-in page's "For reviewers" card — the
+  // shared accounts and their password — in demo mode only, `null` otherwise.
+  // It rides on this route because the sign-in page already reads it before
+  // anyone is signed in. Those values are public on purpose (demo-accounts.ts).
   @Get('setup-status')
-  async setupStatus(): Promise<{ setupComplete: boolean }> {
-    return { setupComplete: await this.authService.isSetupComplete() }
+  async setupStatus(): Promise<{
+    setupComplete: boolean
+    demo: DemoInfo | null
+  }> {
+    return {
+      setupComplete: await this.authService.isSetupComplete(),
+      demo: demoInfo(),
+    }
   }
 
   // == Current user ==
