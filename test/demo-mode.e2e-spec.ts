@@ -42,7 +42,8 @@ describe('Demo mode (e2e)', () => {
 
   const before = {
     mode: process.env.DEMO_MODE,
-    schedule: process.env.DEMO_RESET_SCHEDULE,
+    resetTime: process.env.DEMO_RESET_TIME,
+    resetZone: process.env.DEMO_RESET_TIME_ZONE,
     guide: process.env.DEMO_GUIDE_URL,
   }
   function restore(name: string, value: string | undefined) {
@@ -165,7 +166,8 @@ describe('Demo mode (e2e)', () => {
 
   afterAll(async () => {
     restore('DEMO_MODE', before.mode)
-    restore('DEMO_RESET_SCHEDULE', before.schedule)
+    restore('DEMO_RESET_TIME', before.resetTime)
+    restore('DEMO_RESET_TIME_ZONE', before.resetZone)
     restore('DEMO_GUIDE_URL', before.guide)
     await app.close()
     await sessionPool.end()
@@ -173,7 +175,8 @@ describe('Demo mode (e2e)', () => {
 
   describe('the card, on GET /auth/setup-status', () => {
     it('lists the shared accounts, their password, the two-factor key and the texts — to a visitor without a session', async () => {
-      process.env.DEMO_RESET_SCHEDULE = 'every night at 03:00, Paris time'
+      process.env.DEMO_RESET_TIME = '04:00'
+      process.env.DEMO_RESET_TIME_ZONE = 'America/Toronto'
       process.env.DEMO_GUIDE_URL = 'https://example.com/guide'
       const res = await request(app.getHttpServer()).get('/auth/setup-status')
 
@@ -184,7 +187,7 @@ describe('Demo mode (e2e)', () => {
           accounts: DEMO_CARD_ACCOUNTS,
           password: DEMO_PASSWORD,
           twoFactorKey: DEMO_MFA_SECRET,
-          resetSchedule: 'every night at 03:00, Paris time',
+          reset: { time: '04:00', timeZone: 'America/Toronto' },
           guideUrl: 'https://example.com/guide',
         },
       })

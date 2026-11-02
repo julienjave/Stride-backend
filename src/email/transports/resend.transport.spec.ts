@@ -21,7 +21,8 @@ import { ResendTransport, type ResendEmailsClient } from './resend.transport'
 
 const email: OutgoingEmail = {
   from: 'Stride <noreply@stride.test>',
-  to: 'someone@example.com',
+  // Not @example.com: a reserved domain is refused before Resend (below).
+  to: 'someone@clinic.org',
   subject: 'Hello',
   html: '<p>Hello</p>',
   text: 'Hello',
@@ -126,6 +127,22 @@ describe('ResendTransport', () => {
         'Resend rejected the email: validation_error — Invalid `to` field.',
       ),
     )
+  })
+
+  // Decisions §46: an address that can never receive mail would only bounce,
+  // and bounces hurt the sending domain. Refused before any request.
+  it.each([
+    'pat@stride.test',
+    'someone@example.com',
+    'a@mail.example.org',
+    'x@host.invalid',
+  ])('refuses %s without asking Resend', async (to) => {
+    const { client, send } = stubClient({ data: { id: 'em_1' }, error: null })
+
+    await expect(
+      new ResendTransport(client).send({ ...email, to }),
+    ).rejects.toThrow(/reserved for examples and tests/)
+    expect(send).not.toHaveBeenCalled()
   })
 
   it('lets a network-level failure reject unchanged', async () => {

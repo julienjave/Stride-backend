@@ -1,0 +1,20 @@
+# Every night at 04:00 Eastern time (decisions §46): the reviewers are in
+# North America, and 4 a.m. Eastern is the quietest hour across it — 1–2 a.m.
+# in Vancouver, 5:30 a.m. in St. John's (10:00 in Paris). .env must say the
+# same: DEMO_RESET_TIME=04:00 and DEMO_RESET_TIME_ZONE=America/Toronto — the
+# sign-in page shows that time in each reviewer's own zone.
+#
+# Why a systemd timer and not a crontab line: the droplet's clock is UTC, and
+# the classic cron on Ubuntu has no time zone per line, so "04:00 Eastern"
+# would move by an hour twice a year. systemd reads the zone written in
+# OnCalendar and follows its clock changes.
+[Unit]
+Description=Stride demo: reset the demo data every night
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 America/Toronto
+# A night missed (the droplet was off at 04:00): run once when it is back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

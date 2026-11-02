@@ -56,6 +56,19 @@ describe('SeedEmailTransport', () => {
     expect(transport.captured).toHaveLength(0)
   })
 
+  // The reviewers' demo (production): nothing reaches the real transport —
+  // Resend there, and @stride.test can't receive mail.
+  it('keeps the email in deliver mode when told not to deliver for real', async () => {
+    const kept = new SeedEmailTransport(real, false)
+    kept.mode = 'deliver'
+    const email = invitation('new.patient@stride.test')
+
+    await kept.send(email)
+
+    expect(real.send).not.toHaveBeenCalled()
+    expect(kept.captured).toEqual([email])
+  })
+
   it('rejects in fail mode, like an unreachable mail server', async () => {
     transport.mode = 'fail'
 

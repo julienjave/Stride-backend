@@ -95,6 +95,7 @@ import {
   type SeedAccount,
 } from './seed/dataset'
 import { refuseSeed } from './seed/safety'
+import { demoModeEnabled } from '../src/config/demo-mode'
 import { resetDatabase } from './seed/reset'
 import {
   SeedEmailTransport,
@@ -155,8 +156,13 @@ async function run(): Promise<void> {
   const reset = args.includes('--reset')
 
   // The configured transport (Mailpit with EMAIL_TRANSPORT=smtp), wrapped
-  // so the seed decides, account by account, what really gets sent.
-  const email = new SeedEmailTransport(createEmailTransport())
+  // so the seed decides, account by account, what really gets sent. In
+  // production — only ever the reviewers' demo (refuseSeed) — nothing is:
+  // every seeded address is @stride.test (decisions §46).
+  const email = new SeedEmailTransport(
+    createEmailTransport(),
+    process.env.NODE_ENV !== 'production',
+  )
 
   // The whole app, without an HTTP server. Nest's TESTING module rather
   // than NestFactory, for one feature: overrideProvider — swapping what's
@@ -188,6 +194,7 @@ async function run(): Promise<void> {
       database,
       existingUsers,
       reset,
+      demoMode: demoModeEnabled(),
     })
     if (refusal) {
       console.error(refusal)

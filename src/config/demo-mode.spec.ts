@@ -54,15 +54,16 @@ describe('demoModeEnabled', () => {
 })
 
 describe('demoTexts', () => {
-  it('reads both texts, trimmed', () => {
+  it('reads the reset time and zone and the guide, trimmed', () => {
     expect(
       demoTexts({
-        DEMO_RESET_SCHEDULE: '  every night at 03:00, Paris time ',
+        DEMO_RESET_TIME: ' 04:00 ',
+        DEMO_RESET_TIME_ZONE: ' America/Toronto',
         DEMO_GUIDE_URL:
           ' https://github.com/x/stride/blob/main/docs/dev-test-accounts.md',
       }),
     ).toEqual({
-      resetSchedule: 'every night at 03:00, Paris time',
+      reset: { time: '04:00', timeZone: 'America/Toronto' },
       guideUrl:
         'https://github.com/x/stride/blob/main/docs/dev-test-accounts.md',
     })
@@ -70,20 +71,57 @@ describe('demoTexts', () => {
 
   // A line left as `DEMO_GUIDE_URL=` in .env means "none".
   it('reads absent or empty values as none', () => {
-    expect(demoTexts({})).toEqual({ resetSchedule: null, guideUrl: null })
+    expect(demoTexts({})).toEqual({ reset: null, guideUrl: null })
     expect(
-      demoTexts({ DEMO_RESET_SCHEDULE: '  ', DEMO_GUIDE_URL: '' }),
-    ).toEqual({ resetSchedule: null, guideUrl: null })
+      demoTexts({
+        DEMO_RESET_TIME: '  ',
+        DEMO_RESET_TIME_ZONE: '',
+        DEMO_GUIDE_URL: '',
+      }),
+    ).toEqual({ reset: null, guideUrl: null })
   })
 
-  it('takes a schedule of 120 characters and refuses 121', () => {
-    expect(
-      demoTexts({ DEMO_RESET_SCHEDULE: 'a'.repeat(120) }).resetSchedule,
-    ).toHaveLength(120)
-    expect(() => demoTexts({ DEMO_RESET_SCHEDULE: 'a'.repeat(121) })).toThrow(
-      /DEMO_RESET_SCHEDULE must be at most 120 characters/,
+  // A time with no zone can't be placed on anyone's clock — nor a zone alone.
+  it.each([
+    { DEMO_RESET_TIME: '04:00' },
+    { DEMO_RESET_TIME_ZONE: 'America/Toronto' },
+  ])('refuses one of the pair without the other: %j', (env) => {
+    expect(() => demoTexts(env)).toThrow(
+      'DEMO_RESET_TIME and DEMO_RESET_TIME_ZONE go together',
     )
   })
+
+  it.each(['00:00', '04:00', '09:30', '23:59'])(
+    'takes the 24-hour time %s',
+    (time) => {
+      expect(
+        demoTexts({ DEMO_RESET_TIME: time, DEMO_RESET_TIME_ZONE: 'UTC' }).reset,
+      ).toEqual({ time, timeZone: 'UTC' })
+    },
+  )
+
+  it.each(['4:00', '24:00', '04:60', '4am', '04:00:00', '0400'])(
+    'refuses the time %j',
+    (time) => {
+      expect(() =>
+        demoTexts({ DEMO_RESET_TIME: time, DEMO_RESET_TIME_ZONE: 'UTC' }),
+      ).toThrow(
+        `DEMO_RESET_TIME must be a 24-hour time, HH:MM (e.g. 04:00) — got "${time}".`,
+      )
+    },
+  )
+
+  // An offset isn't a place: it can't follow the zone's clock changes.
+  it.each(['Eastern', 'America/Nowhere', '-05:00', 'EST5EDT x'])(
+    'refuses the zone %j',
+    (zone) => {
+      expect(() =>
+        demoTexts({ DEMO_RESET_TIME: '04:00', DEMO_RESET_TIME_ZONE: zone }),
+      ).toThrow(
+        `DEMO_RESET_TIME_ZONE must be an IANA time zone (e.g. America/Toronto) — got "${zone}".`,
+      )
+    },
+  )
 
   // The card turns the guide into a link: only https:// may get in — never a
   // `javascript:` address, nor plain http.
@@ -103,13 +141,17 @@ describe('demoInfo (the card, on GET /auth/setup-status)', () => {
   it('is null outside demo mode — nothing published', () => {
     expect(demoInfo({})).toBeNull()
     expect(
-      demoInfo({ DEMO_MODE: 'off', DEMO_RESET_SCHEDULE: 'nightly' }),
+      demoInfo({ DEMO_MODE: 'off', DEMO_GUIDE_URL: 'https://x.org' }),
     ).toBeNull()
   })
 
   it('in demo mode: the four accounts, the password, the two-factor key and the texts', () => {
     expect(
-      demoInfo({ DEMO_MODE: 'on', DEMO_RESET_SCHEDULE: 'nightly' }),
+      demoInfo({
+        DEMO_MODE: 'on',
+        DEMO_RESET_TIME: '04:00',
+        DEMO_RESET_TIME_ZONE: 'America/Toronto',
+      }),
     ).toEqual({
       accounts: [
         { email: 'admin@stride.test', role: 'admin', twoFactor: false },
@@ -119,7 +161,7 @@ describe('demoInfo (the card, on GET /auth/setup-status)', () => {
       ],
       password: DEMO_PASSWORD,
       twoFactorKey: DEMO_MFA_SECRET,
-      resetSchedule: 'nightly',
+      reset: { time: '04:00', timeZone: 'America/Toronto' },
       guideUrl: null,
     })
   })

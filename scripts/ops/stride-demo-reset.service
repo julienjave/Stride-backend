@@ -1,0 +1,14 @@
+# The reviewers' demo: one run of scripts/ops/demo-reset.sh (decisions §46).
+# Started by stride-demo-reset.timer. Install both files with
+# docs/demo-deployment.md. Change /opt/stride to where the repository is.
+[Unit]
+Description=Stride demo: reset the demo data
+Requires=docker.service
+After=docker.service
+
+[Service]
+# oneshot: the job runs to its end, then the unit is "inactive" until the
+# timer starts it again.
+Type=oneshot
+# Through `sh`, so the file needs no executable bit (Windows can't record one).
+ExecStart=/bin/sh /opt/stride/scripts/ops/demo-reset.sh

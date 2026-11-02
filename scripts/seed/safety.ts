@@ -26,14 +26,19 @@ export interface SeedTarget {
   existingUsers: number
   // Was --reset passed?
   reset: boolean
+  // DEMO_MODE=on (src/config/demo-mode.ts) — the reviewers' deployment.
+  demoMode: boolean
 }
 
 // null = go ahead; otherwise, why not (printed as is, then exit 1).
 export function refuseSeed(target: SeedTarget): string | null {
   // Demo accounts with a published password must never reach a real
-  // deployment — and --reset there would delete everyone.
-  if (target.nodeEnv === 'production') {
-    return 'Refusing to seed: NODE_ENV=production. The seed creates accounts with a published password, and --reset deletes every user.'
+  // deployment — and --reset there would delete everyone. ONE production is
+  // the exception (decisions §46): the reviewers' demo, which says so with
+  // DEMO_MODE=on — its nightly reset IS this script. A real clinic leaves
+  // DEMO_MODE unset (off), and stays refused.
+  if (target.nodeEnv === 'production' && !target.demoMode) {
+    return 'Refusing to seed: NODE_ENV=production without DEMO_MODE=on. The seed creates accounts with a published password, and --reset deletes every user — only the reviewers\' demo deployment may do that.'
   }
 
   // stride_test belongs to the e2e suites, which empty it at will; seeding

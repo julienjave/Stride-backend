@@ -36,18 +36,26 @@
 // the guard and the route on each request), so an e2e suite can switch it
 // for one file by setting process.env before its requests.
 //
-// Two optional texts for the card, set beside the droplet's cron and the
-// repository's address so each lives in one place:
-//   - DEMO_RESET_SCHEDULE: when the data is reset, in words ("every night at
-//     03:00, Paris time"). Free text, at most 120 characters.
+// Two optional settings for the card:
+//   - DEMO_RESET_TIME + DEMO_RESET_TIME_ZONE: when the data is reset, as a
+//     time of day (24-hour HH:MM) in an IANA zone — "04:00" in
+//     "America/Toronto" (decisions §46: the reviewers are in North America,
+//     4 a.m. Eastern is the quietest hour from St. John's to Vancouver). Sent
+//     as DATA, not words: the card converts it into each reviewer's own time
+//     ("every night at 1:00 AM your time"). Both or neither. The droplet's
+//     timer (scripts/ops/stride-demo-reset.timer) must say the same time and
+//     zone — docs/demo-deployment.md.
 //   - DEMO_GUIDE_URL: the reviewers' guide (docs/dev-test-accounts.md on
 //     GitHub, once the repositories are public). An https:// address — the
 //     card turns it into a link, so nothing else (a `javascript:` URL) may
 //     get in.
 
+import { isTimeZone } from '../common/validators/is-time-zone'
+
 export const DEMO_MODE_VALUES = ['on', 'off'] as const
 
-const RESET_SCHEDULE_MAX_LENGTH = 120
+// 24-hour clock, two digits each: 00:00 to 23:59.
+const RESET_TIME = /^([01]\d|2[0-3]):[0-5]\d$/
 
 export function demoModeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.DEMO_MODE ?? 'off'
@@ -59,27 +67,64 @@ export function demoModeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'on'
 }
 
+export interface DemoReset {
+  // "HH:MM", 24-hour, in `timeZone`.
+  time: string
+  // An IANA zone name ("America/Toronto").
+  timeZone: string
+}
+
 export interface DemoTexts {
-  resetSchedule: string | null
+  reset: DemoReset | null
   guideUrl: string | null
 }
 
-// The two texts, checked. An empty value counts as absent (a line left as
+// The two settings, checked. An empty value counts as absent (a line left as
 // `DEMO_GUIDE_URL=` in .env).
 export function demoTexts(env: NodeJS.ProcessEnv = process.env): DemoTexts {
-  const resetSchedule = env.DEMO_RESET_SCHEDULE?.trim() || null
-  if (resetSchedule && resetSchedule.length > RESET_SCHEDULE_MAX_LENGTH) {
+  return { reset: demoReset(env), guideUrl: demoGuideUrl(env) }
+}
+
+function demoReset(env: NodeJS.ProcessEnv): DemoReset | null {
+  const time = env.DEMO_RESET_TIME?.trim() || null
+  const timeZone = env.DEMO_RESET_TIME_ZONE?.trim() || null
+  if (time === null && timeZone === null) return null
+  // One without the other would be a time the card can't place.
+  if (time === null || timeZone === null) {
     throw new Error(
-      `DEMO_RESET_SCHEDULE must be at most ${RESET_SCHEDULE_MAX_LENGTH} characters — it is shown on the sign-in page.`,
+      'DEMO_RESET_TIME and DEMO_RESET_TIME_ZONE go together: set both (e.g. 04:00 and America/Toronto), or neither.',
     )
   }
+  if (!RESET_TIME.test(time)) {
+    throw new Error(
+      `DEMO_RESET_TIME must be a 24-hour time, HH:MM (e.g. 04:00) — got "${time}".`,
+    )
+  }
+  // The project's own check (is-time-zone.ts): what Intl can format in, and
+  // never a bare offset — an offset isn't a place, so it can't follow the
+  // zone's clock changes the way the timer does.
+  //
+  // The message quotes the setting as written (env.DEMO_RESET_TIME_ZONE), not
+  // `timeZone`: isTimeZone is a TYPE GUARD (`value is string`), so where it
+  // answers false TypeScript removes `string` from what `timeZone` can be —
+  // and a string minus string is `never`, which lint rightly refuses to put
+  // in a template.
+  if (!isTimeZone(timeZone)) {
+    throw new Error(
+      `DEMO_RESET_TIME_ZONE must be an IANA time zone (e.g. America/Toronto) — got "${env.DEMO_RESET_TIME_ZONE}".`,
+    )
+  }
+  return { time, timeZone }
+}
+
+function demoGuideUrl(env: NodeJS.ProcessEnv): string | null {
   const guideUrl = env.DEMO_GUIDE_URL?.trim() || null
   if (guideUrl && !isHttpsUrl(guideUrl)) {
     throw new Error(
       `DEMO_GUIDE_URL must be an https:// address — got "${guideUrl}".`,
     )
   }
-  return { resetSchedule, guideUrl }
+  return guideUrl
 }
 
 function isHttpsUrl(value: string): boolean {

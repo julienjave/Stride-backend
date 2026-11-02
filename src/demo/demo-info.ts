@@ -15,7 +15,7 @@
 */
 // -----------------------------------------------------------------------------------------------------------
 
-import { demoModeEnabled, demoTexts } from '../config/demo-mode'
+import { demoModeEnabled, demoTexts, type DemoReset } from '../config/demo-mode'
 import {
   DEMO_CARD_ACCOUNTS,
   DEMO_MFA_SECRET,
@@ -37,7 +37,9 @@ export interface DemoInfo {
   password: string
   // For the two-factor account: added to an authenticator app by hand.
   twoFactorKey: string
-  resetSchedule: string | null
+  // When the data is reset (a time in a zone); the card shows it in the
+  // reviewer's own time.
+  reset: DemoReset | null
   guideUrl: string | null
 }
 

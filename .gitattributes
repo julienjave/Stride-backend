@@ -1,1 +1,8 @@
-* text=auto eol=lf
+# Files that run on the Linux droplet must keep LF line endings, whatever the
+# machine they are committed from (decisions §46, pass 2): Git on Windows may
+# convert text files to CRLF in the working copy, and a shell script with CRLF
+# fails on Linux ("set: Illegal option -"), as do systemd unit files. `eol=lf`
+# makes Git write these with LF everywhere.
+*.sh      text eol=lf
+*.service text eol=lf
+*.timer   text eol=lf

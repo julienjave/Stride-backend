@@ -20,6 +20,7 @@
 import { Logger } from '@nestjs/common'
 import type { Resend } from 'resend'
 import type { EmailTransport, OutgoingEmail } from '../email-transport'
+import { hasReservedDomain } from '../reserved-domains'
 
 // --- TYPES -------------------------------------------------------------------------------------------------
 
@@ -42,6 +43,17 @@ export class ResendTransport implements EmailTransport {
   constructor(private readonly client: ResendEmailsClient) {}
 
   async send(email: OutgoingEmail): Promise<void> {
+    // An address that can never exist (reserved-domains.ts) is refused HERE,
+    // before Resend: it would only come back as a bounce, which counts
+    // against the sending domain (the reviewers' demo — decisions §46).
+    // Rejected like any failed send: an invitation then shows "couldn't be
+    // sent", which is the truth; a notice is logged and skipped, as always.
+    // Without the address (decisions §32): the caller logs the account's id.
+    if (hasReservedDomain(email.to)) {
+      throw new Error(
+        "Not sent: the address's domain is reserved for examples and tests (RFC 2606) and can never receive email",
+      )
+    }
     // Resend's SDK doesn't throw on an API-level failure (invalid
     // recipient, bad key, rate limit…) — it RESOLVES with `{ data: null,
     // error }`. Forgetting to check `error` would make every failed send

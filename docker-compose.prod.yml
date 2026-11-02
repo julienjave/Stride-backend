@@ -152,6 +152,39 @@ services:
     profiles: ["tools"]
     command: ["npx", "ts-node", "scripts/seed-exercises.ts"]
 
+  # The reviewers' demo only (DEMO_MODE=on in .env — decisions §46): rebuilds
+  # the demo accounts and their data, nightly and on every deploy. NEVER run
+  # it by hand while the app is up — run scripts/ops/demo-reset.sh, which
+  # stops the app first (no sockets left on deleted accounts, no
+  # new-message sweep meeting the reset) and always starts it again.
+  #
+  # Two steps, the second only if the first succeeded (`&&`):
+  #   1. seed-dev.ts --reset: deletes every row but the exercise library, in
+  #      ONE transaction (a failure leaves yesterday's data whole), then
+  #      creates the demo world. Refused unless DEMO_MODE=on (safety.ts).
+  #   2. storage-sweep.ts --delete: the files no row references any more —
+  #      avatars, photos of the accounts just deleted. Files younger than 24
+  #      hours are never touched, so today's go the night after.
+  # Same builder-stage shape as `seed` (ts-node and scripts/ live there).
+  demo-reset:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: stride-demo-reset
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - storage
+    profiles: ["tools"]
+    command:
+      [
+        "sh",
+        "-c",
+        "npx ts-node scripts/seed-dev.ts --reset && npx ts-node scripts/storage-sweep.ts --delete",
+      ]
+
   # === Error tracking (decisions §32) ===
   # GlitchTip (Sentry's protocol, self-hosted) and its OWN Postgres: Stride's
   # database never shares a server, settings or load with it. Nothing here

@@ -37,7 +37,8 @@ describe('validateEnv — error reporting', () => {
     delete process.env.SENTRY_DSN
     delete process.env.SENTRY_BROWSER_DSN
     delete process.env.DEMO_MODE
-    delete process.env.DEMO_RESET_SCHEDULE
+    delete process.env.DEMO_RESET_TIME
+    delete process.env.DEMO_RESET_TIME_ZONE
     delete process.env.DEMO_GUIDE_URL
   })
   afterAll(() => {
@@ -76,7 +77,8 @@ describe('validateEnv — demo mode', () => {
     delete process.env.SENTRY_DSN
     delete process.env.SENTRY_BROWSER_DSN
     delete process.env.DEMO_MODE
-    delete process.env.DEMO_RESET_SCHEDULE
+    delete process.env.DEMO_RESET_TIME
+    delete process.env.DEMO_RESET_TIME_ZONE
     delete process.env.DEMO_GUIDE_URL
   })
   afterAll(() => {
@@ -93,6 +95,11 @@ describe('validateEnv — demo mode', () => {
   it('refuses a malformed switch at boot', () => {
     process.env.DEMO_MODE = 'true'
     expect(() => validateEnv()).toThrow(/DEMO_MODE must be one of: on, off/)
+  })
+
+  it('refuses a reset time without its zone at boot', () => {
+    process.env.DEMO_RESET_TIME = '04:00'
+    expect(() => validateEnv()).toThrow(/go together/)
   })
 
   it('refuses a guide address that is not https at boot', () => {

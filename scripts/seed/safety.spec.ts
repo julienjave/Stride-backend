@@ -22,6 +22,7 @@ const devDatabase: SeedTarget = {
   database: 'stride',
   existingUsers: 0,
   reset: false,
+  demoMode: false,
 }
 
 describe('refuseSeed', () => {
@@ -50,12 +51,31 @@ describe('refuseSeed', () => {
   })
 
   // Even empty, even with --reset: the rule doesn't depend on the data.
-  it('refuses production, whatever else is true', () => {
+  it('refuses production without demo mode, whatever else is true', () => {
     expect(
       refuseSeed({ ...devDatabase, nodeEnv: 'production', reset: true }),
     ).toBe(
-      'Refusing to seed: NODE_ENV=production. The seed creates accounts with a published password, and --reset deletes every user.',
+      "Refusing to seed: NODE_ENV=production without DEMO_MODE=on. The seed creates accounts with a published password, and --reset deletes every user — only the reviewers' demo deployment may do that.",
     )
+  })
+
+  // The reviewers' demo (decisions §46): its nightly reset runs this seed in
+  // production — first install (empty) and every night after (--reset).
+  it('allows production in demo mode, empty or with --reset', () => {
+    const demo = { ...devDatabase, nodeEnv: 'production', demoMode: true }
+    expect(refuseSeed(demo)).toBeNull()
+    expect(refuseSeed({ ...demo, existingUsers: 40, reset: true })).toBeNull()
+  })
+
+  // Demo mode lifts the production rule ONLY: the other two still hold.
+  it('still refuses, in demo mode, a database with users without --reset, and a _test database', () => {
+    const demo = { ...devDatabase, nodeEnv: 'production', demoMode: true }
+    expect(refuseSeed({ ...demo, existingUsers: 3 })).toContain(
+      'already has 3 user(s)',
+    )
+    expect(
+      refuseSeed({ ...demo, database: 'stride_test', reset: true }),
+    ).toContain('belong to the e2e tests')
   })
 
   it('refuses any database ending in _test, even with --reset', () => {

@@ -33,6 +33,10 @@ import type {
 //             person would; for the app it was sent (email_sent_at is set).
 //   deliver — hand it to the REAL transport (Mailpit with
 //             EMAIL_TRANSPORT=smtp): the pending invitation a reviewer opens.
+//             Except in the reviewers' demo (production, decisions §46):
+//             there the real transport is Resend and the address is a
+//             @stride.test one that can't exist — the email is KEPT, as in
+//             capture (for the app it was sent; the invitation is pending).
 //   fail    — reject, like an unreachable mail server: produces the
 //             "couldn't be sent" state through the app's own code path.
 export type SeedEmailMode = 'capture' | 'deliver' | 'fail'
@@ -41,7 +45,11 @@ export class SeedEmailTransport implements EmailTransport {
   mode: SeedEmailMode = 'capture'
   readonly captured: OutgoingEmail[] = []
 
-  constructor(private readonly real: EmailTransport) {}
+  // `deliverForReal` false: 'deliver' keeps the email (the demo's reset).
+  constructor(
+    private readonly real: EmailTransport,
+    private readonly deliverForReal = true,
+  ) {}
 
   send(email: OutgoingEmail): Promise<void> {
     switch (this.mode) {
@@ -49,6 +57,10 @@ export class SeedEmailTransport implements EmailTransport {
         this.captured.push(email)
         return Promise.resolve()
       case 'deliver':
+        if (!this.deliverForReal) {
+          this.captured.push(email)
+          return Promise.resolve()
+        }
         return this.real.send(email)
       case 'fail':
         return Promise.reject(
