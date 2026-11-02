@@ -43,6 +43,9 @@ export interface CurrentUser {
   isActive: boolean
   createdAt: Date
   mfaEnabled: boolean
+  // "Easier-to-read font" (decisions §39) — the frontend applies it as soon
+  // as it knows who is signed in.
+  readableFont: boolean
   roles: string[]
   activeRole: UserRole
   practitionerProfile?: { licenseNumber: string; specialties: string[] }

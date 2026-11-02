@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "readable_font" boolean DEFAULT false NOT NULL;

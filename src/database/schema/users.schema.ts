@@ -135,6 +135,13 @@ export const users = pgTable(
     messageEmailNotices: boolean('message_email_notices')
       .notNull()
       .default(true),
+    // "Easier-to-read font" (design decisions §39): the app's text in
+    // Atkinson Hyperlegible Next instead of Geist. On the ACCOUNT, not the
+    // device: it's about the person's eyesight, so it follows them to every
+    // device — and the next person to sign in on a shared computer doesn't
+    // inherit it (the per-device version did). OFF by default; personal,
+    // like the two above: only the person changes it.
+    readableFont: boolean('readable_font').notNull().default(false),
   },
   (table) => ({
     // The database's half of normalizeEmail(): the stored email equals

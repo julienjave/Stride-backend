@@ -186,4 +186,11 @@ export class UpdateUserDto {
   @ValidateIf(isPresent)
   @IsBoolean()
   messageEmailNotices?: boolean
+
+  // "Easier-to-read font" (decisions §39). The same pairing again — NOT
+  // NULL, so null is refused rather than "cleared" — and self-only, checked
+  // in UsersService.update().
+  @ValidateIf(isPresent)
+  @IsBoolean()
+  readableFont?: boolean
 }

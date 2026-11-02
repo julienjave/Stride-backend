@@ -1695,6 +1695,39 @@ describe('UsersService.update', () => {
     expect(set.mock.calls).toEqual([[{ preferredWeightUnit: 'lbs' }]])
     expect(result.preferredWeightUnit).toBe('lbs')
   })
+
+  // The "Easier-to-read font" (decisions §39): self-only, like the unit.
+  it.each([
+    ['an admin', UserRole.ADMIN],
+    ['another practitioner', UserRole.PRACTITIONER],
+  ])(
+    "refuses %s changing someone else's font setting — 403, before any write",
+    async (_who, activeRole) => {
+      mockPractitionerTarget()
+
+      await expect(
+        usersService.update(1, { readableFont: true }, { id: 9, activeRole }),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'Only the user themselves can change their font setting',
+        ),
+      )
+      expect(db.transaction).not.toHaveBeenCalled()
+    },
+  )
+
+  it('lets a user change their own font setting, written to the users row', async () => {
+    mockPractitionerTarget()
+    const set = mockUsersOnlyTransaction()
+
+    await usersService.update(
+      1,
+      { readableFont: true },
+      { id: 1, activeRole: UserRole.PRACTITIONER },
+    )
+
+    expect(set.mock.calls).toEqual([[{ readableFont: true }]])
+  })
 })
 
 describe('UsersService.reactivate', () => {

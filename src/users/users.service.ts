@@ -869,6 +869,12 @@ export class UsersService {
         'Only the user themselves can change their message email setting',
       )
     }
+    // The font setting (decisions §39): how THIS person reads the app.
+    if (dto.readableFont !== undefined && currentUser.id !== id) {
+      throw new ForbiddenException(
+        'Only the user themselves can change their font setting',
+      )
+    }
 
     // licenseNumber is a professional credential: set or verified by an
     // admin, never self-edited (decided in design decisions §4). This is a

@@ -1017,6 +1017,72 @@ describe('Users (e2e)', () => {
     })
   })
 
+  // "Easier-to-read font" (decisions §39): a users column, NOT NULL DEFAULT
+  // false, on the ACCOUNT so it follows the person and not the device. The
+  // frontend reads it from /auth/me AND from the sign-in answer (it caches
+  // that answer as the current user), so both are checked. patient2 again,
+  // in order: default, refusals, the one allowed change.
+  describe('readableFont', () => {
+    it('is off for an account that never set it — on /auth/me', async () => {
+      const meRes = await patient2.get('/auth/me')
+      expect(meRes.body.readableFont).toBe(false)
+    })
+
+    it("refuses an admin changing someone else's setting, and changes nothing", async () => {
+      const res = await admin
+        .patch(`/users/${patient2Id}`)
+        .send({ readableFont: true })
+      expect(res.status).toBe(403)
+      expect(res.body.message).toEqual([
+        'Only the user themselves can change their font setting',
+      ])
+
+      const meRes = await patient2.get('/auth/me')
+      expect(meRes.body.readableFont).toBe(false)
+    })
+
+    // null: the column is NOT NULL (a 500 without the DTO rule).
+    it.each([null, 'yes', 1])('rejects %j with a 400', async (value) => {
+      const res = await patient2
+        .patch(`/users/${patient2Id}`)
+        .send({ readableFont: value })
+      expect(res.status).toBe(400)
+    })
+
+    it('lets a user turn it on, records it once, and every sign-in answer carries it', async () => {
+      const res = await patient2
+        .patch(`/users/${patient2Id}`)
+        .send({ readableFont: true })
+      expect(res.status).toBe(200)
+      expect(res.body.readableFont).toBe(true)
+
+      // The account's own audit trail, like any change to the account.
+      const entries = await sessionPool.query<{ details: unknown }>(
+        `SELECT details FROM audit_logs
+          WHERE action = 'USER_UPDATED' AND target_user_id = $1
+            AND details->'changes' ? 'readableFont'`,
+        [patient2Id],
+      )
+      expect(entries.rows.map((row) => row.details)).toEqual([
+        { changes: { readableFont: { from: false, to: true } } },
+      ])
+
+      expect((await patient2.get('/auth/me')).body.readableFont).toBe(true)
+
+      // A sign-in on ANOTHER device gets the setting at once — the reason it
+      // lives on the account. (`role`: patient2 was granted a second role
+      // earlier in this file, so the sign-in must say which.)
+      const otherDevice = request.agent(app.getHttpServer())
+      const login = await otherDevice.post('/auth/login').send({
+        email: patient2Email,
+        password: 'password123',
+        role: 'patient',
+      })
+      expect(login.status).toBe(201)
+      expect(login.body.readableFont).toBe(true)
+    })
+  })
+
   // Avatars (POST/DELETE /users/:id/avatar). These go all the way to the
   // real RustFS, so besides status codes they check the thing a user would
   // notice: does the returned avatarUrl actually load the image, and does
