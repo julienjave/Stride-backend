@@ -45,7 +45,7 @@
 //     ("every night at 1:00 AM your time"). Both or neither. The droplet's
 //     timer (scripts/ops/stride-demo-reset.timer) must say the same time and
 //     zone — docs/DEPLOYMENT.md, Part 3.
-//   - DEMO_GUIDE_URL: the reviewers' guide (docs/dev-test-accounts.md on
+//   - DEMO_GUIDE_URL: the reviewers' guide (docs/demo-accounts.md on
 //     GitHub, once the repositories are public). An https:// address — the
 //     card turns it into a link, so nothing else (a `javascript:` URL) may
 //     get in.

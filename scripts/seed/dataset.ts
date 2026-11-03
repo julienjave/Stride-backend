@@ -17,7 +17,7 @@
 
 // THE DEMO DATA — what `npm run seed:dev` creates, as plain data. The seed
 // script (scripts/seed-dev.ts) walks these lists in order; the reviewers'
-// guide (docs/dev-test-accounts.md) describes them, and dataset.spec.ts
+// guide (docs/demo-accounts.md) describes them, and dataset.spec.ts
 // checks the two still match. Change the data here, then the doc.
 //
 // Every email ends in @stride.test: `.test` is reserved (RFC 2606) and can
@@ -79,7 +79,7 @@ interface AccountBase {
   // added afterwards by the admin (a clinic membership).
   clinics: ClinicKey[]
   // What a reviewer can see by logging in as this account — shown in the
-  // seed's summary and in docs/dev-test-accounts.md.
+  // seed's summary and in docs/demo-accounts.md.
   shows: string
 }
 

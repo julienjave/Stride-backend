@@ -7,7 +7,7 @@ working guide.
 
 | Suite | Where | What it runs against | Size (2026-11-03) |
 |---|---|---|---|
-| **Unit** | `src/**/*.spec.ts`, `scripts/**/*.spec.ts` | nothing outside the process (fakes, a local socket or two) | 113 files, 2,589 tests |
+| **Unit** | `src/**/*.spec.ts`, `scripts/**/*.spec.ts` | nothing outside the process (fakes, a local socket or two) | 114 files, 2,593 tests |
 | **API end-to-end** | `test/*.e2e-spec.ts` | the real app, a real Postgres (`stride_test`), S3-compatible storage | 50 files, 1,346 tests |
 | **Browser** | the frontend repository's `e2e/` (TODO-LINK) | this backend built and started on port 3100, its own database (`stride_e2e`), Chromium | 15 tests |
 
@@ -241,8 +241,9 @@ mutant as "killed".
 A GitHub Actions setup exists and was rehearsed from fresh clones (backend
 checks, the API e2e suite against Postgres, RustFS and Mailpit service
 containers, the browser suite). It is **parked** until the repositories are
-public: the workflow files are kept outside the repository, so that no
-Actions minutes are spent and no token is held while it is private. The two
+public: `.github/` is listed in `.gitignore`, so the workflow files are never
+committed, no Actions minutes are spent and no token is held while it is
+private. Going public means removing that line and committing them. The two
 scripts it uses are here: `scripts/ci/prepare-env.sh` writes a `.env` from
 `.env.example` with fresh secrets (masked in the logs on GitHub), and
 `scripts/ci/wait-for-services.sh` waits for storage and Mailpit to answer.

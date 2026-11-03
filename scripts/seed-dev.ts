@@ -21,7 +21,7 @@
 // dataset.ts — clinics, an account per role and per invitation state, a
 // few exercises, templates and an assigned program — so a reviewer can log
 // in as anyone and explore. The accounts are described for reviewers in
-// docs/dev-test-accounts.md.
+// docs/demo-accounts.md.
 //
 // Everything goes through the app's REAL services, as the person who would
 // do it: Alex creating a patient really puts Alex on the care team, under

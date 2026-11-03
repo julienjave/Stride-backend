@@ -60,12 +60,11 @@ describe('demoTexts', () => {
         DEMO_RESET_TIME: ' 04:00 ',
         DEMO_RESET_TIME_ZONE: ' America/Toronto',
         DEMO_GUIDE_URL:
-          ' https://github.com/x/stride/blob/main/docs/dev-test-accounts.md',
+          ' https://github.com/x/stride/blob/main/docs/demo-accounts.md',
       }),
     ).toEqual({
       reset: { time: '04:00', timeZone: 'America/Toronto' },
-      guideUrl:
-        'https://github.com/x/stride/blob/main/docs/dev-test-accounts.md',
+      guideUrl: 'https://github.com/x/stride/blob/main/docs/demo-accounts.md',
     })
   })
 

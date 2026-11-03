@@ -128,7 +128,7 @@ npm run seed
 The exercise library (873 exercises with photos, downloaded from the
 `free-exercise-db` project on GitHub), then the demo world: clinics,
 practitioners, patients, programs, messages. The accounts and their password
-are in [`dev-test-accounts.md`](dev-test-accounts.md). `npm run seed --
+are in [`demo-accounts.md`](demo-accounts.md). `npm run seed --
 --reset` deletes everything but the exercise library and creates the demo
 world again.
 
@@ -862,7 +862,7 @@ production.
 - **The sign-in page shows a "For reviewers" card**: four shared accounts
   (`admin@`, `alex@`, `pat@`, `casey@stride.test`), their password, Casey's
   two-factor key, when the data is reset, and a link to the accounts guide
-  ([`dev-test-accounts.md`](dev-test-accounts.md)).
+  ([`demo-accounts.md`](demo-accounts.md)).
 - **Those four accounts are locked** against the changes that would lock
   other reviewers out: their password, email address and two-factor sign-in
   can't be changed, and they can't be deactivated or merged away (`403`,

@@ -23,7 +23,7 @@
 // src/ only). The seed imports them from here: ONE copy, so the card can never
 // publish a password the seed didn't set.
 //
-// None of this is a secret: it is in docs/dev-test-accounts.md and on the
+// None of this is a secret: it is in docs/demo-accounts.md and on the
 // demo's sign-in page. A real clinic's deployment has no account with these
 // addresses, and DEMO_MODE off publishes nothing.
 

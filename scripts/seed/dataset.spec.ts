@@ -784,9 +784,9 @@ describe('the two-factor demo', () => {
   })
 })
 
-describe('docs/dev-test-accounts.md', () => {
+describe('docs/demo-accounts.md', () => {
   const doc = readFileSync(
-    join(__dirname, '..', '..', 'docs', 'dev-test-accounts.md'),
+    join(__dirname, '..', '..', 'docs', 'demo-accounts.md'),
     'utf8',
   )
 

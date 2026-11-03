@@ -11,7 +11,7 @@ each phase as it happened.
 | Building a client: routes, sign-in, errors, who may call what | [The API reference](api/README.md) |
 | Why a decision was made, what was tried first | [The journal](journal/README.md) and [`PROJECT.md`](PROJECT.md) |
 | Running it on a server | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
-| The seeded accounts | [`dev-test-accounts.md`](dev-test-accounts.md) |
+| The seeded accounts | [`demo-accounts.md`](demo-accounts.md) |
 
 Where this document and the code disagree, the code is right and this
 document has a bug. Each section names its source files so it can be

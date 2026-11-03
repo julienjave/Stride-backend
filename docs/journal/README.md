@@ -168,8 +168,9 @@ against the code and the documents on 2026-11-03.
   the patient next starts a session, or when its program is closed — doc 37). Doc 40's `claim_message_notices()` is the pattern for giving such
   a job its one narrow door.
 - **CI is built but parked** until the repositories are public (doc 41): the
-  workflows are kept outside the repositories so that no Actions minutes are
-  spent and no token is held while they are private.
+  workflows sit in `.github/`, which each repository's `.gitignore` lists,
+  so that no Actions minutes are spent and no token is held while they are
+  private ([`TESTING.md`](../TESTING.md#ci)).
 - **Doc 22's link to `deferred-improvements.md` doesn't resolve, by
   design.** That ledger of deliberately postponed improvements was a private
   development file and isn't part of the repository. Doc 22 stays as

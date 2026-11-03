@@ -17,7 +17,7 @@ that every later permission hangs on, and the shape of an assigned program.
   accounts, after which step 1 is closed. The setup is in
   [`DEPLOYMENT.md`](../DEPLOYMENT.md), part 1. To explore with ready-made
   accounts instead, seed the database and use those in
-  [`dev-test-accounts.md`](../dev-test-accounts.md).
+  [`demo-accounts.md`](../demo-accounts.md).
 - **Mailpit** running (it's in `docker-compose.yml`), with
   `EMAIL_TRANSPORT=smtp`, as in `.env.example`. The invitations of steps 3
   and 8 are real emails. Mailpit catches them: its inbox is at
