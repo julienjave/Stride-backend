@@ -686,17 +686,18 @@ real patient data.
 ## Where to go for "why"
 
 The journal's entries 1–35 cover the backend up to the deployment and the
-row-level security passes. The work since (the frontend era) is described in
-this document; its journal entries are on their way.
+row-level security passes. Entries 36–42 cover the frontend era, one per
+build phase, condensed to the decisions and bugs worth telling; the
+[journal's README](journal/README.md) indexes them all.
 
 | Section | Journal entries |
 |---|---|
 | Stack, overall shape | [01](journal/01-backend-architecture-decisions.md), [04](journal/04-exercise-seeding-and-storage-migration.md), [16](journal/16-docker-deployment-foundations.md) |
-| Data model | [02](journal/02-database-schema-design.md), [08](journal/08-core-clinical-domain.md), [11](journal/11-medical-files-module.md) |
-| Authorization and RLS | [05](journal/05-multi-role-authorization-and-clinics.md), [20](journal/20-two-bug-hunts.md), [23](journal/23-row-level-security-step-zero.md), [24](journal/24-row-level-security-rollout.md), [29](journal/29-row-level-security-user-roles.md), [30](journal/30-write-only-profile-fields.md), [32](journal/32-row-level-security-profile-tables.md), [33](journal/33-row-level-security-user-clinics.md), [34](journal/34-row-level-security-clinics.md) |
-| Audit trail | [10](journal/10-audit-logging-system.md) (the first design, since replaced) |
-| Sign-in and sessions | [03](journal/03-application-layer-and-authentication.md), [12](journal/12-password-reset-and-mfa.md), [17](journal/17-real-email-and-mfa-encryption.md), [28](journal/28-resend-flake-timing-side-channel-and-a-false-claim.md) |
-| Messaging | [09](journal/09-messaging-system.md), [27](journal/27-message-normalization-and-api-docs-rls-review.md) |
-| Files | [07](journal/07-file-upload-system.md), [15](journal/15-closing-the-review-five-improvements.md) |
-| Deployment | [18](journal/18-deployment-provisioning-through-backups.md), [19](journal/19-deployment-verification-and-observability.md), [25](journal/25-closing-the-log-rotation-gap.md), [26](journal/26-redeploying-for-real.md), [35](journal/35-backup-bucket-and-credential-parsing.md) |
-| The frontend era: care team, invitations, record access, demo mode, observability | TODO-LINK |
+| Data model | [02](journal/02-database-schema-design.md), [08](journal/08-core-clinical-domain.md), [11](journal/11-medical-files-module.md), [36](journal/36-care-team-invitations-and-schedules-as-history.md), [37](journal/37-the-session-as-a-state-machine.md), [41](journal/41-observability-without-patient-data.md) |
+| Authorization and RLS | [05](journal/05-multi-role-authorization-and-clinics.md), [20](journal/20-two-bug-hunts.md), [23](journal/23-row-level-security-step-zero.md), [24](journal/24-row-level-security-rollout.md), [29](journal/29-row-level-security-user-roles.md), [30](journal/30-write-only-profile-fields.md), [32](journal/32-row-level-security-profile-tables.md), [33](journal/33-row-level-security-user-clinics.md), [34](journal/34-row-level-security-clinics.md), [36](journal/36-care-team-invitations-and-schedules-as-history.md), [37](journal/37-the-session-as-a-state-machine.md), [39](journal/39-audit-review-account-security-and-record-access.md), [40](journal/40-defence-in-depth-leftovers-and-merges.md) |
+| Audit trail | [10](journal/10-audit-logging-system.md) (the first design, since replaced), [39](journal/39-audit-review-account-security-and-record-access.md) |
+| Sign-in and sessions | [03](journal/03-application-layer-and-authentication.md), [12](journal/12-password-reset-and-mfa.md), [17](journal/17-real-email-and-mfa-encryption.md), [28](journal/28-resend-flake-timing-side-channel-and-a-false-claim.md), [36](journal/36-care-team-invitations-and-schedules-as-history.md), [39](journal/39-audit-review-account-security-and-record-access.md), [42](journal/42-the-documentation-rewrite-finds-three-bugs.md) |
+| Messaging | [09](journal/09-messaging-system.md), [27](journal/27-message-normalization-and-api-docs-rls-review.md), [38](journal/38-messaging-brought-up-to-standard.md) |
+| Files | [07](journal/07-file-upload-system.md), [15](journal/15-closing-the-review-five-improvements.md), [40](journal/40-defence-in-depth-leftovers-and-merges.md), [42](journal/42-the-documentation-rewrite-finds-three-bugs.md) |
+| Deployment | [18](journal/18-deployment-provisioning-through-backups.md), [19](journal/19-deployment-verification-and-observability.md), [25](journal/25-closing-the-log-rotation-gap.md), [26](journal/26-redeploying-for-real.md), [35](journal/35-backup-bucket-and-credential-parsing.md), [41](journal/41-observability-without-patient-data.md) |
+| The frontend era, phase by phase | [36](journal/36-care-team-invitations-and-schedules-as-history.md) (care team, invitations, schedules), [37](journal/37-the-session-as-a-state-machine.md) (sessions), [38](journal/38-messaging-brought-up-to-standard.md) (messaging), [39](journal/39-audit-review-account-security-and-record-access.md) (audit, account security, record access), [40](journal/40-defence-in-depth-leftovers-and-merges.md) (merges, guards, jobs), [41](journal/41-observability-without-patient-data.md) (observability, demo mode), [42](journal/42-the-documentation-rewrite-finds-three-bugs.md) (this documentation) |

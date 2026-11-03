@@ -1,419 +1,564 @@
 # Stride — Project Decisions & Rationale
 
-A comprehensive reference for every major choice made across this project's
-design, build, and deployment — what was decided and why. Written to stand
-alone: useful for picking up work in a new conversation, or for explaining
-the project to someone who wasn't there for any of it.
+What was decided across this project's design, build and deployment, and
+why: the alternatives weighed, and what each choice costs. Written to stand
+alone, for someone picking the project up or reviewing it without having
+been there.
+
+Three neighbours divide the rest of the work:
+[`ARCHITECTURE.md`](ARCHITECTURE.md) explains *how* the system works as it
+stands; the [API reference](api/README.md) is the contract a client relies
+on; the [journal](journal/README.md) tells the story, mistakes included.
+This document is the summary of decisions between them.
+
+**"decisions §N" in the code.** About 450 comments in this repository cite
+"decisions §N". They refer to the project's design-decisions log,
+`docs/stride-design-decisions.md` in the **frontend** repository
+(TODO-LINK), where each feature was designed with the person, one section
+per item (§1–§47). That log is the long form, with every option weighed;
+this document keeps the choices that shaped the backend. A few comments also
+cite `deferred-improvements.md`, a working ledger of postponed improvements
+kept outside the repositories; what is still open in it is summarised under
+"Known limits and what's deferred" below.
+
+---
 
 ## Project shape
 
-Stride is a multi-role physiotherapy practice management backend —
+Stride is a multi-role physiotherapy practice management application:
 admins run clinics, practitioners build exercise programs and assign them
-to patients, patients complete sessions and message their practitioner.
-Built as a capstone specifically to demonstrate real backend engineering
-and infrastructure understanding, not just CRUD — which shaped several
-choices below toward "the more instructive, more genuinely understood
-option" over "the fastest path to a working demo."
+to patients, patients complete sessions and message their practitioner. It
+is two repositories. This one is the backend (a NestJS API over PostgreSQL,
+with object storage, email and a WebSocket gateway); the frontend is a
+React single-page app (TODO-LINK).
+
+It was built as a bootcamp capstone, specifically to show real backend,
+frontend and infrastructure understanding rather than CRUD. That goal
+shaped many choices below toward the option that is more instructive and
+better understood, over the fastest path to a working demo — a
+self-managed server rather than a platform, rules enforced by the database
+as well as the code, and tests that prove a race is closed rather than
+hoping it is.
+
+The backend was built in two eras. Until journal entry 35 it was built on
+its own and deployed. From entry 36 on it grew phase by phase with the
+frontend (the frontend's Phases 1–7), and that work hasn't been deployed
+yet (see "Deployment infrastructure").
 
 ---
 
 ## Technology stack
 
-**NestJS (TypeScript)** — chosen over a lighter framework (Express alone,
-Fastify) specifically for its structure: dependency injection, guards,
-interceptors, and decorators give a capstone real, demonstrable
-architecture (module boundaries, testable services) rather than a pile of
-route handlers.
+**NestJS (TypeScript).** Chosen over Express alone or Fastify for its
+structure: dependency injection, guards, interceptors and decorators give
+real module boundaries and services that can be tested in isolation. The
+decorators carry more than routing here. The same metadata Nest reads to
+build the router is read by tests (every write route must declare its audit
+behaviour) and by the generator of the endpoint table in the API reference.
 
-**PostgreSQL + Drizzle ORM** — Drizzle chosen for staying close to real
-SQL (migrations are genuine SQL files, not a black-box abstraction),
-useful for a project meant to demonstrate understanding rather than hide
-it behind heavy tooling.
+**PostgreSQL + Drizzle ORM.** Drizzle stays close to SQL: migrations are
+real SQL files that can be read and, when needed, edited by hand — as
+about ten were, to repair existing rows before a new constraint
+(ARCHITECTURE §3). Postgres is used for more than storage: row-level
+security, triggers, exclusion constraints, partial unique indexes,
+multiranges and deferred constraint triggers all carry rules.
 
-**Session-cookie authentication (Passport), not JWT** — a deliberate,
-non-default choice. Sessions store only `{ id, activeRole }`; the full
-user is reloaded via `deserializeUser` on every request, meaning a
-role change or account deactivation takes effect immediately, not only
-after a token expires. Traded away JWT's "no server-side session store"
-convenience for this correctness property, and accepted the real
-downstream complexity it created at deployment (cross-site cookies needing
-`secure: true` + `sameSite: 'none'`, CORS with `credentials: true`).
+**Session cookies (Passport), not JWT.** A session stores only the account
+id and the active role; the user is reloaded on every request, so a role
+change or a deactivation takes effect at once, not when a token expires.
+Sessions live in Postgres (`connect-pg-simple`), so the server can also end
+them: a password change, a reset, a deactivation, a merge and the fifth
+failed re-confirmation each delete the sessions they end, and close those
+sessions' sockets. The cost of not using JWT is a session store, and
+cookie settings that must match the deployment (below).
 
-**RustFS (self-hosted, S3-compatible object storage)** — chosen over a
-managed object storage service to keep the whole stack self-hosted and
-inspectable, consistent with the project's infrastructure-first goal.
+**RustFS** (self-hosted, S3-compatible) for files, through the AWS SDK.
+Chosen over managed storage to keep the whole stack self-hosted and
+inspectable. MinIO was the first choice, and was replaced when its
+Community Edition was discontinued (journal 04). Storage stays private:
+every response carries short-lived **signed URLs**, never storage keys.
 
-**bcrypt** for password hashing; **AES-256-GCM** (Node's built-in
-`crypto`, no new dependency) for encrypting MFA secrets at rest —
-deliberately *not* the same treatment as passwords, since a TOTP secret
-must remain genuinely readable to verify codes, unlike a password hash.
-The real, explicitly documented limitation: this protects against
-database-only compromise, not full server compromise, since the
-decryption key lives in the same environment. A real production system
-handling real patient data would use a genuine KMS with the key in
-separate infrastructure — accepted as a deliberate scope decision here,
-not a gap glossed over.
+**bcrypt** for passwords, **AES-256-GCM** (Node's `crypto`) for two-factor
+secrets at rest, and **HMAC-SHA256** for recovery codes. A TOTP secret must
+stay readable to check codes, so it is encrypted, not hashed. The known
+limit: the key lives in the server's environment, so this protects against
+a stolen database, not a stolen server — a real deployment with patient
+data would keep it in a key-management service.
 
-**Resend** for transactional email — chosen for its generous free tier and
-zero-setup sandbox mode during development, later given a real verified
-sending subdomain (`send.notify.stridecare.app`, apex domain
-deliberately protected from the sending subdomain's reputation) once a
-real domain existed. Email send failures are caught and logged, never
-thrown — a failure and a nonexistent recipient must be indistinguishable
-to the API caller, preserving the no-enumeration guarantee on
-`forgot-password`.
+**Email through a port with adapters.** `EmailService` decides what an
+email says; an `EmailTransport` decides how it leaves: **Resend** in
+production (a verified sending subdomain, `send.notify.stridecare.app`, so
+the apex domain's reputation is kept apart), **SMTP to Mailpit** in
+development, a console transport, and an in-memory outbox in the tests.
+`EMAIL_TRANSPORT` is required with no default, because any default is
+wrong somewhere. A transport **rejects** on failure and the caller decides
+what that means (an invitation reports `emailSent: false`; forgot-password
+still answers `204`). This replaced an early "never throws" wrapper.
 
-**Socket.IO** for real-time messaging, layered over the same session-cookie
-auth as REST (via a custom `SessionIoAdapter`) — deliberately not a
-separate token-based auth scheme for WebSockets, keeping one authorization
-model for the whole app rather than two to maintain and keep in sync.
+**Socket.IO** for live messaging, authenticated by the same session cookie
+as HTTP. That keeps one identity model, not a second token scheme to keep
+in step.
 
-**pino / nestjs-pino** for structured JSON logging, **@nestjs/throttler**
-for rate limiting, **@nestjs/terminus** for health checks,
-**class-validator/class-transformer** for DTO validation, **@nestjs/swagger**
-for auto-generated interactive API docs.
+**Also:** pino / nestjs-pino (structured JSON logs), @nestjs/throttler
+(rate limits), @nestjs/terminus (`/health`), class-validator and
+class-transformer (DTOs), @nestjs/swagger (interactive docs at `/api-docs`),
+otplib (TOTP), **pdfkit + fontkit** (the records PDF, with an emoji
+fallback font), **GlitchTip** with the **Sentry SDKs** (error tracking,
+self-hosted).
 
 ---
 
-## Application architecture & domain design
+## Who may see a patient's data
 
-**Clinic-scoped authorization is the core trust boundary of the entire
-app.** A practitioner can only act on a patient they genuinely share a
-clinic with — enforced via one canonical check
-(`UsersService.isPatientManagedBy`), reused everywhere a
-practitioner-patient relationship needs verifying (user profiles,
-assigned programs, sessions, medical files, messaging), rather than
-reimplemented per-module. When this check was ever bypassed or
-insufficiently applied, it produced the most serious bugs found in the
-whole project (cross-clinic patient planting via `POST /users`, missing
-scoping on `GET /users/:id`) — reinforcing why having one shared,
-correctly-tested implementation matters more than convenience.
+**The care team is the trust boundary.** Sharing a clinic with a patient
+gives *directory* access: name, date of birth, photo, who treats them.
+*Clinical* access (programs, sessions, the medical file, range of motion,
+messages) needs a **current care-team link and a shared clinic**. It
+replaced "any practitioner of the clinic" (journal 36). Joining a patient's
+care team is self-service and immediate (a colleague covering on a Monday
+can't wait for an approval), and it is audited and shown to the patient
+and to the others on the team. Links are ended, never deleted: who treated
+whom, and when, is history.
 
-**Row-Level Security as a second, database-enforced authorization layer**
-— added after the app-layer model above had already been running in
-production. The app's own runtime queries connect as `stride_app`, a
-Postgres role created specifically to have no RLS bypass: not a superuser,
-and owning none of the tables it queries (both are independent, absolute
-Postgres exemptions from RLS otherwise). `FORCE`d RLS policies now cover
-**all 18 tables in the schema** — the original six-group rollout
-(`medical_files`, `audit_logs`,
-`assigned_programs`+`assigned_program_exercises`,
-`sessions`+`session_exercises`, `conversations`+`messages`,
-`exercises`+`program_templates`+`template_exercises`, and `users`), plus
-four further passes that closed every table originally left open:
-`clinics`, `user_roles`, the three profile tables
-(`practitioner_profiles`/`patient_profiles`/`admin_profiles`), and
-`user_clinics` — the schema's own trust-anchor table, at one point
-expected to remain a permanent exception.
+**Every clinical rule exists twice.** A service decides what the API
+allows; a row-level security policy decides what Postgres returns. The app
+connects as `stride_app`, a role with no way around row security (not a
+superuser, owner of nothing it queries), so a service bug alone can't leak
+data (journals 23–24). All **42 tables** are `ENABLE` + `FORCE ROW LEVEL
+SECURITY`. For the central rule, the care team, a **parity test** runs the
+same cases through the TypeScript and the SQL and requires the same
+answers. "Covered" isn't "restrictive", though: `users`,
+`user_roles`, `user_clinics`, `clinics`, the three profile tables and the
+exercise library and templates keep a deliberate `SELECT USING (true)`,
+because the sign-in path reads them before anyone is signed in, or because
+the data is shared by design. Their protection is which *columns* each
+endpoint selects. Writes are restricted everywhere.
 
-Worth being precise: full coverage doesn't mean every table restricts who
-can read it. Several tables (`users`, `user_roles`, the three profile
-tables, `clinics`, `user_clinics`, `exercises`, `program_templates`)
-carry a deliberately permissive `SELECT USING (true)` policy — either
-because the data is genuinely shared and non-sensitive by design, or
-because the table backs a read that has to succeed *before* any session
-exists (login itself, or a one-time unauthenticated bootstrap), where a
-restrictive policy would silently break authentication rather than add
-protection. Real, per-row restriction is concentrated on the tables where
-it actually matters, and every table's write policies (`INSERT`/
-`UPDATE`/`DELETE`) are genuinely restrictive throughout, `user_clinics`
-included — a practitioner may only insert a membership row into a clinic
-they themselves already belong to, mirroring a real vulnerability closed
-once already at the application layer.
+**A refusal says as little as possible.** When row security hides a record,
+the API answers `404`, not `403`: whether a patient's program exists is
+itself clinical information. Lists answer `403`, never an empty list, when
+the caller may not ask at all — an empty list would claim "this patient has
+no programs". The rules are in
+[`api/04-authorization.md`](api/04-authorization.md).
 
-`user_clinics` specifically is worth naming directly, since the original
-plan for it didn't survive investigation: it was expected to need a
-`SECURITY DEFINER` function so other tables' policy-internal SQL
-functions could keep working once it carried its own restriction. That
-turned out not to be the real obstacle — the actual blocker was a
-completely different, TypeScript-side contextless read
-(`getClinicIdsForUser()`, underlying `isPatientManagedBy()`, the
-authorization gate for most of the app) that needed `SELECT USING (true)`
-regardless of any privilege question, the same reason `users` and
-`user_roles` already needed it. Once that was proven with real adversarial
-evidence, `SECURITY DEFINER` had nothing left to solve — a genuine,
-evidenced "not needed," reached by investigating the question rather than
-assuming an answer either way.
+**Admins run the organisation, not the care.** Admins manage accounts,
+clinics, memberships, care teams and the audit log. They read no clinical
+row — no program, session, medical file, assessment or message — at either
+layer, and the audit log withholds clinical entries' details from them. A
+"break-glass" read was considered and replaced by **record access** with a
+purpose and a trace: a **complaint review** (one admin, one patient, a
+reason the care team never sees, 7 days, a stamped PDF copy) and a **legal
+disclosure** (recipient, legal basis, the parts and period ordered, an
+optional hold, a stamped copy). Both read the record *as the patient*, so
+they can never contain more than the patient can see, and both tell the
+care team (journal 39).
 
-This is additive, not a replacement: it closes the gap between what the
-original architecture writeup once described as an active guarantee and
-what was actually true at the time (app-layer checks only) — the two
-layers are independently verified, not redundant with each other.
+**Deactivation changes the account, not the record.** A deactivated patient
+keeps their care team: the team must still read the file and may write to
+the *record* (a discharge note, closing a program). Writing *to the
+patient* stops: no new program, no change, no message (the database refuses
+it). Deactivating a practitioner ends their current links in the same
+transaction. Where row security would silently skip those links, the
+deactivation is refused instead of half-done.
 
-**Role-based access control**, layered as `SessionAuthGuard` at the
-controller class level (authentication) with `RolesGuard` +
-`@Roles(...)` at the method level (authorization) — a consistent
-ordering convention relied on throughout the app (e.g., a guard
-correctly asserting a user must already be authenticated by the time a
-role check runs).
+**Roles.** One account may hold several roles, with one **active** at a
+time: single-role accounts get theirs at sign-in, multi-role accounts
+choose, and can switch (`POST /auth/switch-role`, a new session id, the old
+sockets closed). Controllers use `SessionAuthGuard` at the class level and
+`RolesGuard` + `@Roles(…)` per route. A route without its guard still meets
+the policies.
 
-**Multi-role accounts with an explicit active role**, not separate
-accounts per role. Single-role accounts auto-select their role at login;
-multi-role accounts must explicitly choose, and can switch mid-session via
-`POST /auth/switch-role`.
+---
 
-**Two-step MFA login** — `POST /auth/login` returns `{ mfaRequired: true }`
-with a pending (not yet authenticated) session state when MFA is enabled,
-completed via a separate `POST /auth/mfa/verify` call using the same
-session.
+## The clinical domain
 
-**Password reset** stores only a hash of the reset token (never the raw
-token) with an expiry, and the endpoint always returns `204` regardless of
-whether the email exists — deliberate account-enumeration protection,
-verified directly via pino logs showing the code path never reaches
-`EmailService` for a nonexistent address, yet the client sees an
-identical response either way.
+**Copy, not reference, at every level.** Assigning a template copies its
+workouts, exercises and prescriptions into the program, so a later edit to
+the template can't change what a patient was given. One level down, each
+session keeps its own copy of what it was prescribed (name, prescription,
+description), so a later edit to the program can't rewrite past sessions.
+Photos are the deliberate exception: a program shows the library's photos,
+read live, because they illustrate rather than prescribe, and a better
+photo should reach every patient. A practitioner can choose photos of the
+program's own instead (copied, or uploaded for this patient).
 
-**Messaging** is a hybrid of REST (conversation/message history,
-archiving) and WebSocket (real-time delivery), both authorized through the
-same underlying `assertParticipant` check. Archiving is a per-participant
-column flip (`practitionerArchivedAt`/`patientArchivedAt`), never a delete
-— each participant's inbox state is independent, and admins are
-explicitly barred from it (a personal inbox concern, not an oversight
-one).
+**A schedule is a history.** Specific weekdays or N a week, as **versions**
+with an "applies from" date. A change is a new version from a chosen day;
+past days stay judged by the version in force then. The database refuses
+any change to a version that has already judged a day. Sessions due are
+**calculated, never pre-created**, by one pure module (`summarizeSchedule`)
+that every screen asks: done, made up, made up late, done early, swapped,
+missed, due, upcoming. A label that seemed wrong was always a model that was
+wrong ("done early" is not a swap). A pause is a schedule version, so a
+paused week accrues nothing (journal 36).
 
-**Standardized cross-cutting shapes**: a consistent pagination envelope
-(`{ data, meta }`) on list endpoints, a consistent error response shape
-from a global exception filter, and a dedicated `WsHttpExceptionFilter`
-ensuring WebSocket errors carry the same real, meaningful messages as REST
-ones rather than collapsing to a generic failure.
+**A session is a state machine the database enforces.** `in_progress`,
+`completed` (on its own day only), `incomplete` (stopped with a reason, or
+closed by the app) and `skipped`. No `pending`: a row exists only once the
+patient acts. Every moment is the database's `now()`, a finished session is
+final, one session may be open per program, and at most one session a day
+counts (journal 37). Clinical rules about *what may happen* are server rules;
+which option a screen offers first is the screen's choice. A preference
+written as a server rule was removed for exactly that reason.
 
-**Audit logging** as a first-class, structured concern (dedicated
-service + interceptor + real relational table), not just text log lines
-— covers every mutating action with who did what to which resource.
+**Closed means read-only, for everyone.** A completed or cancelled program
+refuses every change, in the service and in a database trigger (the
+project's first). "Assign again" creates a new program from the tailored
+one rather than reopening it. An exercise a session used is **retired**,
+not deleted.
+
+**Alerts are computed, reviews are stored.** "For review" (misses in a row,
+inactivity, a painful session, a new member on a care team, a review or
+disclosure of a record) is computed per request, in a fixed number of
+queries. A stored alert would need a job to keep it true, and a job has no
+user to sign its audit entries. Only the practitioner's review is stored.
+
+**The medical file is append-only.** Entries are typed SOAP notes
+(Subjective, Objective, Assessment, Plan). A correction is a new entry that
+**amends** one earlier entry of the same patient, at most once, so versions
+form a chain. Nothing is updated or deleted. **Range of motion** follows the
+same model: an assessment holds measurements from a fixed catalogue of 33
+movements, each checked against its plausible range, and is corrected by
+amendment (journal 41).
+
+**Messaging** is between a patient and a practitioner on their care team.
+History stays readable after a link ends (it is the patient's record), but
+sending stops, decided by the database at the moment of writing. Text is
+fixed once sent. A sender may delete an unread message within 15 minutes.
+"Read" is set once, by the recipient. Live events are emitted after the
+commit, through rooms derived from the session (journal 38). An email says
+a message is waiting, never what it says, at most once per conversation
+until it is read.
+
+---
+
+## Accounts and sign-in
+
+**Accounts by invitation only.** Public registration was removed. An admin
+or a practitioner creates the account without a password, and a one-time,
+7-day invitation lets its owner choose one. Nobody sets someone else's
+password. The account exists at once, so care can be prepared before the
+patient signs in. The very first admin is created by a one-time
+`register-clinic`, refused once any admin exists.
+
+**Tokens.** Invitations, password resets, email changes and the records
+link all use 32 random bytes, stored only as a SHA-256 hash (a 256-bit
+token can't be guessed, and a deterministic hash makes the lookup an
+index). Each is single-use, decided inside a transaction so two tabs can't
+both spend it, and travels in request bodies, never URLs, which get logged.
+
+**Two-factor, hardened before its screens were built.** Optional for every
+role. Reading the existing code first found a set-up that replaced a
+working secret, enrolment possible from a stolen session, no recovery, and
+codes reusable within their window. Now: set-up asks the password; a code
+is spent under the account's row lock; ten recovery codes are stored as
+keyed hashes; an admin can reset another account's two-factor, with the
+admin's own re-confirmation. Turning it off asks the password *and* a code
+(journal 39).
+
+**Re-confirmation ("step-up").** Changing the email or password, turning
+two-factor off, generating codes, an admin's reset and a merge each ask the
+current password (and a code, if two-factor is on). The session alone isn't
+enough, because a stolen session must not be able to take the account
+over. Each failure is recorded after the change rolls back, and five in a
+row sign that session out.
+
+**Changing the email** has its own design. One stored spelling per address
+(trimmed, A–Z lowercased — the database's `lower()` follows the server's
+locale, so only ASCII is safe to agree on). The link goes to the new
+address, and the old address gets a notice with the new one masked and a
+cancel link. A taken address reveals nothing to the requester. Confirming
+signs the account out everywhere else.
+
+**What the timing says.** Sign-in performs exactly one bcrypt comparison
+whether or not the account exists, so an unknown address takes as long as a
+wrong password (6 ms against 75 ms before the fix; 70 against 72 after).
+Forgot-password always answers `204`, without waiting on the mail server.
+
+**Cookies.** `httpOnly`, `secure` in production. Production still sends
+`SameSite=None`, chosen when the frontend was expected on another site; the
+frontend and the API will share `stridecare.app`, so it becomes `Lax` before
+the next deployment.
+
+---
+
+## The audit trail
+
+**One complete entry per change, in the change's own transaction.** Who,
+what, about which patient, before → after. If the entry fails, the change
+rolls back; if the change rolls back, so does the entry. A no-op writes
+nothing. The first design (a global interceptor recording "`PATCH
+/assigned-programs/3`" after the response, fire-and-forget, with
+duplicates) was **deleted**. In its place, a test fails the build for any
+write route that is tagged neither `@AuditedByService()` nor
+`@NotAudited(reason)` (journal 39).
+
+**Clinical reads are recorded too.** When someone other than the patient
+reads programs, sessions, alerts, range of motion or messages, one entry
+per patient shown is awaited before the answer is sent: no answer without
+its trace. The medical file records every read, the patient's own included.
+
+**Kept whole, shown by need.** Entries are append-only for the app. Admins
+see clinical entries with their details withheld. Retention is decided at
+**6 years** (HIPAA's period for required documentation); the purge job
+isn't built, since nothing can be that old yet.
+
+Not every change is the trail's business. The "easier-to-read font" setting
+is written without an entry: it concerns only its owner, and is visible to
+nobody else.
+
+---
+
+## Records leaving Stride, and accounts merged
+
+**A patient's right of access.** "Download a copy" builds one PDF of the
+medical file, range of motion, programs and sessions, read *as the patient*
+in one consistent snapshot (`REPEATABLE READ`), made on request and never
+stored. Its audit entry lists the ids of what went in. For a patient who
+can't sign in, an admin emails a link (one download, 72 hours, the date of
+birth asked, five tries).
+
+**Duplicate patients** are caught at creation (same date of birth and
+normalised name → a warning the creator can override, recorded) and fixed
+by a **merge**. The merge is the first of the project's two `SECURITY
+DEFINER` functions: it moves every row in one transaction, splits
+overlapping care-team links, deactivates the merged account with a pointer
+to the survivor, and can't be undone in the app. It runs with five locks
+against misuse (journal 40). The other definer function hands the message
+sweep its due notices, because a job has no user to act as. Everything else
+runs under the caller's own row security.
+
+**Files outlive transactions, so they are compensated.** A file stored
+before a transaction that then fails is deleted again; a file a row stops
+naming is deleted after the commit, best-effort; archiving a program
+removes its own photos. A sweeper (run by hand, dry run by default) lists
+what no row references, and never touches a file younger than 24 hours.
+
+---
+
+## The database's half of the rules
+
+Wherever a rule protects the clinical record, the database states it too,
+so it holds for a direct query, a script or a route added later. The
+patterns repeat:
+
+- **CHECKs for one row's shape**, one constraint per rule, so a refusal
+  names the rule it broke. "Not blank" is `~ '\S'` everywhere, the DTOs'
+  own test.
+- **Partial unique indexes and exclusion constraints for "at most one"**
+  (one open session, one open invitation, no overlapping links). The
+  constraint decides a race; the service only translates its refusal into a
+  `409`. No check-then-insert.
+- **Triggers for what a CHECK can't see**: comparing `OLD` and `NEW` (a
+  finished session is final), or reading another row (a closed program).
+  Most exempt the tables' owner, by role membership, so migrations and the
+  seed still work with no role name in the SQL. A policy decides *which
+  rows* someone may write; a trigger decides *which values*.
+- **Named refusals**: each trigger raises its own constraint name, and the
+  global exception filter turns the known ones into the API's own words.
+- **Hand-edited migrations**: a constraint checks every existing row, so a
+  migration first repairs the rows it would refuse. Every migration is
+  created with `drizzle-kit generate` (or `--custom`), never a hand-written
+  journal entry (journal 32).
 
 ---
 
 ## Security-specific decisions
 
-- **Rate limiting**, tighter on sensitive endpoints (login, password reset)
-  than the global default.
-- **DTO-level caps** (`@MaxLength`, `@ArrayMaxSize`, a custom
-  `@MaxJsonSize` validator) on every user-controlled input shape, not
-  just type validation.
-- **An independent file-size guard inside `StorageService` itself**,
-  not solely relying on upstream body-size limits.
-- **Reorder-endpoint permutation checks** were found, across three
-  separate implementations, to only compare deduplicated `Set` sizes —
-  allowing a duplicate-padded array to pass while silently omitting a
-  real entry. Fixed everywhere the pattern was copy-pasted, not just the
-  one originally flagged instance.
-- **A real, previously-invisible WebSocket auth race condition**: the
-  original `handleConnection` lifecycle hook ran without actually
-  blocking further events, meaning a client could reach a handler before
-  session data was populated. Fixed by moving authentication into genuine,
-  blocking Socket.IO middleware (`server.use()`).
-- **`X-Forwarded-For` was found, via direct evidence from real production
-  logs, to not reliably carry the true visitor IP through this specific
-  Cloudflare + Caddy chain** — contradicting generic documentation.
-  Fixed by reading Cloudflare's own dedicated `CF-Connecting-IP` header
-  directly, verified by confirming both headers match in a live request
-  afterward.
-- **A security-claiming code comment that the code never actually
-  enforced**: `archiveConversation`/`unarchiveConversation` stated admins
-  don't get an archive action, but nothing checked for it — an admin
-  calling either endpoint would silently fall into the patient's own
-  archive-state branch. The same unconditional admin bypass was later found
-  to also reach `sendMessage` and `markAsRead` on the identical code path,
-  the second of which had a real secondary effect (closing the 15-minute
-  message-delete window without the real participants' involvement) — both
-  fixed with the same block once the pattern was recognized, not just the
-  instance first reported.
-- **`UsersService.toPublic()` — the single funnel every user-returning
-  endpoint relies on** — stripped `passwordHash` but not `mfaSecret`,
-  `passwordResetTokenHash`, or `passwordResetTokenExpiresAt`, meaning
-  `GET /auth/me` and related endpoints echoed them straight back. Fixed at
-  the one funnel point, then confirmed absent from two further call sites
-  (`AuthService.validateUser()`, `registerClinic()`) that had independently
-  made the identical mistake.
-- **A five-category deliberate bug hunt**, built directly from what the
-  bugs above actually looked like rather than a generic review: cross-
-  tenant/clinic leaks, TOCTOU races, array/object mutation validated before
-  an overwrite, comments claiming an unenforced restriction, and copy-paste
-  propagation of one bug into sibling implementations. Findings were
-  investigated and confidence-rated *before* any fix was written, and every
-  fix re-traced against real source after landing — the same discipline
-  applied to the RLS rollout afterward.
+- **Rate limits** on every route (60 a minute per address), tighter on
+  sign-in, resets, invitations, re-confirmations and downloads (5 a minute
+  on 21 routes). A refused request says how
+  long to wait, in words and in `Retry-After`. The limits can be switched
+  off only outside production (`RATE_LIMITS=off`), and one test suite keeps
+  them on to prove they work.
+- **Validation on every input**: lengths, list sizes, calendar dates
+  checked to exist, unknown fields refused. `null` is refused for every
+  required column (`@ValidateIf(isPresent)`, never `@IsOptional()` — the
+  "null trap" that recurred four times before it became the rule).
+- **One funnel for what a user record exposes** (`toPublic()`): secrets,
+  hashes and storage keys stripped, photos as signed URLs. A person's own
+  answers (`toSelf()`) add only their own settings.
+- **Secrets in bodies, hashes in the database**, as above; nothing secret
+  in a URL.
+- **WebSocket authentication in blocking middleware**, at the handshake; the
+  sockets of every ended session are closed.
+- **Behind Cloudflare and Caddy**, the client's address is read from
+  `CF-Connecting-IP`, after `X-Forwarded-For` proved unreliable in that
+  chain (journal 19).
+- **CORS** names its origins and exposes only the headers the frontend
+  reads (`Content-Disposition`, `Retry-After`, `X-Request-Id`).
+- **Bug hunts by category**, built from what earlier bugs looked like:
+  cross-clinic leaks, TOCTOU races, comments claiming an unenforced rule,
+  one bug copied into sibling code (journals 20, 22).
+- **Nothing that leaves the server names a patient.** Logs and error
+  reports are built from allow-lists: the path without its query, no
+  headers, no IP addresses, no database values, emails masked (journal 41).
 
 ---
 
-## Type safety — four systematic passes, one recurring root cause
+## Type safety
 
-A large stretch of work found and fixed the same underlying pattern
-repeatedly: `any`-typed values standing in for data that had a real,
-well-defined shape, disabling TypeScript's checking entirely at that
-point and cascading into ~150 individual lint findings from one root
-cause. Fixed systematically rather than patched per call site:
-
-1. `@CurrentUser()`'s return type, widened from `any` to a real
-   `CurrentUser` interface.
-2. `express-session`'s `SessionData` interface, extended via declaration
-   merging to know about the app's real custom session fields
-   (`mfaPending`), plus a separate fix for Socket.IO's `request` object
-   not being typed as an Express `Request` at all.
-3. The same `any`-`getRequest()` gap, closed in the remaining guards and
-   interceptor still using it directly.
-4. `activeRole` widened from plain `string` to the real `UserRole` enum
-   everywhere, then every enum comparison project-wide converted to use
-   the actual member — a genuine type-safety upgrade, not just cosmetic
-   consistency, since a `string`-typed field gains nothing from being
-   compared against an enum member.
-
-One deliberate *non*-fix is worth recording: a global `Express.User`
-augmentation was investigated and correctly rejected, because it would
-have papered over a real, intentional divergence — the plain-password
-login path deliberately strips `mfaSecret` before it reaches `req.user`,
-while every other path carries it. Recognizing when the more sweeping fix
-would be *wrong*, not just riskier, mattered more here than closing the
-gap completely.
+A long stretch of work traced about 150 lint findings to one root cause:
+`any` standing in for data with a real shape (`@CurrentUser()`,
+express-session's `SessionData`, untyped requests, `activeRole` as a plain
+string). Each was fixed at the root rather than per call site (journal 21).
+One sweeping fix was deliberately rejected: a global `Express.User`
+augmentation would have hidden a real difference between two sign-in
+paths. The backend has linted with **0 problems** since 2026-11-01; e2e
+files relax only the `no-unsafe-*` rules, because supertest's `res.body` is
+untyped by nature.
 
 ---
 
 ## Development practices
 
-- **A running `deferred-improvements.md`** tracks small, real
-  improvements deliberately not tackled immediately — not urgent, not
-  forgotten, revisited explicitly rather than left to fall out of memory.
-- **Prettier configured to match actual preferences** (`semi: false`,
-  `singleQuote: true`, `trailingComma: "all"`) rather than fighting the
-  default — with the honest, verified limitation that Prettier's
-  blank-line collapsing is not configurable at all, accepted as a real
-  tradeoff.
-- **`.gitattributes` enforcing LF line endings** and **`core.fileMode
-  false`** — both closing recurring Windows/Linux cross-platform friction
-  at the repository-configuration level, rather than re-fixing the same
-  symptom repeatedly.
-- **A codebase-snapshot sync-check discipline**: before any significant
-  edit, verify the actual current state of relevant files directly rather
-  than work from an assumed or remembered state — this caught real drift
-  multiple times and avoided proposing fixes against stale code.
-- **Delegating large, well-scoped mechanical tasks to Claude Code**, with
-  prompts that explicitly demand root-cause fixes over local patches, real
-  verification (not just "should work"), and explicit reporting of
-  anything ambiguous rather than a silent guess — and reviewing its output
-  critically rather than accepting a summary at face value.
-- **A five-check bug-hunt methodology**, developed after bugs were found
-  by accident while writing documentation, then applied deliberately:
-  cross-check sibling routes for inconsistent authorization, cross-check
-  security-claiming comments against actual enforcement, verify every
-  WebSocket handler has a real check, trace what a client actually
-  receives on error, and check for lifecycle-ordering assumptions the
-  framework doesn't actually guarantee.
-- **Test suite philosophy: review-and-fix, not wholesale regenerate** —
-  deliberately preserving already-valuable existing test patterns (a
-  copy-not-reference test explicitly called out as the suite's most
-  important single test) while fixing genuine staleness and closing real
-  coverage gaps for newly-shipped security fixes.
+- **Design with the person, then build in passes.** Each feature was
+  proposed (as screens when it had any), its choices made by the person, and
+  built in passes, each confirmed green on the person's machine before the
+  next. The decisions log records each choice with what was rejected.
+- **Verify against the code, never memory.** Every change starts from the
+  current files, and every document claim is traced to a file (this
+  document included).
+- **Mutation testing, by hand.** After each pass, deliberate bugs are put
+  into the new code (a condition removed, a bound moved, a lock dropped, a
+  policy weakened) and the tests must fail. A surviving mutant is either a
+  missing test or dead code, and which one is proven before acting. See
+  [`TESTING.md`](TESTING.md).
+- **Races proven, not hoped for**: a conflicting write is held open on
+  another connection while the request is sent (`whileHolding`).
+- **Rules checked across the whole codebase by tests**: every write route
+  audited, no log line interpolating an address, the endpoint table equal
+  to the code, every storage column known to the sweeper.
+- **Known, deliberately postponed work is written down** with its reason,
+  in a working ledger kept outside the repository. What is still open and
+  matters to a reader is summarised under "Known limits" below.
+- **Formatting and line endings**: Prettier (`semi: false`, `singleQuote:
+  true`, `trailingComma: "all"`, `endOfLine: "auto"`, because the working
+  copy is CRLF on Windows), and `.gitattributes` keeping shell scripts and
+  systemd units LF, since a CRLF script fails on Linux.
+- **AI assistance, reviewed.** Much of the code and documentation was
+  written with an AI assistant (Claude). The rule throughout was root causes
+  over patches, real verification over "should work", and every
+  ambiguity raised rather than guessed. The person reviewed, ran and
+  confirmed each pass.
 
 ---
 
 ## Deployment infrastructure
 
-**A raw DigitalOcean Droplet (Ubuntu 24.04 LTS, 2GB/1vCPU) with Docker
-Compose, chosen deliberately over a PaaS** (Render/Railway/Fly.io) —
-explicitly because the project's value included demonstrating real
-infrastructure understanding, not abstracting it away. This choice is the
-direct cause of needing to solve TLS, a domain, firewalling, and process
-management by hand — treated as the point, not a cost.
+**A self-managed DigitalOcean Droplet** (Ubuntu 24.04, 2 GB / 1 vCPU) with
+Docker Compose, chosen over a platform (Render, Railway, Fly.io) because
+handling TLS, DNS, firewalling and processes by hand was part of the point.
+The pipeline was run end to end twice: built, then destroyed and
+recreated to prove the guide (journals 18, 26). **Nothing built since
+journal 35 has been deployed yet**; the next deployment's checklist is
+ARCHITECTURE [§12](ARCHITECTURE.md#12-open-items-before-the-deployment).
 
-**Caddy** as the reverse proxy, chosen for its genuinely simple automatic
-HTTPS (a real Let's Encrypt certificate with essentially zero
-configuration) over more complex alternatives.
+**Cloudflare in front, Caddy behind.** Cloudflare gives DNS, DDoS
+protection and TLS at the edge, in Full (strict) mode. The firewall admits
+only Cloudflare's ranges, verified with a packet capture. Caddy obtains its
+own certificates and serves two sites: `api.stridecare.app` → the app, and
+`files.stridecare.app` → storage, `GET` only, so that photo URLs are signed
+for an address browsers can reach (journal 42). The frontend will be
+`stridecare.app` on Cloudflare Pages.
 
-**Cloudflare** in front of the Droplet — DNS, DDoS protection, and TLS
-termination at the edge, in **Full (strict)** mode specifically (verifying
-the origin's certificate is genuinely valid, not just present). The
-domain itself (`stridecare.app`) was purchased directly through
-Cloudflare specifically to skip a separate nameserver handoff step. The
-apex domain is deliberately reserved for the eventual frontend, with the
-API on `api.stridecare.app` — mirroring how real products like Stripe
-separate their marketing site from their API subdomain.
+**Least exposure.** Postgres has no published port at all; RustFS is bound
+to `127.0.0.1` (for the backup script and the admin console over SSH), as is
+GlitchTip's web console; GlitchTip's own Postgres isn't published. Required
+secrets are refused at two layers: Compose won't start without them, and the
+app's `validateEnv()` refuses unset or placeholder values at boot, including
+the production-only ones (`STORAGE_PUBLIC_URL`, `https` origins).
 
-**A hardened Droplet**: SSH key-only auth, root login and password auth
-both disabled, a DigitalOcean Cloud Firewall initially open on 80/443 and
-later — once Caddy existed and was confirmed working — restricted to
-Cloudflare's own published IP ranges specifically, closing the direct-IP
-bypass. This restriction was verified not just via dashboard inspection
-but via a real `tcpdump` packet capture confirming only legitimate
-Cloudflare-range traffic ever reaches the origin.
+**One-shot tools as Compose services** behind the `tools` profile:
+`migrate`, `create-app-role`, `seed` and `demo-reset`, each built from the
+image's builder stage and never started automatically.
 
-**A `migrate` service inside `docker-compose.prod.yml` itself**, gated
-with Compose profiles so it never runs automatically — replacing an
-initial ad hoc `docker build --target builder` command with something
-self-documenting, discoverable by anyone reading the one file everyone
-already looks at. A second service, `create-app-role`, was added the same
-way once the RLS work needed it (see above) — same builder-stage/profile
-shape, invoked once before the app's first boot.
+**Backups**: `pg_dump`, compressed, uploaded to RustFS by cron, with a
+restore performed and checked against real row counts. The known limit is
+that storage sits on the same machine, so this protects against mistakes,
+not against losing the Droplet.
 
-**`db` has no published port at all — not even loopback — and `storage`
-is bound to `127.0.0.1` only**, deliberately different treatment for a
-real reason: nothing outside the compose network ever needs Postgres
-directly, while RustFS genuinely needs host-level access (the admin
-console over an SSH tunnel, the backup script), so it gets the narrower
-127.0.0.1 binding instead of none at all. Either way, both are
-categorically unreachable from the public internet regardless of any
-firewall rule, not just blocked by one.
+**Demo mode** for reviewers (off by default): a card on the sign-in page
+with four published accounts, those accounts locked against changes that
+would spoil them for the next reviewer, and a nightly reset (a systemd
+timer at 04:00 Toronto time stops the app, reseeds, sweeps storage and
+restarts it).
 
-**Required secrets are enforced at two separate layers**: Compose itself
-refuses to start `db`/`storage` at all if `POSTGRES_PASSWORD`,
-`RUSTFS_ACCESS_KEY`, or `RUSTFS_SECRET_KEY` are unset
-(`${VAR:?must be set in .env}`), one layer earlier than the app's own
-`validateEnv()` catching its own required secrets at boot.
-
-**Caddy's config is a single `reverse_proxy app:3000` block** — a real
-domain name is what makes it request and auto-renew a Let's Encrypt
-certificate and redirect HTTP→HTTPS with zero further configuration,
-including proxying WebSocket upgrade requests automatically. It logs to
-stdout as JSON, deliberately separate from the app's own pino output —
-the only record of a request that never reached the app at all (e.g. a
-502 while the app container is down).
-
-**A genuinely tested backup strategy**: `pg_dump`, compressed and uploaded
-to RustFS via a cron-scheduled script, with an explicit restore test
-performed and verified against real row counts — not just assumed to
-work because the script exits cleanly. The real, documented limitation:
-this protects against application-level mistakes, not a whole-Droplet
-disaster, since RustFS lives on the same machine as Postgres; real
-production would use off-Droplet storage.
+**CI** (GitHub Actions: checks, the API's e2e suite and the browser suite)
+is built and rehearsed, and parked until the repositories are public.
 
 ---
 
 ## Observability & operations
 
-**Better Stack**, chosen over the more famous UptimeRobot specifically
-because UptimeRobot's free tier is restricted to non-commercial personal
-use, while Better Stack carries no such restriction and additionally
-bundles log management — one account closing two separate operational
-gaps (uptime monitoring and log persistence) rather than two disconnected
-tools.
+**Logs**: structured JSON (pino), one line per request with a random,
+server-made **request id**, the path, the status and the user id — never a
+query string, a header or an IP address. The id is also in every error
+body and response header, so a person can quote it ("Reference: 2dc325cf")
+and it finds the request in the logs and in the error tracker. Docker
+rotates the logs (`max-size: 10m`, 3 files). **Better Stack**
+(uptime and log shipping through a small Vector agent) was chosen in
+journal 19. Its own page says it isn't HIPAA compliant, which is why the
+log rules above exist.
 
-**A lightweight Vector agent for log shipping, not Better Stack's full
-eBPF-based collector** — the fuller collector failed outright on the
-Droplet's single vCPU (Docker refused a CPU allocation its bundled config
-requested), read correctly as a genuine hardware mismatch rather than
-something to patch around, and resolved by switching to the tool actually
-sized for this deployment's scale.
+**Error tracking**: self-hosted **GlitchTip**, with the official Sentry
+SDKs on the backend and, through the API (`POST /monitoring`), the frontend.
+Only real bugs report (a `500`, a crash), never an answer the app chose to
+give. Each report is collected minimally and rebuilt from an allow-list
+before it is sent (journal 41).
 
-**Log rotation is genuinely implemented and verified locally**, closing a
-gap that had previously existed only as documentation, not configuration
-(see doc 25 in the journal series for the full finding-and-fix). A shared
-`x-logging: &default-logging` anchor (`json-file`, `max-size: "10m"`,
-`max-file: "3"`) is referenced by `db`, `storage`, `app`, and `caddy` —
-deliberately excluded from `migrate`/`create-app-role`, which are
-short-lived, on-demand tools rather than permanently-running containers
-that accumulate logs over time. Verified via `docker compose config`
-resolving the anchor into a full `logging:` block on all four target
-services. Almost certainly live in production too, by mechanism —
-doc 26's full redeploy recreated every container from the current compose
-file, and Compose logging config applies at creation — but that's an
-inference from how Compose works, not something separately confirmed via
-direct inspection of the running Droplet container. Worth a real check
-(`docker inspect` on the deployed containers) before treating it as fully
-verified rather than very likely true.
+**Resilience checked by breaking things**: a database restart no longer
+takes the API down (idle connections' errors are handled); graceful
+shutdown was timed with `docker stop`; the storage client has timeouts that
+throw.
 
-**Graceful shutdown verified directly, not just configured**:
-`app.enableShutdownHooks()` confirmed via a timed `docker stop` completing
-in a fraction of a second (rather than the full grace period before a
-forced kill), deliberately sequenced *after* log shipping was already
-working — so the same test proved both that shutdown hooks work and that
-a container's very last log lines make it out before the process exits.
+---
+
+## Known limits and what's deferred
+
+Postponed on purpose, each with its reason. None is an unknown.
+
+**Scale and operations**
+- **One API instance.** Rate-limit counters and Socket.IO rooms live in the
+  process's memory; two instances would need Redis for both, and sticky
+  sessions. Not needed at one clinic's scale.
+- **No scheduled jobs beyond the message sweep.** The audit purge (nothing
+  is old enough yet), the storage sweeper (run by hand) and closing sessions
+  left in progress (today they close at the next start, or with their
+  program) would each need a job with no user. The message sweep's definer
+  function is the pattern to follow.
+- **Backups on the same machine**, as above. Images not yet pinned:
+  GlitchTip, both Postgres versions and Caddy still float on a major tag.
+- **Signed URLs** are cacheable (stable for an hour) only for the library's
+  thumbnails; other photos are signed fresh each time. Thumbnails are the
+  whole photo scaled down; generating small images needs an image library
+  (a native dependency, not chosen yet).
+
+**Security and privacy**
+- **Two-factor is optional for admins**, by choice: requiring it would
+  change every admin's sign-in, the reviewers' included.
+- **The encryption key lives with the server** (above).
+- **A patient can't remove a practitioner from their care team** — a
+  meaningful privacy right, left for later because it needs a design (a
+  practitioner could simply rejoin).
+
+**Clinical features**
+- **Referrals to another clinic** aren't built: they hand a record to
+  another organisation, which needs the patient's consent and a record of
+  its own. A care-team link never crosses clinics.
+- **Medical file templates** (practitioner-defined sections) — SOAP is
+  fixed today.
+- **Schedules:** no minimum rest between sessions, no second session a day,
+  no backdated sessions, no removing a planned change except by replacing
+  it.
+- **The records PDF** draws emoji in black and white and has no fallback
+  font for Chinese, Japanese, Korean, Arabic or Hebrew text yet; it isn't a
+  tagged (screen-reader structured) PDF.
+- **A legal disclosure's copy can't be downloaded again** (it is the
+  request's answer and is never stored), and its hold can't be ended early.
+- **Merges** keep the surviving account's profile details and fill only its
+  empty fields; choosing each field isn't offered.
+
+**Still to check once deployed**: that a portrait photo from a real phone
+keeps its orientation through the avatar crop, and that log rotation is
+live on the running containers (`docker inspect`).
