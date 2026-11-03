@@ -107,3 +107,48 @@ describe('validateEnv — demo mode', () => {
     expect(() => validateEnv()).toThrow(/DEMO_GUIDE_URL must be an https/)
   })
 })
+
+// Storage's public address (config/storage-urls.ts, whose own spec covers
+// every rule): here only that the BOOT applies it — a production server
+// without STORAGE_PUBLIC_URL would sign every photo for storage:9000, which
+// no browser can reach, so it must not start.
+describe('validateEnv — storage public address', () => {
+  const saved = { ...process.env }
+  beforeEach(() => {
+    process.env = {
+      ...saved,
+      SESSION_SECRET: 'a'.repeat(64),
+      MFA_ENCRYPTION_KEY: 'b'.repeat(64),
+      POSTGRES_APP_USER: 'stride_app',
+      POSTGRES_APP_PASSWORD: 'x',
+      // 'resend' and RATE_LIMITS on: the values production accepts, so only
+      // the storage address can be the reason.
+      EMAIL_TRANSPORT: 'resend',
+      RESEND_API_KEY: 're_test',
+      NODE_ENV: 'production',
+      RATE_LIMITS: 'on',
+      STORAGE_ENDPOINT: 'storage',
+    }
+    delete process.env.SENTRY_DSN
+    delete process.env.SENTRY_BROWSER_DSN
+    delete process.env.DEMO_MODE
+    delete process.env.DEMO_RESET_TIME
+    delete process.env.DEMO_RESET_TIME_ZONE
+    delete process.env.DEMO_GUIDE_URL
+    delete process.env.STORAGE_PUBLIC_URL
+  })
+  afterAll(() => {
+    process.env = saved
+  })
+
+  it('refuses to start in production without it', () => {
+    expect(() => validateEnv()).toThrow(
+      /^Missing required environment variable: STORAGE_PUBLIC_URL/,
+    )
+  })
+
+  it('starts with an https:// address', () => {
+    process.env.STORAGE_PUBLIC_URL = 'https://files.stridecare.app'
+    expect(() => validateEnv()).not.toThrow()
+  })
+})

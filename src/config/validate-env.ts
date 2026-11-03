@@ -19,6 +19,7 @@ import { getEmailTransportKind } from '../email/email-transport.config'
 import { rateLimitsEnabled } from './rate-limits'
 import { demoModeEnabled, demoTexts } from './demo-mode'
 import { errorReportingConfig } from '../observability/error-reporting-config'
+import { storagePublicEndpoint } from './storage-urls'
 
 // Called as the very first thing bootstrap() does, before NestFactory.create()
 // even runs — nothing about this app should construct a single module if a
@@ -72,6 +73,13 @@ export function validateEnv(): void {
   // when malformed rather than on the first sign-in page that reads them.
   demoModeEnabled()
   demoTexts()
+
+  // Storage's public address (config/storage-urls.ts): required in
+  // production — without it every presigned photo URL would name
+  // `storage:9000`, which no browser can reach — and, when set, an origin
+  // (https:// in production). StorageService reads it through the same
+  // function when it's built.
+  storagePublicEndpoint()
 
   // Same reasoning, applied to MFA secret encryption — validated for both
   // presence AND correct shape (64 hex characters = 32 bytes = AES-256's

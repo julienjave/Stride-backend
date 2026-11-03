@@ -303,3 +303,102 @@ describe('StorageService.getCacheablePresignedUrl', () => {
     expect(second).not.toBe(first)
   })
 })
+
+// The two addresses (config/storage-urls.ts): presigned URLs are signed for
+// the PUBLIC one — the host browsers ask — while the backend's own calls keep
+// going to the INTERNAL one. Signing is offline, so the URLs are read back
+// without any server; the upload goes to a fake server on the internal
+// address and must arrive there.
+describe('StorageService, two addresses', () => {
+  const savedEnv = { ...process.env }
+
+  beforeEach(() => {
+    process.env.STORAGE_ENDPOINT = 'storage'
+    process.env.STORAGE_PORT = '9000'
+    delete process.env.STORAGE_PUBLIC_URL
+  })
+
+  afterEach(() => {
+    process.env = { ...savedEnv }
+  })
+
+  it('signs for the public address when STORAGE_PUBLIC_URL is set', async () => {
+    process.env.STORAGE_PUBLIC_URL = 'https://files.stridecare.app'
+    const storageService = new StorageService()
+
+    const plain = new URL(
+      await storageService.getPresignedUrl('avatars/3/1.jpg'),
+    )
+    const cacheable = new URL(
+      await storageService.getCacheablePresignedUrl(
+        'exercises/7/0.jpg',
+        new Date('2031-03-04T14:27:13.000Z'),
+      ),
+    )
+
+    for (const url of [plain, cacheable]) {
+      expect(url.origin).toBe('https://files.stridecare.app')
+      // Path-style, the bucket first — the path the Caddyfile lets through.
+      expect(url.pathname.startsWith('/stride/')).toBe(true)
+      // SigV4 lists what the signature covers: the host is one of them, which
+      // is why the URL must be signed for this host and can't be rewritten.
+      expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host')
+    }
+  })
+
+  it('signs for the internal address when it is unset (local development, unchanged)', async () => {
+    process.env.STORAGE_ENDPOINT = 'localhost'
+    const url = new URL(
+      await new StorageService().getPresignedUrl('avatars/3/1.jpg'),
+    )
+
+    expect(url.origin).toBe('http://localhost:9000')
+  })
+
+  it('gives a different signature for each host (the host is signed)', async () => {
+    const moment = new Date('2031-03-04T14:27:13.000Z')
+    const sign = async (publicUrl: string) => {
+      process.env.STORAGE_PUBLIC_URL = publicUrl
+      const url = new URL(
+        await new StorageService().getCacheablePresignedUrl(
+          'exercises/7/0.jpg',
+          moment,
+        ),
+      )
+      return url.searchParams.get('X-Amz-Signature')
+    }
+
+    expect(await sign('https://files.stridecare.app')).not.toBe(
+      await sign('https://files.example.com'),
+    )
+  })
+
+  it("keeps the backend's own calls on the internal address", async () => {
+    const received: string[] = []
+    const server = createServer((request, response) => {
+      received.push(`${request.method} ${request.url}`)
+      request.resume()
+      request.on('end', () => response.writeHead(200, { ETag: '"x"' }).end())
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    process.env.STORAGE_ENDPOINT = '127.0.0.1'
+    process.env.STORAGE_PORT = String((server.address() as AddressInfo).port)
+    // A public address that resolves nowhere: if the upload used it, the
+    // test would fail with a network error instead of reaching the server.
+    process.env.STORAGE_PUBLIC_URL = 'https://files.invalid'
+
+    try {
+      await new StorageService().upload(
+        'avatars/3/1.jpg',
+        Buffer.from('x'),
+        'image/jpeg',
+      )
+    } finally {
+      server.closeAllConnections()
+      await new Promise((resolve) => server.close(resolve))
+    }
+
+    expect(received).toHaveLength(1)
+    expect(received[0]).toMatch(/^PUT \/stride\/avatars\/3\/1\.jpg/)
+  })
+})

@@ -28,3 +28,43 @@ api.stridecare.app {
 		format json
 	}
 }
+
+files.stridecare.app {
+	# Storage's PUBLIC address: where browsers download photos, through the
+	# presigned URLs the API signs for exactly this host (STORAGE_PUBLIC_URL —
+	# src/config/storage-urls.ts says why it must be a host of its own). The
+	# same RustFS container as always; this site only gives browsers a way in.
+	#
+	# Only signed DOWNLOADS pass: a GET inside the `stride` bucket — the only
+	# kind of URL the API signs (the method is part of the signature, so even
+	# a HEAD on one of them is refused by RustFS). Uploads, deletes and
+	# listings are the backend's alone, made on the internal address
+	# (storage:9000), so the rest of the S3 API isn't reachable from the
+	# internet at all. RustFS still checks each request's signature — this
+	# only shrinks what a stranger can even try.
+	@download {
+		method GET
+		path /stride/*
+	}
+	handle @download {
+		# Caddy forwards the original Host header (files.stridecare.app) by
+		# default. RustFS needs exactly that: it recomputes the URL's signature
+		# from the host the browser asked for, and a different one would fail.
+		reverse_proxy storage:9000
+
+		# "?" = only when the answer doesn't say already. The library's covers
+		# come with their own (`private, max-age=3600`, part of their signed
+		# URL); every other photo would come with none — and Cloudflare caches
+		# .jpg/.png answers at its edge by default. `private` tells it not to:
+		# a patient's photo is kept by their own browser, never by a shared cache.
+		header ?Cache-Control "private"
+	}
+	handle {
+		respond 404
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

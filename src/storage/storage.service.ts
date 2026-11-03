@@ -36,6 +36,10 @@ import {
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { cacheableSigning } from './cacheable-url'
+import {
+  storageInternalEndpoint,
+  storagePublicEndpoint,
+} from '../config/storage-urls'
 
 // One object as the storage server lists it (listObjects below).
 export interface StoredObject {
@@ -80,11 +84,17 @@ export const STORAGE_TIMEOUTS = {
 // The S3 client's configuration, apart from the class so a test can build a
 // client with the SAME settings but shorter timeouts (waiting 30 s in a unit
 // test would be absurd).
+//
+// `endpoint`: which address of the storage server the client talks to —
+// the internal one by default (where the backend's own calls go); the
+// service's signing client passes the PUBLIC one (config/storage-urls.ts
+// explains the two).
 export function storageClientConfig(
   timeouts: typeof STORAGE_TIMEOUTS = STORAGE_TIMEOUTS,
+  endpoint: string = storageInternalEndpoint(),
 ): S3ClientConfig {
   return {
-    endpoint: `http://${process.env.STORAGE_ENDPOINT ?? 'localhost'}:${process.env.STORAGE_PORT ?? 9000}`,
+    endpoint,
     region: 'us-east-1',
     credentials: {
       accessKeyId: process.env.RUSTFS_ACCESS_KEY ?? 'rustfsadmin',
@@ -123,11 +133,25 @@ export function storageClientConfig(
 @Injectable()
 export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name)
+  // Two clients, ONE storage server (config/storage-urls.ts says why):
+  //   - `client` sends the backend's own calls (upload, copy, delete, list)
+  //     to the INTERNAL address — `storage:9000` in production;
+  //   - `signingClient` only computes presigned URLs, for the PUBLIC address
+  //     browsers use — `https://files.stridecare.app` in production. A
+  //     signature covers the URL's host, so it must be made for the host the
+  //     browser will ask. Signing is offline (an HMAC computed here, from the
+  //     credentials): this client never opens a connection.
+  // Without STORAGE_PUBLIC_URL (local development) both have the same
+  // address, and the URLs are exactly what they were before.
   private readonly client: S3Client
+  private readonly signingClient: S3Client
   private readonly bucket = 'stride'
 
   constructor() {
     this.client = new S3Client(storageClientConfig())
+    this.signingClient = new S3Client(
+      storageClientConfig(STORAGE_TIMEOUTS, storagePublicEndpoint()),
+    )
   }
 
   async onModuleInit() {
@@ -216,7 +240,9 @@ export class StorageService implements OnModuleInit {
       Bucket: this.bucket,
       Key: objectKey,
     })
-    return getSignedUrl(this.client, command, { expiresIn: expirySeconds })
+    return getSignedUrl(this.signingClient, command, {
+      expiresIn: expirySeconds,
+    })
   }
 
   // A signed URL that stays THE SAME for the whole hour, so the browser can
@@ -240,7 +266,7 @@ export class StorageService implements OnModuleInit {
       Key: objectKey,
       ResponseCacheControl: cacheControl,
     })
-    return getSignedUrl(this.client, command, { expiresIn, signingDate })
+    return getSignedUrl(this.signingClient, command, { expiresIn, signingDate })
   }
 
   // Same as getPresignedUrl above, but safe to call with a possibly-absent
