@@ -61,6 +61,8 @@ docs/extra/
 docs/guides/
 backend-codebase-snapshot.md
 backend-codebase-snapshot.zip
+backend-docs-snapshot.md
+backend-docs-snapshot.zip
 backend-documentation-snapshot.md
 removed/
 *.tsbuildinfo

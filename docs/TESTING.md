@@ -7,8 +7,8 @@ working guide.
 
 | Suite | Where | What it runs against | Size (2026-11-03) |
 |---|---|---|---|
-| **Unit** | `src/**/*.spec.ts`, `scripts/**/*.spec.ts` | nothing outside the process (fakes, a local socket or two) | 113 files, about 2,590 tests |
-| **API end-to-end** | `test/*.e2e-spec.ts` | the real app, a real Postgres (`stride_test`), S3-compatible storage | 50 files, about 1,345 tests |
+| **Unit** | `src/**/*.spec.ts`, `scripts/**/*.spec.ts` | nothing outside the process (fakes, a local socket or two) | 113 files, 2,589 tests |
+| **API end-to-end** | `test/*.e2e-spec.ts` | the real app, a real Postgres (`stride_test`), S3-compatible storage | 50 files, 1,346 tests |
 | **Browser** | the frontend repository's `e2e/` (TODO-LINK) | this backend built and started on port 3100, its own database (`stride_e2e`), Chromium | 15 tests |
 
 The browser suite belongs to the frontend, but it starts *this* backend, so
