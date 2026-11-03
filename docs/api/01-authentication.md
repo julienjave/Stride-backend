@@ -1,405 +1,326 @@
 # Authentication & Sessions
 
 Source of truth:
-[`src/auth/auth.controller.ts`](../../src/auth/auth.controller.ts),
-[`src/auth/auth.service.ts`](../../src/auth/auth.service.ts),
-[`src/common/guards/session-auth.guard.ts`](../../src/common/guards/session-auth.guard.ts),
-[`src/common/guards/roles.guard.ts`](../../src/common/guards/roles.guard.ts),
+[`src/auth/`](../../src/auth/) (sign-in, sign-out, role switch, password
+reset), [`src/mfa/`](../../src/mfa/) (two-factor sign-in, re-confirmation),
+[`src/password-change/`](../../src/password-change/),
+[`src/email-change/`](../../src/email-change/),
+[`src/invitations/`](../../src/invitations/),
+[`src/common/guards/`](../../src/common/guards/),
 [`src/auth/strategies/session.serializer.ts`](../../src/auth/strategies/session.serializer.ts),
-[`src/users/users.service.ts`](../../src/users/users.service.ts),
-[`src/main.ts`](../../src/main.ts).
+[`src/main.ts`](../../src/main.ts). Tests:
+[`test/auth.e2e-spec.ts`](../../test/auth.e2e-spec.ts),
+[`test/auth-recovery.e2e-spec.ts`](../../test/auth-recovery.e2e-spec.ts),
+[`test/mfa.e2e-spec.ts`](../../test/mfa.e2e-spec.ts),
+[`test/step-up-failures.e2e-spec.ts`](../../test/step-up-failures.e2e-spec.ts),
+[`test/invitations.e2e-spec.ts`](../../test/invitations.e2e-spec.ts),
+[`test/password-change.e2e-spec.ts`](../../test/password-change.e2e-spec.ts),
+[`test/email-change.e2e-spec.ts`](../../test/email-change.e2e-spec.ts).
 
 ## This is cookie auth, not token auth
 
-There is no `Authorization` header, no JWT, and no bearer token anywhere in
-this API. The whole authentication mechanism is a single `httpOnly` session
-cookie named `connect.sid`, issued by
-[`express-session`](https://www.npmjs.com/package/express-session) and backed
-by a Postgres-stored `session` table managed by `connect-pg-simple` — a
-connection pool entirely separate from Drizzle's own, with its own table
-outside Drizzle's schema/migrations.
+There is no `Authorization` header, no JWT and no bearer token anywhere in
+this API. Authentication is one `httpOnly` session cookie, `connect.sid`,
+issued by [`express-session`](https://www.npmjs.com/package/express-session).
+The sessions themselves live in Postgres (a `session` table managed by
+`connect-pg-simple`, on a connection pool of its own).
 
-What this means concretely for a frontend:
+For a frontend, that means:
 
-- **Send every request with credentials included.** With `fetch`, that's
-  `fetch(url, { credentials: 'include' })` on every call, not just login.
-  With `axios`, set `withCredentials: true` (ideally globally). Without this,
-  the browser neither stores nor sends the session cookie, and every
-  "authenticated" request looks like a fresh, logged-out visitor.
-- **CORS trusts an explicit origin allowlist, not a wildcard.** `main.ts`
-  calls `app.enableCors({ origin: getAllowedOrigins(), credentials: true })`.
-  [`getAllowedOrigins()`](../../src/config/allowed-origins.ts) reads the
-  comma-separated `FRONTEND_URLS` env var (default: `http://localhost:5173`).
-  Per the CORS spec, `credentials: true` can never be paired with a wildcard
-  origin — your frontend's real origin (protocol, host, and port, exactly)
-  must be in that list.
-- **There is nothing to store in `localStorage` or attach to a header.** The
-  login response carries no token. The browser manages the cookie
-  transparently once `credentials: 'include'`/`withCredentials` is set;
-  frontend code never reads or writes it directly.
-- **Cookie attributes**, from the `session(...)` config in `main.ts`:
-  `httpOnly: true` always; in production, `secure: true` and
-  `sameSite: 'none'` (required together — browsers reject `SameSite=None`
-  without `Secure`); in development, `secure: false` and `sameSite: 'lax'`,
-  which is why plain `http://localhost` works locally without HTTPS.
-- **Session lifetime is a fixed 7 days from login**
-  (`maxAge: 1000 * 60 * 60 * 24 * 7`), and it is **not** a rolling window —
-  `resave: false` and no `rolling` option means the expiry is set once and
-  not extended by later activity. After 7 days, the cookie is simply invalid
-  and the user must log in again, regardless of how recently they were
-  active.
+- **Send every request with credentials**: `fetch(url, { credentials:
+  'include' })`, or `withCredentials: true` with axios. Without it the
+  browser neither stores nor sends the cookie, and every request looks like
+  a signed-out visitor's.
+- **CORS trusts an explicit list of origins, never a wildcard.** The API
+  answers with credentials only to the origins in `FRONTEND_URLS`
+  (comma-separated; [`src/config/allowed-origins.ts`](../../src/config/allowed-origins.ts)).
+  The CORS rules forbid pairing credentials with `*`, so the frontend's
+  exact origin (scheme, host and port) must be in the list.
+- **There is nothing to store.** No response carries a token, so there's
+  nothing to keep in `localStorage` (where any script on the page could read
+  it). JavaScript never sees the cookie.
+- **Cookie attributes** ([`src/main.ts`](../../src/main.ts)): `httpOnly`
+  always. In production, `secure: true` and `sameSite: 'none'`; in
+  development, `secure: false` and `sameSite: 'lax'`, so plain
+  `http://localhost` works.
+- **A session lasts 7 days from sign-in**, and isn't extended by activity
+  (no `rolling` option). After that, the person signs in again.
+- **A session stops working at once** when its account is deactivated or
+  loses the session's active role. Every request reloads the account
+  (`SessionSerializer.deserializeUser`) and treats such a session as signed
+  out.
 
-## A NestJS default worth calling out: `POST` routes return `201`
+## A Nest default worth knowing: `POST` answers `201`
 
-Any `@Post()` handler with no explicit `@HttpCode(...)` returns `201
-Created`, not `200` — this is Nest's default, not something specific to this
-API, but it trips people up. `register`, `register-clinic`, `login`,
-`mfa/verify`, `mfa/setup`, and `switch-role` all return `201` on success. A
-frontend checking `res.status === 200` to detect a successful login will
-misread every real success as a failure. Routes that explicitly override this
-— `logout`, `mfa/enable`, `mfa/disable`, `forgot-password`,
-`reset-password` — return `204 No Content` instead.
+A `POST` route without `@HttpCode` answers `201 Created`, even when it
+creates nothing: `login`, `mfa/verify` and `switch-role` all answer `201`.
+A client that checks `status === 200` to detect a successful sign-in will
+read every success as a failure. Check `response.ok`, or the exact status
+in the [endpoint index](./06-endpoints.md).
 
-## Registration
+## Accounts are invited, not registered
 
-Two distinct paths exist and are not interchangeable:
+There is **no public sign-up**. `POST /auth/register` was removed with
+invitations: a self-registered patient belonged to no clinic, so no one
+could see or treat them. An account is created by someone already in Stride:
 
-- **`POST /auth/register`** — public self-signup, throttled to 10
-  requests/minute per IP. Always creates a **patient** account —
-  `RegisterDto` has no `role` field at all, so there is nothing for a caller
-  to override. Body: `{ email, password, firstName, lastName, dateOfBirth,
-  phone?, address? }` (`dateOfBirth` an ISO date string; `password` 8–128
-  characters; `phone`/`address` are optional and common to every role — see
-  [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
-  On success (`201`), the new account is logged in immediately via
-  `req.login()` — no separate login call is needed — and the full user
-  object is returned, including top-level `phone`/`address` and
-  `patientProfile: { dateOfBirth }` (see [below](#every-field-stripped-before-a-user-object-reaches-a-response)).
-- **`POST /auth/register-clinic`** — bootstraps the **very first** clinic and
-  its founding admin account together, in one transaction, throttled to 5
-  requests/minute per IP. This is a **one-time setup operation**, not an
-  ongoing signup path: `AuthService.registerClinic` checks whether *any*
-  admin account already exists anywhere in the system and, if so, rejects
-  with `403 Forbidden` (`"An administrator account already exists. Ask an
-  existing admin to create additional accounts."`). Once a first admin
-  exists, this route is permanently closed for the lifetime of that database
-  — every later clinic is created by an existing admin via `POST /clinics`,
-  and every later user via `POST /users`. Body: `{ clinicName, clinicEmail,
-  clinicPhone?, clinicAddress?, clinicWebsite?, email, password, firstName, lastName, phone?,
-  address?, position? }`. **`phone`/`address` here belong to the founding
-  admin's own account, not the clinic** — they're unrelated to `clinicPhone`
-  (the clinic's own contact number); the two land in the same request body
-  but never mean the same thing. On success (`201`), the new admin is logged
-  in immediately; the response is the admin's public user fields (including
-  top-level `phone`/`address`) plus `roles: ['admin']`, `activeRole:
-  'admin'`, `adminProfile: { position }`, and `clinicId` (the id of the
-  clinic just created — you'll need it for later steps).
+- an **admin** creates practitioners, patients and other admins;
+- a **practitioner** creates patients, and joins their care team.
+
+That's `POST /users`. The new account has **no password**: it gets an
+invitation email, and the person chooses their password from its link.
+
+### The very first account: `POST /auth/register-clinic`
+
+Creates the first clinic and its founding admin in one transaction, then
+signs the admin in (`201`, with the admin and the new `clinicId`). It's
+**one-time**: once any admin exists, it answers `403` for good. Later
+clinics are created with `POST /clinics`, and later accounts with
+`POST /users`.
+
+`GET /auth/setup-status` (public) tells the sign-in page which case it's
+in:
+
+```json
+{ "setupComplete": true, "demo": null }
+```
+
+`demo` is `null` except on the reviewers' demo deployment (`DEMO_MODE`).
+There it holds the shared demo accounts, their password, the two-factor
+account's key, and the reset schedule, for the sign-in page's "For
+reviewers" card. Those values are public on purpose.
+
+### Accepting an invitation
+
+The invitation link carries a random 256-bit token. Only its SHA-256 hash
+is stored, so a leaked database can't be used to accept anyone's
+invitation. The token always travels in the **body**, never in a URL the
+server would log.
+
+1. `POST /invitations/lookup` `{ token }`: `200` with what the accept page
+   shows (`email`, `firstName`, `lastName`, `clinicNames`, `expiresAt`). An unknown token answers
+   `404`. One that can't be used any more answers `410`, with `reason`
+   `accepted`, `revoked` or `expired`.
+2. `POST /invitations/accept` `{ token, password }`: `204`. The password is
+   set, and the person then signs in normally.
+
+An invitation is valid for **7 days**, and accepting it is single-use (one
+conditional `UPDATE`: two tabs accepting at once can't both succeed). An
+admin, or a practitioner on the patient's care team, can send a new one
+(`POST /users/:id/invitations`, which closes the open one) or revoke it
+(`POST /users/:id/invitations/revoke`). `GET /users/:id/invitations` shows
+its state.
+
+Until the invitation is accepted, the account can't sign in (it fails like
+a wrong password) and can't ask for a password reset (that would be a way
+around the invitation).
 
 ## Login: single-role vs. multi-role accounts
 
-**`POST /auth/login`** — body: `{ email, password, role? }`.
+`POST /auth/login` `{ email, password, role? }`. The email is matched
+without regard to case. The rules are in `AuthService.validateUser`:
 
-The resolution logic lives in `AuthService.validateUser`:
-
-| Condition | Result |
+| Case | Answer |
 |---|---|
-| Email doesn't match any account, **or** password is wrong | `401 Unauthorized` — `"Invalid email or password"`. Both cases return the identical message and status, so login responses can't be used to enumerate valid emails. A wrong password against a *real* account is separately recorded as a `LOGIN_FAILURE` audit event — but the HTTP response to the caller never reveals which case occurred. |
-| Account has exactly **one** role, and `role` was **not** supplied | Succeeds — that one role becomes `activeRole` automatically. Never send `role` at all for a single-role account. |
-| Account has **more than one** role, and `role` was **not** supplied | `400 Bad Request` — `"This account has multiple roles. Specify which one to log in as."` The frontend must catch this specific case (or, if it already knows the account is multi-role, send `role` up front and avoid the round trip). |
-| Account has more than one role, and `role` **was** supplied, but the account doesn't actually hold that role | `403 Forbidden` — `` `This account does not have the "<role>" role` `` |
-| Credentials valid and role resolved | Continue to the MFA check below |
+| No account with this email, a wrong password, or an account whose invitation isn't accepted yet | `401 Invalid email or password`: the same status and words for all three, so the answer doesn't reveal which. A failed attempt against a real account is audited (`LOGIN_FAILURE`). |
+| The right password for a **deactivated** account | `401 This account has been deactivated`. Checked *after* the password, so someone without the password can't learn the account's state. |
+| One role, no `role` sent | Signed in, in that role. |
+| Several roles, no `role` sent | `400`, with `roles` listing them: `{ "message": ["This account has multiple roles. Specify which one to log in as."], "roles": ["practitioner", "patient"], … }`. Ask the person, then send the same request with `role`. |
+| `role` sent, but the account doesn't hold it | `403 This account does not have the "<role>" role` |
+| Two-factor sign-in is on | `201 { "mfaRequired": true }`. The session is **not** signed in yet: see below. |
+| Otherwise | `201` with the signed-in user (the same shape as [`GET /auth/me`](#get-authme-who-am-i)) |
 
-These are the exact statuses exercised in
-[`test/auth.e2e-spec.ts`](../../test/auth.e2e-spec.ts) ("requires an explicit
-role choice for an account with more than one role, and rejects a role it
-does not hold").
+**The same answer, in the same time.** The three failures in the first
+row also take as long as each other. An unknown email, or an account with
+no password yet, is still checked against a dummy bcrypt hash of the same
+cost ([`src/common/password-hashing.ts`](../../src/common/password-hashing.ts)),
+so every refusal pays one bcrypt comparison (about 70 ms here). Until
+2026-11-03 an unknown email answered at once: 6 ms against 75 ms for a
+wrong password, measured on a local server. Timing a few attempts could
+then tell whether an address has an account. Measured after the fix: 70 ms
+against 72 ms. The remaining couple of milliseconds is the audit entry
+written for a failed attempt against a real account, well inside ordinary
+network jitter.
 
-## The two-step MFA flow
+## Two-factor sign-in
 
-If the resolved account has `mfaEnabled: true`, a correct password alone does
-**not** complete login — `POST /auth/login` intentionally stops short of
-calling `req.login()`.
+If the account has two-factor sign-in on, a correct password doesn't sign
+the session in. `POST /auth/login` stores a *pending* marker in the session
+(`mfaPending`), separate from the one Passport checks, and answers
+`{ mfaRequired: true }`. Until the second step succeeds, every guarded
+route still answers `401`.
 
-**Step 1 — `POST /auth/login`** (same request as above; body:
-`{ email, password, role? }`, throttled to 5/minute per IP):
+**`POST /auth/mfa/verify`** `{ code }` (no guard: the session isn't
+signed in yet; the pending marker is the check):
 
-Password is verified and the role is resolved exactly as in the table above,
-but instead of establishing a real session, the controller stashes
-`{ userId, activeRole }` into a *separate* session key,
-`req.session.mfaPending` — distinct from the key Passport itself reads
-(`req.session.passport`). This means `request.isAuthenticated()` still
-correctly returns `false`; no protected route is reachable with this session
-yet. The response is:
+- `code` is either the **6-digit code** from the authenticator app (TOTP,
+  RFC 6238) or one of the account's **recovery codes** (`xxxxx-xxxxx`).
+  Spaces around it are trimmed.
+- Success: `201` with the signed-in user, in the role chosen at the
+  password step.
+- A wrong or already-used code: `401`, with words saying which. **No code
+  works twice**: each app code is accepted once, and a recovery code is
+  spent when used. The pending marker stays, so the person can type the
+  next code without re-entering the password.
+- No pending sign-in in this session: `400`.
 
-```json
-{ "mfaRequired": true }
-```
+Signing in with a recovery code is audited (`MFA_RECOVERY_CODE_USED`), and
+the account's owner gets an email about it.
 
-This is a normal `201`, not an error — check specifically for this shape to
-decide whether to show an MFA prompt. A session *is* touched (something was
-written to it), so `express-session` does issue the `connect.sid` cookie on
-this response even though the session isn't authenticated yet — the browser
-must retain it, since step 2 depends on being the same session.
+### Turning two-factor on, and off
 
-**Step 2 — `POST /auth/mfa/verify`** — body: `{ code }` (a 6-digit string),
-throttled to 5/minute per IP. This route deliberately carries **no
-`SessionAuthGuard`** — the session isn't authenticated yet, by design; its
-own read of `req.session.mfaPending` stands in for a guard:
+| Step | Route | Body | Answer |
+|---|---|---|---|
+| 1. Start | `POST /auth/mfa/setup` | `currentPassword` | `201` with the new secret and its QR code, shown **once** |
+| 2. Confirm | `POST /auth/mfa/enable` | `code`: a 6-digit code from the app, proving it holds the secret | `200` with **10 recovery codes**, shown once (only their keyed hashes are stored). Every *other* session of the account is signed out. |
+| Codes left | `GET /auth/mfa/recovery-codes` | — | `200 { "remaining": 7 }` |
+| New codes | `POST /auth/mfa/recovery-codes` | `currentPassword`, `code` | `201` with 10 new codes; the old ones stop working |
+| Turn off | `POST /auth/mfa/disable` | `currentPassword`, `code` | `204` |
 
-- No pending MFA state on this session (e.g. called without a prior
-  `/auth/login`, or called a second time after already succeeding) →
-  `400 Bad Request` — `"No pending MFA verification for this session"`.
-- Wrong or expired code → `401 Unauthorized` — `"Invalid authentication
-  code"`.
-- Correct code → `mfaPending` is deleted from the session, `req.login()` is
-  now called with the previously-resolved user and role, and the full user
-  object is returned (`201`) — the session is now genuinely authenticated.
+An admin can turn off someone else's two-factor sign-in, for a person who
+lost their phone and their codes: `POST /users/:id/mfa/reset`. The admin
+re-confirms with *their own* password, plus their own code if their
+account has two-factor on. The person's sessions are signed out.
 
-Worked example:
+The secret is stored encrypted (AES-256-GCM, with a key held in the
+server's environment, not in the database).
 
-```
-POST /auth/login
-{ "email": "dr.smith@clinic.com", "password": "correct-horse-battery" }
+## Re-confirming before sensitive changes ("step-up")
 
-→ 201 { "mfaRequired": true }
-   Set-Cookie: connect.sid=...   (retain this cookie)
+A signed-in session proves someone signed in at some point, not that the
+account's owner is at the keyboard now. So the changes that could hand the
+account to someone else ask again:
 
-POST /auth/mfa/verify
-{ "code": "482913" }
+- **the current password**, always;
+- **and a second factor** (an app code or a recovery code) when the account
+  has two-factor on. The field is `code` on the two-factor routes and
+  `mfaCode` on the others.
 
-→ 201 {
-    "id": 42,
-    "email": "dr.smith@clinic.com",
-    "firstName": "...", "lastName": "...",
-    "avatarPath": null,
-    "phone": null,
-    "address": null,
-    "isActive": true,
-    "createdAt": "2026-08-05T14:22:03.101Z",
-    "mfaEnabled": true,
-    "roles": ["practitioner"],
-    "activeRole": "practitioner",
-    "practitionerProfile": {
-      "licenseNumber": "PT-2024-00931",
-      "specialties": ["sports rehab", "post-surgical"],
-      "bio": null
-    }
-  }
-   (session is now authenticated; protected routes are reachable)
-```
+The routes that ask: changing the email, changing the password, new
+recovery codes, turning two-factor off, and an admin's two-factor reset.
+Starting set-up asks the password alone, since two-factor is still off at
+that point.
 
-**MFA enrollment** (requires an already-authenticated session —
-`SessionAuthGuard`, any role):
-
-- **`POST /auth/mfa/setup`** — no body. Generates a fresh TOTP secret
-  (overwriting any previous, unconfirmed one) and returns
-  `{ secret, otpauthUrl, qrCodeDataUrl }` (`201`). Calling it repeatedly is
-  harmless — nothing takes effect on login until `mfa/enable` actually
-  confirms a code generated from the *most recent* secret.
-- **`POST /auth/mfa/enable`** — body `{ code }`, throttled to 5/minute per
-  IP. Verifies `code` against the secret from the most recent `setup` call
-  and, if valid, sets `mfaEnabled: true`. `204 No Content` on success.
-  `400 Bad Request` if `setup` was never called (`"Call MFA setup before
-  attempting to enable it"`) or the code is wrong (`"Invalid authentication
-  code"`).
-- **`POST /auth/mfa/disable`** — body `{ code }`, throttled to 5/minute per
-  IP. Requires a currently valid TOTP code, not merely an authenticated
-  session — this is deliberate, so someone who only has a stolen session
-  cookie can't turn off MFA they never actually passed. `204` on success.
-  `400 Bad Request` if MFA isn't currently enabled, or the code is wrong.
-
-Both `mfa/enable` and `mfa/disable` carry the same 5-req/min `@Throttle`
-override as `mfa/verify` — see [Response Conventions](./03-conventions.md)
-for the complete list of throttled routes.
+- A wrong password: `400 Your current password is not correct`. A missing,
+  wrong or used second factor is also a `400`, with words saying which.
+- **Five failures in a row sign the session out.** The fifth answers `401`,
+  with words explaining why. The rate limit slows guessing from one
+  address, but a stolen session could otherwise keep trying for hours from
+  several. Each failure is audited (`STEP_UP_FAILED`). A success resets the
+  count.
+- A code that passed is spent even if the change then fails, so it can't be
+  replayed: RFC 6238 says a validated code must not be accepted again.
 
 ## Switching roles on a multi-role account
 
-**`POST /auth/switch-role`** — body: `{ role }`. Requires `SessionAuthGuard`
-only (no throttle override — subject to the global 60/min baseline). Changes
-which role is active for the *current* session without a logout/login round
-trip: it re-invokes `req.login()` with the requested role, which re-runs
-session serialization and overwrites the stored session data in place. If the
-account doesn't actually hold the requested role → `403 Forbidden` —
-`` `You do not have the "<role>" role` ``. On success, returns the full,
-freshly-loaded user object with the new `activeRole` (`201`).
+`POST /auth/switch-role` `{ role }`: `201` with the user in the new role.
+It changes the active role **of this session only**, without signing out:
+
+- The account must hold the role (`403` otherwise).
+- The switch is audited (`ROLE_SWITCHED`), because the role decides what
+  data the session can read.
+- The session gets a **new id** (Passport regenerates it, against session
+  fixation). Its open WebSocket connections are closed, since each keeps
+  the role it connected with. The client reconnects and gets a socket for
+  the new role ([WebSocket API](./02-websocket-api.md#connecting)).
 
 ## Logout
 
-**`POST /auth/logout`** — no guard; safe to call with no active session (it
-just skips the audit log write in that case). Destroys the session
-server-side (`req.session.destroy`) and clears the `connect.sid` cookie via
-`res.clearCookie('connect.sid')`. Always `204 No Content`.
+`POST /auth/logout`: `204`. It destroys the session, clears the cookie,
+closes the session's sockets, and audits `LOGOUT`. It has no guard: a
+signed-out caller gets the same `204`.
 
-## Password reset
+## Passwords
 
-- **`POST /auth/forgot-password`** — body `{ email }`, throttled to 5/minute
-  per IP. **Always** returns `204 No Content`, whether or not the email
-  matches a real account — the response is identical either way specifically
-  so this endpoint cannot be used to enumerate registered emails. Only a real
-  match generates a reset token (a random 32-byte value, SHA-256 hashed
-  before storage) and sends an email containing the raw, unhashed token.
-- **`POST /auth/reset-password`** — body `{ token, newPassword }`, throttled
-  to 5/minute per IP. `token` is the raw value from the email; the server
-  hashes it and compares against the stored hash — the plaintext token is
-  never stored. Tokens expire **1 hour** after being issued and are
-  single-use — the stored hash is cleared the moment a reset succeeds, so a
-  second attempt with the same token afterward fails as invalid even within
-  the hour. Invalid or expired → `400 Bad Request` — `"This password reset link is
-  invalid or has expired"`. On success (`204`), **every existing session for
-  that user is destroyed server-side** (`AuthService.destroyAllSessionsForUser`,
-  a raw SQL delete against the `session` table) — if the reset was prompted
-  by a compromised account, this immediately invalidates any other active
-  session on that account, not just the one that performed the reset.
+### Forgot / reset
 
-## `GET /auth/me`
+| Route | Body | Answer |
+|---|---|---|
+| `POST /auth/forgot-password` | `email` | **Always `204`**, whether an account matched or not. Only an **active** account that has a password gets an email. One still waiting for its invitation doesn't, and neither does a deactivated one: reactivating the account is the way back. The email is sent *after* answering, so the answer doesn't wait for the mail server (that wait used to reveal a real account: journal entry 28). |
+| `POST /auth/reset-password/check` | `token` | `200 { email, expiresAt }` if the link is still usable, otherwise the reset's own `400`. The reset page asks first, so a dead link is reported before anyone types a password. |
+| `POST /auth/reset-password` | `token`, `newPassword` (8–128 characters) | `204`. **Every session of the account is signed out**, since someone else may have had access. |
 
-Requires `SessionAuthGuard`. Returns whatever the current session resolves
-to via `SessionSerializer.deserializeUser` — the full public user object plus
-`roles` and `activeRole`. This is the right call to make once on app load to
-determine "is there a valid session, and who is it" — an expired or
-server-revoked session still leaves a cookie present client-side, so cookie
-presence alone can't answer that question.
+The reset token is random (256 bits), stored as a SHA-256 hash, valid for
+**1 hour**, and single-use. A newer request replaces it. If the account is
+deactivated in the meantime, the link stops working, with the same "invalid
+or has expired" words as any dead link.
 
-### Every field stripped before a user object reaches a response
+### Change (signed in)
 
-`UsersService.toPublic()` is the single funnel every user-returning path in
-this API goes through (`findOne`, `findAll`, `update`, `softDelete`,
-`updateAvatar`, and — via `findOne` — `SessionSerializer.deserializeUser`,
-which is what builds `req.user`/`GET /auth/me` on every request). It strips
-exactly these four fields from the raw `users` row, and nothing else:
+`POST /auth/password` `{ currentPassword, newPassword, mfaCode? }`: `204`.
+It's a step-up route (above). Every other session of the account is signed
+out; this one stays signed in.
 
-- `passwordHash`
-- `mfaSecret` — the encrypted TOTP secret; never sent to a client even in
-  encrypted form
-- `passwordResetTokenHash`
-- `passwordResetTokenExpiresAt`
+## Changing the email address
 
-Two call sites bypass `toPublic()` and do their own equivalent stripping,
-because they read the user row directly rather than through
-`UsersService.findOne()`: `AuthService.validateUser()` (needs the real
-`passwordHash` to run `bcrypt.compare`) and `AuthService.registerClinic()`
-(inserts and returns a raw row inside a transaction). Both strip the same
-four fields by hand — confirmed by
-[`test/auth.e2e-spec.ts`](../../test/auth.e2e-spec.ts), which asserts
-`mfaSecret`, `passwordResetTokenHash`, and `passwordResetTokenExpiresAt` are
-absent from the `POST /auth/mfa/verify` and `POST /auth/switch-role`
-response bodies specifically (both of these also build their response by
-hand from an `AuthService`/`req.login()` path, not directly through
-`toPublic()`).
+The new address must be proven before it replaces the old one, and the old
+address hears about it:
 
-`UsersService.attachProfile()` is the equivalent second funnel for role
-profile data — `practitioner_profiles.licenseNumber`/`specialties`/`bio`,
-`patient_profiles.dateOfBirth`, and `admin_profiles.position` are written at
-account creation (`create()`, `grantRole()`) but live in separate 1:1 tables,
-never joined into the `users` row itself. `attachProfile()` queries whichever
-of those tables the account's roles call for and nests the result under a
-role-named key — `practitionerProfile`, `patientProfile`, `adminProfile` —
-present only for roles the account actually holds, so a multi-role account
-can carry more than one. It's called everywhere `toPublic()` is (`findOne`,
-`findAll`, `update`, `softDelete`, `updateAvatar`, `create`), plus the same
-two hand-built bypasses above (`validateUser()`, `registerClinic()`) — the
-one route it does *not* touch is `POST /users/:id/roles`
-(`UsersService.grantRole`), whose response was never a user object to begin
-with, just the account's roles as a bare array. No new authorization logic
-came with this — profile data rides along on responses that already passed
-`UsersController`'s existing self/admin/managing-practitioner check (see
-[Roles & Authorization](./04-authorization.md)); there's no finer-grained
-visibility rule for a profile field than for the rest of the account.
+| Route | Who | Answer |
+|---|---|---|
+| `POST /auth/email-change` `{ newEmail, currentPassword, mfaCode? }` | signed in (step-up) | `201 { pending }`. **The same answer whether the address is free or already taken**, so the route can't be used to discover accounts. The new address gets a confirmation link (or, if it's taken, an email saying so). The old address gets a notice with a cancel link. |
+| `GET /auth/email-change` | signed in | `200 { pending }`: the open request, or `null` |
+| `DELETE /auth/email-change` | signed in | `204`: cancels the open request |
+| `POST /auth/email-change/confirm` `{ token }` | public (the link from the new inbox) | `200 { email }`. The address changes, and the account's other sessions are signed out. |
+| `POST /auth/email-change/cancel` `{ token }` | public (the link from the old inbox) | `204` |
 
-**`phone`/`address` are a different, simpler case: plain `users` columns,
-not profile data at all.** They flow through `toPublic()` exactly like
-`firstName`/`lastName` — top-level on the response, common to every role —
-never through `attachProfile()`, and never nested under `patientProfile` (or
-any other profile key), even though they used to live on
-`patient_profiles` specifically before this account-wide move.
+A request is valid for **24 hours**. A new request replaces the open one.
 
-**These role-profile fields were readable long before they were writable.**
-`UpdateUserDto` originally carried only `firstName`/`lastName` — the fields
-above could be set at creation or role-grant time but never edited
-afterward, through any route. `PATCH /users/:id` (`UsersService.update()`)
-now accepts two different kinds of extra field, checked differently:
+## `GET /auth/me`: who am I?
 
-- **`phone`/`address`** — common to every role, exactly like
-  `firstName`/`lastName`: **no target-role check at all**. Anyone who
-  already passes the self/admin/managing-practitioner check can set them on
-  any target, regardless of which role(s) that target holds.
-- **`licenseNumber`/`specialties`/`bio`** (practitioner), **`dateOfBirth`**
-  (patient), and **`position`** (admin) — flat on the same dto, not nested
-  under a `practitionerProfile`/`patientProfile`/`adminProfile` sub-object
-  (see [Roles & Authorization](./04-authorization.md) for why). Read-side
-  and write-side authorization diverge in one respect worth being explicit
-  about for these fields specifically: a GET's visibility is governed
-  *only* by `UsersController`'s self/admin/managing-practitioner check, as
-  above — but a PATCH adds one further constraint on top, checked against
-  the *target's* actual held role(s), not the caller's. Sending
-  `licenseNumber` (or `specialties`/`bio`) for a target with no
-  practitioner role is rejected with `400 Bad Request`, even from an admin
-  — an admin can update the field on a practitioner, but can't invent a
-  practitioner profile for a patient by writing to it. See
-  [Roles & Authorization](./04-authorization.md) for the exact rule.
+`200` with the signed-in user. It's built by the same function as every
+user in every response (`UsersService.toPublic`), plus the settings only
+the owner may read (`toSelf`):
 
-The resulting shape (also what `GET /auth/me` and every login/register
-response return) is:
+- the account's own fields (`id`, `email`, names, `phone`, address fields,
+  `isActive`, `mfaEnabled`…);
+- `roles` (every role held) and `activeRole` (this session's);
+- a profile per role: `practitionerProfile` (`licenseNumber`,
+  `specialties`, `bio`), `patientProfile` (`dateOfBirth`), `adminProfile`
+  (`position`);
+- `avatarUrl`: a **presigned URL** the browser can load directly, valid
+  for a limited time, or `null`;
+- `readableFont`: the owner's "easier-to-read font" setting, sent only to
+  the owner.
 
-```ts
-{
-  id: number
-  email: string
-  firstName: string
-  lastName: string
-  avatarPath: string | null
-  phone: string | null
-  address: string | null
-  isActive: boolean
-  createdAt: string        // ISO timestamp
-  mfaEnabled: boolean
-  roles: string[]           // every role the account holds
-  activeRole: string         // which one is active for THIS session
-  practitionerProfile?: { licenseNumber: string; specialties: string[]; bio: string | null }
-  patientProfile?: { dateOfBirth: string }
-  adminProfile?: { position: string | null }
-}
-```
+**Never in any response:**
 
-## What `401` vs `403` actually mean here
+- `passwordHash`;
+- the two-factor secret, and the time the last code was used;
+- the step-up failure count;
+- the reset token's hash and expiry;
+- the photo's storage key. `avatarPath` is replaced by `avatarUrl`: where a
+  file lives in storage is an internal detail.
 
-These are not interchangeable, and the distinction is a reliable signal to
-build frontend behavior around:
+One function strips these for every route, rather than one copy per route.
+Two copies of a security rule drift apart; this happened once, when login
+had its own copy and leaked the reset-token fields.
 
-- **`401 Unauthorized`** — thrown by `SessionAuthGuard.canActivate` whenever
-  `request.isAuthenticated()` is `false`. This means: *there is no valid,
-  currently-logged-in session at all.* Causes include: no cookie sent, an
-  expired cookie (past the 7-day `maxAge`), a session destroyed server-side
-  (logout, or a password reset elsewhere), or — a case worth knowing about
-  specifically — **the session's stored `activeRole` is no longer among the
-  user's actual roles.** `SessionSerializer.deserializeUser` re-checks this
-  on *every single request*: if an admin revokes a role after a session was
-  established under it, the very next request from that session gets a
-  `401`, not a `403` — Passport deserialization fails outright
-  (`done(null, false)`), so `req.user` is never populated at all. The
-  correct frontend response to any `401` is to treat the user as logged out
-  and route to the login screen — there is no scenario where retrying or
-  refreshing helps.
-- **`403 Forbidden`** — thrown by `RolesGuard.canActivate` when the session
-  *is* valid but the route declares `@Roles(...)` and the current
-  `activeRole` isn't in that list, **or** thrown directly by a service for a
-  finer-grained, resource-specific check beyond a flat role gate (e.g. a
-  practitioner trying to modify another practitioner's own custom exercise —
-  see [Roles & Authorization](./04-authorization.md) for the full breakdown). A
-  `403` means the user is genuinely who they say they are, just not allowed
-  to do this specific thing — the right UI response is an in-context
-  "you don't have permission" message, not a redirect to login.
+## When a session is signed out by the server
 
-  **One real exception, worth knowing before you build error handling
-  around either status specifically**: for `medical_files`,
-  `assigned_programs`, `sessions`, and `conversations`, Row-Level Security
-  makes an out-of-scope row invisible to the query *before* any
-  service-level ownership check runs — so "this doesn't exist" and "this
-  isn't yours" are genuinely indistinguishable from outside, and both
-  surface as `404 Not Found`, not `403`. See
-  [Roles & Authorization](./04-authorization.md) for exactly which routes
-  this applies to and why.
+| Event | Which sessions end |
+|---|---|
+| Logout | this one |
+| Password reset (forgot-password link) | **all** of the account's |
+| Password change, two-factor turned on, email change confirmed | all **but** the one making the change |
+| An admin's two-factor reset, a deactivation, a patient merge | the target account's |
+| Five failed step-ups in a row | the one that failed them |
+| A role switch | none, but this session gets a new id and its sockets are closed |
 
-`RolesGuard` only ever runs after `SessionAuthGuard` on a route that has
-both (every controller in this app pairs them this way) — authentication is
-always checked before authorization, never the reverse.
+Each time, the ended sessions' WebSocket connections are closed too.
+
+## `401` vs `403` vs `404`
+
+- **`401 Unauthorized`**: no signed-in session (or one that just ended). The
+  frontend's answer is to go to sign-in. `SessionAuthGuard` says `You must
+  be logged in to access this resource`.
+- **`403 Forbidden`**: signed in, but not allowed. That's either the wrong
+  *active role* for the route (`RolesGuard`: `You do not have permission to
+  access this resource`), or a service rule (for example, writing to a
+  conversation whose care-team link has ended).
+- **`404 Not Found`**, often *instead of* `403`. Row-Level Security makes
+  rows the caller has no relationship with **invisible**, not forbidden. A
+  practitioner asking for a patient outside their care team gets the same
+  `404` as for an id that doesn't exist. That's deliberate: a `403` would
+  confirm that the record exists. [Roles & Authorization](./04-authorization.md)
+  explains where each applies.

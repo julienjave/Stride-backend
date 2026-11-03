@@ -19,7 +19,7 @@
 
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common'
 import { and, eq, isNull, sql } from 'drizzle-orm'
-import * as bcrypt from 'bcrypt'
+import { hashPassword } from '../common/password-hashing'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import { emailChangeRequests, users } from '../database/schema'
 import { withRlsContext } from '../database/rls-context'
@@ -94,7 +94,7 @@ export class PasswordChangeService {
     // cost 10), and the account's row is locked for the whole transaction —
     // no reason to hold the lock while hashing. Cost 10, as every password
     // the app stores (reset, invitation, first admin).
-    const newPasswordHash = await bcrypt.hash(newPassword, 10)
+    const newPasswordHash = await hashPassword(newPassword)
 
     // This request's step-up: confirmed inside the transaction, its `failed`
     // in the `.catch` below (StepUpService.attempt).

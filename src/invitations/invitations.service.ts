@@ -27,7 +27,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { createHash, randomBytes } from 'node:crypto'
-import * as bcrypt from 'bcrypt'
+import { hashPassword } from '../common/password-hashing'
 import { and, asc, desc, eq, gt, isNull, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
@@ -423,7 +423,7 @@ export class InvitationsService {
     // UPDATE below) should be as short as possible. The cost is hashing for
     // requests that turn out to be invalid — bounded by the route's rate
     // limit.
-    const passwordHash = await bcrypt.hash(password, 10)
+    const passwordHash = await hashPassword(password)
 
     await withInvitationTokenContext(this.db, tokenHash, async (tx) => {
       // THE single-use guarantee: one conditional UPDATE. Its WHERE

@@ -1,320 +1,369 @@
-# Roles & Authorization Model
+# Roles & Authorization
 
-Every claim below was read directly from the `@Roles(...)` decorators on each
-controller and the `assertCan*`/inline authorization checks inside each
-service — never inferred from what a "reasonable" physiotherapy API might
-do. Several rows are genuinely non-obvious; don't assume a permission model
-without checking this table against the source it links to.
+Who may do what, and how the API decides. The **gate** of each route (public,
+any signed-in user, or a list of roles) is in the generated
+[endpoint index](./06-endpoints.md). This document explains everything
+behind the gate: the relationships that grant access, the three layers of
+checks, and the rules of each resource.
 
-## The three roles
+Every rule below is read from the code (the services, and the Row-Level
+Security policies in [`src/database/migrations/`](../../src/database/migrations/)).
+Each comes with the end-to-end test file that pins it; the tests' names
+state the rules almost word for word.
 
-A single user account can hold **more than one role at once** —
-`user_roles` is a one-to-many table (e.g. a clinic owner can be both `admin`
-and a treating `practitioner`). Only one role is ever *active* for a given
-session at a time (`activeRole`), chosen at login or via
-`POST /auth/switch-role` (see [Authentication](./01-authentication.md)).
-Every authorization check anywhere in this API is against the session's
-current `activeRole` — never the full set of roles the account holds.
+## The three roles, and the active one
 
-- **`admin`** — clinic/practice-level oversight: manages clinics, users, and
-  corrects or archives clinical content created by others. Deliberately
-  **cannot author new clinical content** in several places (exercises,
-  program templates) — admins edit and archive; practitioners create.
-- **`practitioner`** — the primary content author: exercises, program
-  templates, assigned programs, medical file entries. Almost every
-  practitioner action is **clinic-scoped**: a practitioner can only act on a
-  patient who shares at least one clinic membership with them
-  (`UsersService.isPatientManagedBy`, reused throughout the codebase as the
-  definition of "my patient").
-- **`patient`** — reads and self-reports: views their own assigned programs
-  and medical history, and drives their own workout sessions (start,
-  progress, complete). Patients never edit a clinical prescription, even
-  their own.
+- **`admin`** runs the practice: clinics, accounts, invitations, the audit
+  log, merges, and the formal record releases (complaint reviews, legal
+  disclosures). An admin has **no standing access to clinical data**
+  ([below](#admins-and-clinical-data)).
+- **`practitioner`** treats patients: exercises and templates in the shared
+  library, and, for the patients on their care team, programs, the medical
+  file, range-of-motion assessments, session reviews and messages.
+- **`patient`** reads their own record, does their sessions, and messages
+  their care team. A patient never edits a prescription, even their own.
 
-## Authorization is layered
+An account can hold several roles (`user_roles`); someone can be both
+`admin` and `practitioner`, say. **Every check is made against the
+session's active role**, chosen at sign-in or with `POST /auth/switch-role`,
+never against the full set. The database applies the same rule: each
+transaction runs with the session's user id and active role set
+(`app.current_user_id`, `app.current_role`), and the policies read those.
+An admin + practitioner account signed in **as admin** sees no clinical data
+at all, even for patients on its own care team.
 
-Most protected routes have **two** independent layers, and both matter:
+## The two relationships that grant access
 
-1. **`RolesGuard`** (driven by `@Roles(...)` on the controller or a specific
-   handler) — a coarse gate: is this `activeRole` even allowed to call this
-   route at all? Failing this is always `403 Forbidden`, with the generic
-   message `"You do not have permission to access this resource"`.
-2. **Service-level checks** — `assertCanModify`, `assertCanManage`,
-   `assertCanView`, `assertIsOwner`, `isPatientManagedBy`, direct ownership
-   comparisons, etc. — a finer-grained check against the *specific resource*
-   being acted on (do you own this exercise; do you actually manage this
-   patient; is this your own session). Usually `403 Forbidden` on failure,
-   with a message specific to the resource and rule that rejected it, not
-   the generic `RolesGuard` text — **except for four resources, where the
-   real answer is `404` instead. See the callout immediately below.**
+**Clinic membership** (`user_clinics`) says where someone works or is
+treated. Admins manage it (`/clinics/:id/members`). On its own, membership
+grants **no** clinical access. A same-clinic practitioner who isn't on a
+patient's care team is refused every clinical route
+([`care-team.e2e-spec.ts`](../../test/care-team.e2e-spec.ts), "before anyone
+joins: same clinic is NOT enough"). What membership does give a
+practitioner is the clinic **directory** (`GET /directory/patients`): names
+and directory fields, nothing clinical.
 
-**A third, Row-Level-Security-driven outcome, on four specific resources.**
-`medical_files`, `assigned_programs`, `sessions`, and `conversations` all
-carry database-level RLS policies that mirror the service-level check
-above. Every route on these four resources fetches the target row first,
-*then* runs its ownership/participant check against it — and since RLS
-filters an out-of-scope row out of the query entirely, that row is simply
-never there for the check to reject in the first place. The practical
-effect: for these four resources only, a caller with no real relationship
-to the resource gets `404 Not Found` (`"<Resource> <id> not found"`), not
-`403 Forbidden` — the identical status a genuinely nonexistent id would
-produce. This is deliberate, confirmed directly against each service's
-source and its passing tests, not an inconsistency — but it means a
-resource's existence and a caller's right to see it are genuinely
-indistinguishable from outside, for these four tables specifically. `users`
-(the check runs before any RLS-scoped fetch at all), `exercises`, and
-`program_templates` (both fully visible to any authenticated user via RLS
-by design) are unaffected — their service-level checks still produce a real
-`403`. Each affected resource section below is flagged accordingly.
+**The care team** (`care_team_members`) is the clinical relationship. A
+practitioner is on a patient's care team when a link between them is
+**current** (started, and not ended) **and** they share a clinic. Both
+halves are checked in one SQL function, `rls_care_team_member()`, used by
+the policies of every clinical table. The services check the same thing
+in TypeScript (`isPatientManagedBy`). A test asserts that the two answer
+the same in every situation.
 
-A route with no `@Roles()` at all is reachable by any authenticated user of
-any role — that does not mean it's unrestricted, usually it means the
-*service* scopes the returned or affected data by role internally instead.
-`GET /assigned-programs` is the clearest example: no role restriction on the
-route itself, but a patient only ever sees their own programs, a
-practitioner only their managed patients', and an admin sees everything —
-all from the same endpoint.
+How a link is made:
 
-## Resource-by-resource reference
+- **Creating a patient** (`POST /users`, as a practitioner) puts the creator
+  on the new patient's care team.
+- **"Add to my patients"** (`POST /users/:id/care-team`): a practitioner who
+  shares a clinic with the patient joins **with no approval**. This is
+  deliberate: it's the practice's emergency access ("break-glass"), and it
+  stays accountable. It's audited (`CARE_TEAM_JOINED`), visible to the
+  patient on their team page, and every other current member gets an item to
+  review. A practitioner of another clinic is refused (`403`).
+- **Adding a colleague** (same route, with the colleague and an optional
+  planned end, as planned cover): by a practitioner who shares a clinic
+  with the patient, or an admin. The colleague must work at one of the
+  patient's clinics too (`400` otherwise).
+- `GET /users/:id/care-team/candidates` lists who could be added: the
+  practitioners of the *patient's* clinics.
 
-**Legend:** ✅ = allowed at the route level · — = not allowed at all · a note
-after ✅ means the route-level check passes, but a service-level check
-narrows it further.
+How a link ends: `POST /users/:id/care-team/:practitionerId/end`, by the
+practitioner on the link (for themselves only) or an admin. A link is
+**never deleted** and can only be ended, now. A database trigger refuses
+any other change, for an admin too. The history therefore keeps every past
+member, and the patient sees them. Leaving a clinic, or being deactivated,
+ends a practitioner's links there.
 
-### Clinics (`/clinics`) — [`clinics.controller.ts`](../../src/clinics/clinics.controller.ts)
+## The three layers, and why many refusals are `404`
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| Create a clinic | ✅ | — | — |
-| List / view a single clinic | ✅ (any authenticated user, in fact — no `@Roles()` on these two routes) | ✅ | ✅ |
-| List a clinic's members | ✅ | — | — |
-| Add / remove a member | ✅ | — | — |
-| Update a clinic / upload its logo | ✅ | — | — |
-| Deactivate a clinic | ✅ | — | — |
+1. **The guard** (`SessionAuthGuard`, `RolesGuard` reading `@Roles`): is
+   this session signed in, in a role this route accepts? It fails with `401`
+   or `403 You do not have permission to access this resource`. The
+   [endpoint index](./06-endpoints.md) lists the gate of every route, and its
+   test checks the guards are wired so this holds.
+2. **The service**: may *this* caller act on *this* record? For example:
+   is the patient on my care team, did I write this template, is this my
+   session? These refusals are `403`s with words naming the rule, or `409`
+   when it's the record's state that refuses (a closed program, a
+   deactivated patient).
+3. **Row-Level Security**: the same rules again, enforced by PostgreSQL on
+   every query, for the restricted `stride_app` role the API connects as.
+   Even a query the code got wrong can't read or write outside them.
 
-`POST /auth/register-clinic` (the *very first* clinic and its founding
-admin) is a separate, one-time bootstrap path documented in
-[Authentication](./01-authentication.md) — this table covers creating
-*additional* clinics once at least one admin already exists.
+The third layer changes some answers. A policy doesn't refuse a row; it
+makes the row **invisible**. So when a service first loads the record and
+only then checks the caller, a caller with no relationship to it gets `404
+<Resource> <id> not found`: the same answer as an id that doesn't exist.
+That's on purpose. A `403` would confirm that the record exists, which for
+a patient's file is itself information. The pattern across the API:
 
-### Users (`/users`) — [`users.controller.ts`](../../src/users/users.controller.ts)
+- **one record you have no relationship with**: `404` (a program, a
+  session, a file entry, an assessment, a conversation);
+- **a list, or a route about a patient you named**: often `403`, because
+  the service checks the relationship before reading anything (`GET
+  /medical-files?patientId=` off the care team, `GET
+  /assigned-programs?patientId=`);
+- **a list that's simply scoped**: an empty answer, not an error (for
+  example, the alerts of a practitioner on no care team).
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| Create a user | ✅ any role | ✅ **patients only** — `UsersService.create` throws `403` if a practitioner submits any other `role` | — |
-| Grant an additional role to an existing user | ✅ | — | — |
-| List users (`GET /users`) | ✅ sees every active user | ✅ sees only their own managed patients (clinic-scoped) | — no listing at all |
-| View a specific user (`GET /users/:id`) | ✅ any user | ✅ only themself, or a patient they manage (clinic-scoped via `isPatientManagedBy`) | only themself |
-| Update a user | ✅ any user | ✅ only themself, or a patient they manage | only themself |
-| Deactivate (soft-delete) a user | ✅ any user | ✅ only themself, or a patient they manage | only themself |
-| Upload a user's avatar | ✅ any user | self only | self only |
+Each resource below says which applies.
 
-`GET /users/:id`, `PATCH /users/:id`, and `DELETE /users/:id` all run the
-identical three-way check in `UsersController` —
-`isSelf || isAdmin || isManagingPractitioner` — where
-`isManagingPractitioner` calls `isPatientManagedBy(id, currentUser.id)`, the
-same clinic-membership check used everywhere else in this API. A
-practitioner cannot look up an arbitrary account by id; only their own
-profile or a patient they actually share a clinic with.
+Some tables are readable by everyone on purpose, because the login path
+itself reads them before any user is known. That's `users`, `user_roles`,
+the profile tables, `clinics` and `user_clinics`: `SELECT USING (true)`,
+proven necessary in the RLS passes (journal entries 29–34). The *services*
+then decide which users a caller is shown. "Covered by RLS" and
+"restrictive" are different claims, and here only the first is true for
+those tables.
 
-**`PATCH /users/:id` writes two different kinds of extra field, checked
-differently.** `phone`/`address` are common to every role — plain columns
-on `users` itself, exactly like `firstName`/`lastName` — and carry **no
-target-role check at all**: anyone who already passes the three-way check
-above can set them on any target, regardless of which role(s) that target
-holds. The role-profile fields
-(`practitioner_profiles.licenseNumber`/`specialties`/`bio`,
-`patient_profiles.dateOfBirth`, `admin_profiles.position`) are different —
-`UpdateUserDto` carries them flat alongside `firstName`/`lastName`/`phone`/
-`address`, not nested under a `practitionerProfile`/`patientProfile`/
-`adminProfile` sub-object; there's no precedent anywhere in this codebase
-for validating a single nested sub-object (the one `@ValidateNested()`
-usage, in `assigned-programs`, validates an *array* of sub-items, a
-different shape), and `CreateUserDto`/`GrantRoleDto` already established
-flat, per-role conditional fields as this module's own convention.
-`licenseNumber` is self-editable exactly like every other field here —
-deliberately not admin-gated, despite carrying real professional/
-verification weight (it's `UNIQUE` at the database level and nothing in
-this app verifies it against a real licensing body); a practitioner
-correcting their own license number follows the same rule as correcting
-their own name.
+## Admins and clinical data
 
-The three-way check above is necessary but not sufficient for the
-role-profile fields — `phone`/`address` are unaffected by what follows.
-`UsersService.update()` adds one further constraint on top for
-`licenseNumber`/`specialties`/`bio`/`dateOfBirth`/`position`, checked
-against the **target's** actual held role(s), not the caller's. An admin
-(or a managing practitioner) editing a patient can still only ever touch
-`dateOfBirth` — sending `licenseNumber`, `bio`, or `position` for that same
-target is a `400 Bad Request`, not silently ignored and not silently
-rejected as a `403`. This is a real, separate gate from the three-way check:
-an admin passes that check unconditionally for any user, but still can't
-write a field the target has no matching profile row for.
+**An admin can't read or change clinical data**: programs, sessions,
+medical files, range-of-motion assessments, alerts or messages. That was
+decided in two steps: messages and medical files from the start, programs
+and sessions in Phase 6 (decisions §16). An admin runs clinics and
+accounts; clinical access comes with the practitioner role and a place on
+the care team. The rule holds in all three layers:
 
-Every one of these responses (plus `create`, `findAll`, and login/register)
-also carries the account's role-specific profile data — `practitionerProfile`,
-`patientProfile`, `adminProfile` — nested under the matching role-named key.
-There is no separate authorization check for this: whoever already passes
-the check above for the account itself sees the same profile fields too, no
-finer-grained than that. See
-[`UsersService.attachProfile()`](../../src/users/users.service.ts) and
-[Authentication](./01-authentication.md#every-field-stripped-before-a-user-object-reaches-a-response)
-for the exact shape.
+- every clinical route's gate leaves `admin` out (`403` from the guard);
+- the policies have no admin branch, so an admin's query returns **0 rows**
+  (tested as the database role, not only through the API);
+- in the audit log, an admin sees **that** clinical data was read or
+  changed, by whom and when, but not the details, which hold clinical
+  content (a prescription before and after, a session's scores). The
+  details stay stored.
 
-### Exercises (`/exercises`) — [`exercises.controller.ts`](../../src/exercises/exercises.controller.ts)
+There are two ways an admin can see a record, both **narrow, time-boxed or
+one-off, and recorded** (decisions §25):
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| **Create** an exercise | — | ✅ | — |
-| List / view exercises | ✅ | ✅ | ✅ (any authenticated user) |
-| Update / archive / manage images | ✅ **any** exercise | ✅ **only their own `custom`-sourced exercises** | — |
+- **A complaint review** (`/users/:id/complaint-reviews`): for a complaint
+  about care. The admin opens it on one patient, with a required reason
+  and an optional case reference. It lasts 7 days and can be ended early.
+  It gives no clinical route. What the admin gets is the records PDF,
+  stamped "Review copy", each copy audited with the ids of what went in
+  (only the opener may make copies). The care team is told.
+- **A legal disclosure** (`/users/:id/legal-disclosures`): for a court
+  order, a subpoena or a legal requirement. The recipient, the legal basis,
+  and the parts and period released are recorded, with a PDF of exactly
+  those parts. Messages are released **only** this way. Each disclosure is
+  listed in the patient's own accounting of disclosures (`GET
+  /legal-disclosures`, and their export), unless held back until a date set
+  by the order.
 
-The "admins can't create, only edit" case: `POST /exercises` carries
-`@Roles(UserRole.PRACTITIONER)` only — no `admin`. `PATCH`/`DELETE`/image
-routes carry `@Roles(UserRole.PRACTITIONER, UserRole.ADMIN)`, and
-`ExercisesService.assertCanModify` lets an admin correct *any* exercise
-(including the shared, non-`custom` seeded library), while a practitioner
-may only touch a `custom`-sourced exercise where `createdBy` is their own id.
+## Resource by resource
 
-### Program templates (`/programs`) — [`programs.controller.ts`](../../src/programs/programs.controller.ts)
+### Users — [`users.e2e-spec.ts`](../../test/users.e2e-spec.ts), [`admin-users-list.e2e-spec.ts`](../../test/admin-users-list.e2e-spec.ts)
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| **Create** a template | — | ✅ | — |
-| Add / update / reorder / remove a template's exercises | ✅ **any** template | ✅ **only templates they created** | — |
-| List / view templates | ✅ | ✅ | ✅ (any authenticated user) |
-| Update / archive a template | ✅ **any** | ✅ **only their own** | — |
+- **Create** (`POST /users`): an admin creates any role, in any clinic. A
+  practitioner creates **patients only**, in a clinic they belong to
+  (`clinicId` required) and joins their care team. The account is invited;
+  a `password` in the body is refused.
+- **List** (`GET /users`): a practitioner gets their **care-team
+  patients**, and an admin everyone. The admin's paged, filtered list is
+  `GET /admin/users` ([conventions](./03-conventions.md#pagination)).
+- **Read one** (`GET /users/:id`): yourself, a practitioner on the
+  patient's care team, or an admin. Others get `403`.
+- **Update** (`PATCH /users/:id`): yourself, a managing practitioner for
+  their patient, or an admin.
+  - Which profile fields apply follows the **target's** roles.
+  - A practitioner can't change their own license number (`403`); only an
+    admin can.
+  - An email can't be changed here at all: that's the
+    [verified email change](./01-authentication.md#changing-the-email-address).
+- **Deactivate** (`DELETE /users/:id`, a soft delete) and **reactivate**
+  (`POST /users/:id/reactivate`, admin only):
+  - A patient may deactivate their own account, and so may a managing
+    practitioner or an admin.
+  - A practitioner's account may be deactivated only by an admin or by the
+    practitioner themselves. Their care-team links end, in their name.
+  - The account's sessions end.
+- **Grant a role** (`POST /users/:id/roles`): admin only.
+- **Avatar**: your own, or anyone's for an admin.
+- **Merge duplicate patients** (`POST /users/:id/merge`, `GET
+  /patient-merges`): admin only, and only for two patient accounts. An
+  account that is also staff can't be merged away; a merged account can't
+  be reactivated; the survivor must be active. The merge runs as one
+  database function that only the app's role may execute
+  ([`patient-merges.e2e-spec.ts`](../../test/patient-merges.e2e-spec.ts)).
+- **Reset someone's two-factor sign-in** (`POST /users/:id/mfa/reset`):
+  admin only, with the admin's own re-confirmation.
 
-Same shape as exercises: authorship is practitioner-only via
-`@Roles(UserRole.PRACTITIONER)` on `POST /programs`; admin correction rights
-apply after the fact to *any* template, while `ProgramsService.assertCanModify`
-scopes a practitioner to templates where `practitionerId` matches their own id.
+### Invitations — [`invitations.e2e-spec.ts`](../../test/invitations.e2e-spec.ts)
 
-### Assigned programs (`/assigned-programs`) — [`assigned-programs.controller.ts`](../../src/assigned-programs/assigned-programs.controller.ts)
+Seeing, re-sending and revoking an account's invitation: an admin, or a
+practitioner on the (patient's) care team. A same-clinic practitioner off
+the care team can't see it, and their revoke changes nothing. Looking up and
+accepting are public and use only the token, which sees **only its own
+invitation**: a policy branch matches the token's hash, set for that one
+transaction. Invitations are never deleted, and one account has at most one
+open invitation.
 
-A patient's individualized treatment plan, created by copying a template's
-exercises (or an ad-hoc list) at the moment of assignment — later edits to
-the source template never retroactively change an already-assigned program.
+### Care team — [`care-team.e2e-spec.ts`](../../test/care-team.e2e-spec.ts)
 
-> **RLS-affected resource**: fetching a program with no relationship to the
-> caller returns `404 Not Found`, not `403` — see the callout above.
+- **Seeing a patient's team** (`GET /users/:id/care-team`): the patient
+  (directory fields only, with no contact details, license or reason), an
+  admin, and a practitioner sharing a clinic with the patient. A
+  practitioner of another clinic gets `403`. An id that isn't a patient
+  gets `404`.
+- Joining, adding and ending are [above](#the-two-relationships-that-grant-access).
+  Ending someone else's link is `403`, except for an admin.
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| **Create** (assign a program to a patient) | — | ✅ **only patients they manage** (clinic-scoped) | — |
-| Add / update / reorder / remove exercises; update; archive | ✅ any | ✅ **only for patients they manage** | — |
-| View a specific program | ✅ all | ✅ only their managed patients' | ✅ **only their own** |
-| List (`GET /assigned-programs`) | sees all | sees only their managed patients' | sees only their own |
+### Clinics — [`clinics.e2e-spec.ts`](../../test/clinics.e2e-spec.ts)
 
-`AssignedProgramsService.assertCanManage` has **no patient branch at all** —
-a patient can view their own program (`assertCanView` does allow this
-specific case), but never edit its prescription, even their own.
+Reading clinics (`GET /clinics`, `/clinics/:id`) is open to every
+signed-in user: names, contact details and logos are display data, not
+patient data. Everything else is admin only: creating, editing,
+deactivating and reactivating clinics, their logos, and their members. A
+clinic is **branding and directory data, not a security boundary**, since
+Stride is single-tenant. What the clinic does decide is the care-team rule
+above (a link needs a shared clinic).
 
-### Sessions (`/sessions`) — [`sessions.controller.ts`](../../src/sessions/sessions.controller.ts)
+### Exercise library — [`exercises.e2e-spec.ts`](../../test/exercises.e2e-spec.ts)
 
-A single workout instance a patient actually performs, generated from an
-assigned program's current exercises at the moment the session is created.
+- **Read**: every signed-in user. It's a shared library (RLS `SELECT USING
+  (true)`) with no patient data.
+- **Create**: practitioners. A new exercise is `source: "custom"`, owned by
+  its author.
+- **Edit, archive, photos**: the author of a custom exercise, or an admin.
+  An admin may also correct the imported library. Anyone else gets `403`
+  ("You can only modify custom exercises you created, unless you are an
+  administrator").
 
-> **RLS-affected resource**: fetching a session with no relationship to the
-> caller returns `404 Not Found`, not `403` — see the callout above.
+### Program templates — [`programs.e2e-spec.ts`](../../test/programs.e2e-spec.ts), [`workouts.e2e-spec.ts`](../../test/workouts.e2e-spec.ts)
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| **Create** (start a session) | — | — | ✅ **only for their own assigned programs** |
-| Update a session / a session's exercises | — | — | ✅ **only their own sessions** |
-| View a session | ✅ all | ✅ only their managed patients' | ✅ only their own |
+- **Read**: every signed-in user, the same shared library as exercises.
+- **Create and duplicate**: practitioners only (an admin gets `403`).
+- **Edit, archive, workouts, exercises**: the template's author, or an
+  admin. A different practitioner gets `403`.
 
-The strictest module in the API: both `POST /sessions` and
-`PATCH /sessions/:id`(`/exercises/:id`) carry `@Roles(UserRole.PATIENT)`
-only — no practitioner or admin can even reach these routes at the
-`RolesGuard` layer, and `SessionsService.assertIsOwner` has no
-admin-or-practitioner branch either. Practitioners and admins get read-only
-visibility via `assertCanView`, full stop; starting and progressing a
-session is something only the patient themselves ever does.
+### Assigned programs — [`assigned-programs.e2e-spec.ts`](../../test/assigned-programs.e2e-spec.ts), [`program-lifecycle.e2e-spec.ts`](../../test/program-lifecycle.e2e-spec.ts), [`deactivated-patient.e2e-spec.ts`](../../test/deactivated-patient.e2e-spec.ts)
 
-### Medical files (`/medical-files`) — [`medical-files.controller.ts`](../../src/medical-files/medical-files.controller.ts)
+- **Read**: the patient (their own), and the patient's care team. Anyone
+  else, an admin included, gets nothing.
+  - `GET /assigned-programs` is scoped by role: a patient's own, a
+    practitioner's patients'. An admin gets `403`.
+  - `?patientId=` off the care team is a `403`, not an empty list.
+  - One program off the care team is a `404`.
+- **Change** (create, edit, workouts, exercises, schedules, cancel,
+  complete, delete): the care team. **The patient can never change their
+  own program** (`403`), and neither can an admin.
+  - A closed (cancelled or completed) program is read-only (`409`); only
+    archiving remains.
+  - A program with sessions can't be deleted.
+  - A deactivated patient's open programs can't change, and no new one can
+    be assigned (`409`) until the account is reactivated.
 
-Append-only clinical record entries — this controller deliberately has **no
-`PATCH` or `DELETE` route at all**; a correction is a new entry, never an
-edit to an old one.
+### Sessions — [`sessions.e2e-spec.ts`](../../test/sessions.e2e-spec.ts)
 
-> **RLS-affected resource**: fetching a single entry (`GET
-> /medical-files/:id`) with no relationship to the caller returns `404 Not
-> Found`, not `403` — see the callout above. The list endpoint's `403` for
-> `?patientId=` a practitioner doesn't manage is unaffected — that check
-> runs before any RLS-scoped query, since it validates the query parameter
-> itself rather than fetching a specific row first.
+- **Start, update, skip, complete, stop**: **the patient only**, on their
+  own program's sessions. Starting a session of someone else's program is
+  refused. A practitioner or an admin can't drive a session at all.
+- **Read** (`GET /sessions/:id`): the patient, and their care team.
+- **Review** (`POST /sessions/:id/review`): a care-team practitioner. A
+  managing practitioner can **view** a session and review it, but never
+  write to it.
+- Some rules are enforced by the database too, against races: one finished
+  session a day, no change to a finished session.
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| **Create** an entry | — | ✅ **only for patients they manage** | — |
-| List / view entries | ✅ any patient, via `?patientId=` | ✅ only patients they manage, via `?patientId=` | ✅ only their own (implicit — `patientId` query param not needed, and ignored if sent) |
+### Medical file — [`medical-files.e2e-spec.ts`](../../test/medical-files.e2e-spec.ts)
 
-`POST /medical-files` carries `@Roles(UserRole.PRACTITIONER)` only — not
-admin, the same authorship pattern as exercises and program templates.
-Every read (both the list and a single-entry `GET`) is separately
-audit-logged (`ACCESS_MEDICAL_FILE_LIST` / `ACCESS_MEDICAL_FILE`) against
-both the viewer and the patient whose record was viewed — this is the one
-module in the API where *reads*, not just writes, generate an audit trail.
+- **Read**: the patient (their own file), and their care team. Off the care
+  team: `403` for the list, `404` for one entry. An admin is refused on
+  every route, and the policy returns 0 rows to an admin too.
+- **Write** (`POST /medical-files`): a care-team practitioner, decided by
+  the policy itself. Entries are **append-only**: no edit, no delete. A
+  correction is a new entry *amending* an earlier one, which forms a chain;
+  two simultaneous amendments can't both win.
+- The same account acting in another role sees nothing.
 
-### Messaging (`/conversations`, WebSocket) — [`messaging.controller.ts`](../../src/messaging/messaging.controller.ts), [`messaging.gateway.ts`](../../src/messaging/messaging.gateway.ts)
+### Range of motion — [`range-of-motion.e2e-spec.ts`](../../test/range-of-motion.e2e-spec.ts)
 
-> **RLS-affected resource**: fetching or joining a conversation with no
-> relationship to the caller returns `404 Not Found`, not `403` — see the
-> callout above, and [WebSocket API](./02-websocket-api.md) for the exact
-> confirmed payload over the socket transport specifically. An admin is
-> unaffected by this — admins are visible to every conversation's RLS
-> policy by design, so the explicit `403` blocks below (which exist
-> specifically to stop an admin from writing, not to hide the row) still
-> fire normally.
+The medical file's rules, for measured assessments: the patient reads their
+own; the care team reads and records (`403` for the list off the team,
+`404` for one); an admin gets nothing. Assessments are append-only with
+amendment chains. The author and the moment are set by the server and
+can't be sent.
 
-| Action | admin | practitioner | patient |
-|---|---|---|---|
-| Start a conversation | — | ✅ **only with a patient they manage** | ✅ **only with a practitioner who manages them** |
-| View / list messages | ✅ any conversation | ✅ only conversations they participate in | ✅ only conversations they participate in |
-| Send a message | — (blocked explicitly, participant-only action) | ✅ only conversations they participate in | ✅ only conversations they participate in |
-| Mark a conversation as read | — (blocked explicitly) | ✅ own conversations | ✅ own conversations |
-| Archive / unarchive | — (blocked explicitly) | ✅ own side only | ✅ own side only |
-| Delete a message | not reachable in practice — see note below | ✅ own messages, unread, within 15 min of sending | ✅ own messages, unread, within 15 min of sending |
+### Alerts ("For review") — [`alerts.e2e-spec.ts`](../../test/alerts.e2e-spec.ts)
 
-Only `practitioner` and `patient` can create a conversation at all —
-`MessagingService.createConversation` throws `403` for any other active
-role. `joinConversation` on the WebSocket gateway performs the identical
-participant check as every REST route in this module — see
-[WebSocket API](./02-websocket-api.md) for the exact mechanics.
+Practitioners only (a patient or an admin gets the guard's `403`). Each
+practitioner sees the alerts of **their** care-team patients:
 
-**Admin's messaging access is read-only, and it's enforced per-action, not
-by a single blanket rule.** `assertParticipant` (`messaging.service.ts`)
-lets an authenticated `admin` through its own check unconditionally — that
-alone would let an admin act on any conversation. But `sendMessage`,
-`markAsRead`, `archiveConversation`, and `unarchiveConversation` each add
-their *own* explicit, unconditional block immediately after that check:
-`if (currentUser.activeRole === UserRole.ADMIN) throw new
-ForbiddenException(...)`. So none of those four actually let an admin write
-into or manage a conversation, even though the shared participant check
-alone wouldn't have stopped them. `getMessages` carries no such block, so
-`GET /conversations/:id/messages` stays available to an admin for any
-conversation — consistent, read-only oversight, matching what
-`GET /conversations` (`findConversationsForUser`) already provides for
-admins at the list level.
+- a same-clinic practitioner on no care team gets an empty list;
+- reviewing one off the team is a `404`;
+- a review is written in **your own name** only, never in a colleague's.
 
-One consequence worth noting: since admin is unconditionally blocked from
-`sendMessage`, an admin can never become a message's `senderId` — so
-`deleteMessage`'s ownership check (`message.senderId !== currentUser.id`)
-is always false for an admin caller. This isn't a separate, special-cased
-admin exception in `deleteMessage` itself; it falls out naturally from the
-precondition (having sent a message at all) never being reachable for that
-role.
+### Messaging — [`messaging.e2e-spec.ts`](../../test/messaging.e2e-spec.ts), [`messaging-gateway.e2e-spec.ts`](../../test/messaging-gateway.e2e-spec.ts)
 
-### Audit logs (`/audit-logs`) — [`audit.controller.ts`](../../src/audit/audit.controller.ts)
+Practitioners and patients only; admins read no messages (the socket
+refuses them too).
 
-Admin-only, full stop — `@Roles(UserRole.ADMIN)` at the controller level
-(combined with `SessionAuthGuard` also at the controller level), with no
-further service-level nuance beneath it. Practitioners and patients have no
-access of any kind, not even to log entries about themselves.
+- A conversation is between one practitioner and one patient who share a
+  care team. Each participant sees only their own conversations; one they
+  aren't in is a `404`.
+- Sending needs a **current** care-team link, decided by the policy.
+  Without one the conversation becomes read-only (`403`). If the patient is
+  deactivated, it's a `409` until reactivation. The history stays readable.
+- Deleting is your own message only, unread, within 15 minutes.
+- Archiving is per participant.
+- Details: [WebSocket API](./02-websocket-api.md).
 
-### Health (`/health`) — [`health.controller.ts`](../../src/health/health.controller.ts)
+### Records export — [`records-export.e2e-spec.ts`](../../test/records-export.e2e-spec.ts), [`records-export-links.e2e-spec.ts`](../../test/records-export-links.e2e-spec.ts)
 
-No `SessionAuthGuard`, no role requirement, and explicitly exempt from rate
-limiting (`@SkipThrottle()`) — this endpoint exists for load balancers and
-monitoring systems to poll, not application clients.
+- **`GET /records-export`**: the patient's own whole record, as a PDF.
+  Patients only, with each export audited. HIPAA's right of access is
+  self-service.
+- **Export links**: for a patient who can't sign in, an admin sends a
+  single-use link (`/users/:id/records-export-links`, admin only).
+  - The download (`POST /records-export/download`, public) needs the token
+    **and** the patient's date of birth.
+  - Wrong dates are counted, and the link locks after too many.
+  - Links expire after 72 hours. A newer link replaces the older one.
+
+### Audit log — [`audit-log-viewer.e2e-spec.ts`](../../test/audit-log-viewer.e2e-spec.ts)
+
+Admins only, for the log and the list of actions. Clinical areas' details
+are withheld from the admin ([above](#admins-and-clinical-data)). The log is
+insert-only for the app's role
+([conventions](./03-conventions.md#audit-trail)).
+
+### Admin home — [`admin-metrics.e2e-spec.ts`](../../test/admin-metrics.e2e-spec.ts)
+
+`GET /admin/metrics`: admins only. Counts and attention lists (for example,
+patients without a care team, or invitations to send again); no clinical
+data.
+
+### Public routes
+
+The rest of the public routes are listed in the [endpoint
+index](./06-endpoints.md). Signing in, the password reset, the email-change
+links, invitations and the export download each rely on a secret: a
+password, or a random 256-bit token kept only as a hash. The two others:
+
+- `GET /health` answers whether the database is up.
+- `POST /monitoring` passes browser error reports to GlitchTip. It accepts
+  only the app's own project and a Sentry envelope of up to 256 KB, so it
+  can't be used as an open relay
+  ([`monitoring.e2e-spec.ts`](../../test/monitoring.e2e-spec.ts)).
+
+## Deactivated accounts
+
+A deactivated account can't sign in (`401`, checked after the password).
+Its sessions end, it gets no password reset
+([details](./01-authentication.md#forgot--reset)), and its existing sessions
+stop working on the next request. A deactivated **patient's** record stays
+readable by their care team, but **nothing clinical can be added or
+changed** until reactivation: no new program, no change to an open one, no
+message (`409`, in all three layers)
+([`deactivated-patient.e2e-spec.ts`](../../test/deactivated-patient.e2e-spec.ts),
+[`practitioner-deactivation.e2e-spec.ts`](../../test/practitioner-deactivation.e2e-spec.ts)).
+
+## The demo deployment's locks
+
+On the reviewers' demo (`DEMO_MODE`), the shared demo accounts can't have
+their password, email or two-factor sign-in changed, and can't be
+deactivated or merged (`403`, with words explaining why). One reviewer can't
+lock the others out. The routes are marked *demo lock* in the
+[endpoint index](./06-endpoints.md)
+([`demo-mode.e2e-spec.ts`](../../test/demo-mode.e2e-spec.ts)).

@@ -64,12 +64,14 @@ export type DemoLockedChange =
 
 type LockedAccount = 'self' | 'param'
 
-interface DemoLock {
+export interface DemoLock {
   change: DemoLockedChange
   account: LockedAccount
 }
 
-const DEMO_LOCK_KEY = 'demoLock'
+// Exported for scripts/docs/endpoints.ts, which lists each route's lock in
+// docs/api/06-endpoints.md.
+export const DEMO_LOCK_KEY = 'demoLock'
 
 // What the refused person reads — the frontend shows a refusal's own words
 // (failureText). It says why (others sign in with it) and what to do instead.

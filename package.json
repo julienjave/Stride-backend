@@ -17,6 +17,7 @@
     "seed:dev": "ts-node scripts/seed-dev.ts",
     "seed": "npm run seed:exercises && npm run seed:dev --",
     "storage:sweep": "ts-node scripts/storage-sweep.ts",
+    "docs:endpoints": "ts-node scripts/docs-endpoints.ts",
     "db:create-app-role": "ts-node scripts/create-app-role.ts",
     "db:create-app-role:test": "cross-env POSTGRES_DB=stride_test npm run db:create-app-role",
     "db:migrate:all": "npx drizzle-kit migrate && npm run db:migrate:test",
@@ -32,7 +33,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "test:e2e:fresh": "cross-env POSTGRES_DB=stride_test jest --config ./test/jest-e2e.json --runInBand",
-    "snapshot:codebase": "node devTools/generate-snapshot.mjs"
+    "snapshot:codebase": "node devTools/generate-snapshot.mjs",
+    "snapshot:doc": "node devTools/generate-docs-snapshot.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",

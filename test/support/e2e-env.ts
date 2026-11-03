@@ -26,3 +26,11 @@
 // app, to prove the limits work. Set unconditionally: a developer's .env
 // saying RATE_LIMITS=on must not make the other suites fail with 429.
 process.env.RATE_LIMITS = 'off'
+
+// Demo mode OFF, for the same reason (found 2026-11-03: a .env left with
+// DEMO_MODE=on after checking the reviewers' card failed 6 tests of
+// auth.e2e-spec.ts, which expect `demo: null` from /auth/setup-status). The
+// demo locks and the card exist only in demo mode, and the suites are
+// written for a normal deployment. test/demo-mode.e2e-spec.ts switches it ON
+// itself, before building its app, and restores it after.
+process.env.DEMO_MODE = 'off'

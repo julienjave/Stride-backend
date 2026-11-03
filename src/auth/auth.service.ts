@@ -25,7 +25,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import { and, eq, isNull, sql } from 'drizzle-orm'
-import * as bcrypt from 'bcrypt'
+import { hashPassword, passwordMatches } from '../common/password-hashing'
 import { randomBytes, createHash } from 'crypto'
 import { DRIZZLE, type DrizzleDb } from '../database/drizzle.provider'
 import {
@@ -126,7 +126,7 @@ export class AuthService {
     // that can disagree with the first: this route runs once per deployment.
     // dto.email arrives normalised (@NormalizeEmail()), so "taken" ignores
     // case.
-    const passwordHash = await bcrypt.hash(dto.password, 10)
+    const passwordHash = await hashPassword(dto.password)
 
     const result: RegisterClinicResult = await this.db
       .transaction(async (tx): Promise<RegisterClinicResult> => {
@@ -247,21 +247,25 @@ export class AuthService {
     requestedRole?: UserRole,
   ) {
     const user = await this.usersService.findByEmailWithHash(email)
+    // No account: still one bcrypt comparison, against the dummy hash
+    // (common/password-hashing.ts), so an unknown email takes as long to
+    // refuse as a wrong password — the same 401, AND the same time. Before
+    // 2026-11-03 it answered ~70 ms sooner, which told an attacker timing a
+    // few attempts whether the address has an account.
     if (!user) {
+      await passwordMatches(password, undefined)
       return null
     }
 
     // An account created by invitation has no password until the invitation
     // is accepted (users.password_hash NULL). It fails exactly like a wrong
-    // password — same null, so the same 401 "Invalid email or password" —
-    // which reveals nothing about the account's state to someone who
-    // doesn't hold the invitation. Checked BEFORE bcrypt.compare(), which
-    // throws on a null hash (a 500, not a 401). Recorded like any failed
-    // attempt against a real account (below).
-    const passwordMatches =
-      user.passwordHash !== null &&
-      (await bcrypt.compare(password, user.passwordHash))
-    if (!passwordMatches) {
+    // password — same null, so the same 401 "Invalid email or password",
+    // in the same time (passwordMatches checks the dummy hash for a null
+    // one, rather than bcrypt.compare() throwing on it — a 500). That
+    // reveals nothing about the account's state to someone who doesn't
+    // hold the invitation. Recorded like any failed attempt against a real
+    // account (below).
+    if (!(await passwordMatches(password, user.passwordHash))) {
       // Attributable to a REAL account — this is the security-relevant
       // case worth capturing: repeated failed attempts against one known
       // target, the same signal the login rate limiter partially defends
@@ -367,7 +371,13 @@ export class AuthService {
     // invitation: a reset link would let anyone who knows the address — or
     // the invitee, after an admin REVOKED their invitation — set a password
     // and walk in around the invitation's checks.
-    if (!user || user.passwordHash === null) {
+    // A DEACTIVATED account too (2026-11-03): it can't sign in, so a reset
+    // link would only let someone — whoever reads that inbox now — set a
+    // password on an account the clinic has closed, ready for the day it is
+    // reactivated. Nothing to send, nothing to record: the same silent 204
+    // as an unknown address. Reactivating the account is the way back, and
+    // forgot-password works again from then on.
+    if (!user || user.passwordHash === null || !user.isActive) {
       return
     }
 
@@ -476,7 +486,7 @@ export class AuthService {
   ): Promise<{ endedSessionIds: string[] }> {
     const { user } = await this.findUserByResetToken(rawToken)
 
-    const newPasswordHash = await bcrypt.hash(newPassword, 10)
+    const newPasswordHash = await hashPassword(newPassword)
 
     // Same synthetic self-context reasoning as forgotPassword() above —
     // this request has no session either, but the token match just above
@@ -553,9 +563,14 @@ export class AuthService {
       where: eq(users.passwordResetTokenHash, tokenHash),
     })
 
+    // !isActive: a link sent BEFORE the account was deactivated must stop
+    // working with it — the same rule as forgotPassword(), and the same
+    // "invalid link" words as an unknown token (the link holder learns
+    // nothing about the account's state).
     if (
       !user ||
       user.passwordHash === null ||
+      !user.isActive ||
       !user.passwordResetTokenExpiresAt ||
       user.passwordResetTokenExpiresAt < new Date()
     ) {

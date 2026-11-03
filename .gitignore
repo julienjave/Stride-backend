@@ -65,6 +65,7 @@ backend-documentation-snapshot.md
 removed/
 *.tsbuildinfo
 devTools/
+extra/
 
 .github/
 

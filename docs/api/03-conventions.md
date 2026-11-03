@@ -1,163 +1,205 @@
 # Response Conventions
 
-These conventions apply across the whole REST API — documented once here instead
-of repeated per route.
+The rules that hold across the whole REST API, written once here instead of
+repeated for each route: how requests are validated, what every error looks
+like, which lists are paged, how dates are written, how rate limiting
+answers, and what gets recorded in the audit trail.
+
+## Requests
+
+Bodies are JSON, except the routes marked *multipart upload* in the
+[endpoint index](./06-endpoints.md). Every body and query string goes
+through one global `ValidationPipe`
+([`src/main.ts`](../../src/main.ts)), with three settings that matter to a
+client:
+
+- `whitelist: true` and `forbidNonWhitelisted: true`: a field the route's
+  DTO doesn't declare is an error (`400`, naming the field), not silently
+  ignored. A typo in a field name fails loudly instead of being dropped.
+- `transform: true`: query-string values (always strings on the wire) are
+  converted to the DTO's types, so `?page=2` arrives as the number `2`. A
+  value that can't be converted (`?page=two`) is a `400`.
 
 ## Error responses
 
 Source of truth:
 [`src/common/filters/http-exception.filter.ts`](../../src/common/filters/http-exception.filter.ts),
 registered globally in [`src/app.module.ts`](../../src/app.module.ts) via
-`APP_FILTER`. `@Catch()` with no argument catches literally everything
-thrown anywhere in the app — both deliberate `HttpException`s
-(`NotFoundException`, `ForbiddenException`, validation failures, etc.) and
-genuinely unexpected errors.
+`APP_FILTER`. It's an `@Catch()` with no argument, so it catches everything
+thrown anywhere: deliberate `HttpException`s (`NotFoundException`, a
+validation failure…) and unexpected errors alike.
 
-Every error response, of every status code, has this exact shape:
+Every error, whatever its status, has this shape:
 
 ```json
 {
   "statusCode": 404,
   "message": ["Exercise 501 not found"],
   "error": "NotFoundException",
-  "timestamp": "2026-08-05T14:22:03.101Z",
-  "path": "/exercises/501"
+  "timestamp": "2026-11-03T14:22:03.101Z",
+  "path": "/exercises/501",
+  "requestId": "3f2c7e9a-1b4d-4c6e-9a8f-0d2e5b7c1a44"
 }
 ```
 
-A client can rely on `statusCode`, `error`, `timestamp`, and `path` being
-present on every error response in this API, without exception.
+- **`message` is always an array of strings.** Most errors have exactly one
+  entry: a sentence written for a person, safe to show as it is. The
+  frontend does show it, so the backend's messages are part of its
+  contract. A validation failure can have several entries, one per failed
+  rule.
+- **`requestId`** is also sent as the `X-Request-Id` header on every
+  response, error or not. The same id is in the server's log line and in
+  the error report sent to GlitchTip, so a person quoting it from an error
+  screen leads straight to what happened. The server makes the id itself;
+  an `X-Request-Id` sent by the client is ignored.
+- **A `500` says nothing more than `["Internal server error"]`**, with
+  `error: "InternalServerError"`. The real error (which could carry a stack
+  trace or raw Postgres text naming tables and columns) goes only to the
+  server log and to GlitchTip.
 
-Notes on `message`:
+### Errors that carry more fields
 
-- `message` is **always an array of strings**, one entry per issue. This
-  replaces the old ambiguity where `message` was sometimes a single string
-  and sometimes an array depending on the error type — error-rendering UI
-  never needs to branch on the shape of `message`, only iterate it.
-- For the overwhelming majority of errors — `401`/`403`s from the auth
-  guards, `404`s from a missing resource, and most other deliberately-thrown
-  `HttpException`s — that array has exactly one entry: the real,
-  human-readable reason from the code, safe to surface directly to a user.
-- For a `class-validator` validation failure specifically (a `400 Bad
-  Request` produced by the global `ValidationPipe`), `message` can have
-  **multiple entries**, one per failed constraint — e.g.
-  `["email must be an email", "password must be longer than or equal to 8 characters"]`.
-- For anything that is **not** a deliberately-thrown `HttpException` — a
-  genuine bug, an unhandled database error, etc. — `message` is always
-  replaced with the single-entry array `["Internal server error"]` and
-  `statusCode` is `500`. The real underlying error (which could otherwise
-  leak a stack trace, a file path, or raw Postgres error text naming actual
-  column/table names) is only ever logged server-side via `nestjs-pino`,
-  never returned to the client. Don't expect more diagnostic detail than
-  that generic message on a `500`.
+A few refusals add fields next to `message`, so a screen can react without
+parsing the sentence:
+
+| Status | Where | Extra fields |
+|---|---|---|
+| `400` | `POST /auth/login`, for an account with several roles and no `role` in the body | `roles`: the roles to choose from (see [multi-role login](./01-authentication.md#login-single-role-vs-multi-role-accounts)) |
+| `409` | Creating a patient who may already exist (same name and date of birth) | `reason: "possible_duplicate"`, plus what the caller may see of the existing patient. Send `allowPossibleDuplicate: true` to create anyway. |
+| `410` | An invitation that can't be used any more | `reason`: `accepted`, `revoked` or `expired` |
+| `410` | A records-export link that can't be used any more | `reason`: `used`, `replaced`, `locked` or `expired` |
+| `400` | A records-export download with the wrong date of birth | `attemptsLeft`: how many tries remain before the link locks |
+
+### Database refusals become the same answers
+
+Some rules are enforced twice: by the service, and by the database itself
+(CHECK constraints and triggers). Examples are "a closed program can't
+change" and "one finished session a day". The database's copy catches the
+rare request that races past the service's check, such as an edit that
+lands while the program is being cancelled. When that happens, the filter
+translates the database's refusal into the **same status and the same
+words** the service would have given (`translateDatabaseRefusal`), never a
+`500`. The WebSocket gateway's filter uses the same translation.
+
+## Dates and times
+
+Two kinds of value, never mixed:
+
+- **A calendar date**, a day: `"2026-11-03"`, exactly `YYYY-MM-DD`. Used
+  for program dates, schedules and a session's day. It has no time zone,
+  because a day means the same day for everyone. Impossible dates
+  (`2026-02-30`) are refused.
+- **An instant**, a moment: ISO 8601 with its offset, as written by
+  `toISOString()`, for example `"2026-11-03T13:22:03.101Z"`. Used for
+  timestamps. Where the client sends one (the audit log's `from` and
+  `before`), **the offset is required**. Without one, "midnight" would mean
+  midnight in whatever zone the server or Postgres happens to use. The
+  browser knows the person's time zone; the server doesn't. So the client
+  sends the moments that bound the person's day, and the server compares
+  instants.
+
+Two routes also take an IANA time-zone name (`"Europe/Paris"`), for the
+dates printed in a PDF: the records export and the legal-disclosure copy.
 
 ## Pagination
 
 Source of truth:
 [`src/common/dto/pagination-query.dto.ts`](../../src/common/dto/pagination-query.dto.ts).
 
-**Pagination is not universal.** Only a query DTO that actually extends
-`PaginationQueryDto` gets this shape. As of this commit, that is exactly two
-endpoints:
+**Pagination is not universal.** Three routes are paged:
 
-| Endpoint | Query DTO | Extra filters |
+| Route | Page size by default | Filters |
 |---|---|---|
-| `GET /exercises` | `FindExercisesQueryDto` | `search` (matches against `name`, case-insensitive) |
-| `GET /audit-logs` | `FindAuditLogsQueryDto` | `action`, `entityType`, `performedBy` |
+| `GET /exercises` | 20 | `search` (name), `mine` |
+| `GET /admin/users` | 25 | `search`, `role`, `clinic` (an id, or `none`), `status` (`active` by default, `deactivated`, `all`), `attention` |
+| `GET /audit-logs` | 20 | `action`, `entityType`, `performedBy`, `targetUserId`, `kind` (`change`, `view`, `sign_in`), `from`, `before` |
 
-Every other list endpoint in this API — `GET /users`, `GET /clinics`,
-`GET /clinics/:id/members`, `GET /programs`, `GET /assigned-programs`,
-`GET /sessions`, `GET /medical-files`, `GET /conversations`,
-`GET /conversations/:id/messages` — returns a **plain JSON array**,
-unpaginated, with no `data`/`meta` wrapper at all. Check the specific route
-(or `/api-docs`, which shows the actual accepted query parameters) before
-assuming the wrapper below applies just because a route returns a list.
-
-For the two paginated endpoints, accepted query parameters:
-
-- `page` — integer, ≥ 1, defaults to `1`.
-- `limit` — integer, 1–100 inclusive (hard ceiling — a client cannot request
-  more than 100 rows in one page), defaults to `20`.
-
-Response shape:
+They take `page` (≥ 1, default `1`) and `limit` (1–100, a hard ceiling),
+and answer:
 
 ```json
 {
   "data": [ /* up to `limit` rows */ ],
-  "meta": {
-    "total": 143,
-    "page": 2,
-    "limit": 20,
-    "totalPages": 8
-  }
+  "meta": { "total": 143, "page": 2, "limit": 20, "totalPages": 8 }
 }
 ```
 
-`meta.total` is a full count of matching rows, independent of `page`;
-`meta.totalPages = Math.ceil(total / limit)`.
+`meta.total` counts every matching row, whatever the page.
+`totalPages = Math.ceil(total / limit)`. A page past the last answers
+`data: []` with the real `totalPages`, so a screen can offer the way back.
+
+**Every other list answers a plain JSON array**, with no `data`/`meta`
+wrapper. That includes `GET /users`, the programs, sessions, conversations
+and messages.
 
 ## Rate limiting
 
-Source of truth: [`src/app.module.ts`](../../src/app.module.ts)
-(`ThrottlerModule.forRoot`, applied globally via `APP_GUARD`), plus every
-`@Throttle(...)` override actually present in
-[`src/auth/auth.controller.ts`](../../src/auth/auth.controller.ts). Backed
-by `@nestjs/throttler@^6`.
+Source of truth: [`src/config/rate-limits.ts`](../../src/config/rate-limits.ts),
+applied to every route by a global `ThrottlerGuard` (`@nestjs/throttler`
+6).
 
-**Baseline, applied to every route by default:** 60 requests per 60 seconds,
-tracked per client IP (`req.ip`).
+- **The default:** 60 requests a minute, per route and per client IP
+  address.
+- **Tighter limits** sit on the routes worth guessing at: sign-in,
+  two-factor codes, passwords, invitations, records-export downloads
+  (mostly 5 a minute). The [endpoint index](./06-endpoints.md) lists every
+  route's own limit, generated from its `@Throttle` decorator. `GET /health`
+  has none, so monitors can poll it freely.
+- **The client's IP behind Cloudflare.** In production the server takes
+  the visitor's address from Cloudflare's `CF-Connecting-IP` header
+  ([`src/main.ts`](../../src/main.ts)). Otherwise every visitor would share
+  the limit of the Cloudflare server in front of them.
 
-**Tighter, route-specific overrides.** `AuthController` is the *only*
-controller in this codebase with any `@Throttle(...)` decorator — every
-route below was individually confirmed against its source:
-
-| Route | Limit |
-|---|---|
-| `POST /auth/register` | 10 / 60s |
-| `POST /auth/register-clinic` | 5 / 60s |
-| `POST /auth/login` | 5 / 60s |
-| `POST /auth/mfa/verify` | 5 / 60s |
-| `POST /auth/mfa/enable` | 5 / 60s |
-| `POST /auth/mfa/disable` | 5 / 60s |
-| `POST /auth/forgot-password` | 5 / 60s |
-| `POST /auth/reset-password` | 5 / 60s |
-
-`mfa/enable` and `mfa/disable` share the same tighter throttle as
-`mfa/verify` — the code's own comment on those two decorators frames this as
-consistency with the rest of this controller's rationale for requiring a
-fresh code on sensitive MFA actions, rather than response to an identified
-exploit (`otplib` here uses the default `epochTolerance: 0`, so only a
-single 30-second window is ever valid at a time).
-
-`GET /health` (`src/health/health.controller.ts`) carries `@SkipThrottle()`
-and is exempt from rate limiting entirely — it exists for load balancers and
-monitoring systems to poll frequently, unauthenticated.
-
-**On every response** (throttled or not), these headers are set by
-`ThrottlerGuard`:
-
-```
-X-RateLimit-Limit: 60
-X-RateLimit-Remaining: 47
-X-RateLimit-Reset: 34
-```
-
-`X-RateLimit-Reset` is **seconds until the current window resets**, not a
-timestamp.
-
-**When a limit is exceeded**, the response is `429 Too Many Requests`, with
-an additional `Retry-After` header (seconds until the client may retry), and
-a body in the exact same global error shape described above:
+Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+`X-RateLimit-Reset` (seconds until the window resets, not a timestamp).
+Over the limit, the answer is a `429` with a `Retry-After` header and a
+sentence giving the same wait:
 
 ```json
 {
   "statusCode": 429,
-  "message": ["ThrottlerException: Too Many Requests"],
+  "message": ["Too many attempts in a short time. Try again in 42 seconds."],
   "error": "ThrottlerException",
-  "timestamp": "2026-08-05T14:22:03.101Z",
-  "path": "/auth/login"
+  "timestamp": "2026-11-03T14:22:03.101Z",
+  "path": "/auth/login",
+  "requestId": "…"
 }
 ```
 
-A well-behaved client should read `Retry-After` (or `X-RateLimit-Reset`) on
-a `429` and back off accordingly rather than retrying immediately.
+CORS exposes `Retry-After`, `Content-Disposition` and `X-Request-Id` to the
+browser, so a frontend on another origin can read them.
+
+`RATE_LIMITS=off` switches the limits off for the end-to-end test suites,
+which send far more requests than a person would. The server refuses to
+start with it when `NODE_ENV=production`.
+
+## Audit trail
+
+Every route that can change data writes **one complete audit entry**, in
+the same database transaction as the change: if the change rolls back, so
+does its entry. The service writes it, because only the service knows what
+the record was before and after. The route only *declares* it, with
+`@AuditedByService()`.
+
+A unit test, [`src/audit/audit-tags.spec.ts`](../../src/audit/audit-tags.spec.ts),
+fails the build for any route that can change data and carries neither
+`@AuditedByService()` nor `@NotAudited(reason)`. Only three routes are
+`@NotAudited`, each a `POST` that only reads (marked *changes nothing* in
+the endpoint index).
+
+Entries are of three kinds (`kind` on `GET /audit-logs`):
+
+- **`change`**: a record was created, changed, archived or deactivated.
+- **`view`**: someone **read clinical data**: a program, a session, a
+  medical file, range-of-motion results, messages, alerts, a records
+  export. HIPAA asks for this, because who looked at a health record
+  matters as much as who changed it.
+- **`sign_in`**: sign-ins (successful, failed, blocked), sign-outs, role
+  switches, recovery codes used, failed re-confirmations.
+
+The log can't be edited. The `audit_logs` table's Row-Level Security has
+policies for `SELECT` and `INSERT` only, so the app's database role is
+refused any `UPDATE` or `DELETE` there, whatever the code asks
+([`0002_audit_logs_rls.sql`](../../src/database/migrations/0002_audit_logs_rls.sql)).
+Who may read it is in
+[Roles & Authorization](./04-authorization.md).

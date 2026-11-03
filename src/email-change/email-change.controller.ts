@@ -54,7 +54,7 @@ import { DemoLocked } from '../demo/demo-lock.guard'
 // The password-guessing routes keep the sign-in limit (5 a minute): the
 // request checks a password, and the two link routes answer yes or no about
 // a token.
-@ApiTags('auth')
+@ApiTags('Auth')
 @Controller('auth/email-change')
 export class EmailChangeController {
   constructor(private readonly emailChangeService: EmailChangeService) {}

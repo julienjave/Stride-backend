@@ -54,7 +54,7 @@ import { DemoLocked } from '../demo/demo-lock.guard'
 // code, so none may become a way to guess one from a stolen session. The
 // session id goes to every step-up: the session signed out after 5 failed
 // step-ups in a row (decisions §16).
-@ApiTags('auth')
+@ApiTags('Auth')
 @Controller('auth/mfa')
 export class MfaController {
   constructor(private readonly mfaService: MfaService) {}

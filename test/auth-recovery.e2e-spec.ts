@@ -613,6 +613,49 @@ describe('Auth — MFA and password recovery (e2e)', () => {
       expect(after.body.message).toEqual(DEAD)
     })
 
+    // Deactivation closes the way in by reset too (2026-11-03): a link sent
+    // before it stops working — in the same words as any dead link — and
+    // forgot-password sends nothing while the account is deactivated. The
+    // way back is reactivation, after which forgot-password works again.
+    it('refuses a link once its account is deactivated, and sends none until it is reactivated', async () => {
+      const email = 'check-deactivated@example.com'
+      const token = await resetLinkFor(email)
+      expect((await check(token)).status).toBe(200)
+      const { rows } = await sessionPool.query<{ id: number }>(
+        'SELECT id FROM users WHERE email = $1',
+        [email],
+      )
+      const id = rows[0].id
+      const resetEmails = () =>
+        outbox
+          .sentTo(email)
+          .filter((sent) => sent.subject === 'Reset your Stride password')
+
+      expect((await adminAgent.delete(`/users/${id}`)).status).toBe(200)
+
+      const checked = await check(token)
+      expect(checked.status).toBe(400)
+      expect(checked.body.message).toEqual(DEAD)
+      const reset = await request(app.getHttpServer())
+        .post('/auth/reset-password')
+        .send({ token, newPassword: 'never-set-1' })
+      expect(reset.status).toBe(400)
+      expect(reset.body.message).toEqual(DEAD)
+
+      const before = resetEmails().length
+      const forgot = await request(app.getHttpServer())
+        .post('/auth/forgot-password')
+        .send({ email })
+      expect(forgot.status).toBe(204)
+      expect(resetEmails()).toHaveLength(before)
+
+      expect((await adminAgent.post(`/users/${id}/reactivate`)).status).toBe(
+        201,
+      )
+      expect((await check(await requestLink(email))).status).toBe(200)
+      expect(resetEmails()).toHaveLength(before + 1)
+    })
+
     it('refuses a link replaced by a newer request', async () => {
       const email = 'check-replaced@example.com'
       const older = await resetLinkFor(email)

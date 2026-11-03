@@ -6,6 +6,21 @@ import {
   Logger,
 } from '@nestjs/common'
 import * as bcrypt from 'bcrypt'
+import { DUMMY_PASSWORD_HASH } from '../common/password-hashing'
+
+// bcrypt's real functions, with compare wrapped so a test can see what it
+// was called with (a namespace import can't be spied on directly — see
+// common/password-hashing.spec.ts). Every test still hashes and compares
+// for real.
+jest.mock('bcrypt', () => {
+  const actual = jest.requireActual<typeof import('bcrypt')>('bcrypt')
+  return {
+    ...actual,
+    compare: jest.fn((data: string, hash: string) =>
+      actual.compare(data, hash),
+    ),
+  }
+})
 import { AuthService } from './auth.service'
 import { UsersService } from '../users/users.service'
 import { AuditService } from '../audit/audit.service'
@@ -124,6 +139,17 @@ describe('AuthService.validateUser', () => {
     expect(result).toBeNull()
   })
 
+  // The timing fix (2026-11-03): an unknown email still costs one bcrypt
+  // comparison — against the dummy hash — so it takes as long to refuse as
+  // a wrong password. Without it, the refusal came ~70 ms sooner.
+  it('still runs one bcrypt comparison, against the dummy hash, for an unknown email', async () => {
+    const compare = bcrypt.compare as unknown as jest.Mock
+    compare.mockClear()
+    usersService.findByEmailWithHash.mockResolvedValue(undefined)
+    await authService.validateUser('nobody@example.com', 'password123')
+    expect(compare.mock.calls).toEqual([['password123', DUMMY_PASSWORD_HASH]])
+  })
+
   it('returns null when the password does not match', async () => {
     usersService.findByEmailWithHash.mockResolvedValue({
       id: 1,
@@ -153,6 +179,12 @@ describe('AuthService.validateUser', () => {
       'any-password',
     )
     expect(result).toBeNull()
+    // Checked against the dummy hash, not skipped: the same time as a
+    // wrong password.
+    expect(bcrypt.compare).toHaveBeenLastCalledWith(
+      'any-password',
+      DUMMY_PASSWORD_HASH,
+    )
     // Through log() — a sign-in changes no data, there's no transaction to
     // join — and naming the account concerned.
     expect(auditService.log.mock.calls).toStrictEqual([
@@ -684,6 +716,7 @@ describe('AuthService.forgotPassword', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: 'a-bcrypt-hash',
+      isActive: true,
     })
 
     await authService.forgotPassword('jane@example.com')
@@ -724,6 +757,7 @@ describe('AuthService.forgotPassword', () => {
       id: 1,
       email: 'jane@example.com',
       passwordHash: 'a-bcrypt-hash',
+      isActive: true,
     })
     emailService.sendPasswordResetEmail.mockRejectedValue(
       new Error('connect ECONNREFUSED 127.0.0.1:1025'),
@@ -757,6 +791,23 @@ describe('AuthService.forgotPassword', () => {
 
   // The invitation is such an account's only way in: no token stored, no
   // email sent, nothing audited — indistinguishable from "no account".
+  // Deactivated (2026-11-03): no token, no email, no entry — the same
+  // silent 204 as an unknown address.
+  it('does nothing for a deactivated account', async () => {
+    usersService.findByEmailWithHash.mockResolvedValue({
+      id: 1,
+      email: 'left@example.com',
+      passwordHash: 'a-bcrypt-hash',
+      isActive: false,
+    })
+
+    await authService.forgotPassword('left@example.com')
+
+    expect(db.transaction).not.toHaveBeenCalled()
+    expect(emailService.sendPasswordResetEmail).not.toHaveBeenCalled()
+    expect(auditService.log).not.toHaveBeenCalled()
+  })
+
   it('does nothing for an account with no password yet', async () => {
     usersService.findByEmailWithHash.mockResolvedValue({
       id: 1,
@@ -830,6 +881,23 @@ describe('AuthService.resetPassword', () => {
       id: 1,
       passwordHash: null,
       passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+      isActive: true,
+    })
+
+    await expect(
+      authService.resetPassword('valid-token', 'newpassword123'),
+    ).rejects.toThrow('This password reset link is invalid or has expired')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // Deactivated after the link was sent (2026-11-03): the link dies with the
+  // account — same words as any invalid link, nothing written.
+  it('rejects a valid, unexpired token on a deactivated account', async () => {
+    db.query.users.findFirst.mockResolvedValue({
+      id: 1,
+      passwordHash: 'hash',
+      isActive: false,
+      passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
     })
 
     await expect(
@@ -842,6 +910,7 @@ describe('AuthService.resetPassword', () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       passwordResetTokenExpiresAt: new Date(Date.now() - 60_000),
+      isActive: true,
     })
 
     await expect(
@@ -870,6 +939,7 @@ describe('AuthService.resetPassword', () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+      isActive: true,
     })
     // withRlsContext() sets two session GUCs via tx.execute() before
     // invoking the callback, which then issues the real UPDATEs via tx.
@@ -910,6 +980,7 @@ describe('AuthService.resetPassword', () => {
     db.query.users.findFirst.mockResolvedValue({
       id: 1,
       passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+      isActive: true,
     })
     const { tx, set } = resetTx([{ id: 7 }])
     db.transaction.mockImplementation((cb: TransactionCallback) => cb(tx))
@@ -972,6 +1043,7 @@ describe('AuthService.checkResetToken', () => {
       email: 'jane@example.com',
       passwordHash: 'hash',
       passwordResetTokenExpiresAt: expiresAt,
+      isActive: true,
     })
 
     await expect(
@@ -994,6 +1066,7 @@ describe('AuthService.checkResetToken', () => {
         email: 'x@example.com',
         passwordHash: null,
         passwordResetTokenExpiresAt: expiresAt,
+        isActive: true,
       },
     ],
     [
@@ -1003,6 +1076,19 @@ describe('AuthService.checkResetToken', () => {
         email: 'x@example.com',
         passwordHash: 'hash',
         passwordResetTokenExpiresAt: new Date(Date.now() - 1000),
+        isActive: true,
+      },
+    ],
+    // A link sent before the account was deactivated (2026-11-03): dead
+    // with the account, in the same words as any invalid link.
+    [
+      'a deactivated account',
+      {
+        id: 1,
+        email: 'x@example.com',
+        passwordHash: 'hash',
+        isActive: false,
+        passwordResetTokenExpiresAt: expiresAt,
       },
     ],
     [
@@ -1012,6 +1098,7 @@ describe('AuthService.checkResetToken', () => {
         email: 'x@example.com',
         passwordHash: 'hash',
         passwordResetTokenExpiresAt: null,
+        isActive: true,
       },
     ],
   ])("refuses %s with the reset's own words", async (_name, row) => {

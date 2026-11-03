@@ -44,7 +44,7 @@ import { DemoLocked } from '../demo/demo-lock.guard'
 // it's about the account, not a role's work — so no @Roles; a signed-in
 // session (SessionAuthGuard). Self-service only: no route changes SOMEONE
 // ELSE's password (an admin's way to help is the reset email).
-@ApiTags('auth')
+@ApiTags('Auth')
 @Controller('auth/password')
 export class PasswordChangeController {
   constructor(private readonly passwordChangeService: PasswordChangeService) {}
