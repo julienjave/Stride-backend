@@ -638,10 +638,11 @@ are known before it is:
 
 - **The `files.stridecare.app` DNS record.** Storage's public address (§8)
   needs a Cloudflare record for the Droplet, proxied like the API's, before
-  photos load in production.
+  photos load in production ([`DEPLOYMENT.md`](DEPLOYMENT.md), Phase 2).
 - **Image versions.** RustFS and Mailpit are pinned by tag and digest;
   `glitchtip/glitchtip:6`, `postgres:16`, `postgres:18` and `caddy:2` still
-  float.
+  float, until the first deployment pins what it ran
+  ([`DEPLOYMENT.md`](DEPLOYMENT.md), Part 4).
 
 ## 13. Deliberate limits
 

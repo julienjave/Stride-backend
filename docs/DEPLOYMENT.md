@@ -1,201 +1,222 @@
-# Stride — Installation & Deployment Guide
+# Stride backend — installation and deployment
 
-## Part 1 — Local development setup
+> **Status, 2026-11-03: written, not yet run end to end.** The backend-only
+> deployment this guide grew from was run twice on a real Droplet: first
+> built ([journal 18](journal/18-deployment-provisioning-through-backups.md),
+> [19](journal/19-deployment-verification-and-observability.md)), then
+> destroyed and rebuilt from this file
+> ([26](journal/26-redeploying-for-real.md)). Since then the deployment has
+> gained a public repository (no deploy key), storage's public address
+> `files.stridecare.app`, GlitchTip, the frontend on Cloudflare Pages, and
+> the reviewers' demo. None of those has run on a server yet. What was
+> checked in a sandbox the same day: the `.env` of Phase 3 boots the built
+> API in production mode, Compose accepts it, Phase 7's requests answer as
+> written (with Cloudflare's headers simulated), and the demo reset job's two
+> commands run in production mode. Nothing ran in Docker there (its image
+> registry was out of reach), so the Compose jobs, Caddy and RustFS weren't
+> run. The first real run will correct this file. Until then,
+> treat each step as the plan, and each "Verify" as the test of it.
 
-**Prerequisites**: Node.js 24.x, Docker + Docker Compose, `npm`.
+This is the backend's half. The frontend is static files on Cloudflare Pages,
+with its own guide: the frontend repository's `docs/DEPLOYMENT.md`
+(TODO-LINK). Both are needed for a working site, and the two meet in a few
+settings, named in both guides.
 
-Local dev deliberately does **not** containerize the app itself — only `db`
-and `storage` run in Docker; the app runs directly on the host. This is why
-`docker-compose.yml` has no `app`/`migrate`/`create-app-role` services at
-all, unlike the production compose file.
+- **Part 1** — local development
+- **Part 2** — production, on a fresh Droplet, phase by phase
+- **Part 3** — the reviewers' demo (`DEMO_MODE=on`)
+- **Part 4** — common operations
+- **Appendix** — every environment variable
+
+`journal NN` below links the build journal's entry where a step's reason
+(usually a real failure) is told.
+
+---
+
+## What runs where
+
+```
+browser ── https://stridecare.app ────────► Cloudflare Pages: the frontend's static files
+browser ── https://api.stridecare.app ────► Cloudflare ─► Caddy ─► app:3000   (HTTP and socket.io)
+browser ── https://files.stridecare.app ──► Cloudflare ─► Caddy ─► storage:9000 (signed GETs only)
+
+app ─► db:5432 · storage:9000 · glitchtip:8000   (the Compose network, never the internet)
+app ─► Resend's API (email)          Better Stack ◄─ Vector (logs) · uptime checks from outside
+```
+
+| Where | What |
+|---|---|
+| Cloudflare | DNS for `stridecare.app`; the proxy and the visitor-facing TLS for `api.` and `files.`; Pages for the frontend |
+| The Droplet (DigitalOcean, Ubuntu 24.04, 2 GB / 1 vCPU) | [`docker-compose.prod.yml`](../docker-compose.prod.yml): `caddy` (the only public ports, 80 and 443), `app`, `db`, `storage`, `glitchtip`, `glitchtip-db`; the one-off jobs `migrate`, `create-app-role`, `seed`, `demo-reset` |
+| The Droplet's host, outside Docker | the backup's cron line, the demo's systemd timer, Better Stack's Vector agent, the AWS CLI |
+| Elsewhere | Resend (email delivery), Better Stack (uptime, logs) |
+
+Each service, its image and who can reach it: ARCHITECTURE
+[§11](ARCHITECTURE.md#11-deployment-topology).
+
+---
+
+## Part 1 — Local development
+
+**Prerequisites:** Node.js 24, Docker with Compose, `npm`.
+
+Locally only the services run in Docker: `db`, `storage` and `mailpit` (and
+GlitchTip, if asked for). The app runs on the host, with `npm run start:dev`.
+That's why [`docker-compose.yml`](../docker-compose.yml) has no `app` and no
+one-off jobs.
 
 ### 1. Clone and install
 
 ```bash
-git clone <repo-url> stride-backend
+git clone TODO-LINK stride-backend
 cd stride-backend
 npm ci
 ```
 
-### 2. Start the database and object storage
+### 2. Start Postgres, RustFS and Mailpit
 
 ```bash
 docker compose up -d
 ```
 
-This brings up `db` (Postgres 16, published on `localhost:5432`) and
-`storage` (RustFS, published on `localhost:9000`/`9001`) with default
-credentials suitable for local dev only.
+- `db`: Postgres 16 on `localhost:5432`;
+- `storage`: RustFS on `localhost:9000` (S3) and `9001` (its console);
+- `mailpit`: catches every email the app sends. Its inbox is at
+  http://localhost:8025, with the links clickable. Nothing reaches anyone.
 
-### 3. Configure environment variables
+GlitchTip (error tracking) only starts when asked: `docker compose --profile
+errors up -d`, then http://localhost:8000. Leave the two `SENTRY_…` DSNs empty
+and nothing is reported (the default).
+
+### 3. `.env`
 
 ```bash
 cp .env.example .env
-nano .env
 ```
 
-(Any editor works — `code .env` if you have VS Code's CLI set up, or
-whatever you're used to. `nano` is just the one guaranteed to exist with
-no setup, the same reason it's used throughout this guide.) Everything
-with a `# Generate: openssl rand -hex N` comment needs a real generated
-value — `validateEnv()` refuses to boot on a missing or placeholder value
-for `SESSION_SECRET`, `MFA_ENCRYPTION_KEY`, and `POSTGRES_APP_PASSWORD`
-specifically:
+Three values must be real, or the app refuses to start
+([`validate-env.ts`](../src/config/validate-env.ts)):
 
 ```bash
 openssl rand -hex 32   # SESSION_SECRET
-openssl rand -hex 32   # MFA_ENCRYPTION_KEY — must be exactly 64 hex chars
+openssl rand -hex 32   # MFA_ENCRYPTION_KEY: exactly 64 hex characters
 openssl rand -hex 24   # POSTGRES_APP_PASSWORD
 ```
 
-`RESEND_API_KEY` can stay as the placeholder locally — `EmailService`
-degrades to logging reset links to the console rather than sending real
-email (see doc 12/17), which is fine for local testing.
+The rest of `.env.example` works as it is: `EMAIL_TRANSPORT=smtp` to Mailpit,
+storage on `localhost`, the frontend on `http://localhost:5173`.
 
-### 4. Create the restricted application database role
-
-```bash
-npm run db:create-app-role
-```
-
-This has to succeed **before the app can connect to Postgres at all** —
-`drizzle.provider.ts` connects as `stride_app`, not the Postgres superuser,
-and that role doesn't exist until this script creates it. Idempotent and
-safe to re-run any time (syncs the password if the role already exists).
-*(rationale: doc 23)*
-
-### 5. Run migrations
+### 4. Migrate, then create the app's database role
 
 ```bash
 npx drizzle-kit migrate
+npm run db:create-app-role
 ```
 
-Runs on the *owner* connection (real DDL rights), not `stride_app` —
-migrations and the app's runtime queries deliberately use different roles.
+The migrations run as the owner (`POSTGRES_USER`), which has the rights to
+create tables. The app's own queries run as `stride_app`, a role with no
+right to bypass Row-Level Security, so the policies apply to it
+([journal 23](journal/23-row-level-security-step-zero.md)). The script creates
+that role, or syncs its password if it exists; it's safe to re-run.
 
-### 6. (Optional) Seed the exercise library
+### 5. Seed
 
 ```bash
-npm run seed:exercises
+npm run seed
 ```
 
-Idempotent — safe to re-run; skips any exercise whose `external_id` already
-exists.
+The exercise library (873 exercises with photos, downloaded from the
+`free-exercise-db` project on GitHub), then the demo world: clinics,
+practitioners, patients, programs, messages. The accounts and their password
+are in [`dev-test-accounts.md`](dev-test-accounts.md). `npm run seed --
+--reset` deletes everything but the exercise library and creates the demo
+world again.
 
-### 7. Start the app
+### 6. Start the API
 
 ```bash
 npm run start:dev
 ```
 
-Watches for changes. The API listens on `:3000` by default; `GET /health`
-and `/api-docs` (Swagger) are good first checks that everything's actually
-up.
+It listens on `:3000` and restarts on every change. First checks:
+http://localhost:3000/health and Swagger at http://localhost:3000/api-docs.
+The frontend's own setup is in its `docs/DEPLOYMENT.md` (TODO-LINK).
 
-### 8. Run the test suite
+### 7. Tests
 
-```bash
-npm run test              # unit tests
-npm run test:e2e:fresh    # e2e tests, against a dedicated stride_test database
-```
-
-**Always use `test:e2e:fresh`, never plain `test:e2e`**, unless
-`POSTGRES_DB` is already pointed at `stride_test` some other way — the e2e
-suite truncates its own tables on every run, and running it against your
-real dev database will destroy real dev data. Every e2e spec also verifies
-`current_database()` itself before truncating anything, as a second,
-structural safeguard against exactly this mistake. *(rationale: doc 06, 13)*
-
-`stride_test` needs to exist and be migrated once, separately from the main
-dev database:
-
-```bash
-docker compose exec db psql -U postgres -c "CREATE DATABASE stride_test;"
-POSTGRES_DB=stride_test npx drizzle-kit migrate
-POSTGRES_DB=stride_test npm run db:create-app-role
-```
-
-On Windows/WSL2, a known cause of intermittent, otherwise-inexplicable
-failures in timing-sensitive e2e tests (e.g. an assertion comparing a
-database timestamp against `Date.now()`) is the Docker Desktop WSL2 VM
-clock drifting several seconds ahead of the host — `wsl --shutdown`
-resyncs it.
+The suites, their databases and how to run them: [`TESTING.md`](TESTING.md).
 
 ---
 
-## Part 2 — Production deployment (fresh host, start to finish)
+## Part 2 — Production, on a fresh Droplet
 
-This assumes a fresh DigitalOcean Droplet and mirrors the actual sequence
-used to deploy Stride, in the order that avoids known chicken-and-egg
-problems (documented as they come up below). Each phase ends with a
-concrete way to verify it actually worked before moving to the next one.
+The order below avoids the chicken-and-egg problems met the first time (each
+one is explained where it comes up). Each phase ends with a way to check it
+worked before the next one builds on it.
+
+Two kinds of deployment use this part: **a real clinic's**, and **the
+reviewers' demo**. They differ only in Part 3, applied after Phase 12.
 
 ### Phase 0 — Before you start
 
-You need: a DigitalOcean account, a domain registered through (or
-transferable to) Cloudflare, and SSH access set up locally.
+Accounts: DigitalOcean; Cloudflare, with `stridecare.app` on it; Resend
+(email); Better Stack (uptime and logs). The code is in public repositories,
+so the Droplet needs no GitHub credentials.
 
-**If you're recreating an existing deployment rather than deploying for
-the first time**, note first what does *not* need to be redone — it lives
-independently of the Droplet:
-- The domain and its Cloudflare DNS/SSL configuration — only the `A`
-  record's IP needs updating once the new Droplet exists (Phase 2/8).
-- Any external observability account (Better Stack's uptime monitor and
-  log source) — only the Vector *agent* running on the Droplet itself
-  needs reinstalling (Phase 10).
+**Recreating an existing deployment?** What lives outside the Droplet doesn't
+need redoing: the domain and its Cloudflare settings (only the `A` records'
+IP changes, Phase 2), Resend's verified domain, the Cloudflare Pages project,
+Better Stack's monitors and log source (only the Vector agent on the Droplet
+is reinstalled, Phase 12). GlitchTip's account and projects lived on the old
+Droplet: their DSNs will be new (Phase 10).
+
+An SSH key for the Droplet, on your machine:
 
 ```bash
-ssh-keygen -t ed25519 -C "stride-droplet"   # skip if reusing an existing key
+ssh-keygen -t ed25519 -C "stride-droplet"   # skip if you have one
 cat ~/.ssh/id_ed25519.pub
 ```
 
-Copy the full output of that second command — one line, starting with
-`ssh-ed25519 AAAA...`, ending with the comment you gave it. That's what
-gets pasted into DigitalOcean, either under Settings → Security → SSH Keys
-ahead of time, or directly in the "Add SSH Key" step during Droplet
-creation (Phase 1). **Never paste the contents of `id_ed25519`** (no
-`.pub` extension) anywhere — that's the private key, and it should never
-leave your machine.
+The second command prints one line, `ssh-ed25519 AAAA… stride-droplet`: the
+**public** key, which DigitalOcean asks for. Never paste `id_ed25519` (no
+`.pub`) anywhere: that's the private key, and it stays on your machine.
 
-### Phase 1 — Provision and harden the Droplet
+### Phase 1 — Create and harden the Droplet
 
-1. Create a Droplet — Ubuntu 24.04 LTS (confirm this is still the current
-   image DigitalOcean offers when you do this — check the dashboard
-   directly, don't assume; see doc 18 for why this specific check matters),
-   Basic/Regular, 2GB/1vCPU, SSH-key auth only (never set a root password),
-   IPv6 enabled, monitoring left on.
-2. Note the new IPv4 address. If it was previously assigned to a Droplet
-   you've connected to before, clear the stale host key first:
+1. **Create the Droplet**: Ubuntu 24.04 LTS (check in the dashboard that it's
+   still the current LTS image; don't assume, [journal
+   18](journal/18-deployment-provisioning-through-backups.md)),
+   Basic/Regular, 2 GB / 1 vCPU, SSH-key authentication only (no root
+   password), IPv6 on, monitoring on.
+2. **Note its IPv4 address.** If you've connected to that address before
+   (a recreated Droplet often gets it back), forget the old host key:
    ```bash
    ssh-keygen -R <droplet-ip>
    ```
-3. Connect as root, create a non-root sudo user, and copy your key over:
+3. **A non-root user with sudo**, with your key:
    ```bash
    ssh root@<droplet-ip>
    adduser stride
    usermod -aG sudo stride
    rsync --archive --chown=stride:stride ~/.ssh /home/stride
    ```
-4. Disable root and password SSH login entirely:
+4. **No root login, no password login:**
    ```bash
    sudo nano /etc/ssh/sshd_config
    #   PermitRootLogin no
    #   PasswordAuthentication no
    sudo systemctl restart ssh
    ```
-   **In a new terminal**, confirm `ssh stride@<droplet-ip>` works before
-   closing the original root session — losing access here means starting
-   over from a fresh Droplet.
-5. Create a DigitalOcean Cloud Firewall with two inbound rules —
-   DigitalOcean's own named presets, not just raw port numbers: **HTTP**
-   (port `80`) and **HTTPS** (port `443`), both left open to all
-   IPv4/IPv6 **for now** — restricting them to Cloudflare's IP ranges
-   happens later, in Phase 8, only after Caddy is confirmed working. Doing
-   it now would risk locking out the very first Let's Encrypt certificate
-   request.
-6. Add swap — a 1vCPU Droplet benefits from it, and this project has
-   already hit single-vCPU resource limits once (Better Stack's eBPF
-   collector, doc 19):
+   **In a second terminal**, check `ssh stride@<droplet-ip>` works before
+   closing the root session. Locked out here means starting again from a new
+   Droplet.
+5. **A DigitalOcean Cloud Firewall** with two inbound rules, DigitalOcean's
+   **HTTP** (80) and **HTTPS** (443) presets, open to everyone **for now**.
+   Phase 8 restricts them to Cloudflare's addresses, once the certificates
+   exist; restricting now risks blocking their first request.
+6. **Swap.** GlitchTip alone needs about 0.5 GB (decisions §32), and a 1 vCPU
+   Droplet has run out once already ([journal
+   19](journal/19-deployment-verification-and-observability.md)):
    ```bash
    sudo fallocate -l 2G /swapfile
    sudo chmod 600 /swapfile
@@ -205,8 +226,7 @@ leave your machine.
    echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
    sudo sysctl -p
    ```
-7. Install Docker + the Compose plugin (Ubuntu 24.04's official method —
-   there's no shortcut here worth taking):
+7. **Docker and the Compose plugin**, Docker's own method for Ubuntu:
    ```bash
    sudo apt-get update
    sudo apt-get install -y ca-certificates curl
@@ -220,420 +240,530 @@ leave your machine.
    sudo apt-get update
    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
    sudo usermod -aG docker stride
-   ```
-   **Log out and back in** before continuing — group membership needs a
-   fresh login to take effect:
-   ```bash
    exit
    ssh stride@<droplet-ip>
    ```
-8. Install the AWS CLI — needed for the backup script, and Ubuntu 24.04
-   dropped the `awscli` apt package, so use the official installer:
+   The `exit` and new login matter: a new group membership only applies to
+   a new session.
+8. **The AWS CLI**, which the backup script uses to talk to RustFS (Ubuntu
+   24.04 has no `awscli` package any more):
    ```bash
-   sudo apt install -y curl unzip
-   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+   sudo apt-get install -y unzip
+   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
    unzip awscliv2.zip
    sudo ./aws/install
    rm -rf awscliv2.zip aws/
    ```
-9. Avoid the cross-platform file-mode conflict doc 18 hit directly (a
-   commit's executable bit disagreeing across OSes):
+9. **Ignore file modes in Git.** A commit from Windows can't carry the
+   executable bit, and Git on Linux then reports every script as changed
+   ([journal 18](journal/18-deployment-provisioning-through-backups.md)):
    ```bash
    git config --global core.fileMode false
    ```
 
-**Verify**, with real commands, not just a description of what should be
-true:
+**Verify:**
+
 ```bash
-ssh stride@<droplet-ip>          # should succeed
-ssh root@<droplet-ip>            # should be refused
-docker ps                        # should run with no error, no sudo needed
-aws --version                    # should print a real version string
+ssh stride@<droplet-ip>   # works
+ssh root@<droplet-ip>     # refused
+docker ps                 # works, without sudo
+aws --version             # prints a version
+swapon --show             # /swapfile, 2G
 ```
 
-### Phase 2 — Domain and Cloudflare
+### Phase 2 — DNS and TLS on Cloudflare
 
-1. If the domain isn't already on Cloudflare, add it there — registering
-   directly through Cloudflare (rather than a separate registrar) skips a
-   nameserver handoff step entirely.
-2. Add an `A` record for your API subdomain (e.g. `api.yourdomain.com`)
-   pointing at the Droplet's IP, **proxied** (orange cloud on) — this is
-   what makes Cloudflare terminate TLS at the edge and hide the origin IP.
-3. Set SSL/TLS mode to **Full (strict)** specifically, not plain "Full" —
-   this is what makes Cloudflare actually verify the origin's certificate
-   rather than accept anything. It won't fully work until Caddy has a real
-   certificate (Phase 6), which is expected at this point.
+1. **Two `A` records**, both pointing at the Droplet's IPv4 and both
+   **proxied** (orange cloud): Cloudflare answers visitors itself, with its
+   own certificate, and hides the Droplet's address.
 
-### Phase 3 — Get the code and configure secrets onto the Droplet
+   | Name | Type | Content | Proxy | Serves |
+   |---|---|---|---|---|
+   | `api` | A | `<droplet-ip>` | Proxied | the API and its socket |
+   | `files` | A | `<droplet-ip>` | Proxied | photo downloads through signed links |
 
-Clone via a **read-only deploy key**, not a personal credential sitting on
-the Droplet:
+   The apex, `stridecare.app`, is the frontend: Cloudflare Pages creates its
+   record when the custom domain is added (the frontend's guide). Email's
+   records come in Phase 9.
+2. **SSL/TLS mode: Full (strict).** Cloudflare then connects to Caddy over
+   HTTPS and checks Caddy's certificate is real; plain "Full" accepts any
+   certificate. Until Phase 6 gives Caddy one, requests fail with `526`, which
+   is expected.
+
+Why `files` is a host of its own, not a path on `api.`: a signed link's
+signature covers its host and its path, so the link has to be signed for the
+exact address the browser will use, and a proxy that rewrote the path would
+break every signature
+([`storage-urls.ts`](../src/config/storage-urls.ts) says it in full).
+
+`.app` is on browsers' HSTS preload list as a whole: browsers only ever
+connect to `stridecare.app` and its subdomains over HTTPS.
+
+### Phase 3 — The code and `.env`
 
 ```bash
-ssh stride@your-droplet-ip
-ssh-keygen -t ed25519 -C "stride-droplet-deploy-key" -f ~/.ssh/stride_deploy_key
-chmod 600 ~/.ssh/stride_deploy_key
-cat ~/.ssh/stride_deploy_key.pub
-# add this as a read-only Deploy key on the repo: Settings → Deploy keys
-```
-Then:
-```bash
-git -c core.sshCommand="ssh -i ~/.ssh/stride_deploy_key" clone git@github.com:<you>/Stride-backend.git
-cd Stride-backend
-git config core.sshCommand "ssh -i ~/.ssh/stride_deploy_key"
-```
-The `git config` line matters and is easy to skip: `-c` on the `clone`
-command only applies to that one invocation, not to the repo going
-forward. Without persisting it, the next plain `git pull` here falls back
-to SSH's default key discovery, finds nothing, and fails with `Permission
-denied (publickey)` — worth confirming right after cloning
-(`git pull` should succeed with no error) rather than assuming it carried
-over.
-```bash
-cp .env.example .env
-nano .env
+git clone TODO-LINK /home/stride/Stride-backend
+cd /home/stride/Stride-backend
 ```
 
-Edit for production values (`nano` since you're already in an SSH
-session — no GUI editor is going to be available here):
+(`TODO-LINK` = the backend repository's HTTPS clone URL.) The repository is
+public: cloning over HTTPS needs no key and no credential on the Droplet, and
+every later `git pull` works the same way. The target folder is written out
+because [`scripts/backup-database.sh`](../scripts/backup-database.sh) changes
+into exactly `/home/stride/Stride-backend`.
 
-- **`POSTGRES_HOST=db` and `STORAGE_ENDPOINT=storage`, not `localhost`** —
-  the single easiest mistake to make here. Local dev uses `localhost`
-  because the app runs on the host; in production the app itself is a
-  container reaching `db`/`storage` by their Compose service names.
-- Generate fresh, real secrets — **do not reuse local-dev values**, and
-  generate each one separately (running `openssl rand -hex N` twice
-  produces two *different* values — don't copy one output into multiple
-  fields):
-  ```bash
-  openssl rand -hex 32   # SESSION_SECRET
-  openssl rand -hex 32   # MFA_ENCRYPTION_KEY — exactly 64 hex chars
-  openssl rand -hex 24   # POSTGRES_PASSWORD
-  openssl rand -hex 24   # RUSTFS_SECRET_KEY
-  openssl rand -hex 24   # POSTGRES_APP_PASSWORD
-  openssl rand -hex 8    # RUSTFS_ACCESS_KEY — see note below
-  ```
-  **`RUSTFS_ACCESS_KEY` needs a shorter value than the other secrets.**
-  `.env.example`'s own comment currently suggests `openssl rand -hex 16`
-  (32 hex characters) — this has been observed to cause RustFS console
-  login failures. `openssl rand -hex 8` (16 characters) has worked in
-  practice. *(I couldn't independently confirm RustFS's exact accepted
-  key-length range in their official docs — treating this as your own
-  verified finding from actually hitting the failure, not something I
-  verified myself. Worth fixing `.env.example`'s own comment to match,
-  since as written it currently points anyone following it toward the
-  same failure.)*
-- `NODE_ENV=production` — required exactly as that string; it's what flips
-  session cookies to `secure: true` (`sameSite` is `'lax'` in every
-  environment) and pino to raw JSON.
-- `TRUST_PROXY_HOPS=2` — Cloudflare, then Caddy.
-- `FRONTEND_URL`/`FRONTEND_URLS` — your real deployed frontend origin(s).
-- `RESEND_API_KEY` — a real key if email delivery should actually work at
-  this deploy; note Resend's sandbox mode only delivers to the account's
-  own signup address until a sending domain is verified (see doc 17).
-- `EMAIL_FROM` — confirm the real sending subdomain before deploying;
-  double-check this against whatever you actually verified in Resend
-  rather than an old value copied from a previous `.env`.
+**Write `.env`** with every secret generated on the spot:
 
 ```bash
+cat > .env <<EOF
+# --- Database: the Compose service's name, never localhost
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+POSTGRES_DB=stride
+POSTGRES_APP_USER=stride_app
+POSTGRES_APP_PASSWORD=$(openssl rand -hex 24)
+
+# --- Storage: the internal address, and the public one links are signed for
+STORAGE_ENDPOINT=storage
+STORAGE_PORT=9000
+STORAGE_PUBLIC_URL=https://files.stridecare.app
+RUSTFS_ACCESS_KEY=$(openssl rand -hex 8)
+RUSTFS_SECRET_KEY=$(openssl rand -hex 24)
+
+# --- Sessions and two-factor secrets
+SESSION_SECRET=$(openssl rand -hex 32)
+MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# --- The frontend: links in emails, and the CORS allow-list
+FRONTEND_URL=https://stridecare.app
+FRONTEND_URLS=https://stridecare.app
+
+# --- Behind two proxies: Cloudflare, then Caddy
+NODE_ENV=production
+TRUST_PROXY_HOPS=2
+
+# --- Email: Phase 9 replaces the key
+EMAIL_TRANSPORT=resend
+RESEND_API_KEY=re_REPLACE_ME
+EMAIL_FROM=Stride <noreply@stridecare.app>
+
+# --- Error tracking: the two DSNs come in Phase 10, GlitchTip's secrets now
+SENTRY_DSN=
+SENTRY_BROWSER_DSN=
+GLITCHTIP_SECRET_KEY=$(openssl rand -hex 32)
+GLITCHTIP_DB_PASSWORD=$(openssl rand -hex 24)
+EOF
 chmod 600 .env
 ```
 
-`Caddyfile` came along with the clone — confirm it points at your real
-domain.
+How it works: `<<EOF … EOF` (a *here-document*) feeds the lines between the
+markers to `cat`, which writes them into `.env`. Because `EOF` isn't quoted,
+the shell first replaces each `$(openssl rand -hex N)` with that command's
+output, so every secret is generated once, separately, and never typed or
+copied (copying one output into two fields was a real risk with the old
+hand-edited version). `chmod 600`: only `stride` can read the file.
 
-### Phase 4 — Bring up the database and storage layer
+What each group is for:
+
+- **`db` and `storage`, not `localhost`.** In production the app is a
+  container too, and reaches the others by their Compose service names. The
+  easiest mistake in this whole guide.
+- **`STORAGE_PUBLIC_URL`** is required in production: without it every photo
+  link would name `storage:9000`, which no browser can reach, so the app
+  refuses to start.
+- **`RUSTFS_ACCESS_KEY`: 16 characters** (`-hex 8`). A 32-character key broke
+  the RustFS console's sign-in on the first deployment; 16 worked. (Observed,
+  not found in RustFS's documentation.)
+- **`NODE_ENV=production`**, exactly. It makes the session cookie `Secure`,
+  turns the logs into raw JSON, and switches on the production-only refusals
+  (`EMAIL_TRANSPORT=log`, `RATE_LIMITS=off`).
+- **`TRUST_PROXY_HOPS=2`**: Cloudflare, then Caddy. Express needs it to see
+  that the visitor's request was HTTPS, and the app trusts Cloudflare's
+  `CF-Connecting-IP` for the visitor's address
+  ([journal 19](journal/19-deployment-verification-and-observability.md)).
+- **`GLITCHTIP_SECRET_KEY` and `GLITCHTIP_DB_PASSWORD` now**, though GlitchTip
+  starts in Phase 10: Compose checks every required variable in the file for
+  every command, so without them even `docker compose … up -d db` stops with
+  `required variable GLITCHTIP_SECRET_KEY is missing a value`.
+- **`EMAIL_FROM`**: an address on the domain Resend verifies in Phase 9.
+
+Using another domain than `stridecare.app`: change it here, in the
+[`Caddyfile`](../Caddyfile)'s two site names, and in
+[`scripts/test-websocket-production.js`](../scripts/test-websocket-production.js)
+(Phase 7).
+
+### Phase 4 — Postgres and RustFS
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d db storage
 ```
 
-**Verify**: `docker compose -f docker-compose.prod.yml ps` shows both
-healthy; `docker compose -f docker-compose.prod.yml logs storage` shows
-RustFS started cleanly.
+**Verify:** `docker compose -f docker-compose.prod.yml ps` shows both
+running, and `docker compose -f docker-compose.prod.yml logs storage` shows
+RustFS started without errors.
 
-### Phase 5 — Migrations and the restricted app role
+### Phase 5 — Migrations, the app's role, the exercise library
 
 ```bash
+docker compose -f docker-compose.prod.yml build migrate create-app-role seed
 docker compose -f docker-compose.prod.yml run --rm migrate
 docker compose -f docker-compose.prod.yml run --rm create-app-role
+docker compose -f docker-compose.prod.yml run --rm seed
 ```
 
-**Run migrations before `create-app-role`, not after.** `create-app-role`
-does two things: an explicit grant sweep over every table that exists *at
-the moment it runs*, and an `ALTER DEFAULT PRIVILEGES` rule so any table a
-*future* migration creates is automatically granted too. Running migrations
-first means the explicit sweep immediately covers every real table, rather
-than relying solely on the default-privilege mechanism for tables that
-already existed.
+- **These are one-off jobs** (`profiles: ["tools"]`): `up` never starts them.
+  They're built from the image's `builder` stage, which has `drizzle-kit` and
+  `ts-node`; the runtime image has neither.
+- **`build` first, always.** `run` builds an image only the first time; after
+  that it silently reuses the old one, so after a `git pull` it would run
+  yesterday's code ([journal 26](journal/26-redeploying-for-real.md)).
+- **Migrations before the role.** `create-app-role` grants `stride_app`
+  access to every table that exists when it runs, and sets default
+  privileges for tables created later. Running it after the migrations means
+  the explicit grants cover every table at once.
+- **`seed`** imports the exercise library (873 exercises and their photos,
+  from GitHub). It skips exercises it already has, so it's safe to re-run. A
+  real clinic may skip it; **the demo needs it** before its first reset
+  (Part 3), or the seeded templates that use library exercises are left out.
 
-**Verify**: no errors from either command; `create-app-role`'s output
-confirms the role was created or its password synced.
+**Verify** that the app's role can't bypass the policies:
 
-### Phase 6 — Bring up the app and Caddy
+```bash
+docker compose -f docker-compose.prod.yml exec -T db \
+  psql -U postgres -d stride -Atc \
+  "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'stride_app'"
+```
+
+→ `stride_app|f|f`: not a superuser, and no `BYPASSRLS`. Either `t` would
+switch Row-Level Security off for every query the app makes.
+
+### Phase 6 — The app and Caddy
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build app caddy
 ```
 
-Caddy will attempt to request a Let's Encrypt certificate automatically the
-moment it sees real traffic on your domain — this requires the DNS record
-from Phase 2 to already be live and port 80 reachable (which it is, since
-the firewall is still open at this point).
+Caddy asks Let's Encrypt for two certificates, `api.stridecare.app` and
+`files.stridecare.app`, as soon as it starts. That needs Phase 2's records
+live and port 80 reachable, which it is: the firewall is still open.
 
-**If you also need to seed the exercise library**, a dedicated `seed`
-service mirrors `migrate`'s shape (`profiles: ["tools"]`, only ever run
-explicitly):
+**Verify**, from your own machine:
 
 ```bash
-docker compose -f docker-compose.prod.yml build seed
-docker compose -f docker-compose.prod.yml run --rm seed
+curl -sI https://api.stridecare.app/health | head -1     # HTTP/2 200
+curl -sI https://files.stridecare.app/ | head -1         # HTTP/2 404
 ```
 
-Idempotent — safe to re-run; skips any exercise whose `external_id`
-already exists. Always `build` before `run --rm` for any `profiles: ["tools"]`
-service after a `git pull` — Compose only auto-builds an image the first
-time it doesn't exist, and silently reuses a stale one otherwise (see
-Part 3's redeploy note for the general version of this rule).
+The `404` is Caddy's: `files.` only passes `GET`s inside the `stride` bucket,
+and answers everything else itself. A `526` from either means Caddy has no
+certificate yet: `docker compose -f docker-compose.prod.yml logs caddy` shows
+the ACME attempt (a failed challenge is the likeliest first-deploy problem).
 
-**Verify**:
-```bash
-curl -I https://api.yourdomain.com/health
-```
-should return a real, valid-certificate HTTPS response with `200`. Check
-`docker compose -f docker-compose.prod.yml logs caddy` if not — a failed
-ACME challenge is the most likely first-deploy issue here.
+### Phase 7 — Verify the whole chain, not just that it's up
 
-### Phase 7 — Verify end-to-end, not just that it's up
+A green health check says the app started. These checks say the chain
+(Cloudflare, Caddy, the app's proxy settings, the cookie, the database
+roles) behaves as designed. Running them is how the first deployment found
+its most important bugs ([journal
+19](journal/19-deployment-verification-and-observability.md)).
 
-Don't stop at a green health check — this is the point where doc 19 found
-its most important real bugs (an `X-Forwarded-For` chain that didn't behave
-as documented, and firewall behavior that only a `tcpdump` capture could
-confirm was actually correct). No frontend needed for any of this — every
-route is exercised directly.
-
-**Run the `curl` and WebSocket steps below from your own machine, not the
-Droplet.** They're all testing the public domain as any external client
-would — running them from your laptop is actually the *more* correct test,
-since it exercises the real "outside the internet → Cloudflare → origin"
-path a real user takes, rather than a Droplet-to-itself round trip. It also
-means you don't need Node installed on the Droplet at all — production
-deliberately has nothing but Docker on the host (Part 1's local setup is
-the only place this project expects a bare Node install). Only the final
-log-checking step genuinely needs to run **on** the Droplet, since Docker's
-logs only exist there — that one's called out explicitly below.
-
-Set your real domain once:
+**Run them from your own machine**, as any visitor would, unless a step says
+"on the Droplet". (The Droplet has no Node and needs none: production has
+nothing but Docker on the host.)
 
 ```bash
-DOMAIN=<api.yourdomain.com>
+API=https://api.stridecare.app
+J='Content-Type: application/json'
 ```
 
-- [ ] **Health check**
+- [ ] **Stride isn't set up yet:**
   ```bash
-  curl -I https://$DOMAIN/health
+  curl -s $API/auth/setup-status
+  ```
+  → `{"setupComplete":false,"demo":null}`: no admin exists, so the one-time
+  setup route is open.
+
+- [ ] **Register the clinic and its first admin — and read the cookie.**
+  There is no sign-up in Stride: this route creates the one account everyone
+  else is invited by.
+  ```bash
+  curl -si -c admin.txt -X POST $API/auth/register-clinic -H "$J" -d '{
+    "clinicName": "Riverside Physiotherapy",
+    "clinicEmail": "hello@riverside.example",
+    "email": "admin@riverside.example",
+    "password": "correct-horse-battery",
+    "firstName": "Ada",
+    "lastName": "Admin"
+  }' | grep -iE '^HTTP|^set-cookie'
+  ```
+  - **For a real clinic, this is its real admin**: use the clinic's names,
+    an address that receives email (Phase 9 sends a reset link to it) and a
+    real password. Nothing here needs undoing afterwards.
+  - **For the demo**, any values: Part 3's reset deletes this account.
+
+  → `201`, and a cookie line ending `HttpOnly; Secure; SameSite=Lax`. No
+  `Set-Cookie` line at all means the app didn't see the request as HTTPS, so
+  it wouldn't set a `Secure` cookie: check `TRUST_PROXY_HOPS=2` and
+  `NODE_ENV=production`. (Why `Lax` is enough: the frontend and the API are
+  one *site*, `stridecare.app`; see
+  [`session-cookie.ts`](../src/config/session-cookie.ts).)
+
+- [ ] **The setup route is closed now:**
+  ```bash
+  curl -s $API/auth/setup-status
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST $API/auth/register-clinic -H "$J" -d '{
+    "clinicName": "X", "clinicEmail": "x@x.example", "email": "y@x.example",
+    "password": "correct-horse-battery", "firstName": "A", "lastName": "B" }'
+  ```
+  → `{"setupComplete":true,…}`, then `403` ("An administrator account already
+  exists…").
+
+- [ ] **The session works:**
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' -b admin.txt $API/auth/me
   ```
   → `200`.
 
-- [ ] **Register, and confirm the cookie itself, not just success** —
-  `-c cookies.txt` saves the session cookie for every following step, and
-  `-i` shows the raw response headers so you can see `Set-Cookie` directly
-  rather than trust `curl` swallowed it silently:
+- [ ] **Roles are enforced, not just sign-in.** Creating an exercise is a
+  practitioner's action; the admin is refused:
   ```bash
-  curl -i -c cookies.txt -X POST https://$DOMAIN/auth/register \
-    -H "Content-Type: application/json" \
-    -d '{
-      "email": "verify-deploy@example.com",
-      "password": "SomeStrongPassw0rd!",
-      "firstName": "Deploy",
-      "lastName": "Verify",
-      "dateOfBirth": "1990-01-01"
-    }'
+  curl -s -o /dev/null -w '%{http_code}\n' -b admin.txt -X POST $API/exercises \
+    -H "$J" -d '{"name": "Should be refused", "primaryMuscles": ["abdominals"]}'
   ```
-  Check the `Set-Cookie` line in the output directly: it must include
-  `Secure` and `SameSite=Lax` — if `Secure` is missing, `NODE_ENV` isn't
-  actually resolving to `production` in the running container (§ Phase 3).
-  Also check the response body includes a nested `"patientProfile":
-  { "dateOfBirth": "1990-01-01" }`.
+  → `403`.
 
-- [ ] **Confirm the session is real**, using the saved cookie:
+- [ ] **CORS trusts the frontend, and only it:**
   ```bash
-  curl -i -b cookies.txt https://$DOMAIN/auth/me
+  curl -s -o /dev/null -D - -H "Origin: https://stridecare.app" $API/health | grep -i '^access-control-allow'
+  curl -s -o /dev/null -D - -H "Origin: https://stride.pages.dev" $API/health | grep -i '^access-control-allow-origin'
   ```
-  → `200` with your account's data, `passwordHash`/`mfaSecret`/reset-token
-  fields genuinely absent from the body (doc 22), `patientProfile` present
-  the same as the register response.
+  → `Access-Control-Allow-Origin: https://stridecare.app` and
+  `Access-Control-Allow-Credentials: true` for the first; **nothing** for the
+  second: a browser on any other origin can't read the API's answers.
 
-- [ ] **`404`, not `403`, for an out-of-scope RLS-protected resource** —
-  confirms the RLS rollout's actual current behavior is live, not the
-  pre-rollout assumption: `medical_files`, `assigned_programs`, `sessions`,
-  and `conversations` all return `404` for a resource this account has no
-  relationship to, since RLS filters the row out before the ownership
-  check ever runs (doc 27). A genuinely nonexistent id is the simplest
-  live check (a real, existing-but-not-yours id would need a second test
-  account, already covered by the local e2e suite — this is a lighter
-  smoke check, not a full re-verification):
+- [ ] **The app queries as `stride_app`.** On the Droplet, straight after a
+  request (pg closes an idle connection after 10 seconds):
   ```bash
-  curl -i -b cookies.txt https://$DOMAIN/medical-files/999999
+  curl -s https://api.stridecare.app/health > /dev/null && \
+  docker compose -f docker-compose.prod.yml exec -T db psql -U postgres -d stride -Atc \
+    "SELECT DISTINCT usename FROM pg_stat_activity WHERE datname = 'stride' AND usename IS NOT NULL ORDER BY 1"
+  docker compose -f docker-compose.prod.yml exec -T db psql -U postgres -d stride -Atc \
+    "SELECT count(*) FROM pg_policies"
   ```
-  → `404`, `"Medical file entry 999999 not found"` — not a `403`.
+  → `postgres` (the session store's pool, and this `psql`) and `stride_app`
+  (every query of the app); then the number of policies, 113 on the schema of
+  2026-11-03. Zero would mean the migrations didn't run.
 
-- [ ] **WebSocket, over the full real chain** (Cloudflare + Caddy +
-  session auth) — extract the raw cookie value first, then run the
-  existing test script:
+- [ ] **The messaging socket, through the real chain** (Cloudflare, Caddy,
+  the session cookie). From a local clone of this repository with `npm ci`
+  done (the script uses `socket.io-client`):
   ```bash
-  COOKIE=$(grep connect.sid cookies.txt | awk '{print $6"="$7}')
+  COOKIE=$(grep connect.sid admin.txt | awk '{print $6"="$7}')
   node scripts/test-websocket-production.js "$COOKIE"
   ```
+  → `PASSED: WebSocket connected through the real chain`.
 
-- [ ] **`CF-Connecting-IP` vs `X-Forwarded-For`, checked directly against
-  real evidence** — this was doc 19's most important finding, and it's
-  worth re-confirming on every fresh deployment, not assumed to still
-  hold. **This is the one step that genuinely needs to run on the
-  Droplet itself** (SSH in), since Docker's logs live only there — fire
-  the request from anywhere (or reuse `cookies.txt` if you copy it over),
-  then check what Caddy actually received and what the app actually
-  resolved for the *same* request, matched by timestamp:
-  ```bash
-  curl -s -b cookies.txt https://$DOMAIN/auth/me >/dev/null   # can run from anywhere with the cookie
-  # then, on the Droplet:
-  docker compose -f docker-compose.prod.yml logs --since 30s caddy \
-    | grep -o '"Cf-Connecting-Ip":\["[^"]*"\].*"X-Forwarded-For":\["[^"]*"\]'
-  docker compose -f docker-compose.prod.yml logs --since 30s app | tail -20
-  ```
-  The IP in the app's own log line for that request should match
-  `Cf-Connecting-Ip` above — and should be a real, non-Cloudflare address
-  (not something in Cloudflare's own published ranges), confirming the
-  `main.ts` middleware fix from doc 19 is genuinely active in *this*
-  deployment, not just correct in theory.
+- [ ] **The app sees the visitor's real address.** It matters for the rate
+  limits, which count per address: if the app saw Cloudflare's or Caddy's
+  address instead, every visitor would share one counter. The app's logs
+  can't show it (since Phase 7 they hold no IP address, [journal
+  41](journal/41-observability-without-patient-data.md)), so check the two
+  ends:
+  1. **Cloudflare sends it.** On the Droplet, after any request from your
+     machine:
+     ```bash
+     docker compose -f docker-compose.prod.yml logs --since 1m caddy \
+       | grep -o '"Cf-Connecting-Ip":\["[^"]*"\]' | tail -1
+     ```
+     → your own public address (Cloudflare's
+     `https://www.cloudflare.com/cdn-cgi/trace` shows it as `ip=`).
+  2. **The app counts per visitor.** Six failed sign-ins in a row from your
+     machine, then one from the Droplet:
+     ```bash
+     for i in 1 2 3 4 5 6; do
+       curl -s -o /dev/null -w '%{http_code} ' -X POST $API/auth/login -H "$J" \
+         -d '{"email": "nobody@example.com", "password": "wrong-password"}'
+     done; echo
+     ```
+     → `401 401 401 401 401 429`: sign-in allows 5 attempts a minute per
+     address. Then, within that minute, the same request **on the Droplet**
+     (its own address, through Cloudflare) → `401`, not `429`.
 
-- [ ] **A real authorization boundary, not just an authenticated
-  request** — a freshly registered account has no clinic and no elevated
-  role, so a practitioner-only action should be refused:
-  ```bash
-  curl -i -b cookies.txt -X POST https://$DOMAIN/exercises \
-    -H "Content-Type: application/json" \
-    -d '{"name": "Should be rejected", "primaryMuscles": ["abdominals"]}'
-  ```
-  → `403`. Production RBAC enforcement under real conditions is a
-  different claim than the local test suite passing.
+- [ ] **Nothing to clean up.** The real clinic keeps its admin. The demo's
+  reset (Part 3) deletes every account, this one included.
 
-- [ ] **Don't try to clean up the verification account individually** —
-  there's no real way to. The app has no hard-delete route for `users`,
-  and the schema's own `RESTRICT` foreign keys correctly refuse a direct
-  SQL delete once an audit log entry references the account (confirmed
-  directly — this is the schema working as designed, not a bug to work
-  around). Leave it as known, intentional test data for now; **Phase 11**
-  is where it actually gets removed, as part of a full reset, once you're
-  done verifying everything else.
+### Phase 8 — Close the firewall around Cloudflare
 
-### Phase 8 — Lock down the firewall
+Now that Caddy has its certificates: restrict the Cloud Firewall's inbound
+80 and 443 rules to Cloudflare's published ranges, fetched fresh from
+https://www.cloudflare.com/ips/ (the list changes from time to time). The
+certificates still renew: Let's Encrypt's checks reach the Droplet through
+Cloudflare, like any request to the two names.
 
-Only now, once Phase 6/7 have confirmed Caddy genuinely has a working
-certificate: restrict the DigitalOcean Cloud Firewall's inbound 80/443
-rules to Cloudflare's published IP ranges — **re-fetch the current list
-from `https://www.cloudflare.com/ips/` rather than reuse an old copy**,
-since it does change periodically — instead of "everyone."
-
-**Verify properly, not just by re-testing through Cloudflare** (a VPN or
-other network quirk can produce a false pass or false fail — see doc 19).
-Run these from your own machine, not the Droplet — you're testing whether
-the outside world can reach the Droplet's raw IP directly, which is a
-question about the network path *into* the Droplet, not something the
-Droplet can meaningfully test against itself:
+**Verify from your own machine**, against the Droplet's own address:
 
 ```bash
-DROPLET_IP=<your-droplet-s-real-IP>
+DROPLET_IP=<droplet-ip>
 curl -m 5 -I http://$DROPLET_IP/health
 curl -m 5 -I -k https://$DROPLET_IP/health
+curl -sI https://api.stridecare.app/health | head -1
 ```
 
-Both should **fail to connect** (a timeout or connection-refused, not any
-kind of HTTP response) — `-m 5` caps the wait at 5 seconds so a correctly
-blocked request doesn't just hang. Compare that against the domain, which
-should still work fine, since Cloudflare's own IPs remain allowed:
+The first two must **fail to connect** (a timeout, not any HTTP answer;
+`-m 5` stops waiting after 5 seconds). The third still answers `200`,
+through Cloudflare.
+
+If the direct requests get an answer, don't trust the dashboard: watch what
+reaches the Droplet, then repeat them.
 
 ```bash
-curl -I https://$DOMAIN/health   # should still succeed normally
+sudo tcpdump -i eth0 port 80 or port 443   # on the Droplet
 ```
 
-If the direct-IP requests unexpectedly succeed, don't trust the dashboard's
-claimed rule set — capture directly on the box instead, from an SSH session
-on the Droplet itself:
+Cloud Firewalls filter before the Droplet, so a blocked request never shows
+up in the capture. Seeing it arrive means the rule isn't applied. (A VPN on
+your side can fake either answer: [journal
+19](journal/19-deployment-verification-and-observability.md).)
+
+### Phase 9 — Email through Resend
+
+Invitations and password resets are real emails. Resend's shared sender
+(`onboarding@resend.dev`) only delivers to the Resend account's own address,
+so the app needs a domain of its own ([journal
+17](journal/17-real-email-and-mfa-encryption.md)).
+
+1. **Resend → Domains → Add domain** (`stridecare.app`), then add the DNS
+   records Resend lists (SPF and DKIM; DMARC recommended) in Cloudflare, as
+   **DNS only** (grey cloud): they're for mail servers, not visitors. Wait
+   for "Verified".
+2. **Resend → API Keys**: a key with sending access. On the Droplet, replace
+   `re_REPLACE_ME` in `.env` (`nano .env`), and check `EMAIL_FROM` is an
+   address on the verified domain.
+3. Restart the app with the new values:
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d --force-recreate app
+   ```
+
+**Verify:** ask for a password reset for Phase 7's admin (a real clinic's;
+the demo's `@riverside.example` address can't receive mail):
 
 ```bash
-sudo tcpdump -i eth0 port 80 or port 443
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $API/auth/forgot-password \
+  -H "$J" -d '{"email": "<the admin address>"}'
 ```
 
-then repeat the `curl` commands above from your machine and watch what
-actually arrives. Cloud Firewalls filter at the hypervisor level, so
-blocked traffic never reaches a capture taken on the box at all — seeing
-*nothing* in the capture while a request is in flight is itself
-confirmation the block is working; seeing the request arrive means the
-firewall rule isn't actually applied the way the dashboard claims.
+→ `204`, and an email arrives with a link to
+`https://stridecare.app/reset-password?token=…`. The answer is `204` for any
+address, known or not, so only the email proves delivery.
 
-### Phase 9 — Backups
+Addresses that can never exist are never sent to: `@stride.test` (the seed's),
+`@example.com` and the other names reserved by RFC 2606 are refused before
+Resend is asked ([`reserved-domains.ts`](../src/email/reserved-domains.ts)).
+They would only bounce, and bounces lower the domain's reputation.
 
-The `backups` bucket is created automatically by the script itself on
-first run — nothing to confirm ahead of time. Worth knowing the RustFS
-console is also reachable via an SSH tunnel if you ever want to browse
-buckets directly, now that `storage` is actually up:
+### Phase 10 — Error tracking (GlitchTip)
+
+GlitchTip receives the backend's error reports and, through the API's
+`POST /monitoring`, the browser's (decisions §32). Nothing of it is on the
+internet: the app reaches it as `glitchtip:8000`, and its web interface is
+bound to the Droplet's `127.0.0.1:8000`.
+
+1. **Start it** (its Postgres is a server of its own, so Stride's database
+   shares nothing with it):
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d glitchtip-db glitchtip
+   ```
+2. **An account.** Nobody can sign up (`ENABLE_USER_REGISTRATION=False`):
+   ```bash
+   docker compose -f docker-compose.prod.yml exec glitchtip ./manage.py createsuperuser
+   ```
+3. **Its interface, over an SSH tunnel**, from your machine:
+   ```bash
+   ssh -L 8000:127.0.0.1:8000 stride@<droplet-ip>
+   ```
+   then http://localhost:8000. Sign in, create an organization, then two
+   projects: **`stride-api`** (the backend) and **`stride-web`** (the
+   frontend).
+4. **The two DSNs**, from each project's settings, "Client Keys". GlitchTip
+   writes them with the host it knows itself by, `localhost:8000`; replace it
+   with **`glitchtip:8000`**, the name on the Compose network, then set in
+   `.env`:
+   ```dotenv
+   SENTRY_DSN=http://<stride-api's key>@glitchtip:8000/<its id>
+   SENTRY_BROWSER_DSN=http://<stride-web's key>@glitchtip:8000/<its id>
+   ```
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d --force-recreate app
+   ```
+5. **The frontend's build gets the browser DSN too**, as `VITE_SENTRY_DSN`,
+   character for character the same string, host included: the API forwards
+   only envelopes for exactly that DSN (the frontend's guide, TODO-LINK). The
+   browser never contacts `glitchtip:8000`; it sends to `/monitoring`.
+
+Optional: `SENTRY_RELEASE` (the deployed commit, `git rev-parse --short
+HEAD`) labels each report with its code. GlitchTip's alert emails go to its
+log until `GLITCHTIP_EMAIL_URL` is set to an SMTP URL.
+
+**Verify** that the browser's route is on:
 
 ```bash
-ssh -L 9101:localhost:9001 stride@<droplet-ip>
-# then browse to http://localhost:9101 locally
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $API/monitoring
 ```
 
-Run the backup script for real, **on the Droplet**:
+→ `415` ("The body must be a Sentry envelope"): the route exists and checks
+what it's given. `404` ("Error reporting is not set up on this server")
+means `SENTRY_BROWSER_DSN` didn't reach the app. A real report: the
+frontend's guide raises one from the browser.
+
+### Phase 11 — Backups
+
+[`scripts/backup-database.sh`](../scripts/backup-database.sh) dumps the
+database, compresses it, uploads it to RustFS's `backups` bucket (creating it
+on the first run) and keeps the last 14. RustFS is on the same Droplet: this
+protects against mistakes (a bad migration, a wrong command), not against
+losing the Droplet.
+
+Run it once by hand, on the Droplet:
 
 ```bash
 chmod +x scripts/backup-database.sh
-./scripts/backup-database.sh   # run once by hand first — confirm it works
+./scripts/backup-database.sh
 ```
 
-Then schedule it. Run:
-
-```bash
-crontab -e
-```
-
-That opens an editor — add this line inside it (don't paste it into your
-shell directly; it only means anything inside the crontab file):
+Then schedule it (`crontab -e`, and this line in the editor, not in the
+shell):
 
 ```
 0 3 * * * /home/stride/Stride-backend/scripts/backup-database.sh >> /home/stride/backup.log 2>&1
 ```
 
-**Don't stop at "the script exited cleanly"** — actually pull the backup
-it just produced back down and restore it, verifying real row counts. A
-backup that's never been restored is an assumption, not a tested fact.
-*(rationale: doc 18)* Still on the Droplet:
+(03:00 on the Droplet's clock, which is UTC.)
+
+**Verify by restoring**, not by a clean exit: a backup never restored is an
+assumption ([journal 18](journal/18-deployment-provisioning-through-backups.md)).
 
 ```bash
-# Same credential-extraction the backup script itself uses (a shared
-# env_var() helper stripping trailing inline comments — .env.example's
-# own documented "KEY=value # Generate: ..." format broke a naive
-# grep|cut extraction here and in the script both; see its own comments
-# for why `source .env` is deliberately avoided instead of just fixing
-# that a different way):
+# The script's own way of reading .env: grep the line, cut the value, strip a
+# trailing "# comment". Not `source .env`: that would run the file as shell
+# code, and EMAIL_FROM's "<…>" breaks it (journal 35).
 env_var() {
   grep -E "^$1=" .env | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//'
 }
-RUSTFS_ACCESS_KEY=$(env_var RUSTFS_ACCESS_KEY)
-RUSTFS_SECRET_KEY=$(env_var RUSTFS_SECRET_KEY)
+export AWS_ACCESS_KEY_ID="$(env_var RUSTFS_ACCESS_KEY)"
+export AWS_SECRET_ACCESS_KEY="$(env_var RUSTFS_SECRET_KEY)"
 STORAGE_PORT=$(env_var STORAGE_PORT)
-export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY"
-export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY"
 
-# Find the file the manual run above actually produced:
 aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 ls s3://backups/
 ```
 
-Pull the most recent one down and restore it into a genuinely separate,
-throwaway database — never directly into `stride`, even to "just check":
+([journal 35](journal/35-backup-bucket-and-credential-parsing.md) is the bug
+behind that `env_var`.) Restore the newest file into a separate, throwaway
+database, never into `stride`:
 
 ```bash
-BACKUP_FILE=<the filename from the ls output above>
+BACKUP_FILE=<a file name from the list>
 aws --endpoint-url "http://localhost:${STORAGE_PORT}" s3 cp \
   "s3://backups/${BACKUP_FILE}" "/tmp/${BACKUP_FILE}"
 
@@ -642,17 +772,14 @@ docker compose -f docker-compose.prod.yml exec -T db \
 gunzip -c "/tmp/${BACKUP_FILE}" | docker compose -f docker-compose.prod.yml \
   exec -T db psql -U postgres -d restore_verify
 
-# The real check — an actual count, not "no errors occurred":
 docker compose -f docker-compose.prod.yml exec -T db \
   psql -U postgres -d restore_verify -c "SELECT count(*) FROM exercises;"
 docker compose -f docker-compose.prod.yml exec -T db \
   psql -U postgres -d restore_verify -c "SELECT count(*) FROM users;"
 ```
 
-Compare those counts against what you actually expect (873 exercises if
-seeded, plus however many real accounts exist) — a mismatch here is the
-one thing a clean-looking backup run can't tell you on its own. Clean up
-once confirmed:
+The counts must be the ones you expect (873 exercises when seeded; the
+accounts that exist). Then clean up:
 
 ```bash
 rm "/tmp/${BACKUP_FILE}"
@@ -660,179 +787,301 @@ docker compose -f docker-compose.prod.yml exec -T db \
   psql -U postgres -c "DROP DATABASE restore_verify;"
 ```
 
-### Phase 10 — Observability
+The RustFS console, to browse the buckets: `ssh -L 9101:localhost:9001
+stride@<droplet-ip>`, then http://localhost:9101.
 
-**Uptime monitor**: point at `https://<your-domain>/health`, HTTP, expect
-`200`. If this is a redeploy and the monitor already targets the domain
-(not the Droplet's IP directly), it may not need touching at all.
+### Phase 12 — Uptime and logs (Better Stack)
 
-**Log shipping**: install Better Stack's Docker-specific Vector agent (not
-the full eBPF collector — it's failed outright on a 1vCPU Droplet before,
-see doc 19):
+**Uptime monitors**, watching from outside (the only place that sees the
+Droplet down): `https://api.stridecare.app/health`, expecting `200`, and
+`https://stridecare.app/`. Monitors that target the names, not the IP,
+survive a recreated Droplet unchanged.
+
+**Logs**: Better Stack's Docker-specific Vector agent. Not the full eBPF
+collector, which failed outright on a 1 vCPU Droplet ([journal
+19](journal/19-deployment-verification-and-observability.md)):
 
 ```bash
-curl -sSL https://telemetry.betterstack.com/setup-vector/docker/YOUR_SOURCE_TOKEN \
+curl -sSL https://telemetry.betterstack.com/setup-vector/docker/<your source token> \
   -o /tmp/setup-vector.sh && bash /tmp/setup-vector.sh
-```
-
-Then fix the Docker socket permission immediately — Vector runs as a
-restricted `vector` user by default and can't reach the socket without
-this:
-
-```bash
-sudo usermod -aG docker vector
+sudo usermod -aG docker vector     # Vector's own user must reach Docker's socket
 sudo systemctl restart vector
 ```
 
-Verify log shipping is genuinely working (Live Tail actually showing
-output from all four containers) before trusting it, and confirm graceful
-shutdown works as expected:
+**Verify:** Live Tail shows lines from the running containers (`caddy`,
+`app`, `db`, `storage`, `glitchtip`, `glitchtip-db`). Live Tail can lag by
+some seconds; wait before concluding it's broken. What the lines may contain
+is decided in the app: no email address, no IP address, no query string
+([journal 41](journal/41-observability-without-patient-data.md)).
+
+**Graceful shutdown:**
 
 ```bash
 time docker compose -f docker-compose.prod.yml stop app
-```
-
-Should complete in well under the default 10-second grace period — if it
-takes the full 10 seconds and gets killed, `enableShutdownHooks()` isn't
-actually taking effect.
-
-**`stop` only stops the container — it does not come back on its own.**
-Bring it back up before treating this check as done, or you'll leave the
-app genuinely down:
-```bash
 docker compose -f docker-compose.prod.yml start app
 ```
-(`start`, not `up -d` — nothing changed, so this just resumes the existing
-container rather than re-evaluating whether to recreate it.)
 
-**Live Tail can lag behind real time by a noticeable amount** — the
-shutdown and restart log lines may not appear immediately. Don't read a
-few seconds of apparent silence as log shipping having failed; give it a
-moment and check again before assuming Vector needs troubleshooting.
+The `stop` should finish well under Docker's 10-second limit; taking the full
+10 seconds means the app ignored the signal (`enableShutdownHooks()`).
+`start` brings it back: `stop` alone leaves the site down.
 
-### Phase 11 — Final clean reset, once everything's verified (optional)
+### Phase 13 — A clean start (optional, a real clinic only)
 
-Phase 7's verification steps leave real artifacts behind: at least one
-test account, and its `REGISTER`/`LOGIN_SUCCESS` rows in `audit_logs`.
-There's no clean way to remove just that — the app has no hard-delete
-route for `users` at all, and the schema's own `RESTRICT` foreign keys
-correctly refuse a direct SQL delete once an audit log entry references
-the account (this is the schema working as designed, not a bug to work
-around). Once Phases 4–10 have all been confirmed working, it's worth one
-full reset to leave the deployment genuinely clean before treating it as
-ready for real use, rather than carrying test data forward indefinitely:
+If the checks left data you don't want (accounts or records created while
+trying the site), the only clean way out is to start the data again. No
+route deletes a user for good (`DELETE /users/:id` deactivates), and the
+audit log's `RESTRICT` keys refuse an SQL delete of an account it mentions,
+by design.
 
 ```bash
 docker compose -f docker-compose.prod.yml down -v
 ```
 
-This is deliberately destructive — safe specifically because there's no
-real data yet, the same reasoning behind this project's established
-pre-launch reset pattern (doc 04). Know exactly what it does and doesn't
-touch before running it:
+**Deleted:** the six named volumes: `pgdata` (the database, and the
+`stride_app` role, which lives inside it), `rustfs_data` (photos and
+backups), `caddy_data` and `caddy_config` (the certificates),
+`glitchtip_pgdata` and `glitchtip_uploads` (GlitchTip's account, projects and
+reports, so its DSNs will be new). **Kept:** the Droplet, DNS, the clone and
+`.env`, the firewall, the crontab, Vector.
 
-**Destroyed** — the four named volumes, nothing else:
-- `pgdata` — the entire database, **including the `stride_app` role
-  itself** (Postgres roles live inside the data directory, not outside it)
-- `rustfs_data` — every bucket, including `stride` (exercise images) and
-  the `backups` bucket (self-created by the backup script on next run)
-- `caddy_data`/`caddy_config` — the TLS certificate
-
-**Untouched** — everything outside those volumes: the Droplet itself
-(Phase 1), DNS/Cloudflare (Phase 2), the cloned repo and `.env` (Phase 3),
-the firewall restriction (Phase 8), the cron entry (Phase 9 — crontab is
-host state, not a volume), and Vector (a host-level systemd service,
-Phase 10).
-
-**To bring it back**: restart from **Phase 4 through Phase 6** — `db`/
-`storage` up, `migrate`, `create-app-role`, `seed` if you need the
-exercise library again, `app`/`caddy`. **Deliberately don't re-run Phase
-7's verification steps** — registering a fresh test account would
-immediately recreate the exact kind of artifact this reset just removed,
-defeating the point. A single, non-mutating confirmation is enough to
-know the redeploy actually worked:
-```bash
-curl -I https://<your-domain>/health
-```
-**Backups are worth re-verifying too, but only partially.** The cron entry
-itself survived the reset — it's host state, already listed as untouched
-above — so there's no need to touch `crontab -e` again. What's actually
-worth redoing is a single manual run plus the restore-and-row-count check,
-since that data really did live in the wiped volume:
-```bash
-./scripts/backup-database.sh
-```
-then the restore verification from earlier in Phase 9. The `backups`
-bucket recreates itself automatically on that run — nothing manual needed
-there either. **Phase 8 and Phase 10 don't need repeating**; nothing they
-configured lived in a wiped volume.
+To bring it back: Phases 4 to 7 and 10 again, with the real admin this time,
+then one backup by hand and its restore check (Phase 11). The demo doesn't need this:
+its reset deletes everything but the exercise library every night.
 
 ---
 
-## Part 3 — Common operations
+## Part 3 — The reviewers' demo (`DEMO_MODE=on`)
+
+How the deployed demo differs from a real clinic's, and how to run it
+(decisions §46). Everything hangs on one setting, `DEMO_MODE=on`. A real
+clinic leaves it out: no card, no locks, and the seed refuses to run in
+production.
+
+### What demo mode does
+
+- **The sign-in page shows a "For reviewers" card**: four shared accounts
+  (`admin@`, `alex@`, `pat@`, `casey@stride.test`), their password, Casey's
+  two-factor key, when the data is reset, and a link to the accounts guide
+  ([`dev-test-accounts.md`](dev-test-accounts.md)).
+- **Those four accounts are locked** against the changes that would lock
+  other reviewers out: their password, email address and two-factor sign-in
+  can't be changed, and they can't be deactivated or merged away (`403`,
+  with a sentence saying why). Everything else works. Reviewers who want to
+  try the locked features invite themselves as a new user.
+- **The data is reset every night**, and after each deploy: every account
+  and everything they did. The exercise library is kept.
+
+### Settings
+
+Added to Phase 3's `.env` (Phase 9's email is needed too: "invite yourself"
+sends a real invitation):
+
+```dotenv
+DEMO_MODE=on
+DEMO_RESET_TIME=04:00
+DEMO_RESET_TIME_ZONE=America/Toronto
+# DEMO_GUIDE_URL=TODO-LINK
+```
+
+- **`DEMO_RESET_TIME` / `DEMO_RESET_TIME_ZONE`** tell the card when the reset
+  runs; it shows that moment in each reviewer's own time ("every night at
+  1:00 AM your time"). Both or neither. They must match the timer
+  (`OnCalendar=*-*-* 04:00:00 America/Toronto`): the card only reports, the
+  timer decides.
+- **`DEMO_GUIDE_URL`**: the accounts guide on GitHub, once the repository is
+  public. It must start with `https://`, or the app refuses to start, so the
+  line stays commented out until the address exists.
+- `DEMO_MODE` accepts `on` or `off` only: a typo (`true`, `yes`) stops the
+  app rather than meaning either.
+
+Then `docker compose -f docker-compose.prod.yml up -d --force-recreate app`.
+
+### The first reset
+
+After Phase 5's `seed` (the exercise library first: the demo's templates use
+it):
+
+```bash
+sh scripts/ops/demo-reset.sh
+```
+
+[`scripts/ops/demo-reset.sh`](../scripts/ops/demo-reset.sh) checks `.env`
+says `DEMO_MODE=on`, **stops the app**, runs the `demo-reset` job, and
+**starts the app again, always**, even if the reset failed (a shell `trap`).
+The job:
+
+1. **`seed-dev.ts --reset`**: deletes every row except the exercise library,
+   in **one transaction** (if anything fails, nothing is deleted and the app
+   comes back on yesterday's data), then creates the demo world again. Every
+   signed-in reviewer is signed out: sessions are rows too.
+2. **`storage-sweep.ts --delete`**: deletes the stored files no row uses any
+   more (the deleted accounts' avatars and photos). Files younger than 24
+   hours are left alone, so a day's files go the night after.
+
+Why the app is stopped rather than reset under it: a browser's live
+messaging connection was authenticated once, when it opened, and would stay
+open on an account that no longer exists; and the app's new-message sweep
+(every minute) could meet the reset halfway. Stopped, neither can happen.
+The site answers an error for the minute or so it takes.
+
+Through `sh`, so the script needs no executable bit, which a commit from
+Windows can't carry. [`.gitattributes`](../.gitattributes) keeps it and the
+systemd units in LF line endings: with CRLF, Linux's shell refuses the
+script.
+
+**Verify:**
+
+```bash
+curl -s $API/auth/setup-status | jq '{accounts: [.demo.accounts[].email], reset: .demo.reset}'
+```
+
+→ the four `@stride.test` accounts and `{"time": "04:00", "timeZone":
+"America/Toronto"}`. Phase 7's admin can no longer sign in. Signed in as
+`admin@stride.test`, `POST /auth/password` answers `403` ("This is one of the
+demo's shared accounts, so its password can't be changed…").
+
+### The nightly timer
+
+```bash
+sed 's#/opt/stride#/home/stride/Stride-backend#' scripts/ops/stride-demo-reset.service \
+  | sudo tee /etc/systemd/system/stride-demo-reset.service > /dev/null
+sudo cp scripts/ops/stride-demo-reset.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now stride-demo-reset.timer
+systemctl list-timers stride-demo-reset.timer   # the next run
+journalctl -u stride-demo-reset.service         # what the last runs printed
+```
+
+The unit in the repository runs `/opt/stride/scripts/ops/demo-reset.sh`; the
+`sed` writes the installed copy with this guide's folder instead, and leaves
+the repository's file untouched (so `git pull` stays clean).
+
+- **A systemd timer, not a crontab line:** the Droplet's clock is UTC, and
+  Ubuntu's cron has no time zone per line, so "04:00 Eastern" would move by
+  an hour twice a year. `OnCalendar=… America/Toronto` follows Eastern time's
+  clock changes. `Persistent=true` runs a missed night once the Droplet is
+  back.
+- **Why 04:00 Eastern:** the reviewers are in North America, and the reset
+  signs everyone out and deletes what they did. 4 a.m. Eastern is the
+  quietest hour across the continent: 1 a.m. in Vancouver, 5:30 a.m. in
+  St. John's (10:00 in Paris). The backup (03:00 UTC: 22:00 or 23:00 in
+  Toronto) never meets it.
+- **Accounts reviewers create are deleted too.** An account a reviewer
+  invited themselves to is gone the next morning (they invite themselves
+  again). On purpose: those addresses are real people's, and the demo keeps
+  them less than a day; and their data is woven into the seeded accounts'
+  (Pat's care team, Alex's messages), so keeping some accounts while
+  recreating others would leave broken links. The card says so.
+
+### After each deploy
+
+```bash
+sh scripts/ops/demo-reset.sh
+```
+
+after Part 4's redeploy steps. A deploy can change what the seed creates;
+resetting straight after means the demo always shows the data of the version
+that runs.
+
+### Known limits
+
+- **Casey's recovery codes are single-use.** Reviewers who sign in with them
+  use them up until the next reset; the key on the card, added to an
+  authenticator app, always works.
+- **A two-factor code works once.** Two reviewers signing in as Casey within
+  the same 30 seconds: the second waits for the next code.
+- **Reviewers see each other's data.** The card says not to enter real
+  personal information; the nightly reset removes whatever was typed.
+
+---
+
+## Part 4 — Common operations
 
 **Redeploying after a code change:**
+
 ```bash
-git pull   # requires core.sshCommand set once per Phase 3 — see there if this fails with "Permission denied (publickey)"
-docker compose -f docker-compose.prod.yml build migrate   # or: run --build --rm migrate
-docker compose -f docker-compose.prod.yml run --rm migrate   # if migrations changed
-docker compose -f docker-compose.prod.yml up -d --build app
+cd /home/stride/Stride-backend
+git pull
+docker compose -f docker-compose.prod.yml --profile tools build
+docker compose -f docker-compose.prod.yml run --rm migrate
+docker compose -f docker-compose.prod.yml up -d app
+sh scripts/ops/demo-reset.sh        # the demo only
 ```
-**Rebuild before you rely on it, every time, for every service whose
-source actually changed — not just the one you're about to restart.**
-`docker compose run`/`up` only auto-build an image the *first* time it
-doesn't exist yet; once built, both silently reuse that image forever,
-staleness included, unless `--build` is passed explicitly. `app`'s line
-above already had `--build`; `migrate`'s didn't, and it should have —
-this exact gap (a `stride-migrate` image built before a fix landed,
-silently reused after) cost real debugging time during this project's own
-redeploy. If in doubt, `docker compose -f docker-compose.prod.yml build`
-with no service name rebuilds everything that has a `build:` block in one
-pass.
 
-Note: `logging:` config (§ below) only applies at container *creation* —
-a plain `up -d --build` on a service that already exists won't retroactively
-apply a **new** compose-level change like that; use `--force-recreate` if
-you've changed something structural (env var additions requiring restart
-aside, which `up -d` does pick up).
+`--profile tools build` rebuilds all five images from the pulled code: `app`
+and the four one-off jobs. **Without `--profile tools`, `build` builds `app`
+only**: a service behind a profile is left out unless its profile is active
+or it's named (checked with `--dry-run`, Compose 5.6). Never skip the build:
+`run` and `up` reuse an existing image, however old, which is how a stale
+`migrate` image cost a day in [journal
+26](journal/26-redeploying-for-real.md). `migrate` is harmless when there's
+no new migration.
 
-**Rotating a secret**: update `.env`, then recreate only the affected
-service(s) — `docker compose -f docker-compose.prod.yml up -d
---force-recreate app` for most app-level secrets. `POSTGRES_APP_PASSWORD`
-specifically needs `create-app-role` re-run first (it syncs the password
-via `ALTER ROLE`) before the app is restarted with the new value, or the
-app will fail to authenticate.
+**Changing `.env`:** `docker compose -f docker-compose.prod.yml up -d
+--force-recreate app` (or the service the value belongs to). Rotating
+`POSTGRES_APP_PASSWORD`: run `create-app-role` first, which sets the role's
+new password, then recreate the app; the other way round, the app can't sign
+in to Postgres.
 
-**Restoring from backup**: pull the relevant `.sql.gz` from the `backups`
-bucket, `gunzip`, and `psql` it into a target database — always a
-throwaway/test target first if you're validating the backup itself, never
-directly into production without a reason to believe you need to.
+**Restoring a backup:** as in Phase 11's check, always into a throwaway
+database first. Restoring over `stride` itself is a decision of its own: stop
+the app, then restore.
 
-**Full teardown and redeploy from scratch**: `docker compose -f
-docker-compose.prod.yml down -v` destroys named volumes (`pgdata`,
-`rustfs_data`, `caddy_data`, `caddy_config`) — this is genuinely
-destructive and appropriate only for a true from-scratch test, not a normal
-redeploy. See Phase 11 for exactly what survives this and what needs
-redoing afterward — a genuine fresh Droplet needs the whole Part 2 runbook
-from Phase 1; an existing Droplet after `down -v` only needs Phase 4 onward.
+**Pinning the floating images.** `caddy:2`, `postgres:16`, `postgres:18` and
+`glitchtip/glitchtip:6` are tags their owners move (RustFS and Mailpit are
+pinned by digest). Once the first deployment works, read what's running:
+
+```bash
+docker image inspect --format '{{index .RepoDigests 0}}' caddy:2 postgres:16 postgres:18 glitchtip/glitchtip:6
+```
+
+and write each as `name:version@sha256:…` in `docker-compose.prod.yml`, in a
+commit: what runs is then exactly what was tested.
+
+**Starting the data again:** Phase 13.
+
+**When the repositories go public:** set `DEMO_GUIDE_URL` (Part 3) and
+replace this file's `TODO-LINK`s. CI is written and parked until then
+([`PROJECT.md`](PROJECT.md#deployment-infrastructure)): `.github/` is listed
+in `.gitignore`, and that day the line is removed and `.github/` committed,
+with the other steps of decisions §38.
 
 ---
 
-## Appendix: required environment variables
+## Appendix — Environment variables
 
-| Variable | Required? | Notes |
+Read by the app (and its scripts) unless marked *Compose*: those are read by
+`docker compose` itself. "Refused" means the app stops at start with a
+message naming the variable.
+
+| Variable | Production | Rules (from the code) |
 |---|---|---|
-| `POSTGRES_HOST` | Yes | `localhost` locally; `db` (the Compose service name) in production — **not** `localhost` there |
-| `POSTGRES_USER`/`PASSWORD`/`DB` | Yes | Owner/superuser connection — migrations, session store, `create-app-role` itself |
-| `POSTGRES_APP_USER`/`APP_PASSWORD` | Yes | The app's own restricted runtime role — see Phase 5 |
-| `STORAGE_ENDPOINT`/`PORT` | Yes | `localhost` locally; RustFS's service name in prod |
-| `RUSTFS_ACCESS_KEY`/`SECRET_KEY` | Yes | |
-| `SESSION_SECRET` | Yes — boot fails without it | `openssl rand -hex 32` |
-| `MFA_ENCRYPTION_KEY` | Yes — boot fails without it | Exactly 64 hex chars |
-| `FRONTEND_URL` | Yes | Singular — used to build password-reset links |
-| `FRONTEND_URLS` | Yes | Plural, comma-separated — CORS allow-list |
-| `TRUST_PROXY_HOPS` | Prod only | `2` behind Cloudflare + Caddy |
-| `NODE_ENV` | Prod only | Must be exactly `production` |
-| `RESEND_API_KEY` | Yes — boot fails without it | Placeholder OK locally |
-| `EMAIL_FROM` | No | Defaults to a Resend sandbox address |
-| `DATABASE_POOL_MAX` / `SESSION_POOL_MAX` / `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | No | Safe defaults if omitted |
+| `NODE_ENV` | `production` | Exactly that string: `Secure` cookie, JSON logs, the production-only refusals below |
+| `PORT` | unset | The app's port; default `3000` (Caddy proxies to `app:3000`) |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | `db` / `5432` | Defaults `localhost` / `5432` |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `postgres` / generated / `stride` | Required. The owner: migrations, the session store, `create-app-role`. *Compose* requires `POSTGRES_PASSWORD` too |
+| `POSTGRES_APP_USER` / `POSTGRES_APP_PASSWORD` | `stride_app` / generated | Required (refused if missing). The role every query of the app uses |
+| `DATABASE_POOL_MAX` / `SESSION_POOL_MAX` | unset | Pool sizes; defaults 10 and 5 |
+| `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | unset | Wait for a free connection; default 5000 |
+| `STORAGE_ENDPOINT` / `STORAGE_PORT` | `storage` / `9000` | The internal S3 address; defaults `localhost` / `9000` |
+| `STORAGE_PUBLIC_URL` | `https://files.stridecare.app` | The address links are signed for. Required in production (refused if missing); an origin only (no path, query or credentials); `https://` in production |
+| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | generated (`-hex 8` / `-hex 24`) | The app's and the backup's S3 credentials. *Compose* requires both (RustFS's own) |
+| `SESSION_SECRET` | generated (`-hex 32`) | Required; the `.env.example` placeholder is refused |
+| `MFA_ENCRYPTION_KEY` | generated (`-hex 32`) | Required; exactly 64 hex characters (AES-256) |
+| `FRONTEND_URL` | `https://stridecare.app` | The base of the links in emails (reset, invitation, email change) |
+| `FRONTEND_URLS` | `https://stridecare.app` | Comma-separated: the origins CORS and the socket accept; default `http://localhost:5173` |
+| `TRUST_PROXY_HOPS` | `2` | Proxies in front of the app; default 1 |
+| `RATE_LIMITS` | unset (`on`) | `on` or `off`; `off` (the e2e tests') refused in production |
+| `EMAIL_TRANSPORT` | `resend` | Required: `resend`, `smtp` or `log`; `log` refused in production (its output holds live links) |
+| `RESEND_API_KEY` | Resend's key | Required when the transport is `resend` |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASS` | unset | The `smtp` transport only (Mailpit locally); host and port required there, user and password together or neither |
+| `EMAIL_FROM` | `Stride <noreply@stridecare.app>` | The sender; on the verified domain |
+| `SENTRY_DSN` | `stride-api`'s DSN, host `glitchtip:8000` | Unset or empty = no backend reports; a malformed DSN is refused |
+| `SENTRY_BROWSER_DSN` | `stride-web`'s DSN, host `glitchtip:8000` | Unset = `POST /monitoring` answers 404; must equal the frontend's `VITE_SENTRY_DSN` |
+| `SENTRY_ENVIRONMENT` | unset | A label on each report; defaults to `NODE_ENV` |
+| `SENTRY_RELEASE` | optional | The deployed commit, shown on each report |
+| `DEMO_MODE` | `on` for the demo only | `on` or `off` (default); anything else refused |
+| `DEMO_RESET_TIME` / `DEMO_RESET_TIME_ZONE` | `04:00` / `America/Toronto` | Both or neither; `HH:MM` and an IANA zone; must match the timer |
+| `DEMO_GUIDE_URL` | once public | `https://` only, refused otherwise |
+| `GLITCHTIP_SECRET_KEY` / `GLITCHTIP_DB_PASSWORD` | generated | *Compose*, required for every command |
+| `GLITCHTIP_EMAIL_URL` / `GLITCHTIP_FROM_EMAIL` | optional | *Compose*: GlitchTip's alert emails (unset: its log) |

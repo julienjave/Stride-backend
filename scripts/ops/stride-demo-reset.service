@@ -1,6 +1,7 @@
 # The reviewers' demo: one run of scripts/ops/demo-reset.sh (decisions §46).
 # Started by stride-demo-reset.timer. Install both files with
-# docs/demo-deployment.md. Change /opt/stride to where the repository is.
+# docs/DEPLOYMENT.md, Part 3 ("The nightly timer"), which writes the installed
+# copy with /opt/stride replaced by where the repository is.
 [Unit]
 Description=Stride demo: reset the demo data
 Requires=docker.service
