@@ -10,7 +10,9 @@ replacing "admins can read everything" with a narrow, recorded way to give a
 record to someone outside the care team.
 
 Condensed to four stories; [`PROJECT.md`](../PROJECT.md) has the rest. The
-frontend journal's Phase 6 entry (TODO-LINK) covers the screens, among them
+frontend journal's Phase 6 entry
+(`docs/journal/04-honest-states-plain-words-and-account-pages.md`, TODO-LINK)
+covers the screens, among them
 the one-sentence failure wording and the loading states that now span the
 whole app.
 

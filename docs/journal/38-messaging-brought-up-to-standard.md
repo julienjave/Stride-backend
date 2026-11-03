@@ -11,7 +11,8 @@ the bar was the same as for a session.
 Condensed to four stories; the full list is in [`PROJECT.md`](../PROJECT.md).
 The live screens — the cache written from socket events, read receipts, the
 15-minute delete window drawn to the millisecond — are the frontend
-journal's Phase 5 entry (TODO-LINK).
+journal's Phase 5 entry
+(`docs/journal/03-messaging-shown-once-stored.md`, TODO-LINK).
 
 ## Nine gaps, found by reading
 

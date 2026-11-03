@@ -12,7 +12,7 @@ It is condensed on purpose — four stories, not a changelog. The full list of
 what was built and why is in [`PROJECT.md`](../PROJECT.md), and the current
 shape of each part is in [`ARCHITECTURE.md`](../ARCHITECTURE.md). The same
 period seen from the screens is the frontend journal's Phases 1–3 entry
-(TODO-LINK).
+(`docs/journal/01-the-shell-and-the-practitioners-loop.md`, TODO-LINK).
 
 Phases 1 and 2 needed little from the backend, and what they needed was
 small fixes found by building on it: a license number only an admin may
