@@ -37,6 +37,7 @@ import { AppModule } from './app.module'
 import { getDatabaseUrl } from './config/database-url'
 import { validateEnv } from './config/validate-env'
 import { corsOptions } from './config/cors-options'
+import { sessionCookieOptions } from './config/session-cookie'
 import { getPoolConfig } from './config/pool-config'
 import { survivePoolErrors } from './database/pool-errors'
 import { SessionIoAdapter } from './messaging/session-io.adapter'
@@ -145,12 +146,9 @@ async function bootstrap() {
     secret: process.env.SESSION_SECRET!,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
-    },
+    // httpOnly, Secure in production, SameSite=Lax, 7 days —
+    // config/session-cookie.ts says why each (and why Lax since 2026-11-03).
+    cookie: sessionCookieOptions(),
   })
 
   app.use(sessionMiddleware)

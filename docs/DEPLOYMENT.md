@@ -324,7 +324,8 @@ session — no GUI editor is going to be available here):
   since as written it currently points anyone following it toward the
   same failure.)*
 - `NODE_ENV=production` — required exactly as that string; it's what flips
-  session cookies to `secure: true`/`sameSite: 'none'` and pino to raw JSON.
+  session cookies to `secure: true` (`sameSite` is `'lax'` in every
+  environment) and pino to raw JSON.
 - `TRUST_PROXY_HOPS=2` — Cloudflare, then Caddy.
 - `FRONTEND_URL`/`FRONTEND_URLS` — your real deployed frontend origin(s).
 - `RESEND_API_KEY` — a real key if email delivery should actually work at
@@ -450,7 +451,7 @@ DOMAIN=<api.yourdomain.com>
     }'
   ```
   Check the `Set-Cookie` line in the output directly: it must include
-  `Secure` and `SameSite=None` — if either is missing, `NODE_ENV` isn't
+  `Secure` and `SameSite=Lax` — if `Secure` is missing, `NODE_ENV` isn't
   actually resolving to `production` in the running container (§ Phase 3).
   Also check the response body includes a nested `"patientProfile":
   { "dateOfBirth": "1990-01-01" }`.

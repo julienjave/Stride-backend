@@ -275,10 +275,14 @@ whether or not the account exists, so an unknown address takes as long as a
 wrong password (6 ms against 75 ms before the fix; 70 against 72 after).
 Forgot-password always answers `204`, without waiting on the mail server.
 
-**Cookies.** `httpOnly`, `secure` in production. Production still sends
-`SameSite=None`, chosen when the frontend was expected on another site; the
-frontend and the API will share `stridecare.app`, so it becomes `Lax` before
-the next deployment.
+**Cookies.** `httpOnly`, `secure` in production, and `SameSite=Lax`
+everywhere since 2026-11-03. Production first sent `SameSite=None`, chosen
+when the frontend was expected on another domain (journal 16); with the
+frontend and the API sharing `stridecare.app`, the browser treats the
+frontend's calls as same-site, and `Lax` keeps the cookie off every other
+site's background requests (forged form posts, cross-site `fetch`). The cost:
+a frontend served from another site, such as a Cloudflare Pages preview on
+`*.pages.dev`, can't keep a session with this API.
 
 ---
 

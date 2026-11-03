@@ -39,10 +39,16 @@ For a frontend, that means:
 - **There is nothing to store.** No response carries a token, so there's
   nothing to keep in `localStorage` (where any script on the page could read
   it). JavaScript never sees the cookie.
-- **Cookie attributes** ([`src/main.ts`](../../src/main.ts)): `httpOnly`
-  always. In production, `secure: true` and `sameSite: 'none'`; in
-  development, `secure: false` and `sameSite: 'lax'`, so plain
-  `http://localhost` works.
+- **Cookie attributes**
+  ([`src/config/session-cookie.ts`](../../src/config/session-cookie.ts)):
+  `httpOnly` and `sameSite: 'lax'` always; `secure: true` in production, and
+  `false` in development so plain `http://localhost` works. `Lax` is enough
+  because the frontend and the API share one *site*: `stridecare.app` and
+  `api.stridecare.app` (and, in development, `localhost:5173` and
+  `localhost:3000` — a port isn't part of a site). The browser sends the
+  cookie with the frontend's `fetch` calls, and never with another site's
+  background requests. A frontend served from another site (Cloudflare
+  Pages' `*.pages.dev` previews, say) can't keep a session with this API.
 - **A session lasts 7 days from sign-in**, and isn't extended by activity
   (no `rolling` option). After that, the person signs in again.
 - **A session stops working at once** when its account is deactivated or

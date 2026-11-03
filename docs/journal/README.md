@@ -153,9 +153,8 @@ against the code and the documents on 2026-11-03.
 - **Nothing since doc 35 has been deployed.** The Droplet-based pipeline was
   last run end to end in doc 26. Before the next deployment:
   `STORAGE_PUBLIC_URL` in the production `.env` and a proxied `files` DNS
-  record (doc 42 — without the setting the app now refuses to start); the
-  session cookie's `SameSite` from `none` to `lax` (the frontend and the API
-  share a site); pinning `glitchtip/glitchtip:6`, `postgres:16`,
+  record (doc 42 — without the setting the app now refuses to start);
+  pinning `glitchtip/glitchtip:6`, `postgres:16`,
   `postgres:18` and `caddy:2`, which still float. ARCHITECTURE's
   [§12](../ARCHITECTURE.md#12-open-items-before-the-deployment) keeps the
   same list.

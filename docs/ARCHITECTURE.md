@@ -65,7 +65,7 @@ flowchart LR
 The addresses chosen for the deployment are `https://stridecare.app` (the
 frontend, on Cloudflare Pages) and `https://api.stridecare.app` (the API,
 proxied by Cloudflare to the Droplet). Being one site lets the session cookie
-be `SameSite=Lax`; see [§12](#12-open-items-before-the-deployment).
+be `SameSite=Lax` ([`config/session-cookie.ts`](../src/config/session-cookie.ts)).
 
 | Layer | Choice |
 |---|---|
@@ -378,7 +378,8 @@ The client-facing behaviour is in
 [Authentication & Sessions](api/01-authentication.md). The design in brief:
 
 - **A server-side session, not a token.** The cookie `connect.sid` is
-  `httpOnly`, lasts 7 days from sign-in, and is not extended by activity. The
+  `httpOnly`, `SameSite=Lax` (`Secure` in production), lasts 7 days from
+  sign-in, and is not extended by activity. The
   session row stores `{ id, activeRole }` only. Ending a session server-side
   (sign-out, a password reset, deactivation) is immediate, and the same
   cookie authenticates the WebSocket.
@@ -638,9 +639,6 @@ are known before it is:
 - **The `files.stridecare.app` DNS record.** Storage's public address (§8)
   needs a Cloudflare record for the Droplet, proxied like the API's, before
   photos load in production.
-- **The cookie's `SameSite`.** Production still sets `SameSite=None`
-  ([`main.ts`](../src/main.ts)). With the frontend and the API on one site,
-  it becomes `Lax`.
 - **Image versions.** RustFS and Mailpit are pinned by tag and digest;
   `glitchtip/glitchtip:6`, `postgres:16`, `postgres:18` and `caddy:2` still
   float.
@@ -673,7 +671,7 @@ real patient data.
 |---|---|---|---|
 | Transport | Cloudflare Full (strict), Caddy's certificate | Encryption to the origin, with its certificate checked | — |
 | Network | Firewall limited to Cloudflare's ranges; database unpublished; storage's S3 API on loopback, with only signed `GET`s in its bucket let through by Caddy | Reaching the origin directly; reaching the database, or any other storage operation, from outside | A compromised Droplet |
-| Sign-in | bcrypt, constant-time unknown-email path, `httpOnly` cookie, optional TOTP, recovery codes, step-up, rate limits | Password guessing, session theft by script, a stolen password alone (with two-factor) | A compromised device |
+| Sign-in | bcrypt, constant-time unknown-email path, `httpOnly` and `SameSite=Lax` cookie, optional TOTP, recovery codes, step-up, rate limits | Password guessing, session theft by script, a forged request from another site, a stolen password alone (with two-factor) | A compromised device |
 | Authorization in the app | Guards, care-team checks in services, tested wiring | Every route | A bug in a check, which the next row is for |
 | Authorization in the database | RLS forced on 42/42 tables for `stride_app`; 29 guard triggers; two narrow definer functions | A query the code got wrong; races between requests | The deliberately readable directory tables (§4) |
 | Data at rest | AES-256-GCM (TOTP secrets), keyed HMAC (recovery codes), SHA-256 (tokens), bcrypt (passwords) | A copy of the database | A compromised app server, which holds the keys |
