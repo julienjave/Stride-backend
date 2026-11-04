@@ -1,0 +1,229 @@
+# Continuous integration for the backend (decisions §38).
+#
+# THREE JOBS, one per layer, so a red run says WHICH layer broke:
+#   checks     type check, lint, unit tests, build — no services, minutes;
+#   api-e2e    the Jest e2e suites (test/*.e2e-spec.ts) against a real
+#              Postgres, RustFS and Mailpit — the same pinned images as
+#              docker-compose.yml;
+#   browser    the frontend's Playwright suite (its e2e/ folder) driving the
+#              production build against THIS commit's backend — the seam
+#              between the two repos (CORS, cookies, the socket), which
+#              neither repo's own tests can see.
+# They run in parallel (no `needs:`): each gives its answer as soon as it can.
+#
+# The frontend repo's ci.yml has the twin `browser` job (the same suite, with
+# the roles of the two repos swapped). Keep the two in step.
+
+name: CI
+
+on:
+  # Every pull request, whatever its target, and every push to main (a merge
+  # included): nothing reaches main untested, and main itself stays checked.
+  pull_request:
+  push:
+    branches: [main]
+  # A "Run workflow" button on the Actions tab — e.g. to re-check main after
+  # the frontend changed.
+  workflow_dispatch:
+
+# The job token can READ this repository and nothing else: CI never pushes,
+# comments or releases. (Least privilege — a compromised step can do little.)
+permissions:
+  contents: read
+
+# A new push to the same branch or pull request cancels the run still going
+# for the previous push: only the newest commit's answer matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The other repository, checked out by the browser job. Repository names are
+# case-insensitive on GitHub.
+env:
+  FRONTEND_REPOSITORY: ${{ github.repository_owner }}/Stride-frontend
+
+jobs:
+  checks:
+    name: Type check, lint, unit tests, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Every action is pinned to a COMMIT, the tag in a comment — the same
+      # idea as the images' digests: a tag (v7) is a label its owner can move
+      # to other code; a commit hash names exactly the code that was read.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The token isn't left in .git/config: no later step needs git
+          # credentials, so none should be able to find them.
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # the Dockerfile's node:24-slim
+          # Caches npm's download cache (~/.npm), keyed by package-lock.json:
+          # `npm ci` still installs from scratch, but without downloading.
+          cache: npm
+      # `npm ci`, not `npm install`: exactly the lockfile's versions, and a
+      # failure if package.json and the lockfile disagree.
+      - run: npm ci
+      - run: npx tsc --noEmit -p tsconfig.json
+      - run: npm run lint
+      # Unit tests need no database and no .env (checked: 2,391 green
+      # without one). --ci: a missing snapshot fails instead of being written.
+      - run: npx jest --ci
+      - run: npm run build
+
+  api-e2e:
+    name: API e2e (Postgres, RustFS, Mailpit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # SERVICE CONTAINERS: started before the first step, stopped after the
+    # last, reachable on localhost through `ports` — what `docker compose up
+    # -d` gives a developer. Mirrors docker-compose.yml; change both together.
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # The e2e suites refuse any database but stride_test
+          # (test:e2e:fresh sets POSTGRES_DB): created by the image itself.
+          POSTGRES_DB: stride_test
+        ports: ["5432:5432"]
+        # A healthcheck: GitHub waits for "healthy" before the first step.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      storage:
+        image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin # .env.example's development keys
+          RUSTFS_SECRET_KEY: rustfsadmin
+          RUSTFS_ADDRESS: "0.0.0.0:9000"
+          RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+          RUSTFS_CONSOLE_ENABLE: "true"
+          RUSTFS_VOLUMES: "/data"
+        ports: ["9000:9000"]
+        volumes: ["rustfs-data:/data"]
+      mailpit:
+        image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+        ports: ["1025:1025", "8025:8025"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Write .env (fresh secrets)
+        run: bash scripts/ci/prepare-env.sh
+      - name: Wait for RustFS and Mailpit
+        run: bash scripts/ci/wait-for-services.sh
+      # What a developer does once on a new machine (README / handoff): the
+      # schema, then the restricted role the app connects as.
+      - name: Migrate stride_test and create the app role
+        run: |
+          npm run db:migrate:test
+          npm run db:create-app-role:test
+      - name: Run the e2e suites
+        run: npm run test:e2e:fresh -- --ci
+
+  browser:
+    name: Browser suite (Playwright, with the frontend)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The same three services: the suite's own database (stride_e2e) is
+    # created by `db:prepare:e2e` from the default `postgres` database.
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      storage:
+        image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+          RUSTFS_ADDRESS: "0.0.0.0:9000"
+          RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+          RUSTFS_CONSOLE_ENABLE: "true"
+          RUSTFS_VOLUMES: "/data"
+        ports: ["9000:9000"]
+        volumes: ["rustfs-data:/data"]
+      mailpit:
+        image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+        ports: ["1025:1025", "8025:8025"]
+    steps:
+      # The two repos side by side, as on a developer's machine:
+      #   $GITHUB_WORKSPACE/backend    this commit
+      #   $GITHUB_WORKSPACE/frontend   the frontend's main branch
+      # so the suite's default backend folder (`../backend`, seen from the
+      # frontend) is right with no setting.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.FRONTEND_REPOSITORY }}
+          ref: main
+          path: frontend
+          persist-credentials: false
+          # While the frontend repo is PRIVATE, this job's own token can't
+          # read it (a job token reaches only its own repository): a
+          # read-only token for it is stored as the STRIDE_REPOS_TOKEN
+          # secret. Once the repo is PUBLIC, any token can read it and the
+          # secret can be deleted — `||` falls back to the job's own.
+          # (Pull requests from forks never receive secrets: until then, they
+          # fail here — expected.)
+          token: ${{ secrets.STRIDE_REPOS_TOKEN || github.token }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          # Two lockfiles: the cache key covers both.
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install the backend
+        working-directory: backend
+        run: npm ci
+      - name: Install the frontend
+        working-directory: frontend
+        run: npm ci
+      # The browser binary matching @playwright/test's exact version, plus
+      # the system libraries it needs (--with-deps). Not cached: Playwright's
+      # own advice — restoring ~150 MB takes about as long as downloading.
+      - name: Install Chromium for Playwright
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Write the backend's .env (fresh secrets)
+        run: bash backend/scripts/ci/prepare-env.sh
+      - name: Wait for RustFS and Mailpit
+        run: bash backend/scripts/ci/wait-for-services.sh
+      # playwright.config.ts starts both servers itself (`webServer`): the
+      # backend — db:prepare:e2e (create stride_e2e, migrate, app role, seed),
+      # build, start on :3100 — and the frontend's production build on :4174.
+      # CI=true (set by GitHub) turns on forbidOnly and the GitHub reporter.
+      - name: Run the browser suite
+        working-directory: frontend
+        run: npm run test:e2e
+      # On failure only: the HTML report and each failed test's trace and
+      # screenshot (playwright.config.ts keeps them for failures), as a zip on
+      # the run's page. `npx playwright show-trace <file>` replays a trace.
+      - name: Keep the report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
