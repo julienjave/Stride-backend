@@ -625,24 +625,19 @@ The procedure is in [`DEPLOYMENT.md`](DEPLOYMENT.md). What runs where, from
   app (closing every socket), reseeds, sweeps storage and starts the app
   again whatever happened.
 - **CI** (GitHub Actions: lint, type-check, unit and e2e suites, and the
-  frontend's browser suite against this backend) is written and rehearsed,
-  and switched on once the repositories are public. Its shared scripts are in
+  frontend's browser suite against this backend) was rehearsed while the
+  repositories were private, and runs since they went public. Its shared scripts are in
   [`scripts/ci/`](../scripts/ci/).
 
 ---
 
-## 12. Open items before the deployment
+## 12. Open items
 
-The deployment above hasn't been run end to end with the frontend yet. These
-are known before it is:
-
-- **The `files.stridecare.app` DNS record.** Storage's public address (§8)
-  needs a Cloudflare record for the Droplet, proxied like the API's, before
-  photos load in production ([`DEPLOYMENT.md`](DEPLOYMENT.md), Phase 2).
-- **Image versions.** RustFS and Mailpit are pinned by tag and digest;
-  `glitchtip/glitchtip:6`, `postgres:16`, `postgres:18` and `caddy:2` still
-  float, until the first deployment pins what it ran
-  ([`DEPLOYMENT.md`](DEPLOYMENT.md), Part 4).
+None for the deployment. It ran end to end with the frontend on 2026-11-03,
+by following [`DEPLOYMENT.md`](DEPLOYMENT.md) from start to finish. Since
+2026-11-04 the images it pulls are pinned by tag and digest (GlitchTip,
+both Postgres versions and Caddy, beside RustFS), and log rotation is
+confirmed on every running container. What's left out on purpose is §13.
 
 ## 13. Deliberate limits
 

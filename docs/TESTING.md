@@ -254,12 +254,12 @@ mutant as "killed".
 
 ## CI
 
-A GitHub Actions setup exists and was rehearsed from fresh clones (backend
-checks, the API e2e suite against Postgres, RustFS and Mailpit service
-containers, the browser suite). It is **parked** until the repositories are
-public: `.github/` is listed in `.gitignore`, so the workflow files are never
-committed, no Actions minutes are spent and no token is held while it is
-private. Going public means removing that line and committing them. The two
+A GitHub Actions setup runs the backend checks, the API e2e suite against
+Postgres, RustFS and Mailpit service containers, and the browser suite. It
+was rehearsed from fresh clones while the repositories were private, when
+`.github/` was listed in `.gitignore` so that no Actions minutes were spent
+and no token was held; when they went public, that line was removed and the
+workflow files committed. The two
 scripts it uses are here: `scripts/ci/prepare-env.sh` writes a `.env` from
 `.env.example` with fresh secrets (masked in the logs on GitHub), and
 `scripts/ci/wait-for-services.sh` waits for storage and Mailpit to answer.

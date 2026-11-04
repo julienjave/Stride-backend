@@ -151,27 +151,11 @@ against the code and the documents on 2026-11-03.
 
 ### Still open
 
-- **Nothing since doc 35 has been deployed.** The Droplet-based pipeline was
-  last run end to end in doc 26. Before the next deployment:
-  `STORAGE_PUBLIC_URL` in the production `.env` and a proxied `files` DNS
-  record (doc 42 — without the setting the app now refuses to start);
-  pinning `glitchtip/glitchtip:6`, `postgres:16`,
-  `postgres:18` and `caddy:2`, which still float. ARCHITECTURE's
-  [§12](../ARCHITECTURE.md#12-open-items-before-the-deployment) keeps the
-  same list.
-- **Doc 25's log rotation is still "very likely, not verified".** Doc 26's
-  recreated containers almost certainly picked up the `logging:` settings,
-  but nobody has run `docker inspect` on a running production container to
-  confirm it. Doing that at the next deployment closes it.
 - **Jobs that need to run without a user aren't scheduled yet**: the audit
   log purge (retention is decided at 6 years, doc 39), the storage sweeper
   (run by hand today, doc 40), and closing sessions left in progress (today one closes only when
   the patient next starts a session, or when its program is closed — doc 37). Doc 40's `claim_message_notices()` is the pattern for giving such
   a job its one narrow door.
-- **CI is built but parked** until the repositories are public (doc 41): the
-  workflows sit in `.github/`, which each repository's `.gitignore` lists,
-  so that no Actions minutes are spent and no token is held while they are
-  private ([`TESTING.md`](../TESTING.md#ci)).
 - **Doc 22's link to `deferred-improvements.md` doesn't resolve, by
   design.** That ledger of deliberately postponed improvements was a private
   development file and isn't part of the repository. Doc 22 stays as

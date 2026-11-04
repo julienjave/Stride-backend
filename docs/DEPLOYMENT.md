@@ -1,21 +1,18 @@
 # Stride backend — installation and deployment
 
-> **Status, 2026-11-03: written, not yet run end to end.** The backend-only
-> deployment this guide grew from was run twice on a real Droplet: first
-> built ([journal 18](journal/18-deployment-provisioning-through-backups.md),
+> **Status, 2026-11-03: run end to end.** The whole system was deployed
+> by following this guide from start to finish, each "Verify" included: a
+> public repository (no deploy key), storage's public address
+> `files.stridecare.app`, GlitchTip, the frontend on Cloudflare Pages, and
+> the reviewers' demo, live at `https://stridecare.app`. The backend-only
+> deployment this guide grew from had been run twice on a real Droplet
+> before: first built
+> ([journal 18](journal/18-deployment-provisioning-through-backups.md),
 > [19](journal/19-deployment-verification-and-observability.md)), then
 > destroyed and rebuilt from this file
-> ([26](journal/26-redeploying-for-real.md)). Since then the deployment has
-> gained a public repository (no deploy key), storage's public address
-> `files.stridecare.app`, GlitchTip, the frontend on Cloudflare Pages, and
-> the reviewers' demo. None of those has run on a server yet. What was
-> checked in a sandbox the same day: the `.env` of Phase 3 boots the built
-> API in production mode, Compose accepts it, Phase 7's requests answer as
-> written (with Cloudflare's headers simulated), and the demo reset job's two
-> commands run in production mode. Nothing ran in Docker there (its image
-> registry was out of reach), so the Compose jobs, Caddy and RustFS weren't
-> run. The first real run will correct this file. Until then,
-> treat each step as the plan, and each "Verify" as the test of it.
+> ([26](journal/26-redeploying-for-real.md)). The day after, 2026-11-04,
+> the images were pinned by digest (Part 4) and log rotation was confirmed on
+> every running container.
 
 This is the backend's half. The frontend is static files on Cloudflare Pages,
 with its own guide: the frontend repository's
@@ -887,7 +884,7 @@ sends a real invitation):
 DEMO_MODE=on
 DEMO_RESET_TIME=04:00
 DEMO_RESET_TIME_ZONE=America/Toronto
-# DEMO_GUIDE_URL=https://github.com/julienjave/Stride-backend/blob/main/docs/demo-accounts.md
+DEMO_GUIDE_URL=https://github.com/julienjave/Stride-backend/blob/main/docs/demo-accounts.md
 ```
 
 - **`DEMO_RESET_TIME` / `DEMO_RESET_TIME_ZONE`** tell the card when the reset
@@ -896,9 +893,9 @@ DEMO_RESET_TIME_ZONE=America/Toronto
   (`OnCalendar=*-*-* 04:00:00 America/Toronto`): the card only reports, the
   timer decides.
 - **`DEMO_GUIDE_URL`**: the accounts guide on GitHub, the address above. It
-  must start with `https://`, or the app refuses to start. Uncomment it once
-  the backend repository is public: until then the card's link would lead
-  reviewers to GitHub's 404 page.
+  must start with `https://`, or the app refuses to start. It needs the
+  backend repository to be public (it is): on a private one, the card's link
+  would lead reviewers to GitHub's 404 page.
 - `DEMO_MODE` accepts `on` or `off` only: a typo (`true`, `yes`) stops the
   app rather than meaning either.
 
@@ -1035,24 +1032,33 @@ in to Postgres.
 database first. Restoring over `stride` itself is a decision of its own: stop
 the app, then restore.
 
-**Pinning the floating images.** `caddy:2`, `postgres:16`, `postgres:18` and
-`glitchtip/glitchtip:6` are tags their owners move (RustFS and Mailpit are
-pinned by digest). Once the first deployment works, read what's running:
+**Pinned images, and updating one.** `caddy:2`, `postgres:16`,
+`postgres:18` and `glitchtip/glitchtip:6` are tags their owners move, so
+`docker-compose.prod.yml` names each as `name:tag@sha256:…`, like RustFS
+(since 2026-11-04): Docker pulls by the digest, so what runs is exactly what
+was tested, and the tag only tells a reader the version. To move one to a
+newer release, pull it, read its digest, and write it in the file, in a
+commit:
 
 ```bash
-docker image inspect --format '{{index .RepoDigests 0}}' caddy:2 postgres:16 postgres:18 glitchtip/glitchtip:6
+docker pull caddy:2
+docker image inspect --format '{{index .RepoDigests 0}}' caddy:2
 ```
 
-and write each as `name:version@sha256:…` in `docker-compose.prod.yml`, in a
-commit: what runs is then exactly what was tested.
+Then `git pull` on the Droplet and `docker compose -f docker-compose.prod.yml
+up -d`. **Changing an `image:` line recreates that container**, even when the
+digest is the one already running: Compose compares each service's whole
+configuration, not only its image. When the pins were committed, `db`,
+`glitchtip-db`, `glitchtip` and `caddy` restarted, a few seconds each; a
+restart of `db` drops the app's connections, and its pool opens new ones.
 
 **Starting the data again:** Phase 13.
 
-**When the repositories go public:** uncomment `DEMO_GUIDE_URL` (Part 3);
-this guide's GitHub links then open for everyone. CI is written and parked
-until then ([`PROJECT.md`](PROJECT.md#deployment-infrastructure)):
-`.github/` is listed in `.gitignore`, and that day the line is removed and
-`.github/` committed, with the other steps of decisions §38.
+**The repositories are public**, so `DEMO_GUIDE_URL` is set (Part 3), this
+guide's GitHub links open for everyone, and CI runs on GitHub
+([`PROJECT.md`](PROJECT.md#deployment-infrastructure)): `.github/` was
+listed in `.gitignore` while they were private, and was committed when they
+went public (decisions §38).
 
 ---
 
@@ -1090,6 +1096,6 @@ message naming the variable.
 | `SENTRY_RELEASE` | optional | The deployed commit, shown on each report |
 | `DEMO_MODE` | `on` for the demo only | `on` or `off` (default); anything else refused |
 | `DEMO_RESET_TIME` / `DEMO_RESET_TIME_ZONE` | `04:00` / `America/Toronto` | Both or neither; `HH:MM` and an IANA zone; must match the timer |
-| `DEMO_GUIDE_URL` | once public | `https://` only, refused otherwise |
+| `DEMO_GUIDE_URL` | Part 3's address | `https://` only, refused otherwise |
 | `GLITCHTIP_SECRET_KEY` / `GLITCHTIP_DB_PASSWORD` | generated | *Compose*, required for every command |
 | `GLITCHTIP_EMAIL_URL` / `GLITCHTIP_FROM_EMAIL` | optional | *Compose*: GlitchTip's alert emails (unset: its log) |

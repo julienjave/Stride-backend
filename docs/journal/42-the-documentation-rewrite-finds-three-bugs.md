@@ -109,7 +109,7 @@ suite turns it on itself.
 Stages 1 and 2 are complete; this entry and the journal README's update are
 stage 3. The API reference is [`docs/api/`](../api/README.md), and the
 architecture document is [`ARCHITECTURE.md`](../ARCHITECTURE.md), whose
-[§12](../ARCHITECTURE.md#12-open-items-before-the-deployment) lists what must
+[§12](../ARCHITECTURE.md#12-open-items) lists what must
 be done before the next deployment, the `files` DNS record among it. The documents still to come (`PROJECT.md`, a `TESTING.md`, the
 deployment guide, the README) are described in the journal README's open
 items.

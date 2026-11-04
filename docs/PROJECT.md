@@ -43,8 +43,8 @@ hoping it is.
 
 The backend was built in two eras. Until journal entry 35 it was built on
 its own and deployed. From entry 36 on it grew phase by phase with the
-frontend (the frontend's Phases 1–7), and that work hasn't been deployed
-yet (see "Deployment infrastructure").
+frontend (the frontend's Phases 1–7), and that work was deployed with it
+on 2026-11-03 (see "Deployment infrastructure").
 
 ---
 
@@ -454,10 +454,11 @@ untyped by nature.
 **A self-managed DigitalOcean Droplet** (Ubuntu 24.04, 2 GB / 1 vCPU) with
 Docker Compose, chosen over a platform (Render, Railway, Fly.io) because
 handling TLS, DNS, firewalling and processes by hand was part of the point.
-The pipeline was run end to end twice: built, then destroyed and
-recreated to prove the guide (journals 18, 26). **Nothing built since
-journal 35 has been deployed yet**; the next deployment's checklist is
-ARCHITECTURE [§12](ARCHITECTURE.md#12-open-items-before-the-deployment).
+The backend-only pipeline was run end to end twice: built, then destroyed
+and recreated to prove the guide (journals 18, 26). **The whole system,
+frontend included, was then deployed on 2026-11-03** by following the
+current guides from start to finish; what's still open is ARCHITECTURE
+[§12](ARCHITECTURE.md#12-open-items).
 
 **Cloudflare in front, Caddy behind.** Cloudflare gives DNS, DDoS
 protection and TLS at the edge, in Full (strict) mode. The firewall admits
@@ -490,7 +491,8 @@ timer at 04:00 Toronto time stops the app, reseeds, sweeps storage and
 restarts it).
 
 **CI** (GitHub Actions: checks, the API's e2e suite and the browser suite)
-is built and rehearsed, and parked until the repositories are public.
+was built and rehearsed while the repositories were private, and runs since
+they went public.
 
 ---
 
@@ -532,8 +534,7 @@ Postponed on purpose, each with its reason. None is an unknown.
   left in progress (today they close at the next start, or with their
   program) would each need a job with no user. The message sweep's definer
   function is the pattern to follow.
-- **Backups on the same machine**, as above. Images not yet pinned:
-  GlitchTip, both Postgres versions and Caddy still float on a major tag.
+- **Backups on the same machine**, as above.
 - **Signed URLs** are cacheable (stable for an hour) only for the library's
   thumbnails; other photos are signed fresh each time. Thumbnails are the
   whole photo scaled down; generating small images needs an image library
@@ -564,6 +565,5 @@ Postponed on purpose, each with its reason. None is an unknown.
 - **Merges** keep the surviving account's profile details and fill only its
   empty fields; choosing each field isn't offered.
 
-**Still to check once deployed**: that a portrait photo from a real phone
-keeps its orientation through the avatar crop, and that log rotation is
-live on the running containers (`docker inspect`).
+**Still to check now that it's deployed**: that a portrait photo from a
+real phone keeps its orientation through the avatar crop.
