@@ -13,13 +13,14 @@ This document is the summary of decisions between them.
 
 **"decisions §N" in the code.** About 450 comments in this repository cite
 "decisions §N". They refer to the project's design-decisions log,
-`docs/stride-design-decisions.md` in the **frontend** repository
-(TODO-LINK), where each feature was designed with the person, one section
-per item (§1–§47). That log is the long form, with every option weighed;
-this document keeps the choices that shaped the backend. A few comments also
-cite `deferred-improvements.md`, a working ledger of postponed improvements
-kept outside the repositories; what is still open in it is summarised under
-"Known limits and what's deferred" below.
+[`docs/stride-design-decisions.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/stride-design-decisions.md)
+in the **frontend** repository, where each feature was designed with the
+person, one section per item (§1–§47). That log is the long form, with
+every option weighed; this document keeps the choices that shaped the
+backend. A few comments also cite `deferred-improvements.md`, a working
+ledger of postponed improvements kept outside the repositories; what is
+still open in it is summarised under "Known limits and what's deferred"
+below.
 
 ---
 
@@ -30,7 +31,7 @@ admins run clinics, practitioners build exercise programs and assign them
 to patients, patients complete sessions and message their practitioner. It
 is two repositories. This one is the backend (a NestJS API over PostgreSQL,
 with object storage, email and a WebSocket gateway); the frontend is a
-React single-page app (TODO-LINK).
+React single-page app, [`Stride-frontend`](https://github.com/julienjave/Stride-frontend).
 
 It was built as a bootcamp capstone, specifically to show real backend,
 frontend and infrastructure understanding rather than CRUD. That goal

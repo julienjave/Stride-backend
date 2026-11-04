@@ -28,8 +28,9 @@ build phase, written after the fact (2026-11-03) and condensed to the three
 or four decisions or bugs worth telling as a story. The complete "what and
 why" of each phase is in [`PROJECT.md`](../PROJECT.md), and the system as
 it stands is in [`ARCHITECTURE.md`](../ARCHITECTURE.md). Each of those
-entries names its counterpart in the frontend repository's journal, which
-covers the same phase from the screens.
+entries names its counterpart in the
+[frontend repository's journal](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/README.md),
+which covers the same phase from the screens.
 
 ---
 
@@ -180,9 +181,6 @@ against the code and the documents on 2026-11-03.
 - **Three commit placeholders were never filled in**: docs 28, 30 and 35
   each end with "`[commit hash — to be filled in]`". The entries stay as
   written; the repository's history is the record of those commits.
-- **Links to the frontend's journal** in docs 36–41 name their counterpart's
-  file (the frontend journal's entries 01–06, written 2026-11-03) and are
-  written `TODO-LINK` until the repositories are public.
 - **One instance only, for live messaging** (doc 38). Socket.IO's rooms live
   in the memory of one process. Running two API instances would need the
   Redis adapter, and sticky sessions or websocket-only transport. This is a

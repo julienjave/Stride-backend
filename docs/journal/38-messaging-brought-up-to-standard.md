@@ -12,7 +12,7 @@ Condensed to four stories; the full list is in [`PROJECT.md`](../PROJECT.md).
 The live screens — the cache written from socket events, read receipts, the
 15-minute delete window drawn to the millisecond — are the frontend
 journal's Phase 5 entry
-(`docs/journal/03-messaging-shown-once-stored.md`, TODO-LINK).
+([`docs/journal/03-messaging-shown-once-stored.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/03-messaging-shown-once-stored.md)).
 
 ## Nine gaps, found by reading
 

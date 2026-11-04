@@ -11,7 +11,7 @@ record to someone outside the care team.
 
 Condensed to four stories; [`PROJECT.md`](../PROJECT.md) has the rest. The
 frontend journal's Phase 6 entry
-(`docs/journal/04-honest-states-plain-words-and-account-pages.md`, TODO-LINK)
+([`docs/journal/04-honest-states-plain-words-and-account-pages.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/04-honest-states-plain-words-and-account-pages.md))
 covers the screens, among them
 the one-sentence failure wording and the loading states that now span the
 whole app.

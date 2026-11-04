@@ -10,7 +10,7 @@ security when there is no user.
 
 Condensed to four stories; [`PROJECT.md`](../PROJECT.md) has the rest. The
 merge's screens and the paged users list are the frontend journal's Phase
-6.5 entry (`docs/journal/05-merges-paging-and-the-leftovers.md`, TODO-LINK).
+6.5 entry ([`docs/journal/05-merges-paging-and-the-leftovers.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/05-merges-paging-and-the-leftovers.md)).
 
 ## Files a transaction can't roll back
 

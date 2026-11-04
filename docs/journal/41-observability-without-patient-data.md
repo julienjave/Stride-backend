@@ -11,7 +11,7 @@ tests.
 
 Condensed to four stories; [`PROJECT.md`](../PROJECT.md) has the rest. The
 frontend journal's Phase 7 entry
-(`docs/journal/06-reports-the-browser-suite-and-the-bundle.md`, TODO-LINK)
+([`docs/journal/06-reports-the-browser-suite-and-the-bundle.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/06-reports-the-browser-suite-and-the-bundle.md))
 covers the screens, among them
 the Playwright suite's first run, which found a frozen role switch no unit
 test could see.

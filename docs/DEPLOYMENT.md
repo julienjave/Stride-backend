@@ -18,9 +18,10 @@
 > treat each step as the plan, and each "Verify" as the test of it.
 
 This is the backend's half. The frontend is static files on Cloudflare Pages,
-with its own guide: the frontend repository's `docs/DEPLOYMENT.md`
-(TODO-LINK). Both are needed for a working site, and the two meet in a few
-settings, named in both guides.
+with its own guide: the frontend repository's
+[`docs/DEPLOYMENT.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/DEPLOYMENT.md).
+Both are needed for a working site, and the two meet in a few settings,
+named in both guides.
 
 - **Part 1** — local development
 - **Part 2** — production, on a fresh Droplet, phase by phase
@@ -68,10 +69,14 @@ one-off jobs.
 ### 1. Clone and install
 
 ```bash
-git clone TODO-LINK stride-backend
-cd stride-backend
+git clone https://github.com/julienjave/Stride-backend.git backend
+cd backend
 npm ci
 ```
+
+The frontend's browser suite looks for the backend beside it: at
+`../backend` (the name used here, as in CI), then `../Stride-backend` (a
+plain `git clone`). Clone the frontend into the same parent folder.
 
 ### 2. Start Postgres, RustFS and Mailpit
 
@@ -140,7 +145,8 @@ npm run start:dev
 
 It listens on `:3000` and restarts on every change. First checks:
 http://localhost:3000/health and Swagger at http://localhost:3000/api-docs.
-The frontend's own setup is in its `docs/DEPLOYMENT.md` (TODO-LINK).
+The frontend's own setup is in its
+[`docs/DEPLOYMENT.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/DEPLOYMENT.md#1-running-it-locally).
 
 ### 7. Tests
 
@@ -302,13 +308,13 @@ connect to `stridecare.app` and its subdomains over HTTPS.
 ### Phase 3 — The code and `.env`
 
 ```bash
-git clone TODO-LINK /home/stride/Stride-backend
+git clone https://github.com/julienjave/Stride-backend.git /home/stride/Stride-backend
 cd /home/stride/Stride-backend
 ```
 
-(`TODO-LINK` = the backend repository's HTTPS clone URL.) The repository is
-public: cloning over HTTPS needs no key and no credential on the Droplet, and
-every later `git pull` works the same way. The target folder is written out
+The repository is public: cloning over HTTPS needs no key and no credential
+on the Droplet, and every later `git pull` works the same way. The target
+folder is written out
 because [`scripts/backup-database.sh`](../scripts/backup-database.sh) changes
 into exactly `/home/stride/Stride-backend`.
 
@@ -699,8 +705,9 @@ bound to the Droplet's `127.0.0.1:8000`.
    ```
 5. **The frontend's build gets the browser DSN too**, as `VITE_SENTRY_DSN`,
    character for character the same string, host included: the API forwards
-   only envelopes for exactly that DSN (the frontend's guide, TODO-LINK). The
-   browser never contacts `glitchtip:8000`; it sends to `/monitoring`.
+   only envelopes for exactly that DSN
+   ([the frontend's guide](https://github.com/julienjave/Stride-frontend/blob/main/docs/DEPLOYMENT.md#2-the-build-and-its-settings)).
+   The browser never contacts `glitchtip:8000`; it sends to `/monitoring`.
 
 Optional: `SENTRY_RELEASE` (the deployed commit, `git rev-parse --short
 HEAD`) labels each report with its code. GlitchTip's alert emails go to its
@@ -880,7 +887,7 @@ sends a real invitation):
 DEMO_MODE=on
 DEMO_RESET_TIME=04:00
 DEMO_RESET_TIME_ZONE=America/Toronto
-# DEMO_GUIDE_URL=TODO-LINK
+# DEMO_GUIDE_URL=https://github.com/julienjave/Stride-backend/blob/main/docs/demo-accounts.md
 ```
 
 - **`DEMO_RESET_TIME` / `DEMO_RESET_TIME_ZONE`** tell the card when the reset
@@ -888,9 +895,10 @@ DEMO_RESET_TIME_ZONE=America/Toronto
   1:00 AM your time"). Both or neither. They must match the timer
   (`OnCalendar=*-*-* 04:00:00 America/Toronto`): the card only reports, the
   timer decides.
-- **`DEMO_GUIDE_URL`**: the accounts guide on GitHub, once the repository is
-  public. It must start with `https://`, or the app refuses to start, so the
-  line stays commented out until the address exists.
+- **`DEMO_GUIDE_URL`**: the accounts guide on GitHub, the address above. It
+  must start with `https://`, or the app refuses to start. Uncomment it once
+  the backend repository is public: until then the card's link would lead
+  reviewers to GitHub's 404 page.
 - `DEMO_MODE` accepts `on` or `off` only: a typo (`true`, `yes`) stops the
   app rather than meaning either.
 
@@ -1040,11 +1048,11 @@ commit: what runs is then exactly what was tested.
 
 **Starting the data again:** Phase 13.
 
-**When the repositories go public:** set `DEMO_GUIDE_URL` (Part 3) and
-replace this file's `TODO-LINK`s. CI is written and parked until then
-([`PROJECT.md`](PROJECT.md#deployment-infrastructure)): `.github/` is listed
-in `.gitignore`, and that day the line is removed and `.github/` committed,
-with the other steps of decisions §38.
+**When the repositories go public:** uncomment `DEMO_GUIDE_URL` (Part 3);
+this guide's GitHub links then open for everyone. CI is written and parked
+until then ([`PROJECT.md`](PROJECT.md#deployment-infrastructure)):
+`.github/` is listed in `.gitignore`, and that day the line is removed and
+`.github/` committed, with the other steps of decisions §38.
 
 ---
 

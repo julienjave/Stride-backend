@@ -10,7 +10,7 @@ trustworthy, and most of that trust ended up in the database.
 
 Condensed to four stories; the full list is in [`PROJECT.md`](../PROJECT.md).
 The screens' side is the frontend journal's Phase 4 entry
-(`docs/journal/02-the-patients-loop-on-a-phone.md`, TODO-LINK).
+([`docs/journal/02-the-patients-loop-on-a-phone.md`](https://github.com/julienjave/Stride-frontend/blob/main/docs/journal/02-the-patients-loop-on-a-phone.md)).
 
 ## A state machine whose states the database knows
 

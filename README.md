@@ -7,7 +7,7 @@ their practitioners in real time. This repository is the backend — a NestJS
 API over PostgreSQL, with object storage, email and a WebSocket gateway —
 built with the discipline of the HIPAA Security Rule's technical safeguards
 in mind. The frontend, a React single-page app, is its own repository,
-`Stride-frontend` (TODO-LINK).
+[`Stride-frontend`](https://github.com/julienjave/Stride-frontend).
 
 This is a bootcamp capstone, built specifically to demonstrate real
 backend, frontend and infrastructure understanding rather than CRUD — which
@@ -130,8 +130,8 @@ code is.
 | [`DEPLOYMENT.md`](./docs/DEPLOYMENT.md) | Local development, then the production runbook phase by phase — each step with how to verify it — the reviewers' demo, and every environment variable. |
 | [`docs/journal/README.md`](./docs/journal/README.md) | An index into a 42-entry chronological log of the real decisions, tradeoffs and bugs — with a "Start here" path of six entries, and the list of what's still open. |
 | [`demo-accounts.md`](./docs/demo-accounts.md) | The seeded accounts, their password, and what each one shows. |
-| The frontend repository (TODO-LINK) | The other half: its own README, architecture, decisions, tests, deployment guide and journal. |
-| The design-decisions log (TODO-LINK) | `docs/stride-design-decisions.md` in the frontend repository — where every feature was designed, one section per item. The code's comments cite it as "decisions §N". |
+| [The frontend repository](https://github.com/julienjave/Stride-frontend) | The other half: its own README, architecture, decisions, tests, deployment guide and journal. |
+| [The design-decisions log](https://github.com/julienjave/Stride-frontend/blob/main/docs/stride-design-decisions.md) | `docs/stride-design-decisions.md` in the frontend repository — where every feature was designed, one section per item. The code's comments cite it as "decisions §N". |
 
 ## Getting Started
 
@@ -140,7 +140,7 @@ why each step exists — are in [`DEPLOYMENT.md`, Part 1](./docs/DEPLOYMENT.md#p
 The short version, for local development:
 
 ```bash
-git clone TODO-LINK stride-backend && cd stride-backend
+git clone https://github.com/julienjave/Stride-backend.git backend && cd backend
 npm ci
 docker compose up -d          # Postgres, RustFS (S3 storage) and Mailpit (catches every email)
 cp .env.example .env          # then set SESSION_SECRET, MFA_ENCRYPTION_KEY, POSTGRES_APP_PASSWORD
@@ -287,8 +287,8 @@ the full version of this; a few of the more instructive moments:
 
 ## Future Improvements
 
-What's next, by area. The frontend's README lists the items that sit mostly
-there (TODO-LINK); [`PROJECT.md`'s "Known limits"](./docs/PROJECT.md#known-limits-and-whats-deferred)
+What's next, by area. The [frontend's README](https://github.com/julienjave/Stride-frontend/blob/main/README.md#future-improvements)
+lists the items that sit mostly there; [`PROJECT.md`'s "Known limits"](./docs/PROJECT.md#known-limits-and-whats-deferred)
 gives each postponed item its reason.
 
 **Security and data integrity**

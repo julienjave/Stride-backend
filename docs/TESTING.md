@@ -9,7 +9,7 @@ working guide.
 |---|---|---|---|
 | **Unit** | `src/**/*.spec.ts`, `scripts/**/*.spec.ts` | nothing outside the process (fakes, a local socket or two) | 114 files, 2,593 tests |
 | **API end-to-end** | `test/*.e2e-spec.ts` | the real app, a real Postgres (`stride_test`), S3-compatible storage | 50 files, 1,346 tests |
-| **Browser** | the frontend repository's `e2e/` (TODO-LINK) | this backend built and started on port 3100, its own database (`stride_e2e`), Chromium | 15 tests |
+| **Browser** | the frontend repository's [`e2e/`](https://github.com/julienjave/Stride-frontend/tree/main/e2e) | this backend built and started on port 3100, its own database (`stride_e2e`), Chromium | 15 tests |
 
 The browser suite belongs to the frontend, but it starts *this* backend, so
 the two scripts it needs live here (below).
@@ -78,6 +78,22 @@ npm run build && npm run start:e2e
 
 `stride_e2e` is reseeded on every run, so the browser tests start from the
 same accounts every time.
+
+### Documentation links
+
+```sh
+npm run docs:links       # every link in every .md file: does it lead somewhere?
+```
+
+[`scripts/check-doc-links.mjs`](../scripts/check-doc-links.mjs) checks
+relative links and their `#anchors` (with GitHub's heading slugs, and the
+exact letter case GitHub needs), and GitHub links to either repository
+against the other one's folder beside this one (`../frontend` or
+`../Stride-frontend`, or `STRIDE_FRONTEND_DIR`). It counts the placeholders
+for addresses that don't exist yet, and exits with 1 on a broken link. Before checking, it tests
+itself on a planted set of mistakes. The same file is in the frontend
+repository: a change to one is copied to the other. Run it after renaming
+a file or rewording a heading.
 
 ---
 
