@@ -841,7 +841,11 @@ describe('Patient merges (e2e)', () => {
           legalBasis: 'court_order',
           receivedOn: today,
           parts: ['programs'],
-          timeZone: 'America/Montreal',
+          // The zone `today` was computed in (toISOString gives the UTC
+          // date). The API refuses an order received after today IN THIS
+          // ZONE, so a zone behind UTC failed every night between 00:00 and
+          // 05:00 UTC, when Montreal is still on the day before.
+          timeZone: 'UTC',
         })
       expect(disclosed.status).toBe(201)
       const [adminRow] = await ownerRows<{ id: number }>(
