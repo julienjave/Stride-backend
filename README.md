@@ -20,6 +20,7 @@
 
   <br />
 
+  [Live demo](https://stridecare.app) ·
   [Frontend repository](https://github.com/julienjave/Stride-frontend) ·
   [Architecture](./docs/ARCHITECTURE.md) ·
   [API reference](./docs/api/README.md) ·
@@ -68,14 +69,16 @@ development process built around verifying claims against real evidence
 rather than assuming they hold.
 
 > [!NOTE]
-> **Status.** The backend's first era (journal entries 01–35) was deployed
-> to a real production environment, with monitoring and a backup verified
-> by an actual restore, and that deployment was then destroyed and rebuilt
-> from its own runbook. Everything built since, together with the frontend,
-> hasn't been deployed yet: the deployment guide for it is written and
-> partly sandbox-checked, and says plainly which steps haven't run on a
-> server. The reviewers' demo will live at `https://stridecare.app`
-> (TODO-LINK).
+> **Status: live.** The reviewers' demo runs at
+> [stridecare.app](https://stridecare.app), with this API at
+> `https://api.stridecare.app`. The sign-in page lists four published
+> accounts ([`demo-accounts.md`](./docs/demo-accounts.md) says what each one
+> shows), and the demo resets every night. The whole system, frontend
+> included, was deployed by following the deployment guides from start to
+> finish on the real servers. Before that, the backend's first era (journal
+> entries 01–35) had been deployed to a real production environment, with
+> monitoring and a backup verified by an actual restore, and that
+> deployment was then destroyed and rebuilt from its own runbook.
 
 ---
 
@@ -475,12 +478,12 @@ hand).
 
 ### Every production-infrastructure claim was exercised, not just configured
 
-For the deployment that ran, backups were verified by an actual restore
-with real row counts checked, and the runbook was run end to end against a
-genuinely destroyed-and-recreated Droplet, which is how several of the real
-bugs below were found. The current guide applies the same standard: each
-step comes with how to verify it, and the steps that haven't run on a
-server yet are named as such.
+Backups were verified by an actual restore with real row counts checked,
+and the runbook was run end to end against a genuinely
+destroyed-and-recreated Droplet, which is how several of the real bugs
+below were found. The current guides hold the same standard: each step
+comes with how to verify it, and the live deployment was built by
+following them from start to finish.
 
 ---
 
