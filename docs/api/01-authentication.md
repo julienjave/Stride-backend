@@ -17,6 +17,26 @@ reset), [`src/mfa/`](../../src/mfa/) (two-factor sign-in, re-confirmation),
 [`test/password-change.e2e-spec.ts`](../../test/password-change.e2e-spec.ts),
 [`test/email-change.e2e-spec.ts`](../../test/email-change.e2e-spec.ts).
 
+---
+
+## Contents
+
+- [This is cookie auth, not token auth](#this-is-cookie-auth-not-token-auth)
+- [A Nest default worth knowing: `POST` answers `201`](#a-nest-default-worth-knowing-post-answers-201)
+- [Accounts are invited, not registered](#accounts-are-invited-not-registered)
+- [Login: single-role vs. multi-role accounts](#login-single-role-vs-multi-role-accounts)
+- [Two-factor sign-in](#two-factor-sign-in)
+- [Re-confirming before sensitive changes ("step-up")](#re-confirming-before-sensitive-changes-step-up)
+- [Switching roles on a multi-role account](#switching-roles-on-a-multi-role-account)
+- [Logout](#logout)
+- [Passwords](#passwords)
+- [Changing the email address](#changing-the-email-address)
+- [`GET /auth/me`: who am I?](#get-authme-who-am-i)
+- [When a session is signed out by the server](#when-a-session-is-signed-out-by-the-server)
+- [`401` vs `403` vs `404`](#401-vs-403-vs-404)
+
+---
+
 ## This is cookie auth, not token auth
 
 There is no `Authorization` header, no JWT and no bearer token anywhere in

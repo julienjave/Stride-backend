@@ -20,11 +20,13 @@ with its own guide: the frontend repository's
 Both are needed for a working site, and the two meet in a few settings,
 named in both guides.
 
-- **Part 1** — local development
-- **Part 2** — production, on a fresh Droplet, phase by phase
-- **Part 3** — the reviewers' demo (`DEMO_MODE=on`)
-- **Part 4** — common operations
-- **Appendix** — every environment variable
+### In this guide:
+
+- [**Part 1** — local development](#part-1--local-development)
+- [**Part 2** — production](#part-2--production-on-a-fresh-droplet), on a fresh Droplet, phase by phase
+- [**Part 3** — the reviewers' demo](#part-3--the-reviewers-demo-demo_modeon) (`DEMO_MODE=on`)
+- [**Part 4** — common operations](#part-4--common-operations)
+- [**Appendix** — every environment variable](#appendix--environment-variables)
 
 `journal NN` below links the build journal's entry where a step's reason
 (usually a real failure) is told.

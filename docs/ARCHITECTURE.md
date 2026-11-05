@@ -19,6 +19,26 @@ checked.
 
 ---
 
+## Table of Content
+
+1. [What Stride is, and its parts](#1-what-stride-is-and-its-parts)
+2. [Inside the API process](#2-inside-the-api-process)
+3. [The data model](#3-the-data-model)
+4. [Who may do what, and how it's enforced](#4-who-may-do-what-and-how-its-enforced)
+5. [The audit trail](#5-the-audit-trail)
+6. [Accounts, sign-in and sessions](#6-accounts-sign-in-and-sessions)
+7. [Real-time messaging](#7-real-time-messaging)
+8. [Files: uploads, photos and generated PDFs](#8-files-uploads-photos-and-generated-pdfs)
+9. [Email](#9-email)
+10. [Configuration, logging and demo mode](#10-configuration-logging-and-demo-mode)
+11. [Deployment topology](#11-deployment-topology)
+12. [Open items](#12-open-items)
+13. [Deliberate limits](#13-deliberate-limits)
+14. [Security, in one table](#14-security-in-one-table)
+15. [Where to go for "why"](#where-to-go-for-why)
+
+---
+
 ## 1. What Stride is, and its parts
 
 Stride runs a physiotherapy practice. **Admins** run its clinics and

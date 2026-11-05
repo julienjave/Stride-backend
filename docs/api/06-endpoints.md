@@ -16,6 +16,35 @@ fails as soon as a route changes and the table doesn't. The same test checks
 that every role check has a sign-in check in front of it, since the
 **Who** column depends on that.
 
+---
+
+## Contents
+
+- [Reading the table](#reading-the-table)
+- [The routes](#the-routes)
+  - [Admin](#admin)
+  - [Alerts](#alerts)
+  - [Assigned Programs](#assigned-programs)
+  - [Audit](#audit)
+  - [Auth](#auth)
+  - [Care team](#care-team)
+  - [Clinics](#clinics)
+  - [Complaint reviews](#complaint-reviews)
+  - [Exercises](#exercises)
+  - [Health](#health)
+  - [Invitations](#invitations)
+  - [Legal disclosures](#legal-disclosures)
+  - [Medical Files](#medical-files)
+  - [Messaging](#messaging)
+  - [Monitoring](#monitoring)
+  - [Programs](#programs)
+  - [Range of Motion](#range-of-motion)
+  - [Records export](#records-export)
+  - [Sessions](#sessions)
+  - [Users](#users)
+
+---
+
 ## Reading the table
 
 - **Who** is the *guard-level* gate: the first check a request meets.

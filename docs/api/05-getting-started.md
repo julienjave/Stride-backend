@@ -10,6 +10,24 @@ What it shows, in order: setting up Stride, inviting people (there is no
 sign-up), signing in with a session cookie, the practitioner–patient link
 that every later permission hangs on, and the shape of an assigned program.
 
+---
+
+## Contents
+
+- [Before you start](#before-you-start)
+- [Is Stride set up?](#0-is-stride-set-up)
+- [Register the clinic and its founding admin](#1-register-the-clinic-and-its-founding-admin)
+- [Create a practitioner (as the admin)](#2-create-a-practitioner-as-the-admin)
+- [Accept the invitation](#3-accept-the-invitation)
+- [Sign in as the practitioner](#4-sign-in-as-the-practitioner)
+- [Create a patient (as the practitioner)](#5-create-a-patient-as-the-practitioner)
+- [Create an exercise (as the practitioner)](#6-create-an-exercise-as-the-practitioner)
+- [Assign a program to the patient (as the practitioner)](#7-assign-a-program-to-the-patient-as-the-practitioner)
+- [The patient accepts, signs in, and sees the program](#8-the-patient-accepts-signs-in-and-sees-the-program)
+- [Where to go from here](#where-to-go-from-here)
+
+---
+
 ## Before you start
 
 - A backend running locally against a **fresh database**: migrated, with

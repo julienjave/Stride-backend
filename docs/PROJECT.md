@@ -24,6 +24,25 @@ below.
 
 ---
 
+## Table of Content
+
+- [Project shape](#project-shape)
+- [Technology stack](#technology-stack)
+- [Who may see a patient's data](#who-may-see-a-patients-data)
+- [The clinical domain](#the-clinical-domain)
+- [Accounts and sign-in](#accounts-and-sign-in)
+- [The audit trail](#the-audit-trail)
+- [Records leaving Stride, and accounts merged](#records-leaving-stride-and-accounts-merged)
+- [The database's half of the rules](#the-databases-half-of-the-rules)
+- [Security-specific decisions](#security-specific-decisions)
+- [Type safety](#type-safety)
+- [Development practices](#development-practices)
+- [Deployment infrastructure](#deployment-infrastructure)
+- [Observability & operations](#observability--operations)
+- [Known limits and what's deferred](#known-limits-and-whats-deferred)
+
+---
+
 ## Project shape
 
 Stride is a multi-role physiotherapy practice management application:

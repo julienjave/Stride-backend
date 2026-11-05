@@ -17,6 +17,18 @@ Swagger documents HTTP routes only, so none of this appears at `/api-docs`.
 default namespace (`/`) and path (`/socket.io`). The gateway's CORS uses the
 same allow-list as the REST API (`FRONTEND_URLS`), with credentials.
 
+---
+
+## Contents
+
+- [What the socket is for](#what-the-socket-is-for)
+- [Connecting](#connecting)
+- [Client → server events](#client--server-events)
+- [Server → client events](#server--client-events)
+- [End-to-end example](#end-to-end-example)
+
+---
+
 ## What the socket is for
 
 The socket is the **live** half of messaging. Every action also exists as a

@@ -11,6 +11,36 @@ Security policies in [`src/database/migrations/`](../../src/database/migrations/
 Each comes with the end-to-end test file that pins it; the tests' names
 state the rules almost word for word.
 
+---
+
+## Contents
+
+- [The three roles, and the active one](#the-three-roles-and-the-active-one)
+- [The two relationships that grant access](#the-two-relationships-that-grant-access)
+- [The three layers, and why many refusals are `404`](#the-three-layers-and-why-many-refusals-are-404)
+- [Admins and clinical data](#admins-and-clinical-data)
+- [Resource by resource](#resource-by-resource)
+  - [Users](#users--userse2e-spects-admin-users-liste2e-spects)
+  - [Invitations](#invitations--invitationse2e-spects)
+  - [Care team](#care-team--care-teame2e-spects)
+  - [Clinics](#clinics--clinicse2e-spects)
+  - [Exercise library](#exercise-library--exercisese2e-spects)
+  - [Program templates](#program-templates--programse2e-spects-workoutse2e-spects)
+  - [Assigned programs](#assigned-programs--assigned-programse2e-spects-program-lifecyclee2e-spects-deactivated-patiente2e-spects)
+  - [Sessions](#sessions--sessionse2e-spects)
+  - [Medical file](#medical-file--medical-filese2e-spects)
+  - [Range of motion](#range-of-motion--range-of-motione2e-spects)
+  - [Alerts ("For review")](#alerts-for-review--alertse2e-spects)
+  - [Messaging](#messaging--messaginge2e-spects-messaging-gatewaye2e-spects)
+  - [Records export](#records-export--records-exporte2e-spects-records-export-linkse2e-spects)
+  - [Audit log](#audit-log--audit-log-viewere2e-spects)
+  - [Admin home](#admin-home--admin-metricse2e-spects)
+  - [Public routes](#public-routes)
+- [Deactivated accounts](#deactivated-accounts)
+- [The demo deployment's locks](#the-demo-deployments-locks)
+
+---
+
 ## The three roles, and the active one
 
 - **`admin`** runs the practice: clinics, accounts, invitations, the audit

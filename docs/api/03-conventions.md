@@ -5,6 +5,19 @@ repeated for each route: how requests are validated, what every error looks
 like, which lists are paged, how dates are written, how rate limiting
 answers, and what gets recorded in the audit trail.
 
+---
+
+## Contents
+
+- [Requests](#requests)
+- [Error responses](#error-responses)
+- [Dates and times](#dates-and-times)
+- [Pagination](#pagination)
+- [Rate limiting](#rate-limiting)
+- [Audit trail](#audit-trail)
+
+---
+
 ## Requests
 
 Bodies are JSON, except the routes marked *multipart upload* in the

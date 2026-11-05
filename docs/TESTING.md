@@ -16,6 +16,22 @@ the two scripts it needs live here (below).
 
 ---
 
+## Table of Content
+
+- [Running them](#running-them)
+  - [Unit tests](#unit-tests)
+  - [API end-to-end tests](#api-end-to-end-tests)
+  - [For the browser suite](#for-the-browser-suite)
+  - [Documentation links](#documentation-links)
+- [What each layer proves](#what-each-layer-proves)
+- [Techniques](#techniques)
+- [Mutation testing](#mutation-testing)
+- [Rules learned the hard way](#rules-learned-the-hard-way)
+- [What the suites don't cover](#what-the-suites-dont-cover)
+- [CI](#ci)
+
+---
+
 ## Running them
 
 ### Unit tests

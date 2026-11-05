@@ -34,6 +34,15 @@ which covers the same phase from the screens.
 
 ---
 
+## Contents
+
+- [Start here](#start-here)
+- [Reading order](#reading-order)
+- [Looking for a specific topic?](#looking-for-a-specific-topic)
+- [Known open items](#known-open-items)
+
+---
+
 ## Start here
 
 Six entries that show how this project works, more than what it contains:
